@@ -49,10 +49,9 @@ notifier = TelegramNotifier()
 trade = TradeService(repo, notifier)
 report = ReportService(repo)
 
-# --- Endpoints ---
+# --- Endpoints # --- Endpoints ---
 @app.get("/health")
-@limiter.limit("30/minute")
-async def health(request: Request):
+async def health():
     return {"status": "ok"}
 
 @app.post("/recommendations", response_model=RecommendationOut, dependencies=[Depends(require_api_key)])
