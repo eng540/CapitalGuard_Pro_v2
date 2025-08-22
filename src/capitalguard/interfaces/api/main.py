@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, Depends
+# src/capitalguard/interfaces/api/main.py
+from fastapi import FastAPI, HTTPException, Depends, Request   # <-- أضف Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -41,12 +42,12 @@ report = ReportService(repo)
 
 @app.get("/health")
 @limiter.limit("30/minute")
-def health():
+async def health(request: Request):           # <-- أضف request
     return {"status": "ok"}
 
 @app.post("/recommendations", response_model=RecommendationOut, dependencies=[Depends(require_api_key)])
 @limiter.limit("60/minute")
-def create_rec(payload: RecommendationIn):
+def create_rec(payload: RecommendationIn, request: Request):    # <-- أضف request
     try:
         rec = trade.create(
             asset=payload.asset, side=payload.side, entry=payload.entry,
@@ -63,7 +64,7 @@ def create_rec(payload: RecommendationIn):
 
 @app.get("/recommendations", response_model=list[RecommendationOut], dependencies=[Depends(require_api_key)])
 @limiter.limit("120/minute")
-def list_recs(channel_id: int | None = None):
+def list_recs(channel_id: int | None = None, request: Request = None):  # <-- أضف request
     items = trade.list_all(channel_id)
     return [RecommendationOut(
         id=i.id, asset=i.asset.value, side=i.side.value, entry=i.entry.value,
@@ -73,7 +74,7 @@ def list_recs(channel_id: int | None = None):
 
 @app.post("/recommendations/{rec_id}/close", response_model=RecommendationOut, dependencies=[Depends(require_api_key)])
 @limiter.limit("60/minute")
-def close_rec(rec_id: int, payload: CloseIn):
+def close_rec(rec_id: int, payload: CloseIn, request: Request):        # <-- أضف request
     try:
         rec = trade.close(rec_id, payload.exit_price)
         return RecommendationOut(
@@ -86,7 +87,7 @@ def close_rec(rec_id: int, payload: CloseIn):
 
 @app.get("/report", response_model=ReportOut, dependencies=[Depends(require_api_key)])
 @limiter.limit("30/minute")
-def get_report(channel_id: int | None = None):
+def get_report(channel_id: int | None = None, request: Request = None):  # <-- أضف request
     return report.summary(channel_id)
 
 # Routers
