@@ -38,7 +38,6 @@ app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)
 def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
-    # إرجاع JSONResponse بدل tuple لضمان توافق FastAPI
     return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
 
 app.add_middleware(SlowAPIMiddleware)
@@ -49,14 +48,18 @@ notifier = TelegramNotifier()
 trade = TradeService(repo, notifier)
 report = ReportService(repo)
 
-# --- Endpoints # --- Endpoints ---
+# --- Endpoints ---
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
-@app.post("/recommendations", response_model=RecommendationOut, dependencies=[Depends(require_api_key)])
+@app.post(
+    "/recommendations",
+    response_model=RecommendationOut,
+    dependencies=[Depends(require_api_key)],
+)
 @limiter.limit("60/minute")
-def create_rec(payload: RecommendationIn, request: Request):
+def create_rec(request: Request, payload: RecommendationIn):
     try:
         rec = trade.create(
             asset=payload.asset,
@@ -81,9 +84,13 @@ def create_rec(payload: RecommendationIn, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/recommendations", response_model=list[RecommendationOut], dependencies=[Depends(require_api_key)])
+@app.get(
+    "/recommendations",
+    response_model=list[RecommendationOut],
+    dependencies=[Depends(require_api_key)],
+)
 @limiter.limit("120/minute")
-def list_recs(channel_id: int | None = None, request: Request = None):
+def list_recs(request: Request, channel_id: int | None = None):
     items = trade.list_all(channel_id)
     return [
         RecommendationOut(
@@ -100,9 +107,13 @@ def list_recs(channel_id: int | None = None, request: Request = None):
         for i in items
     ]
 
-@app.post("/recommendations/{rec_id}/close", response_model=RecommendationOut, dependencies=[Depends(require_api_key)])
+@app.post(
+    "/recommendations/{rec_id}/close",
+    response_model=RecommendationOut,
+    dependencies=[Depends(require_api_key)],
+)
 @limiter.limit("60/minute")
-def close_rec(rec_id: int, payload: CloseIn, request: Request):
+def close_rec(request: Request, rec_id: int, payload: CloseIn):
     try:
         rec = trade.close(rec_id, payload.exit_price)
         return RecommendationOut(
@@ -119,9 +130,13 @@ def close_rec(rec_id: int, payload: CloseIn, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-@app.get("/report", response_model=ReportOut, dependencies=[Depends(require_api_key)])
+@app.get(
+    "/report",
+    response_model=ReportOut,
+    dependencies=[Depends(require_api_key)],
+)
 @limiter.limit("30/minute")
-def get_report(channel_id: int | None = None, request: Request = None):
+def get_report(request: Request, channel_id: int | None = None):
     return report.summary(channel_id)
 
 # --- Routers (metrics & tradingview webhook) ---
