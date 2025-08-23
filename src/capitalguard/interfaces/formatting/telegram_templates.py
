@@ -14,16 +14,16 @@ def format_signal(
     def tp_pct(t: float) -> str:
         try:
             if side.upper() == "LONG":
-                pct = (t - entry) / entry * 100
+                pct = ((t - entry) / entry) * 100
             else:
-                pct = (entry - t) / entry * 100
+                pct = ((entry - t) / entry) * 100
             return f"{pct:+.2f}%"
         except Exception:
             return "-"
 
     targets_with_pct = " • ".join([f"{t:g} ({tp_pct(t)})" for t in targets])
 
-    lines: List[str] = []
+    lines = []
     lines.append("┌────────────────────────┐")
     lines.append(f"│ 📣 Trade Signal — #REC{rec_id:04d} │  #{symbol} #Futures #{side.capitalize()}")
     lines.append("└────────────────────────┘")
