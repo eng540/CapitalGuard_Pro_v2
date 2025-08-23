@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import sentry_sdk
+from capitalguard.infrastructure.db.patches import run_patches
+run_patches()
 
 # ضع هذا مباشرة بعد importات fastapi والسنتري والـ CORS، وقبل import TradeService إلخ.
 import sys, os, logging
