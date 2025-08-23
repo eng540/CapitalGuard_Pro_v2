@@ -1,30 +1,17 @@
-# -*- coding: utf-8 -*-
-from __future__ import annotations
 from typing import List, Optional
-
 from capitalguard.domain.entities import Recommendation
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from capitalguard.domain.ports import RecommendationRepoPort, NotifierPort
-from capitalguard.interfaces.formatting.telegram_templates import (
-    format_signal, format_closed
-)
+from capitalguard.interfaces.formatting.telegram_templates import format_signal, format_closed
 
 class TradeService:
     def __init__(self, repo: RecommendationRepoPort, notifier: Optional[NotifierPort] = None) -> None:
         self.repo = repo
         self.notifier = notifier
 
-    def create(
-        self,
-        asset: str,
-        side: str,
-        entry: float,
-        stop_loss: float,
-        targets: List[float],
-        channel_id: Optional[int] = None,
-        user_id: Optional[int] = None,
-        notes: Optional[str] = None,
-    ) -> Recommendation:
+    def create(self, asset: str, side: str, entry: float, stop_loss: float,
+               targets: List[float], channel_id: Optional[int] = None,
+               user_id: Optional[int] = None) -> Recommendation:
         rec = Recommendation(
             asset=Symbol(asset),
             side=Side(side),
@@ -35,7 +22,6 @@ class TradeService:
             user_id=user_id,
         )
         saved = self.repo.add(rec)
-
         if self.notifier:
             try:
                 msg = format_signal(
@@ -45,33 +31,24 @@ class TradeService:
                     entry=saved.entry.value,
                     sl=saved.stop_loss.value,
                     targets=saved.targets.values,
-                    notes=notes,
+                    notes=None,
                 )
-                # نشر تلقائي في قناة الإعلانات
-                self.notifier.publish(msg, chat_id=saved.channel_id)
+                self.notifier.publish(msg)  # يذهب إلى TELEGRAM_CHANNEL_ID
             except Exception:
-                # لا نمنع إنشاء التوصية عند فشل الإرسال
                 pass
-
         return saved
 
     def close(self, rec_id: int, exit_price: float) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec:
             raise ValueError("Recommendation not found")
-
         rec.close(exit_price)
         saved = self.repo.update(rec)
-
         if self.notifier:
             try:
-                self.notifier.publish(
-                    format_closed(saved.id, saved.asset.value, exit_price),
-                    chat_id=saved.channel_id,
-                )
+                self.notifier.publish(format_closed(saved.id, saved.asset.value, exit_price))
             except Exception:
                 pass
-
         return saved
 
     def list_open(self, channel_id: Optional[int] = None):
