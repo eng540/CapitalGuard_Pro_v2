@@ -1,3 +1,11 @@
+
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+import sentry_sdk
+
 # ضع هذا مباشرة بعد importات fastapi والسنتري والـ CORS، وقبل import TradeService إلخ.
 import sys, os, logging
 logging.basicConfig(level=logging.INFO)
@@ -9,13 +17,6 @@ logging.info("List /app: %s", os.listdir("/app") if os.path.exists("/app") else 
 logging.info("List /app/src: %s", os.listdir("/app/src") if os.path.exists("/app/src") else "NO /app/src")
 logging.info("List capitalguard/interfaces: %s", os.listdir("/app/src/capitalguard/interfaces") if os.path.exists("/app/src/capitalguard/interfaces") else "NO interfaces")
 logging.info("List capitalguard/interfaces/formatting: %s", os.listdir("/app/src/capitalguard/interfaces/formatting") if os.path.exists("/app/src/capitalguard/interfaces/formatting") else "NO formatting")
-
-from fastapi import FastAPI, HTTPException, Depends, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
-import sentry_sdk
 
 from capitalguard.config import settings
 from capitalguard.infrastructure.db.repository import RecommendationRepository
