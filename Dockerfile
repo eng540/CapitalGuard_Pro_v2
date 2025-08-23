@@ -1,5 +1,8 @@
 # Python slim
 FROM python:3.11-slim
+# أعلى Dockerfile بعد FROM
+ARG BUILD_REV=1
+ENV BUILD_REV=${BUILD_REV}
 
 # منع البايثون من كتابة .pyc وتسريب البافر
 ENV PYTHONDONTWRITEBYTECODE=1
