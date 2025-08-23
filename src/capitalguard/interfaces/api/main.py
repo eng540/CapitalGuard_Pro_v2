@@ -1,4 +1,3 @@
-# src/capitalguard/interfaces/api/main.py
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -20,11 +19,11 @@ from capitalguard.interfaces.webhook.tradingview import router as tv_router
 
 app = FastAPI(title="CapitalGuard Pro API", version="2.0.0")
 
-# --- Sentry ---
+# Sentry
 if settings.SENTRY_DSN:
     sentry_sdk.init(dsn=settings.SENTRY_DSN, traces_sample_rate=0.1)
 
-# --- CORS ---
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if settings.CORS_ORIGINS == "*" else settings.CORS_ORIGINS.split(","),
@@ -33,7 +32,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Rate limiting (slowapi) ---
+# Rate limiting
 app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)
@@ -42,103 +41,62 @@ def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
 
 app.add_middleware(SlowAPIMiddleware)
 
-# --- DI / Services ---
+# Services
 repo = RecommendationRepository()
 notifier = TelegramNotifier()
 trade = TradeService(repo, notifier)
 report = ReportService(repo)
 
-# --- Endpoints ---
 @app.get("/health")
-async def health():
+@limiter.limit("30/minute")
+async def health(request: Request):
     return {"status": "ok"}
 
-@app.post(
-    "/recommendations",
-    response_model=RecommendationOut,
-    dependencies=[Depends(require_api_key)],
-)
+@app.post("/recommendations", response_model=RecommendationOut, dependencies=[Depends(require_api_key)])
 @limiter.limit("60/minute")
-def create_rec(request: Request, payload: RecommendationIn):
+def create_rec(payload: RecommendationIn, request: Request):
     try:
         rec = trade.create(
-            asset=payload.asset,
-            side=payload.side,
-            entry=payload.entry,
-            stop_loss=payload.stop_loss,
-            targets=payload.targets,
-            channel_id=payload.channel_id,
-            user_id=payload.user_id,
+            asset=payload.asset, side=payload.side, entry=payload.entry,
+            stop_loss=payload.stop_loss, targets=payload.targets,
+            channel_id=payload.channel_id, user_id=payload.user_id
         )
         return RecommendationOut(
-            id=rec.id,
-            asset=rec.asset.value,
-            side=rec.side.value,
-            entry=rec.entry.value,
-            stop_loss=rec.stop_loss.value,
-            targets=rec.targets.values,
-            status=rec.status,
-            channel_id=rec.channel_id,
-            user_id=rec.user_id,
+            id=rec.id, asset=rec.asset.value, side=rec.side.value, entry=rec.entry.value,
+            stop_loss=rec.stop_loss.value, targets=rec.targets.values, status=rec.status,
+            channel_id=rec.channel_id, user_id=rec.user_id
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get(
-    "/recommendations",
-    response_model=list[RecommendationOut],
-    dependencies=[Depends(require_api_key)],
-)
+@app.get("/recommendations", response_model=list[RecommendationOut], dependencies=[Depends(require_api_key)])
 @limiter.limit("120/minute")
 def list_recs(request: Request, channel_id: int | None = None):
     items = trade.list_all(channel_id)
-    return [
-        RecommendationOut(
-            id=i.id,
-            asset=i.asset.value,
-            side=i.side.value,
-            entry=i.entry.value,
-            stop_loss=i.stop_loss.value,
-            targets=i.targets.values,
-            status=i.status,
-            channel_id=i.channel_id,
-            user_id=i.user_id,
-        )
-        for i in items
-    ]
+    return [RecommendationOut(
+        id=i.id, asset=i.asset.value, side=i.side.value, entry=i.entry.value,
+        stop_loss=i.stop_loss.value, targets=i.targets.values, status=i.status,
+        channel_id=i.channel_id, user_id=i.user_id
+    ) for i in items]
 
-@app.post(
-    "/recommendations/{rec_id}/close",
-    response_model=RecommendationOut,
-    dependencies=[Depends(require_api_key)],
-)
+@app.post("/recommendations/{rec_id}/close", response_model=RecommendationOut, dependencies=[Depends(require_api_key)])
 @limiter.limit("60/minute")
-def close_rec(request: Request, rec_id: int, payload: CloseIn):
+def close_rec(rec_id: int, payload: CloseIn, request: Request):
     try:
         rec = trade.close(rec_id, payload.exit_price)
         return RecommendationOut(
-            id=rec.id,
-            asset=rec.asset.value,
-            side=rec.side.value,
-            entry=rec.entry.value,
-            stop_loss=rec.stop_loss.value,
-            targets=rec.targets.values,
-            status=rec.status,
-            channel_id=rec.channel_id,
-            user_id=rec.user_id,
+            id=rec.id, asset=rec.asset.value, side=rec.side.value, entry=rec.entry.value,
+            stop_loss=rec.stop_loss.value, targets=rec.targets.values, status=rec.status,
+            channel_id=rec.channel_id, user_id=rec.user_id
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-@app.get(
-    "/report",
-    response_model=ReportOut,
-    dependencies=[Depends(require_api_key)],
-)
+@app.get("/report", response_model=ReportOut, dependencies=[Depends(require_api_key)])
 @limiter.limit("30/minute")
 def get_report(request: Request, channel_id: int | None = None):
     return report.summary(channel_id)
 
-# --- Routers (metrics & tradingview webhook) ---
+# Routers
 app.include_router(metrics_router)
 app.include_router(tv_router)
