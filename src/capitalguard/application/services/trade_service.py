@@ -1,10 +1,13 @@
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 from typing import List, Optional
 
 from capitalguard.domain.entities import Recommendation
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from capitalguard.domain.ports import RecommendationRepoPort, NotifierPort
-
+from capitalguard.interfaces.formatting.telegram_templates import (
+    format_signal, format_closed
+)
 
 class TradeService:
     def __init__(self, repo: RecommendationRepoPort, notifier: Optional[NotifierPort] = None) -> None:
@@ -33,37 +36,22 @@ class TradeService:
         )
         saved = self.repo.add(rec)
 
-        # -------- الإشعار بتنسيق احترافي --------
         if self.notifier:
-            # إن كان المرسّل يدعم الواجهة الجديدة
-            if hasattr(self.notifier, "send_recommendation"):
-                try:
-                    self.notifier.send_recommendation(
-                        rec_id=saved.id,
-                        asset=saved.asset.value,
-                        side=saved.side.value,               # "LONG" / "SHORT"
-                        entry=saved.entry.value,
-                        stop_loss=saved.stop_loss.value,
-                        targets=saved.targets.values,        # List[float]
-                        notes=notes,
-                        chat_id=saved.channel_id,
-                    )
-                except Exception:
-                    # لا نكسر إنشاء التوصية إن فشل الإرسال
-                    pass
-            else:
-                # توافقيًا مع مرسّلات قديمة تملك publish(text)
-                try:
-                    msg = (
-                        f"📌 <b>New Recommendation</b>\n"
-                        f"Asset: <b>{saved.asset.value}</b> | Side: <b>{saved.side.value}</b>\n"
-                        f"Entry: <b>{saved.entry.value}</b> | SL: <b>{saved.stop_loss.value}</b>\n"
-                        f"Targets: <b>{', '.join(map(str, saved.targets.values))}</b>\n"
-                        f"ID: <code>{saved.id}</code>"
-                    )
-                    self.notifier.publish(msg)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+            try:
+                msg = format_signal(
+                    rec_id=saved.id,
+                    symbol=saved.asset.value,
+                    side=saved.side.value,
+                    entry=saved.entry.value,
+                    sl=saved.stop_loss.value,
+                    targets=saved.targets.values,
+                    notes=notes,
+                )
+                # نشر تلقائي في قناة الإعلانات
+                self.notifier.publish(msg, chat_id=saved.channel_id)
+            except Exception:
+                # لا نمنع إنشاء التوصية عند فشل الإرسال
+                pass
 
         return saved
 
@@ -75,24 +63,14 @@ class TradeService:
         rec.close(exit_price)
         saved = self.repo.update(rec)
 
-        # -------- إشعار الإغلاق --------
         if self.notifier:
-            if hasattr(self.notifier, "send_close"):
-                try:
-                    self.notifier.send_close(
-                        rec_id=saved.id,
-                        asset=saved.asset.value,
-                        exit_price=exit_price,
-                        pnl_pct=None,               # يمكن حسابها لاحقًا إن رغبت
-                        chat_id=saved.channel_id,
-                    )
-                except Exception:
-                    pass
-            else:
-                try:
-                    self.notifier.publish(f"✅ <b>Closed</b> | ID: <code>{saved.id}</code>")  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+            try:
+                self.notifier.publish(
+                    format_closed(saved.id, saved.asset.value, exit_price),
+                    chat_id=saved.channel_id,
+                )
+            except Exception:
+                pass
 
         return saved
 
