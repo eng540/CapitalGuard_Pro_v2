@@ -21,6 +21,12 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt && \
     pip install --no-cache-dir supervisor
 
+RUN python - <<'PY'
+import pkgutil
+mods = [m.name for m in pkgutil.iter_modules() if m.name == 'capitalguard']
+print('HAS_PYPI_CAPITALGUARD?', bool(mods))
+PY
+
 # نسخ السورس وملفات الإعداد
 COPY src /app/src
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
