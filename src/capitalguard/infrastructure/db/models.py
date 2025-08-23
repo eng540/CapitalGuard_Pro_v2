@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, ForeignKey, Index
+from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, JSON, ForeignKey, Index
 from datetime import datetime
 from .base import Base
 
@@ -11,10 +11,13 @@ class RecommendationORM(Base):
     stop_loss = Column(Float, nullable=False)
     targets = Column(JSON, nullable=False)
     status = Column(String, default="OPEN", nullable=False)
-    channel_id = Column(Integer, index=True, nullable=True)
-    user_id = Column(Integer, nullable=True)
+
+    # هنا التغيير المهم:
+    channel_id = Column(BigInteger, index=True, nullable=True)
+    user_id    = Column(BigInteger, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
-Index("idx_recs_asset_status", RecommendationORM.asset, RecommendationORM.status)
+Index("idx_recs_asset_status",  RecommendationORM.asset,  RecommendationORM.status)
