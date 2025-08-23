@@ -1,38 +1,30 @@
-from fastapi import APIRouter, HTTPException, Request, Depends
-from capitalguard.application.services.trade_service import TradeService
+from __future__ import annotations
+from fastapi import APIRouter, Request, Depends
+from typing import Any, List
+from capitalguard.interfaces.api.deps import require_api_key
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
-from capitalguard.config import settings
+from capitalguard.application.services.trade_service import TradeService
 
-router = APIRouter(prefix="/webhook", tags=["webhook"])
+repo = RecommendationRepository()
+notifier = TelegramNotifier()
+trade = TradeService(repo, notifier)
 
-# Simple DI
-_repo = RecommendationRepository()
-_notifier = TelegramNotifier()
-_trade = TradeService(_repo, _notifier)
+router = APIRouter(tags=["webhook"])
 
-def require_secret(request: Request):
-    secret = request.headers.get("X-TV-Secret") or (request.query_params.get("secret"))
-    if settings.TV_WEBHOOK_SECRET and secret != settings.TV_WEBHOOK_SECRET:
-        raise HTTPException(status_code=401, detail="Invalid webhook secret")
-    return True
-
-@router.post("/tradingview", dependencies=[Depends(require_secret)])
-async def tradingview_webhook(request: Request):
+@router.post("/webhook/tradingview")
+async def tradingview_webhook(payload: dict, request: Request, _=Depends(require_api_key)):
     try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    required = ["asset","side","entry","stop_loss","targets"]
-    if not all(k in payload for k in required):
-        raise HTTPException(status_code=400, detail=f"Missing keys: {required}")
-
-    rec = _trade.create(
-        asset=str(payload["asset"]).upper().strip(),
-        side=str(payload["side"]).upper().strip(),
-        entry=float(payload["entry"]),
-        stop_loss=float(payload["stop_loss"]),
-        targets=[float(x) for x in payload["targets"]],
-    )
-    return {"status":"ok","id":rec.id}
+        symbol = (payload.get("symbol") or payload.get("asset") or "").upper()
+        side = (payload.get("side") or "").upper()
+        entry = float(payload.get("entry"))
+        sl = float(payload.get("sl") or payload.get("stop_loss"))
+        tg = payload.get("targets") or payload.get("tps") or []
+        if isinstance(tg, str):
+            targets: List[float] = [float(x) for x in tg.replace(" ", "").split(",") if x]
+        else:
+            targets = [float(x) for x in tg]
+        rec = trade.create(symbol, side, entry, sl, targets)
+        return {"ok": True, "id": rec.id}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
