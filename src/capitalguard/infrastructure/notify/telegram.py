@@ -1,91 +1,49 @@
+# -*- coding: utf-8 -*-
 from __future__ import annotations
+from typing import Iterable, Optional
 import os
-import math
 import html
-from typing import List, Optional
-
 import requests
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-DEFAULT_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # يمكن تمرير channel_id مع التوصية
+TELEGRAM_API = "https://api.telegram.org"
 
-# Telegram MarkdownV2 يحتاج هروب محارف خاصة
-_MD_V2_SPECIAL = r'_*[]()~`>#+-=|{}.!'
-
-def _esc(s: str) -> str:
-    return ''.join('\\' + c if c in _MD_V2_SPECIAL else c for c in s)
-
-def _fmt_pct(p: float) -> str:
-    sign = "+" if p >= 0 else ""
-    return f"{sign}{p:.2f}%"
-
-def _rr_ratio(entry: float, sl: float, targets: List[float], side: str) -> Optional[float]:
-    """حساب R/R بسيط: المسافة للهدف الأول على المسافة لوقف الخسارة."""
-    try:
-        if side.upper() == "LONG":
-            risk = abs(entry - sl)
-            reward = abs(targets[0] - entry)
-        else:  # SHORT
-            risk = abs(sl - entry)
-            reward = abs(entry - targets[0])
-        if risk == 0:
-            return None
-        return reward / risk
-    except Exception:
-        return None
-
-def _tp_percents(entry: float, tps: List[float], side: str) -> List[float]:
-    """نسبة الربح لكل هدف مقارنة بسعر الدخول."""
-    percs = []
-    for tp in tps:
-        if side.upper() == "LONG":
-            percs.append((tp - entry) / entry * 100.0)
-        else:
-            percs.append((entry - tp) / entry * 100.0)
-    return percs
 
 class TelegramNotifier:
-    API_BASE = "https://api.telegram.org/bot{token}/{method}"
+    """
+    مرسل تيليجرام بسيط باستخدام HTTP (بدون مكتبات ثقيلة).
+    يدعم الدوال:
+      - send_recommendation
+      - send_close
+      - send_report
+    ويمكن استدعاء publish(text) للتوافق الخلفي.
+    """
 
-    def __init__(self, token: str | None = None, default_chat_id: str | None = None):
-        self.token = token or TELEGRAM_BOT_TOKEN
-        self.default_chat_id = default_chat_id or DEFAULT_CHAT_ID
+    def __init__(self, bot_token: Optional[str] = None, default_chat_id: Optional[int] = None):
+        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
+        self.default_chat_id = default_chat_id or int(os.getenv("TELEGRAM_CHANNEL_ID", "0") or "0")
+        if not self.bot_token:
+            raise RuntimeError("TELEGRAM_BOT_TOKEN is missing")
 
-    # --- إرسال عام ---
-    def _send(self, text: str, chat_id: Optional[int | str] = None, reply_markup: dict | None = None):
-        if not self.token:
+    # ---------- Low-level ----------
+    def _send(self, text: str, chat_id: Optional[int] = None, disable_web_page_preview: bool = True) -> None:
+        cid = chat_id or self.default_chat_id
+        if not cid:
+            # لا نكسر المنطق إن لم يُعطَ chat_id — فقط نتجاهل الإرسال.
             return
+        url = f"{TELEGRAM_API}/bot{self.bot_token}/sendMessage"
         payload = {
-            "chat_id": chat_id or self.default_chat_id,
+            "chat_id": cid,
             "text": text,
-            "parse_mode": "MarkdownV2",
-            "disable_web_page_preview": True,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": disable_web_page_preview,
         }
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        url = self.API_BASE.format(token=self.token, method="sendMessage")
         try:
-            requests.post(url, json=payload, timeout=15).raise_for_status()
+            requests.post(url, json=payload, timeout=10)
         except Exception:
-            # لا نرفع الاستثناء حتى لا يُفشل المنطق الأساسي للتداول
+            # لا نفجّر الخدمة عند فشل الإرسال
             pass
 
-    # --- أزرار سفلية (روابط/أوامر) ---
-    def _cta_keyboard(self) -> dict:
-        # عدّل الروابط حسب قنواتك/بوتك
-        return {
-            "inline_keyboard": [
-                [
-                    {"text": "🔗 Futures Watcher Bot", "url": "https://t.me/your_futures_bot"},
-                    {"text": "📣 Official Channel", "url": "https://t.me/your_channel"},
-                ],
-                [
-                    {"text": "📬 Contact", "url": "https://t.me/your_support"},
-                ]
-            ]
-        }
-
-    # --- رسائل توصية/إغلاق/تقرير ---
+    # ---------- Public API ----------
     def send_recommendation(
         self,
         rec_id: int,
@@ -93,48 +51,30 @@ class TelegramNotifier:
         side: str,
         entry: float,
         stop_loss: float,
-        targets: List[float],
-        notes: str | None = None,
-        chat_id: Optional[int | str] = None,
-    ):
-        # الحسابات
-        tps_pct = _tp_percents(entry, targets, side)
-        rr = _rr_ratio(entry, stop_loss, targets, side)
+        targets: Iterable[float],
+        notes: Optional[str] = None,
+        chat_id: Optional[int] = None,
+    ) -> None:
+        # تنسيق “البطاقة” كما طلبت
+        # مثال: / Futures / SHORT  + هاشتاقات متكررة للأصل
+        tags = f"#{asset} #{asset} #Futures #{side.capitalize()}"
+        header = f"┌────────────────────────┐\n│ 📣 Trade Signal — #REC{rec_id:04d} │  {tags}\n└────────────────────────┘"
 
-        # تهيئة أقسام التنسيق
-        tag_asset = f"#{_esc(asset)}"
-        hdr = (
-            f"┌────────────────────────┐\n"
-            f"│ 📣 {_esc('Trade Signal')} — #{_esc(f'REC{rec_id:04d}')} │  "
-            f"{tag_asset} {tag_asset} {_esc('#Futures')} #{_esc(side.capitalize())}\n"
-            f"└────────────────────────┘"
-        )
-
-        body_top = (
-            f"💎 {_esc('Symbol')} : {_esc(asset)}\n"
-            f"📌 {_esc('Type')}   : {_esc('Futures')} / {_esc(side.upper())}\n"
+        tps_str = " • ".join([f"{t:g}" for t in targets])
+        body = (
+            f"💎 <b>Symbol</b> : <code>{html.escape(asset)}</code>\n"
+            f"📌 <b>Type</b>   : <code>Futures / {side.upper()}</code>\n"
             f"────────────────────────\n"
-            f"💰 {_esc('Entry')}  : {_esc(str(entry))}\n"
-            f"🛑 {_esc('SL')}     : {_esc(str(stop_loss))}\n\n"
+            f"💰 <b>Entry</b>  : <code>{entry:g}</code>\n"
+            f"🛑 <b>SL</b>     : <code>{stop_loss:g}</code>\n\n"
+            f"🎯 <b>TPs</b>   : {tps_str}\n"
+            f"────────────────────────\n"
+            f"📊 <b>R/R</b>   : -\n"
+            f"📝 <b>Notes</b> : {html.escape(notes) if notes else '-'}\n\n"
+            f"(Disclaimer: Not financial advice. Manage your risk.)\n\n"
+            f"🔗 <i>Futures Watcher Bot</i>  |  📣 <i>Official Channel</i>  |  📬 <i>Contact</i>"
         )
-
-        # قائمة الأهداف مع النِّسَب
-        tps_lines = []
-        for i, (tp, pc) in enumerate(zip(targets, tps_pct), start=1):
-            tps_lines.append(f"{i}) {_esc(str(tp))} ({_esc(_fmt_pct(pc))})")
-        tps_block = "🎯 " + _esc("TPs") + "   : " + " • ".join(tps_lines) + "\n\n"
-
-        body_mid = "────────────────────────\n"
-        rr_text = "-" if rr is None else f"{rr:.2f}"
-        body_mid += f"📊 {_esc('R/R')}   : {_esc(rr_text)}\n"
-        body_mid += f"📝 {_esc('Notes')} : {_esc(notes or '—')}\n\n"
-
-        disclaimer = _esc("(Disclaimer: Not financial advice. Manage your risk.)")
-
-        # روابط أسفل الرسالة عبر أزرار
-        text = "\n".join([hdr, body_top, tps_block, body_mid, disclaimer])
-
-        self._send(text, chat_id=chat_id, reply_markup=self._cta_keyboard())
+        self._send(f"{header}\n{body}", chat_id=chat_id)
 
     def send_close(
         self,
@@ -142,30 +82,43 @@ class TelegramNotifier:
         asset: str,
         exit_price: float,
         pnl_pct: Optional[float] = None,
-        chat_id: Optional[int | str] = None,
-    ):
-        pnl_str = f"{_fmt_pct(pnl_pct)}" if pnl_pct is not None else "-"
-        text = (
-            f"✅ {_esc('Position Closed')} — #{_esc(f'REC{rec_id:04d}')}\n"
-            f"🔔 {_esc('Symbol')} : {_esc(asset)}\n"
-            f"💸 {_esc('Exit')}   : {_esc(str(exit_price))}\n"
-            f"📈 {_esc('PnL')}    : {_esc(pnl_str)}"
+        chat_id: Optional[int] = None,
+    ) -> None:
+        pnl_text = f"{pnl_pct:+.2f}%" if pnl_pct is not None else "-"
+        msg = (
+            f"✅ <b>Closed</b> — #REC{rec_id:04d}\n"
+            f"🔸 <b>Symbol</b>: <code>{html.escape(asset)}</code>\n"
+            f"🔸 <b>Exit</b>  : <code>{exit_price:g}</code>\n"
+            f"🔸 <b>PNL</b>   : {pnl_text}"
         )
-        self._send(text, chat_id=chat_id, reply_markup=self._cta_keyboard())
+        self._send(msg, chat_id=chat_id)
 
-    def send_report(
-        self,
-        total: int,
-        open_count: int,
-        closed_count: int,
-        top_asset: Optional[str],
-        chat_id: Optional[int | str] = None,
-    ):
-        text = (
-            f"📊 {_esc('Summary Report')}\n"
-            f"• {_esc('Total')}   : {_esc(str(total))}\n"
-            f"• {_esc('Open')}    : {_esc(str(open_count))}\n"
-            f"• {_esc('Closed')}  : {_esc(str(closed_count))}\n"
-            f"• {_esc('Top Asset')}: {_esc(top_asset or '-')} "
+    def send_report(self, total: int, open_cnt: int, closed_cnt: int, most_asset: Optional[str]) -> None:
+        msg = (
+            "📈 <b>تقرير مختصر</b>\n"
+            f"• <b>إجمالي التوصيات</b>: <code>{total}</code>\n"
+            f"• <b>المفتوحة</b>: <code>{open_cnt}</code> | <b>المغلقة</b>: <code>{closed_cnt}</code>\n"
+            f"• <b>أكثر أصل تكرارًا</b>: <code>{most_asset or '-'} </code>"
         )
-        self._send(text, chat_id=chat_id, reply_markup=self._cta_keyboard())
+        self._send(msg)
+
+    # ---------- Backward compatibility ----------
+    def publish(self, text_or_rec):
+        # دعم publish القديم لو موجود استدعاءات قديمة
+        if isinstance(text_or_rec, str):
+            self._send(text_or_rec)
+            return
+        try:
+            rec = text_or_rec
+            self.send_recommendation(
+                rec_id=rec.id,
+                asset=rec.asset.value,
+                side=rec.side.value,
+                entry=rec.entry.value,
+                stop_loss=rec.stop_loss.value,
+                targets=rec.targets.values,
+                notes=None,
+                chat_id=getattr(rec, "channel_id", None),
+            )
+        except Exception:
+            pass
