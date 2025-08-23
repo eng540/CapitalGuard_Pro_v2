@@ -1,33 +1,36 @@
+# -*- coding: utf-8 -*-
+from __future__ import annotations
 from dataclasses import dataclass
-from enum import Enum
+import re
 from typing import List
 
-class Side(str, Enum):
-    LONG = "LONG"
-    SHORT = "SHORT"
-    SPOT = "SPOT"
-
-@dataclass(frozen=True)
 class Symbol:
-    value: str
-    def __post_init__(self):
-        v = self.value.strip().upper()
-        if not v:
-            raise ValueError("Symbol cannot be empty")
-        object.__setattr__(self, "value", v)
+    def __init__(self, value: str) -> None:
+        v = (value or "").strip().upper()
+        if not re.match(r"^[A-Z0-9._:-]{3,30}$", v):
+            raise ValueError("Invalid symbol")
+        self.value = v
 
-@dataclass(frozen=True)
+class Side:
+    def __init__(self, value: str) -> None:
+        v = (value or "").strip().upper()
+        if v not in ("LONG", "SHORT"):
+            raise ValueError("Invalid side (use LONG/SHORT)")
+        self.value = v
+
+@dataclass
 class Price:
     value: float
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        try:
+            self.value = float(self.value)
+        except Exception:
+            raise ValueError("Invalid price")
         if self.value <= 0:
-            raise ValueError("Price must be positive")
+            raise ValueError("Price must be > 0")
 
-@dataclass(frozen=True)
 class Targets:
-    values: List[float]
-    def __post_init__(self):
-        if not self.values:
-            raise ValueError("At least one target is required")
-        if any(v <= 0 for v in self.values):
-            raise ValueError("Targets must be positive")
+    def __init__(self, values: List[float]) -> None:
+        if not values or not isinstance(values, list):
+            raise ValueError("targets must be a non-empty list")
+        self.values = [float(v) for v in values]
