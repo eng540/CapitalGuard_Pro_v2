@@ -1,41 +1,43 @@
-# Python slim
+# ---------- Dockerfile ----------
 FROM python:3.11-slim
-# أعلى Dockerfile بعد FROM
-ARG BUILD_REV=1
+
+# اكسر الكاش كل مرة تغيّر الرقم (زِدْه عند كل نشر)
+ARG BUILD_REV=3
 ENV BUILD_REV=${BUILD_REV}
 
-# منع البايثون من كتابة .pyc وتسريب البافر
+# لا نكتب .pyc ونفعل إخراج غير مُخزَّن
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# مكان التشغيل داخل الحاوية
+# مكان التشغيل
 WORKDIR /app
 
-# تثبيت متطلبات النظام الخفيفة (اختياري حسب احتياجك)
+# حزم نظام خفيفة (اختياري)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# نسخ المتطلبات قبل السورس لزيادة كفاءة الكاش
+# تثبيت باقات بايثون
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt && \
     pip install --no-cache-dir supervisor
 
+# نضمن أنه لن يتم سحب باكج خارجي باسم capitalguard بالصدفة
 RUN python - <<'PY'
 import pkgutil
-mods = [m.name for m in pkgutil.iter_modules() if m.name == 'capitalguard']
-print('HAS_PYPI_CAPITALGUARD?', bool(mods))
+print("HAS_PYPI_CAPITALGUARD? ", any(m.name=="capitalguard" for m in pkgutil.iter_modules()))
 PY
 
-# نسخ السورس وملفات الإعداد
+# نسخ السورس وملف المشرف
 COPY src /app/src
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# مهم: تعريف ROOT للكود حتى تعمل import بالحزمة capitalguard.*
+# مهم: تعريف جذر الكود ليُرى كحزمة
 ENV PYTHONPATH=/app/src
 
-# Railway يضبط PORT تلقائيًا، نُظهره فقط
+# Railway يضبط PORT
 EXPOSE 8080
 
-# نقطة الدخول: Supervisor يدير api + bot
+# عملية الإقلاع
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# ---------- end ----------
