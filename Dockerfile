@@ -31,6 +31,27 @@ PY
 # نسخ السورس وملف المشرف
 COPY src /app/src
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+# بعد نسخ السورس
+COPY src /app/src
+
+# حذف أي ملفات/أسماء فيها سطر جديد أو مسافات غريبة
+RUN python - <<'PY'
+import pathlib, os, sys
+root = pathlib.Path('/app/src')
+bad = []
+for p in root.rglob('*'):
+    name = p.name
+    if '\n' in name or name.strip() != name:
+        bad.append(p)
+for p in bad:
+    print('Removing weird file:', p)
+    try:
+        p.unlink()
+    except IsADirectoryError:
+        # ما نتوقع مجلدات, لكن احترازًا
+        import shutil; shutil.rmtree(p, ignore_errors=True)
+print('DONE')
+PY
 
 # مهم: تعريف جذر الكود ليُرى كحزمة
 ENV PYTHONPATH=/app/src
