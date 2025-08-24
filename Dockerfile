@@ -6,13 +6,12 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ كود التطبيق
+# نسخ الكود
 COPY src ./src
 ENV PYTHONPATH=/app/src
 
-# المنصة تمرّر المنفذ عبر $PORT
-ENV PORT=8000
+# Railway يمرر PORT تلقائياً
 EXPOSE 8000
 
-# شغّل واجهة FastAPI (البوت مدمج عبر Webhook)
-CMD ["uvicorn", "capitalguard.interfaces.api.main:app", "--host", "0.0.0.0", "--port", "${PORT}"]
+# شغل Uvicorn بالمنفذ اللي توفره Railway
+CMD ["sh", "-c", "uvicorn capitalguard.interfaces.api.main:app --host 0.0.0.0 --port $PORT"]
