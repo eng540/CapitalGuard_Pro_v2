@@ -1,40 +1,38 @@
-from typing import Optional
+from typing import Optional, Iterable
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, TypeHandler
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, ContextTypes, filters
+)
 
 from capitalguard.config import settings
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.report_service import ReportService
 
 
-# --- Authorization gate ---
+# --- Allowed users ---
 ALLOWED_USERS = {int(uid.strip()) for uid in (settings.TELEGRAM_ALLOWED_USERS or "").split(",") if uid.strip()}
+ALLOWED_FILTER = filters.User(list(ALLOWED_USERS)) if ALLOWED_USERS else filters.ALL
 
-async def _auth_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Allow only users in ALLOWED_USERS if set; allow all if empty."""
-    if not ALLOWED_USERS:
-        return True
-    uid = update.effective_user.id if update.effective_user else None
-    if uid in ALLOWED_USERS:
-        return True
-    if update.message:
-        await update.message.reply_text("🚫 غير مصرح لك باستخدام هذا البوت.")
-    return False
+
+# --- Unauthorized handler (group=-1) ---
+async def unauthorized_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user:
+        return
+    if ALLOWED_USERS and update.effective_user.id not in ALLOWED_USERS:
+        if update.message:
+            await update.message.reply_text("🚫 غير مصرح لك باستخدام هذا البوت.")
+        return
 
 
 # --- Helpers ---
 def _fmt_report(summary: dict) -> str:
-    """
-    Builds a simple HTML report message from summary dict returned by ReportService.summary().
-    Expected keys (adapt to your ReportService): total, win_rate, avg_rr, open_positions, closed_positions, pnl...
-    """
     lines = ["<b>تقرير الأداء</b>"]
     for k, v in summary.items():
         lines.append(f"• <b>{k}</b>: {v}")
     return "\n".join(lines)
 
 
-# --- Command handlers ---
+# --- Commands ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html("👋 أهلاً بك في <b>CapitalGuard Bot</b>.\nاستخدم /help للمساعدة.")
 
@@ -49,7 +47,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def newrec_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_service: TradeService):
     try:
-        # /newrec BTCUSDT LONG 65000 63000 66000,67000 ملاحظات
         text = (update.message.text or "").strip()
         parts = text.split(maxsplit=6)
         if len(parts) < 6:
@@ -69,7 +66,6 @@ async def newrec_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_s
             notes=notes,
         )
         await update.message.reply_html(f"✅ تم إنشاء التوصية. <b>ID:</b> <code>{rec.id}</code>")
-
     except Exception as e:
         await update.message.reply_html(
             f"⚠️ <b>خطأ:</b> <code>{e}</code>\n"
@@ -78,7 +74,6 @@ async def newrec_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_s
 
 async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_service: TradeService):
     try:
-        # /close 123 65500
         parts = (update.message.text or "").split()
         if len(parts) != 3:
             raise ValueError("صيغة غير صحيحة.")
@@ -109,30 +104,13 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, report_
 
 # --- Wiring ---
 def register_bot_handlers(application: Application, trade_service: TradeService, report_service: ReportService):
-    # مصادقة قبل كل شيء
-    application.add_handler(TypeHandler(Update, _auth_gate), group=-1)
-    # أوامر
-    application.add_handler(CommandHandler("start", start_cmd))
-    application.add_handler(CommandHandler("help", help_cmd))
-    application.add_handler(CommandHandler("newrec", lambda u, c: newrec_cmd(u, c, trade_service)))
-    application.add_handler(CommandHandler("close", lambda u, c: close_cmd(u, c, trade_service)))
-    application.add_handler(CommandHandler("list", lambda u, c: list_cmd(u, c, trade_service)))
-    application.add_handler(CommandHandler("report", lambda u, c: report_cmd(u, c, report_service)))
+    # أولاً: أي رسالة من غير المصرح لهم → ردّ رفض مبكر
+    application.add_handler(MessageHandler(filters.ALL, unauthorized_handler), group=-1)
 
-
-def setup_telegram_webhook(application: Application):
-    async def setup():
-        url = settings.TELEGRAM_WEBHOOK_URL
-        if not url:
-            print("⚠️ TELEGRAM_WEBHOOK_URL is not set. Telegram webhook not configured.")
-            return
-        await application.bot.set_webhook(url, allowed_updates=Update.ALL_TYPES)
-        print(f"✅ Telegram webhook set to: {url}")
-    return setup
-
-
-def shutdown_telegram_webhook(application: Application):
-    async def shutdown():
-        await application.bot.delete_webhook()
-        print("🧹 Telegram webhook deleted.")
-    return shutdown
+    # بعدها أوامر المصرح لهم فقط
+    application.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("help", help_cmd, filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("newrec", lambda u, c: newrec_cmd(u, c, trade_service), filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("close", lambda u, c: close_cmd(u, c, trade_service), filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("list", lambda u, c: list_cmd(u, c, trade_service), filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("report", lambda u, c: report_cmd(u, c, report_service), filters=ALLOWED_FILTER))
