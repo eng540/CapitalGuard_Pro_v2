@@ -3,19 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
 
-# معدل الطلبات
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-# رصد الأخطاء (اختياري)
 import sentry_sdk
 
-# Telegram Webhook Integration
 from telegram import Update
 from telegram.ext import Application
-from capitalguard.interfaces.telegram.webhook_handlers import (
-    register_bot_handlers, setup_telegram_webhook, shutdown_telegram_webhook
-)
 
 from capitalguard.config import settings
 from capitalguard.infrastructure.db.repository import RecommendationRepository
@@ -27,7 +21,13 @@ from capitalguard.interfaces.api.schemas import (
 )
 from capitalguard.interfaces.api.deps import limiter, require_api_key
 
-# Routers الاختيارية
+# Handlers
+from capitalguard.interfaces.telegram.webhook_handlers import (
+    register_bot_handlers,
+    unauthorized_handler,
+)
+
+# Optional routers
 metrics_router = None
 tv_router = None
 try:
@@ -43,14 +43,13 @@ except Exception:
     pass
 
 
-# --- تطبيق FastAPI ---
 app = FastAPI(title="CapitalGuard Pro API", version="2.0.0")
 
-# --- Sentry (اختياري) ---
+# Sentry
 if settings.SENTRY_DSN:
     sentry_sdk.init(dsn=settings.SENTRY_DSN, traces_sample_rate=0.1)
 
-# --- CORS ---
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if settings.CORS_ORIGINS == "*" else settings.CORS_ORIGINS.split(","),
@@ -59,7 +58,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Rate limiting (slowapi) ---
+# Rate limiting
 app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)
@@ -68,30 +67,66 @@ def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
 
 app.add_middleware(SlowAPIMiddleware)
 
-# --- DI / Services ---
+# Domain services
 repo = RecommendationRepository()
 notifier = TelegramNotifier()
 trade = TradeService(repo, notifier)
 report = ReportService(repo)
 
-# --- Telegram Bot Webhook Integration ---
+# --- Telegram via Webhook ---
 ptb_app: Application | None = None
+
 if settings.TELEGRAM_BOT_TOKEN:
     ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
+    # سجل الأوامر + ربط الخدمات
     register_bot_handlers(ptb_app, trade, report)
+
+    @app.on_event("startup")
+    async def _startup():
+        # 1) تهيئة تطبيق PTB (ضروري مع الويبهوك)
+        await ptb_app.initialize()
+        # 2) ضبط الويبهوك إذا تم توفير URL
+        if settings.TELEGRAM_WEBHOOK_URL:
+            await ptb_app.bot.set_webhook(
+                settings.TELEGRAM_WEBHOOK_URL,
+                allowed_updates=["message","edited_message","callback_query"]
+            )
+            logging.info(f"✅ Telegram webhook set to: {settings.TELEGRAM_WEBHOOK_URL}")
+        else:
+            logging.warning("⚠️ TELEGRAM_WEBHOOK_URL is not set. Telegram webhook not configured.")
+
+    @app.on_event("shutdown")
+    async def _shutdown():
+        try:
+            await ptb_app.bot.delete_webhook()
+        except Exception:
+            pass
+        await ptb_app.shutdown()
 
     @app.post("/webhook/telegram")
     async def telegram_webhook(request: Request):
-        # يحوّل تحديث تيليجرام ويعالج الأوامر
-        update = Update.de_json(await request.json(), ptb_app.bot)
-        await ptb_app.process_update(update)
+        """
+        نقطة استقبال تحديثات تيليجرام. لا تضع RateLimit هنا.
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            # في حالات نادرة يجي بدون JSON
+            return JSONResponse({"detail": "invalid json"}, status_code=400)
+
+        update = Update.de_json(data, ptb_app.bot)
+        try:
+            await ptb_app.process_update(update)
+        except Exception as e:
+            # لا تسقط السيرفر حتى لو أخفق الهاندلر
+            logging.exception("Telegram update processing failed: %s", e)
+            # رُدّ 200 حتى لا يعيد تيليجرام المحاولة بلا نهاية
+            await unauthorized_handler(update, None)  # رد افتراضي إن لزم
         return {"status": "ok"}
 
-    # إعداد/مسح الويب هوك عند بدء/إيقاف التطبيق
-    app.add_event_handler("startup", setup_telegram_webhook(ptb_app))
-    app.add_event_handler("shutdown", shutdown_telegram_webhook(ptb_app))
 else:
-    logging.warning("TELEGRAM_BOT_TOKEN is not set; Telegram webhook disabled.")
+    logging.warning("TELEGRAM_BOT_TOKEN not set; Telegram webhook disabled.")
+
 
 # --- API Endpoints ---
 @app.get("/health")
@@ -149,10 +184,9 @@ def get_report(request: Request, channel_id: int | None = None):
     cid = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else None
     return report.summary(channel_id or cid)
 
-# --- Include optional routers ---
+# Optional routers
 if metrics_router:
     app.include_router(metrics_router)
 if tv_router:
-    # حماية Webhook TradingView بمفتاح API
     from fastapi import Depends
     app.include_router(tv_router, dependencies=[Depends(require_api_key)])
