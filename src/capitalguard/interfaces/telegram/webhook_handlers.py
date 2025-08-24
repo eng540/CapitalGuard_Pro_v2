@@ -47,25 +47,30 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def newrec_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_service: TradeService):
     try:
+        # الصيغة: /newrec BTCUSDT LONG 65000 63000 66000,67000
         text = (update.message.text or "").strip()
         parts = text.split(maxsplit=6)
         if len(parts) < 6:
             raise ValueError("صيغة الأمر غير مكتملة.")
         _, asset, side, entry, sl, targets_str = parts[:6]
-        notes = parts[6] if len(parts) > 6 else None
 
         targets = [float(t) for t in targets_str.replace(";", ",").split(",") if t]
+
+        # ⚠️ لا نمرّر notes لأن TradeService.create لا يدعمه
+        # إذا كانت create أيضًا لا تدعم user_id أو channel_id لديك،
+        # احذفهما ببساطة من الاستدعاء أدناه.
         rec = trade_service.create(
             asset=asset,
             side=side.upper(),
             entry=float(entry),
             stop_loss=float(sl),
             targets=targets,
-            channel_id=int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else None,
-            user_id=update.effective_user.id if update.effective_user else None,
-            notes=notes,
+            channel_id=(int(settings.TELEGRAM_CHAT_ID) if (settings.TELEGRAM_CHAT_ID and settings.TELEGRAM_CHAT_ID.strip()) else None),
+            user_id=(update.effective_user.id if update.effective_user else None),
         )
+
         await update.message.reply_html(f"✅ تم إنشاء التوصية. <b>ID:</b> <code>{rec.id}</code>")
+
     except Exception as e:
         await update.message.reply_html(
             f"⚠️ <b>خطأ:</b> <code>{e}</code>\n"
