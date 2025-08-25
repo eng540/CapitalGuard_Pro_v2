@@ -1,4 +1,3 @@
---- START OF FILE: src/capitalguard/interfaces/webhook/tradingview.py ---
 from fastapi import APIRouter, Request, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -36,4 +35,3 @@ async def tradingview_webhook(payload: TVSignal, request: Request, _=Depends(req
         return {"ok": True, "id": rec.id}
     except Exception as e:
         return {"ok": False, "error": str(e)}
---- END OF FILE ---
