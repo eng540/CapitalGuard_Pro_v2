@@ -1,4 +1,3 @@
-
 .PHONY: init dev api watcher test migrate fmt  
 init:  
 	python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt  
