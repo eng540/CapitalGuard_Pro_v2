@@ -17,8 +17,15 @@ class Recommendation:
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
+    # المرحلة 1: حفظ بيانات الإغلاق
+    exit_price: Optional[float] = None
+    closed_at: Optional[datetime] = None
+
     def close(self, exit_price: float) -> None:
         if self.status == "CLOSED":
             return
         self.status = "CLOSED"
         self.updated_at = datetime.utcnow()
+        # المرحلة 1: سجّل سعر وتاريخ الإغلاق
+        self.exit_price = float(exit_price)
+        self.closed_at = self.updated_at
