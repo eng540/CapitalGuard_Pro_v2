@@ -1,18 +1,37 @@
-name: CI
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Tests
-        env:
-          DATABASE_URL: sqlite:///./dev.db
-        run: pytest -q
+--- START OF FILE: .github/workflows/ci.yml ---  
+name: CI Pipeline  
+  
+# يشغل هذا السير عند أي عملية دفع (push) أو طلب سحب (pull request)  
+on: [push, pull_request]  
+  
+jobs:  
+  test:  
+    # سيتم تشغيل المهمة على أحدث إصدار من Ubuntu  
+    runs-on: ubuntu-latest  
+    strategy:  
+      matrix:  
+        # سيتم تشغيل الاختبارات على إصدارات Python هذه  
+        python-version: ["3.11"]  
+  
+    steps:  
+    # الخطوة 1: استنساخ الكود من المستودع  
+    - name: Checkout repository  
+      uses: actions/checkout@v3  
+  
+    # الخطوة 2: إعداد بيئة Python بالإصدار المحدد  
+    - name: Set up Python ${{ matrix.python-version }}  
+      uses: actions/setup-python@v4  
+      with:  
+        python-version: ${{ matrix.python-version }}  
+  
+    # الخطوة 3: تثبيت الاعتماديات  
+    - name: Install dependencies  
+      run: |  
+        python -m pip install --upgrade pip  
+        pip install -r requirements.txt  
+      
+    # الخطوة 4: تشغيل الاختبارات باستخدام pytest  
+    - name: Run tests  
+      run: |  
+        pytest  
+--- END OF FILE ---
