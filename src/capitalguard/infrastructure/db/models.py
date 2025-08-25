@@ -1,4 +1,3 @@
---- START OF FILE: src/capitalguard/infrastructure/db/models.py ---  
 from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, JSON, ForeignKey, Index  
 from datetime import datetime  
 from .base import Base  
@@ -25,4 +24,3 @@ class RecommendationORM(Base):
   
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())  
 Index("idx_recs_asset_status",  RecommendationORM.asset,  RecommendationORM.status)  
---- END OF FILE ---
