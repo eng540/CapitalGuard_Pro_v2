@@ -1,37 +1,38 @@
---- START OF FILE: .github/workflows/ci.yml ---  
-name: CI Pipeline  
-  
-#يشغل هذا السير عند أي عملية دفع (push) أو طلب سحب (pull request)  
-on: [push, pull_request]  
-  
-jobs:  
-  test:  
-    #سيتم تشغيل المهمة على أحدث إصدار من Ubuntu  
-    runs-on: ubuntu-latest  
-    strategy:  
-      matrix:  
-        #سيتم تشغيل الاختبارات على إصدارات Python هذه  
-        python-version: ["3.11"]  
-  
-    steps:  
-    # الخطوة 1: استنساخ الكود من المستودع  
-    - name: Checkout repository  
-      uses: actions/checkout@v3  
-  
-    #الخطوة 2: إعداد بيئة Python بالإصدار المحدد  
-    - name: Set up Python ${{ matrix.python-version }}  
-      uses: actions/setup-python@v4  
-      with:  
-        python-version: ${{ matrix.python-version }}  
-  
-    # الخطوة 3: تثبيت الاعتماديات  
-    - name: Install dependencies  
-      run: |  
-        python -m pip install --upgrade pip  
-        pip install -r requirements.txt  
-      
-    # الخطوة 4: تشغيل الاختبارات باستخدام pytest  
-    - name: Run tests  
-      run: |  
-        pytest  
+--- START OF FILE: .github/workflows/ci.yml ---
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: sqlite:///./dev.db
+      API_KEY: test_api_key
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 bandit safety
+
+      - name: Lint (flake8)
+        run: flake8 src
+
+      - name: Security (bandit)
+        run: bandit -r src -q || true
+
+      - name: Dependencies Audit (safety)
+        run: safety check -r requirements.txt || true
+
+      - name: Tests
+        run: pytest -q
 --- END OF FILE ---
