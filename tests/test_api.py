@@ -1,68 +1,50 @@
---- START OF FILE: tests/test_api.py ---  
-from fastapi.testclient import TestClient  
-from capitalguard.interfaces.api.main import app  
-from capitalguard.config import settings  
-import pytest  
-  
-# ملاحظة: لإجراء اختبار تكاملي حقيقي، ستحتاج إلى إعداد قاعدة بيانات منفصلة للاختبارات.  
-# هذا المثال يركز على اختبار مسار الطلب والاستجابة.  
-  
-client = TestClient(app)  
-  
-# يمكن تعيين مفتاح API للاختبارات إذا كان مطلوبًا  
-API_KEY = "test_api_key"  
-settings.API_KEY = API_KEY  # Override settings for testing  
-HEADERS = {"X-API-Key": API_KEY}  
-  
-def test_health():  
-    response = client.get("/health")  
-    assert response.status_code == 200  
-    assert response.json() == {"status": "ok"}  
-  
-def test_api_key_protection():  
-    response = client.get("/recommendations", headers={"X-API-Key": "wrong_key"})  
-    assert response.status_code == 401 # Unauthorized  
-  
-    response = client.get("/recommendations") # No key  
-    assert response.status_code == 401  
-  
-def test_create_and_close_recommendation_flow():  
-    """  
-    يختبر سيناريو كامل لإنشاء ثم إغلاق توصية عبر API.  
-    """  
-    # 1. إنشاء توصية جديدة  
-    create_payload = {  
-        "asset": "ETHUSDT",  
-        "side": "SHORT",  
-        "entry": 3000,  
-        "stop_loss": 3100,  
-        "targets": [2900, 2800]  
-    }  
-    create_response = client.post("/recommendations", json=create_payload, headers=HEADERS)  
-      
-    assert create_response.status_code == 200  
-    created_rec = create_response.json()  
-    assert created_rec["status"] == "OPEN"  
-    assert created_rec["asset"] == "ETHUSDT"  
-    rec_id = created_rec["id"]  
-  
-    # 2. إغلاق التوصية التي تم إنشاؤها  
-    close_payload = {"exit_price": 2950.0}  
-    close_response = client.post(f"/recommendations/{rec_id}/close", json=close_payload, headers=HEADERS)  
-  
-    assert close_response.status_code == 200  
-    closed_rec = close_response.json()  
-    assert closed_rec["status"] == "CLOSED"  
-    assert closed_rec["id"] == rec_id  
-  
-    # 3. (اختياري) التحقق من أن التوصية تظهر كمغلقة عند طلبها مرة أخرى  
-    get_response = client.get("/recommendations", headers=HEADERS)  
-    all_recs = get_response.json()  
-    found = False  
-    for rec in all_recs:  
-        if rec['id'] == rec_id:  
-            assert rec['status'] == 'CLOSED'  
-            found = True  
-            break  
-    assert found, "The closed recommendation was not found in the list."  
+--- START OF FILE: tests/test_api.py ---
+import os
+import pytest
+from fastapi.testclient import TestClient
+
+@pytest.fixture(autouse=True)
+def _db_sqlite_tmp(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+
+@pytest.fixture(autouse=True)
+def _api_key(monkeypatch):
+    monkeypatch.setenv("API_KEY", "test_api_key")
+
+from capitalguard.interfaces.api.main import app
+client = TestClient(app)
+HEADERS = {"X-API-Key": "test_api_key"}
+
+def test_health():
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+def test_api_key_protection():
+    assert client.get("/recommendations", headers={"X-API-Key": "wrong"}).status_code == 401
+    assert client.get("/recommendations").status_code == 401
+
+def test_create_and_close_recommendation_flow():
+    create_payload = {
+        "asset": "ETHUSDT",
+        "side": "SHORT",
+        "entry": 3000,
+        "stop_loss": 3100,
+        "targets": [2900, 2800]
+    }
+    r1 = client.post("/recommendations", json=create_payload, headers=HEADERS)
+    assert r1.status_code == 200
+    rec = r1.json()
+    rec_id = rec["id"]
+    assert rec["status"] == "OPEN"
+
+    r2 = client.post(f"/recommendations/{rec_id}/close", json={"exit_price": 2950.0}, headers=HEADERS)
+    assert r2.status_code == 200
+    rec2 = r2.json()
+    assert rec2["status"] == "CLOSED"
+
+    r3 = client.get("/recommendations", headers=HEADERS)
+    found = any(item["id"] == rec_id and item["status"] == "CLOSED" for item in r3.json())
+    assert found
 --- END OF FILE ---
