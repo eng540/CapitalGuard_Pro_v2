@@ -1,4 +1,4 @@
---- START OF FILE: Makefile ---  
+
 .PHONY: init dev api watcher test migrate fmt  
 init:  
 	python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt  
@@ -13,4 +13,3 @@ migrate:
 	. .venv/bin/activate && alembic upgrade head || alembic revision --autogenerate -m "init" && alembic upgrade head  
 test:  
 	. .venv/bin/activate && pytest -q  
---- END OF FILE ---
