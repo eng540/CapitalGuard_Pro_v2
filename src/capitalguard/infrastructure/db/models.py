@@ -16,6 +16,10 @@ class RecommendationORM(Base):
     channel_id = Column(BigInteger, index=True, nullable=True)
     user_id    = Column(BigInteger, nullable=True)
 
+    # المرحلة 1: أعمدة الإغلاق
+    exit_price = Column(Float, nullable=True)
+    closed_at  = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
