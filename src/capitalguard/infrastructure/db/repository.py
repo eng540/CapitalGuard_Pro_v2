@@ -1,4 +1,3 @@
---- START OF FILE: src/capitalguard/infrastructure/db/repository.py ---  
 from typing import List, Optional  
 from sqlalchemy.orm import Session  
 from datetime import datetime  
@@ -105,4 +104,3 @@ class RecommendationRepository:
             return self._to_entity(row)  
         finally:  
             if close: s.close()  
---- END OF FILE ---
