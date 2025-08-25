@@ -1,4 +1,3 @@
---- START OF FILE: tests/test_api.py ---
 import os
 import pytest
 from fastapi.testclient import TestClient
@@ -47,4 +46,3 @@ def test_create_and_close_recommendation_flow():
     r3 = client.get("/recommendations", headers=HEADERS)
     found = any(item["id"] == rec_id and item["status"] == "CLOSED" for item in r3.json())
     assert found
---- END OF FILE ---
