@@ -1,4 +1,3 @@
---- START OF FILE: src/capitalguard/application/services/trade_service.py ---  
 import logging  # ✅ ADDED  
 from typing import List, Optional  
 from capitalguard.domain.entities import Recommendation  
@@ -59,5 +58,4 @@ class TradeService:
         return self.repo.list_open(channel_id)  
   
     def list_all(self, channel_id: Optional[int] = None):  
-        return self.repo.list_all(channel_id)  
---- END OF FILE ---
+        return self.repo.list_all(channel_id)
