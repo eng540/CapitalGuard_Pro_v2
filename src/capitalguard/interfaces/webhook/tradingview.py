@@ -1,30 +1,39 @@
-from __future__ import annotations
-from fastapi import APIRouter, Request, Depends
-from typing import Any, List
+--- START OF FILE: src/capitalguard/interfaces/webhook/tradingview.py ---
+from fastapi import APIRouter, Request, Depends, HTTPException
+from pydantic import BaseModel, Field
+from typing import List, Optional
 from capitalguard.interfaces.api.deps import require_api_key
-from capitalguard.infrastructure.db.repository import RecommendationRepository
-from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.application.services.trade_service import TradeService
+from capitalguard.infrastructure.db.repository import RecommendationRepository
+from capitalguard.config import settings
 
-repo = RecommendationRepository()
-notifier = TelegramNotifier()
-trade = TradeService(repo, notifier)
+router = APIRouter()
 
-router = APIRouter(tags=["webhook"])
+class TVSignal(BaseModel):
+    symbol: str = Field(..., alias="symbol")
+    side: str
+    entry: float
+    stop_loss: float = Field(..., alias="sl")
+    targets: List[float] = []
 
 @router.post("/webhook/tradingview")
-async def tradingview_webhook(payload: dict, request: Request, _=Depends(require_api_key)):
+async def tradingview_webhook(payload: TVSignal, request: Request, _=Depends(require_api_key)):
+    # تحقق من سر TradingView
+    tv_secret = (request.headers.get("X-TV-Secret") or "").strip()
+    if (settings.TV_WEBHOOK_SECRET or "").strip() and tv_secret != (settings.TV_WEBHOOK_SECRET or "").strip():
+        raise HTTPException(status_code=401, detail="Invalid TV secret")
+
+    repo = RecommendationRepository()
+    svc = TradeService(repo=repo)
     try:
-        symbol = (payload.get("symbol") or payload.get("asset") or "").upper()
-        side = (payload.get("side") or "").upper()
-        entry = float(payload.get("entry"))
-        sl = float(payload.get("sl") or payload.get("stop_loss"))
-        tg = payload.get("targets") or payload.get("tps") or []
-        if isinstance(tg, str):
-            targets: List[float] = [float(x) for x in tg.replace(" ", "").split(",") if x]
-        else:
-            targets = [float(x) for x in tg]
-        rec = trade.create(symbol, side, entry, sl, targets)
+        rec = svc.create(
+            asset=payload.symbol,
+            side=payload.side,
+            entry=payload.entry,
+            stop_loss=payload.stop_loss,
+            targets=payload.targets,
+        )
         return {"ok": True, "id": rec.id}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+--- END OF FILE ---
