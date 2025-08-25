@@ -1,4 +1,3 @@
---- START OF FILE: src/capitalguard/domain/entities.py ---  
 from dataclasses import dataclass, field  
 from datetime import datetime  
 from typing import Optional, List  
@@ -30,5 +29,4 @@ class Recommendation:
   
         # ✅ MODIFIED: Store exit price and time on close  
         self.exit_price = exit_price  
-        self.closed_at = self.updated_at  
---- END OF FILE ---
+        self.closed_at = self.updated_at 
