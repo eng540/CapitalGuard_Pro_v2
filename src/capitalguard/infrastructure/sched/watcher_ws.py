@@ -1,4 +1,3 @@
---- START OF FILE: src/capitalguard/infrastructure/sched/watcher_ws.py ---  
 import asyncio  
 import logging  
   
@@ -56,4 +55,3 @@ async def main():
   
 if __name__ == "__main__":  
     asyncio.run(main())  
---- END OF FILE ---
