@@ -2,16 +2,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# تثبيت الاعتمادات
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# 1) تثبيت الاعتمادات
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
 
-# نسخ الكود
+# 2) نسخ الكود وملفات Alembic
 COPY src ./src
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
+
+# 3) إعداد PYTHONPATH
 ENV PYTHONPATH=/app/src
 
-# Railway يمرر PORT تلقائياً
-EXPOSE 8000
-
-# شغل Uvicorn بالمنفذ اللي توفره Railway
-CMD ["sh", "-c", "uvicorn capitalguard.interfaces.api.main:app --host 0.0.0.0 --port $PORT"]
+# 4) شغّل الهجرة ثم شغّل Uvicorn بالمنفذ اللي توفره Railway
+CMD ["sh", "-lc", "alembic upgrade head && uvicorn capitalguard.interfaces.api.main:app --host 0.0.0.0 --port ${PORT}"]
