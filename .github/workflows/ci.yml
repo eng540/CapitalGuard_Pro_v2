@@ -1,16 +1,16 @@
 --- START OF FILE: .github/workflows/ci.yml ---  
 name: CI Pipeline  
   
-# يشغل هذا السير عند أي عملية دفع (push) أو طلب سحب (pull request)  
+#يشغل هذا السير عند أي عملية دفع (push) أو طلب سحب (pull request)  
 on: [push, pull_request]  
   
 jobs:  
   test:  
-    # سيتم تشغيل المهمة على أحدث إصدار من Ubuntu  
+    #سيتم تشغيل المهمة على أحدث إصدار من Ubuntu  
     runs-on: ubuntu-latest  
     strategy:  
       matrix:  
-        # سيتم تشغيل الاختبارات على إصدارات Python هذه  
+        #سيتم تشغيل الاختبارات على إصدارات Python هذه  
         python-version: ["3.11"]  
   
     steps:  
@@ -18,7 +18,7 @@ jobs:
     - name: Checkout repository  
       uses: actions/checkout@v3  
   
-    # الخطوة 2: إعداد بيئة Python بالإصدار المحدد  
+    #الخطوة 2: إعداد بيئة Python بالإصدار المحدد  
     - name: Set up Python ${{ matrix.python-version }}  
       uses: actions/setup-python@v4  
       with:  
