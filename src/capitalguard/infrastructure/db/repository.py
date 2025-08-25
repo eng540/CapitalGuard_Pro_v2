@@ -29,8 +29,24 @@ class RecommendationRepository:
             user_id=row.user_id,
             created_at=row.created_at,
             updated_at=row.updated_at,
+         
+# ... داخل _to_entity
+        return Recommendation(
+            id=row.id,
+            asset=Symbol(row.asset),
+            side=Side(row.side),
+            entry=Price(row.entry),
+            stop_loss=Price(row.stop_loss),
+            targets=Targets(list(row.targets or [])),
+            status=row.status,
+            channel_id=row.channel_id,
+            user_id=row.user_id,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            # ✅ جديد:
+            exit_price=row.exit_price,
+            closed_at=row.closed_at,
         )
-
     def add(self, rec: Recommendation) -> Recommendation:
         s = self._session()
         close = self._external_session is None
