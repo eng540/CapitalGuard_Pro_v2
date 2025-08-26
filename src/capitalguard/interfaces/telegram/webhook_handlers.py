@@ -1,5 +1,4 @@
 #--- START OF FILE: src/capitalguard/interfaces/telegram/webhook_handlers.py ---
-
 from typing import Optional, Iterable, List
 from telegram import Update
 from telegram.ext import (
@@ -152,3 +151,4 @@ def register_bot_handlers(
     # ✅ سجل أمر /analytics إذا تم تمرير الخدمة من main.py
     if analytics_service is not None:
         application.add_handler(CommandHandler("analytics", lambda u, c: analytics_cmd(u, c, analytics_service), filters=ALLOWED_FILTER))
+#--- END OF FILE ---
