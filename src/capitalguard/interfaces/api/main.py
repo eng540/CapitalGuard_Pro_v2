@@ -20,6 +20,7 @@ from capitalguard.interfaces.api.schemas import (
     RecommendationIn, RecommendationOut, CloseIn, ReportOut
 )
 from capitalguard.interfaces.api.deps import limiter, require_api_key
+from capitalguard.application.services.analytics_service import AnalyticsService
 
 # Handlers
 from capitalguard.interfaces.telegram.webhook_handlers import (
@@ -69,6 +70,7 @@ app.add_middleware(SlowAPIMiddleware)
 
 # Domain services
 repo = RecommendationRepository()
+analytics = AnalyticsService(repo)
 notifier = TelegramNotifier()
 trade = TradeService(repo, notifier)
 report = ReportService(repo)
@@ -190,3 +192,16 @@ if metrics_router:
 if tv_router:
     from fastapi import Depends
     app.include_router(tv_router, dependencies=[Depends(require_api_key)])
+
+@app.get(
+    "/analytics",
+    dependencies=[Depends(require_api_key)],
+)
+def get_analytics(request: Request, channel_id: int | None = None):
+    """
+    إحصائيات الأداء: عدد الصفقات المغلقة، نسبة النجاح، مجموع/متوسط PnL، أفضل وأسوأ صفقة.
+    إذا لم يُرسل channel_id نستخدم TELEGRAM_CHAT_ID (إن توفر).
+    """
+    cid = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else None
+    summary = analytics.performance_summary(channel_id or cid)
+    return summary
