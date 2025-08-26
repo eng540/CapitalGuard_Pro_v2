@@ -1,4 +1,6 @@
-from typing import Optional, Iterable
+#--- START OF FILE: src/capitalguard/interfaces/telegram/webhook_handlers.py ---
+
+from typing import Optional, Iterable, List
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -7,6 +9,7 @@ from telegram.ext import (
 from capitalguard.config import settings
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.report_service import ReportService
+from capitalguard.application.services.analytics_service import AnalyticsService  # ✅ NEW
 
 
 # --- Allowed users ---
@@ -31,6 +34,17 @@ def _fmt_report(summary: dict) -> str:
         lines.append(f"• <b>{k}</b>: {v}")
     return "\n".join(lines)
 
+def _fmt_analytics(summary: dict) -> str:  # ✅ NEW
+    return (
+        "<b>📊 ملخص الأداء</b>\n"
+        f"• <b>الصفقات المغلقة:</b> {summary.get('total_closed_trades', 0)}\n"
+        f"• <b>نسبة النجاح:</b> {summary.get('win_rate_percent', 0)}%\n"
+        f"• <b>إجمالي PnL:</b> {summary.get('total_pnl_percent', 0)}%\n"
+        f"• <b>متوسط PnL:</b> {summary.get('average_pnl_percent', 0)}%\n"
+        f"• <b>أفضل صفقة:</b> {summary.get('best_trade_pnl_percent', 0)}%\n"
+        f"• <b>أسوأ صفقة:</b> {summary.get('worst_trade_pnl_percent', 0)}%"
+    )
+
 
 # --- Commands ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,6 +57,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/close &lt;id&gt; &lt;exit_price&gt;</code>\n"
         "• <code>/list</code>\n"
         "• <code>/report</code>\n"
+        "• <code>/analytics</code>\n"  # ✅ NEW
     )
 
 async def newrec_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_service: TradeService):
@@ -56,9 +71,6 @@ async def newrec_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_s
 
         targets = [float(t) for t in targets_str.replace(";", ",").split(",") if t]
 
-        # ⚠️ لا نمرّر notes لأن TradeService.create لا يدعمه
-        # إذا كانت create أيضًا لا تدعم user_id أو channel_id لديك،
-        # احذفهما ببساطة من الاستدعاء أدناه.
         rec = trade_service.create(
             asset=asset,
             side=side.upper(),
@@ -106,9 +118,26 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, report_
     summary = report_service.summary(cid)
     await update.message.reply_html(_fmt_report(summary))
 
+async def analytics_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, analytics_service: AnalyticsService):  # ✅ NEW
+    """
+    يعرض ملخص الأداء بناءً على التوصيات المغلقة (PnL/WinRate).
+    يعتمد channel_id الافتراضي على TELEGRAM_CHAT_ID إن وُجد.
+    """
+    try:
+        cid = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else None
+        summary = analytics_service.performance_summary(cid)
+        await update.message.reply_html(_fmt_analytics(summary))
+    except Exception as e:
+        await update.message.reply_html(f"⚠️ <b>خطأ:</b> <code>{e}</code>")
+
 
 # --- Wiring ---
-def register_bot_handlers(application: Application, trade_service: TradeService, report_service: ReportService):
+def register_bot_handlers(
+    application: Application,
+    trade_service: TradeService,
+    report_service: ReportService,
+    analytics_service: Optional[AnalyticsService] = None,   # ✅ NEW (اختياري)
+):
     # أولاً: أي رسالة من غير المصرح لهم → ردّ رفض مبكر
     application.add_handler(MessageHandler(filters.ALL, unauthorized_handler), group=-1)
 
@@ -116,6 +145,10 @@ def register_bot_handlers(application: Application, trade_service: TradeService,
     application.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_FILTER))
     application.add_handler(CommandHandler("help", help_cmd, filters=ALLOWED_FILTER))
     application.add_handler(CommandHandler("newrec", lambda u, c: newrec_cmd(u, c, trade_service), filters=ALLOWED_FILTER))
-    application.add_handler(CommandHandler("close", lambda u, c: close_cmd(u, c, trade_service), filters=ALLOWED_FILTER))
-    application.add_handler(CommandHandler("list", lambda u, c: list_cmd(u, c, trade_service), filters=ALLOWED_FILTER))
-    application.add_handler(CommandHandler("report", lambda u, c: report_cmd(u, c, report_service), filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("close",  lambda u, c: close_cmd(u, c, trade_service),  filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("list",   lambda u, c: list_cmd(u, c, trade_service),   filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("report", lambda u, c: report_cmd(u, c, report_service),filters=ALLOWED_FILTER))
+
+    # ✅ سجل أمر /analytics إذا تم تمرير الخدمة من main.py
+    if analytics_service is not None:
+        application.add_handler(CommandHandler("analytics", lambda u, c: analytics_cmd(u, c, analytics_service), filters=ALLOWED_FILTER))
