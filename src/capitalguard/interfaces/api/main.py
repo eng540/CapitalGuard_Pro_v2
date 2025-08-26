@@ -81,7 +81,7 @@ ptb_app: Application | None = None
 if settings.TELEGRAM_BOT_TOKEN:
     ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
     # سجل الأوامر + ربط الخدمات
-    register_bot_handlers(ptb_app, trade, report)
+    register_bot_handlers(ptb_app, trade, report, analytics)
 
     @app.on_event("startup")
     async def _startup():
