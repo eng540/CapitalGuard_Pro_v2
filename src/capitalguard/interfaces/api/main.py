@@ -20,19 +20,14 @@ from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.report_service import ReportService
 from capitalguard.application.services.analytics_service import AnalyticsService
-from capitalguard.interfaces.api.schemas import (
-    RecommendationIn, RecommendationOut, CloseIn, ReportOut
-)
-from capitalguard.interfaces.telegram.webhook_handlers import (
-    register_bot_handlers,
-    unauthorized_handler,
-)
+from capitalguard.interfaces.api.schemas import RecommendationIn, RecommendationOut, CloseIn, ReportOut
+from capitalguard.interfaces.telegram.webhook_handlers import register_bot_handlers, unauthorized_handler
 
-# ✅ نظام المصادقة/الصلاحيات الجديد
+# أمن وصلاحيات + راوتر المصادقة
 from capitalguard.interfaces.api.security.deps import require_roles, get_current_user
 from capitalguard.interfaces.api.routers import auth as auth_router
 
-# راوترات اختيارية (لا تُفشل التشغيل إن لم تُوجد)
+# راوترات اختيارية
 metrics_router = None
 tv_router = None
 try:
@@ -40,15 +35,13 @@ try:
     metrics_router = _metrics_router
 except Exception:
     pass
-
 try:
     from capitalguard.interfaces.webhook.tradingview import router as _tv_router
     tv_router = _tv_router
 except Exception:
     pass
 
-
-app = FastAPI(title="CapitalGuard Pro API", version="2.1.0")
+app = FastAPI(title="CapitalGuard Pro API", version="2.2.0")
 
 # Sentry
 if settings.SENTRY_DSN:
@@ -58,12 +51,10 @@ if settings.SENTRY_DSN:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if settings.CORS_ORIGINS == "*" else settings.CORS_ORIGINS.split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
-# ✅ Rate limiting (محليًا هنا بدل الاستيراد من deps)
+# Rate limiting
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
@@ -80,19 +71,15 @@ notifier = TelegramNotifier()
 trade = TradeService(repo, notifier)
 report = ReportService(repo)
 
-# --- Telegram via Webhook ---
+# --- Telegram via Webhook (مهم: لا تضع RateLimit على هذا المسار) ---
 ptb_app: Application | None = None
-
 if settings.TELEGRAM_BOT_TOKEN:
     ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
-    # ربط الخدمات بالهاندلرز
     register_bot_handlers(ptb_app, trade, report, analytics)
 
     @app.on_event("startup")
     async def _startup():
-        # 1) تهيئة PTB (ضروري مع الويبهوك)
         await ptb_app.initialize()
-        # 2) ضبط الويبهوك إن توفّر URL
         if settings.TELEGRAM_WEBHOOK_URL:
             await ptb_app.bot.set_webhook(
                 settings.TELEGRAM_WEBHOOK_URL,
@@ -112,9 +99,6 @@ if settings.TELEGRAM_BOT_TOKEN:
 
     @app.post("/webhook/telegram")
     async def telegram_webhook(request: Request):
-        """
-        نقطة استقبال تحديثات تيليجرام. لا تضع RateLimit هنا.
-        """
         try:
             data = await request.json()
         except Exception:
@@ -125,14 +109,12 @@ if settings.TELEGRAM_BOT_TOKEN:
             await ptb_app.process_update(update)
         except Exception as e:
             logging.exception("Telegram update processing failed: %s", e)
-            # رد افتراضي حتى لا يعيد تيليجرام المحاولة بلا نهاية
             await unauthorized_handler(update, None)
         return {"status": "ok"}
 else:
     logging.warning("TELEGRAM_BOT_TOKEN not set; Telegram webhook disabled.")
 
-# --- API Endpoints ---
-
+# --- Basic root & health ---
 @app.get("/")
 def root():
     return {"message": "🚀 CapitalGuard API is running on Railway"}
@@ -147,10 +129,9 @@ def healthz():
 
 @app.get("/favicon.ico")
 def favicon():
-    # منع 404 المزعج في اللوج
     return {}
 
-# ✅ حماية بالصلاحيات/المستخدم
+# --- API Endpoints (محميّة) ---
 @app.post(
     "/recommendations",
     response_model=RecommendationOut,
@@ -165,7 +146,7 @@ def create_rec(request: Request, payload: RecommendationIn, user: dict = Depends
             stop_loss=payload.stop_loss,
             targets=payload.targets,
             channel_id=int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else None,
-            user_id=user.get("sub"),  # هوية المستخدم من الـ JWT/مزود الهوية
+            user_id=user.get("sub"),
             notes=getattr(payload, "notes", None),
         )
         return RecommendationOut.model_validate(rec)
@@ -207,22 +188,15 @@ def get_report(request: Request, channel_id: int | None = None):
     dependencies=[Depends(get_current_user)],
 )
 def get_analytics(request: Request, channel_id: int | None = None):
-    """
-    إحصائيات الأداء: عدد الصفقات المغلقة، نسبة النجاح، مجموع/متوسط PnL، أفضل وأسوأ صفقة.
-    إذا لم يُرسل channel_id نستخدم TELEGRAM_CHAT_ID (إن توفر).
-    """
     cid = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else None
-    summary = analytics.performance_summary(channel_id or cid)
-    return summary
+    return analytics.performance_summary(channel_id or cid)
 
 # --- Routers ---
 if metrics_router:
     app.include_router(metrics_router)
-
-# ملاحظة: tv_router عادة يملك تحقق توقيع/سر داخلاً؛ لا نضيف Depends هنا
 if tv_router:
     app.include_router(tv_router)
 
-# ✅ Router المصادقة (تسجيل الدخول/التجديد…)
+# ✅ Router المصادقة
 app.include_router(auth_router.router)
 # --- END OF FILE ---
