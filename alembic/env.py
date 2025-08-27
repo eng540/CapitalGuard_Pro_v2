@@ -4,14 +4,18 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 import os
 
-# Import Base from the new central location
-from capitalguard.infrastructure.db.models import Base
+# استيراد Base من الموقع المركزي الجديد
+from capitalguard.infrastructure.db.models.base import Base
 
-# This import is crucial: it ensures that all your model files are loaded
-# so that Base.metadata knows about them.
-from capitalguard.infrastructure.db.models import __all__ as all_models
+# هذا الاستيراد هو المفتاح: يقوم بتنفيذ ملف __init__.py في حزمة models،
+# والذي بدوره يستورد جميع ملفات الموديلات الفردية، مما يجعلها معروفة لـ Base.metadata.
+from capitalguard.infrastructure.db import models
 
 config = context.config
+
+# تعيين target_metadata لـ Alembic
+target_metadata = Base.metadata
+
 db_url = (os.getenv("DATABASE_URL") or "").strip()
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
@@ -20,9 +24,6 @@ if db_url:
 
 if config.config_file_name:
     fileConfig(config.config_file_name)
-
-# Set the target metadata for Alembic
-target_metadata = Base.metadata
 
 def run_migrations_offline():
     url = config.get_main_option("sqlalchemy.url")
