@@ -1,5 +1,4 @@
-# docker-compose.yml  
-
+#--- START OF FILE: docker-compose.yml ---
 version: "3.9"  
 services:  
   db:  
@@ -16,25 +15,24 @@ services:
   api:  
     build:  
       context: .  
-      dockerfile: Dockerfile.api  
+      dockerfile: Dockerfile  # ✅ تم التغيير هنا
     environment:  
       DATABASE_URL: postgresql+psycopg://cg:cgpass@db:5432/capitalguard  
-      API_KEY: ${API_KEY}  
-      # ... باقي متغيرات البيئة  
+      API_KEY: ${API_KEY}
+      # ... (أضف باقي متغيرات البيئة الخاصة بك هنا من ملف .env)
     ports:  
       - "8000:8000"  
     depends_on: ["db"]  
-
-  # ⛔️ تم حذف خدمة "bot" من هنا ⛔️  
 
   watcher:  
     build:  
       context: .  
       dockerfile: Dockerfile.watcher  
     environment:  
-      DATABASE_URL: postgresql+psycopg://cg:cgpass@db:5432/capitalguard  
-      # ... باقي متغيرات البيئة  
+      DATABASE_URL: postgresql+ps psycopg://cg:cgpass@db:5432/capitalguard
+      # ... (أضف باقي متغيرات البيئة الخاصة بك هنا)
     depends_on: ["db"]  
 
 volumes:  
   pgdata:
+#--- END OF FILE ---
