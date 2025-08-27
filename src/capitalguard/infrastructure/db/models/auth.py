@@ -1,12 +1,7 @@
-from __future__ import annotations
+#--- START OF FILE: src/capitalguard/infrastructure/db/models/auth.py ---
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, UniqueConstraint
-from sqlalchemy.orm import relationship, declarative_base
-
-try:
-    # Prefer your project's shared Base if available
-    from capitalguard.infrastructure.db.base import Base  # type: ignore
-except Exception:
-    Base = declarative_base()
+from sqlalchemy.orm import relationship
+from .base import Base
 
 class User(Base):
     __tablename__ = "users"
@@ -14,7 +9,6 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
-
     roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
 
 class Role(Base):
@@ -27,10 +21,7 @@ class UserRole(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role_id = Column(Integer, ForeignKey("roles.id", ondelete="CASCADE"), nullable=False)
-
     user = relationship("User", back_populates="roles")
     role = relationship("Role")
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "role_id", name="uq_user_role"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "role_id", name="uq_user_role"),)
+#--- END OF FILE ---
