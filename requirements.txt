@@ -16,6 +16,3 @@ pytest==8.3.2
 pydantic-settings==2.3.4
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-pip install -r requirements.txt
-# أو سيقوم Docker بتثبيتها عند build
-
