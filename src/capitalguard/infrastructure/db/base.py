@@ -1,23 +1,4 @@
-
-#--- START OF FILE: src/capitalguard/infrastructure/db/models/__init__.py ---
-from .base import Base
-from .recommendation import RecommendationORM
-from .auth import User, Role, UserRole
-
-# This makes `Base.metadata` aware of all models for Alembic
-__all__ = ["Base", "RecommendationORM", "User", "Role", "UserRole"]
---- END OF FILE ---```
-
----
-
-### **المرحلة الثالثة: استبدال الملفات المتأثرة**
-
-**التعليمات:**
-استبدل المحتوى الكامل للملفات التالية بالنسخ المحدثة أدناه.
-
-##### **1. `src/capitalguard/infrastructure/db/base.py`**
-```python
---- START OF FILE: src/capitalguard/infrastructure/db/base.py ---
+#--- START OF FILE: src/capitalguard/infrastructure/db/base.py ---
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from capitalguard.config import settings
