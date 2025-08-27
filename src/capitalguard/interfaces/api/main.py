@@ -192,6 +192,21 @@ if metrics_router:
 if tv_router:
     from fastapi import Depends
     app.include_router(tv_router, dependencies=[Depends(require_api_key)])
+# ==== Basic root & health endpoints (no DB changes) ====
+
+@app.get("/")
+def root():
+    return {"message": "🚀 CapitalGuard API is running on Railway"}
+
+@app.get("/healthz")
+def healthz():
+    # أبسط فحص صحّة: التطبيق اشتغل ويستقبل الطلبات
+    return {"status": "ok"}
+
+@app.get("/favicon.ico")
+def favicon():
+    # منع 404 المزعج في اللوج
+    return {}
 
 @app.get(
     "/analytics",
