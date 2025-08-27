@@ -1,3 +1,4 @@
+#--- START OF FILE: Dockerfile ---
 # Unified & final Dockerfile for CapitalGuard API
 FROM python:3.11-slim
 
@@ -19,3 +20,4 @@ ENV PYTHONPATH=/app/src
 
 # Apply migrations then start API (works locally and on PaaS that inject $PORT)
 CMD ["sh", "-lc", "alembic upgrade head && uvicorn capitalguard.interfaces.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+#--- END OF FILE ---
