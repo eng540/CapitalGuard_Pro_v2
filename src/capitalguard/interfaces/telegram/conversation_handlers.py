@@ -34,6 +34,8 @@ def _format_recap(data: Dict[str, Any]) -> str:
     )
 
 async def start_new_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ✅ تنظيف أي حالة قديمة محفوظة عبر PicklePersistence
+    context.user_data.clear()
     context.user_data["recommendation"] = {}
     await update.message.reply_text(
         "لنبدأ بإنشاء توصية جديدة.\nما هو *رمز الأصل*؟ (مثال: BTCUSDT)",
@@ -73,7 +75,7 @@ async def received_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE)
         sl_val = float((update.message.text or "").strip())
     except (ValueError, TypeError):
         await update.message.reply_text("سعر غير صالح. الرجاء إدخال رقم.")
-        return STOP_LOLOSS
+        return STOP_LOSS
     context.user_data["recommendation"]["stop_loss"] = sl_val
     await update.message.reply_text(
         "أخيرًا، أرسل *الأهداف* مفصولة بمسافة أو فاصلة (مثال: `68000 70000` أو `68000,70000`).",
@@ -124,7 +126,7 @@ async def publish_recommendation(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text("انتهت صلاحية هذه الجلسة أو حدث خطأ.")
         return
 
-    # ✅ الوصول إلى خدمة التداول من مفتاح المحادثات
+    # ✅ الخدمة تؤخذ من المفتاح الخاص بالمحادثات
     trade_service = context.application.bot_data.get("trade_service_conv")
     if not isinstance(trade_service, TradeService):
         await query.edit_message_text("❌ خطأ داخلي: خدمة التداول غير مهيأة.")
@@ -140,7 +142,6 @@ async def publish_recommendation(update: Update, context: ContextTypes.DEFAULT_T
             targets=rec_data["targets"],
             user_id=str(query.from_user.id),
         )
-        # لا نرسل للقناة هنا — TradeService سيتكفل بالإشعار عبر TelegramNotifier
         await query.edit_message_text(f"✅ تم إنشاء التوصية #{new_rec.id} ونشرها بنجاح.")
     except Exception as e:
         logging.exception("Failed to publish recommendation")
