@@ -11,11 +11,11 @@ from telegram.ext import (
     filters,
 )
 from .auth import ALLOWED_FILTER
-
 from capitalguard.application.services.trade_service import TradeService
 from .keyboards import recommendation_management_keyboard, confirm_close_keyboard
 
-AWAITING_CLOSE_PRICE_KEY = "awaiting_close_price_for"  # user_data key: int rec_id
+# مفتاح حالة انتظار سعر الإغلاق لكل مستخدم
+AWAITING_CLOSE_PRICE_KEY = "awaiting_close_price_for"
 
 def _svc(context: ContextTypes.DEFAULT_TYPE, name: str):
     svc = context.application.bot_data.get(name)
@@ -23,9 +23,16 @@ def _svc(context: ContextTypes.DEFAULT_TYPE, name: str):
         raise RuntimeError(f"Service '{name}' not initialized in bot_data")
     return svc
 
-# ===== أوامر =====
+# ======================
+# أوامر
+# ======================
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service: TradeService):
-    items = trade_service.list_open()
+    try:
+        items = trade_service.list_open()
+    except Exception as e:
+        await update.message.reply_text(f"❌ تعذّر جلب التوصيات: {e}")
+        return
+
     if not items:
         await update.message.reply_text("لا توجد توصيات مفتوحة.")
         return
@@ -42,7 +49,9 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_
         )
         await update.message.reply_html(text, reply_markup=recommendation_management_keyboard(it.id))
 
-# ===== أزرار الإغلاق =====
+# ======================
+# تدفّق الإغلاق
+# ======================
 async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -66,10 +75,24 @@ async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # يتفاعل فقط إذا كنا بانتظار سعر إغلاق
+    """
+    هذه الدالة تُستدعى عند استلام نص من المستخدم.
+    لن تعمل إلا إذا كان المستخدم في حالة انتظار سعر الإغلاق.
+    """
+    # يعمل فقط إذا كنّا بانتظار السعر
     if AWAITING_CLOSE_PRICE_KEY not in context.user_data:
         return
 
+    # استخرج rec_id بأمان
+    try:
+        rec_id = int(context.user_data[AWAITING_CLOSE_PRICE_KEY])
+    except Exception:
+        # نظّف الحالة إن فشلت القراءة
+        context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
+        await update.message.reply_text("انتهت صلاحية هذه الجلسة. ابدأ من جديد بالأمر /open.")
+        return
+
+    # حوّل النص إلى رقم
     txt = (update.message.text or "").strip()
     try:
         exit_price = float(txt)
@@ -77,7 +100,6 @@ async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("⚠️ سعر غير صالح. الرجاء إدخال رقم صحيح.")
         return
 
-    rec_id = int(context.user_data[AWAITING_CLOSE_PRICE_KEY])
     # اطلب التأكيد عبر أزرار
     await update.message.reply_html(
         f"هل تريد تأكيد إغلاق التوصية <b>#{rec_id}</b> على سعر <code>{exit_price}</code>؟",
@@ -94,6 +116,7 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("تنسيق تأكيد غير صحيح.")
         return
 
+    # استخرج القيم بأمان
     try:
         rec_id = int(parts[2])
         exit_price = float(parts[3])
@@ -101,6 +124,7 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ بيانات التأكيد غير صالحة.")
         return
 
+    # نفّذ الإغلاق
     try:
         trade_service: TradeService = _svc(context, "trade_service")
         rec = trade_service.close(rec_id, exit_price)
@@ -109,11 +133,11 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
-        # لا نمرّر متغيرات غير معرّفة إلى الرسالة
+        # لا نستخدم rec_id هنا في الرسالة لتجنّب أي NameError
         await query.edit_message_text(f"❌ تعذّر إغلاق التوصية: {e}")
         return
 
-    # تنظيف حالة الانتظار بشكل آمن
+    # تنظيف حالة الانتظار للمستخدم الحالي فقط
     try:
         if int(context.user_data.get(AWAITING_CLOSE_PRICE_KEY)) == rec_id:
             context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
@@ -132,7 +156,7 @@ async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             rec_id = None
 
-    # نظّف حالة الانتظار لهذه التوصية فقط
+    # إن كانت حالة انتظار تخص هذه التوصية، نظّفها
     try:
         if rec_id is not None and int(context.user_data.get(AWAITING_CLOSE_PRICE_KEY)) == rec_id:
             context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
@@ -141,6 +165,9 @@ async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text("تم التراجع عن الإغلاق.")
 
+# ======================
+# التسجيل
+# ======================
 def register_management_handlers(app: Application, services: dict):
     # أمر /open بحقن صريح
     app.add_handler(CommandHandler(
