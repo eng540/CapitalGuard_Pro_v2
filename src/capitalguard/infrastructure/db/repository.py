@@ -1,4 +1,4 @@
-#--- START OF FILE: src/capitalguard/infrastructure/db/repository.py ---
+# --- START OF FILE: src/capitalguard/infrastructure/db/repository.py ---
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -8,8 +8,9 @@ from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from .models import RecommendationORM, Base
 from .base import engine, SessionLocal
 
-# This line ensures tables are created for development/testing with SQLite.
+# إنشاء الجداول لأغراض التطوير/الاختبار (احذر استخدامها في الإنتاج إن كان Alembic يدير المايجريشن)
 Base.metadata.create_all(bind=engine)
+
 
 class RecommendationRepository:
     def _to_entity(self, row: RecommendationORM) -> Recommendation:
@@ -68,10 +69,18 @@ class RecommendationRepository:
             return [self._to_entity(r) for r in rows]
 
     def update(self, rec: Recommendation) -> Recommendation:
+        """
+        يحدّث سجل توصية موجودة اعتمادًا على قيم كيان الدومين الممرّر.
+        """
+        if rec.id is None:
+            raise ValueError("Recommendation id is required for update")
+
         with SessionLocal() as s:
-            row = s.get(RecommendationORM, rec_id)
+            row = s.get(RecommendationORM, rec.id)  # ✅ استخدم rec.id بدل rec_id غير المعرف
             if not row:
                 raise ValueError("Recommendation not found")
+
+            # تعيين الحقول
             row.asset = rec.asset.value
             row.side = rec.side.value
             row.entry = rec.entry.value
@@ -83,7 +92,8 @@ class RecommendationRepository:
             row.exit_price = rec.exit_price
             row.closed_at = rec.closed_at
             row.updated_at = datetime.utcnow()
+
             s.commit()
             s.refresh(row)
             return self._to_entity(row)
-#--- END OF FILE ---
+# --- END OF FILE ---
