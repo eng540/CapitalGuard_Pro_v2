@@ -25,12 +25,19 @@ ASSET, SIDE, ENTRY, STOP_LOSS, TARGETS = range(5)
 
 def _get_trade_service(context: ContextTypes.DEFAULT_TYPE) -> TradeService:
     """
-    ✅ الطريقة الصحيحة والآمنة للوصول إلى الخدمة من bot_data.
+    محاولة جلب الخدمة من bot_data بشكل متسامح.
+    إذا لم توجد، نعيد None ونترك النداء الأعلى يتعامل بودّية مع المستخدم.
     """
-    service = context.application.bot_data.get("trade_service")
-    if not isinstance(service, TradeService):
-        raise TypeError("TradeService not found in bot_data or has the wrong type.")
-    return service
+    service = None
+    try:
+        # المسار القياسي
+        service = context.application.bot_data.get("trade_service")
+        # مسار احتياطي (لو كانت محقونة على مستوى bot_data العام)
+        if not service:
+            service = context.bot_data.get("trade_service")
+    except Exception:
+        service = None
+    return service  # قد تكون None
 
 
 def _format_recap(data: Dict[str, Any]) -> str:
@@ -49,7 +56,6 @@ def _format_recap(data: Dict[str, Any]) -> str:
 
 async def start_new_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the interactive flow."""
-    # تهيئة حاوية البيانات
     context.user_data["recommendation"] = {}
     await update.message.reply_text(
         "لنبدأ بإنشاء توصية جديدة.\nما هو *رمز الأصل*؟ (مثال: BTCUSDT)",
@@ -119,7 +125,6 @@ async def received_targets(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         # Store a copy in bot_data keyed by unique id, to be used by callback buttons
         user_data_key = str(uuid.uuid4())
-        # ننقل الداتا إلى bot_data لأن user_data قد تُمسح بنهاية المحادثة
         context.bot_data[user_data_key] = dict(context.user_data["recommendation"])
 
         recap_text = _format_recap(context.user_data["recommendation"])
@@ -159,8 +164,17 @@ async def publish_recommendation(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text("انتهت صلاحية هذه الجلسة أو حدث خطأ.")
         return
 
+    # ✅ تحقّق ودّي لوجود الخدمة قبل الإنشاء
+    trade_service = _get_trade_service(context)
+    if not trade_service:
+        await query.edit_message_text(
+            "⚠️ الخدمة غير متوفّرة الآن.\n"
+            "تحقق من أن التطبيق شغّال بنسخة `main.py` التي تقوم بحقن الخدمات في `bot_data` "
+            "وأعد تشغيل الخدمة ثم أعد المحاولة."
+        )
+        return
+
     try:
-        trade_service = _get_trade_service(context)
         new_rec = trade_service.create(
             asset=rec_data["asset"],
             side=rec_data["side"],
@@ -224,7 +238,7 @@ def get_recommendation_conversation_handler() -> ConversationHandler:
             TARGETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_targets)],
         },
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
-        # ✅ تفعيل الاستمرارية عبر PicklePersistence (main.py يفعّل الـ persistence)
+        # الاستمرارية مفعّلة في main.py عبر PicklePersistence
         persistent=True,
         name="new_recommendation_conversation",
     )
