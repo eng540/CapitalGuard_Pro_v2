@@ -1,13 +1,15 @@
+#--- START OF FILE: src/capitalguard/interfaces/api/schemas.py ---
 from __future__ import annotations
 from typing import List, Optional, Any, Iterable
 from pydantic import BaseModel, ConfigDict, field_validator
 from datetime import datetime
 from decimal import Decimal
 
+# -------- Helpers لتطبيع القيم القادمة من الدومين --------
 def _to_str(v: Any) -> Optional[str]:
     if v is None: return None
     if hasattr(v, "value"):
-        try: return str(getattr(v, "value"))
+        try: return str(v.value)
         except Exception: pass
     try: return str(v)
     except Exception: return None
@@ -24,16 +26,17 @@ def _to_float(v: Any) -> Optional[float]:
 
 def _to_float_list(v: Any) -> Optional[List[float]]:
     if v is None: return None
-    for attr in ("to_list", "values", "targets", "all"):
+    for attr in ("values", "to_list"):
         if hasattr(v, attr):
-            seq = getattr(v, attr)
-            seq = seq() if callable(seq) else seq
-            try: return [ _to_float(x) for x in list(seq) ]
+            try:
+                seq = getattr(v, attr)
+                return [ _to_float(x) for x in list(seq) ]
             except Exception: pass
     if isinstance(v, Iterable) and not isinstance(v, (str, bytes)):
         return [ _to_float(x) for x in list(v) ]
     return None
 
+# -------- Schemas --------
 class RecommendationIn(BaseModel):
     asset: str
     side: str
@@ -44,7 +47,7 @@ class RecommendationIn(BaseModel):
     user_id: Optional[str] = None
 
 class RecommendationOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: float})
+    model_config = ConfigDict(from_attributes=True)
 
     id: Optional[int] = None
     asset: str
@@ -60,32 +63,28 @@ class RecommendationOut(BaseModel):
     exit_price: Optional[float] = None
     closed_at: Optional[datetime] = None
 
-    @field_validator("asset", mode="before")
+    @field_validator("asset", "side", mode="before")
     @classmethod
-    def _v_asset(cls, v): 
-        s = _to_str(v); 
-        if s is None: raise ValueError("invalid asset"); 
-        return s
-
-    @field_validator("side", mode="before")
-    @classmethod
-    def _v_side(cls, v): 
-        s = _to_str(v); 
-        if s is None: raise ValueError("invalid side"); 
+    def _v_str(cls, v):
+        s = _to_str(v)
+        if s is None: raise ValueError("invalid string-like value")
         return s
 
     @field_validator("entry", "stop_loss", "exit_price", mode="before")
     @classmethod
-    def _v_price(cls, v): 
-        f = _to_float(v); 
-        if f is None: raise ValueError("invalid price"); 
+    def _v_price(cls, v):
+        f = _to_float(v)
+        if f is None:
+             # Allow exit_price to be None
+            if v is None: return None
+            raise ValueError("invalid price-like value")
         return f
 
     @field_validator("targets", mode="before")
     @classmethod
-    def _v_targets(cls, v): 
-        arr = _to_float_list(v); 
-        if arr is None: raise ValueError("invalid targets"); 
+    def _v_targets(cls, v):
+        arr = _to_float_list(v)
+        if arr is None: raise ValueError("invalid targets-like value")
         return arr
 
 class CloseIn(BaseModel):
@@ -96,3 +95,4 @@ class ReportOut(BaseModel):
     open: int
     closed: int
     top_asset: Optional[str] = None
+#--- END OF FILE ---
