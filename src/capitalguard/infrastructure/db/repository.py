@@ -9,7 +9,6 @@ from .models import RecommendationORM, Base
 from .base import engine, SessionLocal
 
 # This line ensures tables are created for development/testing with SQLite.
-# In production with PostgreSQL and Alembic, this won't re-create tables.
 Base.metadata.create_all(bind=engine)
 
 class RecommendationRepository:
@@ -70,7 +69,7 @@ class RecommendationRepository:
 
     def update(self, rec: Recommendation) -> Recommendation:
         with SessionLocal() as s:
-            row = s.get(RecommendationORM, rec.id)
+            row = s.get(RecommendationORM, rec_id)
             if not row:
                 raise ValueError("Recommendation not found")
             row.asset = rec.asset.value
