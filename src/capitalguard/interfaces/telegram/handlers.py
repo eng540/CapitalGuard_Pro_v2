@@ -67,7 +67,6 @@ def register_all_handlers(application: Application, services: dict):
     ))
 
     # 2) محادثة إنشاء توصية + أزرار نشر/إلغاء
-    # نحقن خدمة التداول في bot_data للمحادثات فقط
     application.bot_data['trade_service_conv'] = trade_service
     application.add_handler(get_recommendation_conversation_handler(ALLOWED_FILTER))
     application.add_handler(CallbackQueryHandler(publish_recommendation, pattern=r"^rec:publish:"))
@@ -75,7 +74,6 @@ def register_all_handlers(application: Application, services: dict):
 
     # 3) إدارة التوصيات المفتوحة + إغلاق سهل
     application.add_handler(CommandHandler("open", partial(open_cmd, trade_service=trade_service), filters=ALLOWED_FILTER))
-    # Callbacks تحتاج الوصول للخدمة — نضعها في bot_data لمسار الإدارة
     application.bot_data['trade_service_mgmt'] = trade_service
     application.add_handler(CallbackQueryHandler(click_close_now, pattern=r"^rec:close:\d+$"))
     application.add_handler(CallbackQueryHandler(confirm_close, pattern=r"^rec:confirm_close:\d+:[0-9.]+$"))
