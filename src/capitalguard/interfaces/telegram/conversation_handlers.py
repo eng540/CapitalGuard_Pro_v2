@@ -10,15 +10,13 @@ from telegram.ext import (
     ConversationHandler,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     filters,
 )
 
 from capitalguard.application.services.trade_service import TradeService
-from capitalguard.interfaces.formatting.telegram_templates import format_signal
 from .keyboards import confirm_recommendation_keyboard
 
-# مراحل المحادثة
+# States
 ASSET, SIDE, ENTRY, STOP_LOSS, TARGETS = range(5)
 
 def _format_recap(data: Dict[str, Any]) -> str:
@@ -34,69 +32,58 @@ def _format_recap(data: Dict[str, Any]) -> str:
     )
 
 async def start_new_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ✅ تنظيف أي حالة قديمة محفوظة عبر PicklePersistence
+    # تنظيف أي حالة قديمة محفوظة
     context.user_data.clear()
     context.user_data["recommendation"] = {}
     await update.message.reply_text(
-        "لنبدأ بإنشاء توصية جديدة.\nما هو *رمز الأصل*؟ (مثال: BTCUSDT)",
+        "لنبدأ بإنشاء توصية جديدة. ما هو رمز الأصل؟ (مثال: BTCUSDT)",
         parse_mode=ParseMode.MARKDOWN,
     )
     return ASSET
 
 async def received_asset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["recommendation"]["asset"] = (update.message.text or "").strip().upper()
-    await update.message.reply_text(
-        "ممتاز. الآن ما هو *الاتجاه*؟ أرسل `LONG` أو `SHORT`.",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    context.user_data["recommendation"]["asset"] = (update.message.text or "").upper().strip()
+    await update.message.reply_text("ممتاز. الآن، ما هو الاتجاه؟ (LONG أو SHORT)")
     return SIDE
 
 async def received_side(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    side = (update.message.text or "").strip().upper()
+    side = (update.message.text or "").upper().strip()
     if side not in {"LONG", "SHORT"}:
         await update.message.reply_text("اتجاه غير صالح. الرجاء إدخال LONG أو SHORT.")
         return SIDE
     context.user_data["recommendation"]["side"] = side
-    await update.message.reply_text("رائع. ما هو *سعر الدخول*؟", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("رائع. ما هو سعر الدخول؟")
     return ENTRY
 
 async def received_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
-        entry_val = float((update.message.text or "").strip())
+        context.user_data["recommendation"]["entry"] = float((update.message.text or "").strip())
     except (ValueError, TypeError):
         await update.message.reply_text("سعر غير صالح. الرجاء إدخال رقم.")
         return ENTRY
-    context.user_data["recommendation"]["entry"] = entry_val
-    await update.message.reply_text("تمام. ما هو *سعر وقف الخسارة*؟", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("تمام. ما هو سعر وقف الخسارة؟")
     return STOP_LOSS
 
 async def received_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
-        sl_val = float((update.message.text or "").strip())
+        context.user_data["recommendation"]["stop_loss"] = float((update.message.text or "").strip())
     except (ValueError, TypeError):
         await update.message.reply_text("سعر غير صالح. الرجاء إدخال رقم.")
         return STOP_LOSS
-    context.user_data["recommendation"]["stop_loss"] = sl_val
-    await update.message.reply_text(
-        "أخيرًا، أرسل *الأهداف* مفصولة بمسافة أو فاصلة (مثال: `68000 70000` أو `68000,70000`).",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    await update.message.reply_text("أخيرًا، أدخل الأهداف مفصولة بمسافة أو فاصلة (مثال: 68000 70000).")
     return TARGETS
 
 async def received_targets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
-        text = (update.message.text or "").replace(",", " ").strip()
-        parts = [p for p in text.split() if p]
-        targets: List[float] = [float(p) for p in parts]
+        targets = [float(t) for t in (update.message.text or "").replace(",", " ").split() if t]
         if not targets:
-            raise ValueError("No targets")
+            raise ValueError
+        context.user_data["recommendation"]["targets"] = targets
     except (ValueError, TypeError):
         await update.message.reply_text("الأهداف غير صالحة. الرجاء إدخال قائمة أرقام صحيحة.")
         return TARGETS
 
-    context.user_data["recommendation"]["targets"] = targets
-
-    # تخزين نسخة مؤقتة في bot_data لاستخدامها عند الضغط على الأزرار
+    # نخزّن نسخة مؤقتة للزرّين
     user_data_key = str(uuid.uuid4())
     context.bot_data[user_data_key] = dict(context.user_data["recommendation"])
 
@@ -123,11 +110,10 @@ async def publish_recommendation(update: Update, context: ContextTypes.DEFAULT_T
     rec_data = context.bot_data.get(user_data_key) if user_data_key else None
 
     if not rec_data:
-        await query.edit_message_text("انتهت صلاحية هذه الجلسة أو حدث خطأ.")
+        await query.edit_message_text("انتهت صلاحية هذه الجلسة.")
         return
 
-    # ✅ الخدمة تؤخذ من المفتاح الخاص بالمحادثات
-    trade_service = context.application.bot_data.get("trade_service_conv")
+    trade_service = context.application.bot_data.get("trade_service")
     if not isinstance(trade_service, TradeService):
         await query.edit_message_text("❌ خطأ داخلي: خدمة التداول غير مهيأة.")
         logging.error("TradeService not found in bot_data for conversation.")
@@ -142,10 +128,11 @@ async def publish_recommendation(update: Update, context: ContextTypes.DEFAULT_T
             targets=rec_data["targets"],
             user_id=str(query.from_user.id),
         )
-        await query.edit_message_text(f"✅ تم إنشاء التوصية #{new_rec.id} ونشرها بنجاح.")
+        # لا نرسل للقناة هنا — TradeService/TelegramNotifier سيتكفّل بذلك
+        await query.edit_message_text(f"✅ تم إنشاء التوصية #{new_rec.id} ونشرها بنجاح!")
     except Exception as e:
         logging.exception("Failed to publish recommendation")
-        await query.edit_message_text(f"❌ فشل في إنشاء أو نشر التوصية: {e}")
+        await query.edit_message_text(f"❌ فشل في النشر: {e}")
     finally:
         if user_data_key and user_data_key in context.bot_data:
             del context.bot_data[user_data_key]
@@ -161,21 +148,14 @@ async def cancel_publication(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text("تم إلغاء النشر.")
 
 def get_recommendation_conversation_handler(allowed_filter) -> ConversationHandler:
-    """
-    نقيّد الدخول بالمستخدمين المصرّح لهم + دردشة خاصة (اختياريًا حسب حاجتك).
-    """
     return ConversationHandler(
-        entry_points=[CommandHandler(
-            "newrec",
-            start_new_recommendation,
-            filters=filters.ChatType.PRIVATE & allowed_filter,
-        )],
+        entry_points=[CommandHandler("newrec", start_new_recommendation, filters=filters.ChatType.PRIVATE & allowed_filter)],
         states={
-            ASSET: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_asset)],
-            SIDE: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_side)],
-            ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_entry)],
-            STOP_LOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_stop_loss)],
-            TARGETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_targets)],
+            ASSET:    [MessageHandler(filters.TEXT & ~filters.COMMAND, received_asset)],
+            SIDE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, received_side)],
+            ENTRY:    [MessageHandler(filters.TEXT & ~filters.COMMAND, received_entry)],
+            STOP_LOSS:[MessageHandler(filters.TEXT & ~filters.COMMAND, received_stop_loss)],
+            TARGETS:  [MessageHandler(filters.TEXT & ~filters.COMMAND, received_targets)],
         },
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
         persistent=True,
