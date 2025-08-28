@@ -13,10 +13,7 @@ class Recommendation:
     targets: Targets
     id: Optional[int] = None
     channel_id: Optional[int] = None
-    
-    # ✅ التصحيح النهائي: تغيير النوع من int إلى str
     user_id: Optional[str] = None
-    
     status: str = "OPEN"
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
