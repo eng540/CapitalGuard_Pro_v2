@@ -71,6 +71,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/list</code>\n"
         "• <code>/report</code>\n"
         "• <code>/analytics</code>\n"
+        "• <code>/diag_services</code> — فحص الخدمات المحقونة.\n"
+        "• <code>/webhook_info</code> — فحص إعداد الويب هوك.\n"
     )
 
 async def close_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_service: TradeService):
@@ -103,16 +105,43 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, report_
     await update.message.reply_html(_fmt_report(summary))
 
 async def analytics_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, analytics_service: AnalyticsService):
-    """
-    يعرض ملخص الأداء بناءً على التوصيات المغلقة (PnL/WinRate).
-    يعتمد channel_id الافتراضي على TELEGRAM_CHAT_ID إن وُجد.
-    """
     try:
         cid = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else None
         summary = analytics_service.performance_summary(cid)
         await update.message.reply_html(_fmt_analytics(summary))
     except Exception as e:
         await update.message.reply_html(f"⚠️ <b>خطأ:</b> <code>{e}</code>")
+
+
+# --- Diagnostic Commands ---
+async def diag_services_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    يعرض محتويات bot_data (المفاتيح وأنواعها).
+    """
+    services = context.application.bot_data
+    if not services:
+        await update.message.reply_text("⚠️ لا توجد خدمات محقونة في bot_data.")
+        return
+    lines = ["🔎 <b>Diag Services</b>"]
+    for k, v in services.items():
+        lines.append(f"• {k}: {type(v).__name__}")
+    await update.message.reply_html("\n".join(lines))
+
+async def webhook_info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    يعرض معلومات الويب هوك من تيليجرام.
+    """
+    try:
+        info = await context.bot.get_webhook_info()
+        msg = (
+            f"🌐 <b>Webhook Info</b>\n"
+            f"• URL: {info.url or '-'}\n"
+            f"• Pending updates: {info.pending_update_count}\n"
+            f"• IP: {info.ip_address or '-'}"
+        )
+        await update.message.reply_html(msg)
+    except Exception as e:
+        await update.message.reply_html(f"⚠️ فشل في جلب webhook info: <code>{e}</code>")
 
 
 # --- Wiring ---
@@ -141,11 +170,14 @@ def register_bot_handlers(
     if analytics_service is not None:
         application.add_handler(CommandHandler("analytics", lambda u, c: analytics_cmd(u, c, analytics_service), filters=ALLOWED_FILTER))
 
-    # ✅ 5) تسجيل معالجات الإدارة ( /open + أزرار الإغلاق السهل )
+    # ✅ أوامر التشخيص
+    application.add_handler(CommandHandler("diag_services", diag_services_cmd, filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("webhook_info",  webhook_info_cmd,  filters=ALLOWED_FILTER))
+
+    # ✅ تسجيل معالجات الإدارة ( /open + أزرار الإغلاق السهل )
     register_management_handlers(application)
 
 
-# اسم بديل للتوافق مع استدعاء محتمل في main.py بعد التحديث
 def register_base_handlers(application: Application):
     """
     توافقية: إذا كان main.py الجديد يستدعي register_base_handlers(application) فقط.
@@ -162,6 +194,6 @@ def register_base_handlers(application: Application):
         analytics_service=analytics_service,
     )
 
-    # ✅ كذلك نسجّل معالجات الإدارة هنا لضمان توفرها في هذا المسار أيضًا
+    # ✅ تسجيل معالجات الإدارة هنا أيضًا
     register_management_handlers(application)
 #--- END OF FILE ---
