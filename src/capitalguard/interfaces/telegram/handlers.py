@@ -23,7 +23,7 @@ from .management_handlers import (
     confirm_close,
     cancel_close,
 )
-
+from .errors import register_error_handler
 # ======================
 # أوامر عامة
 # ======================
@@ -108,4 +108,12 @@ def register_all_handlers(application: Application, services: dict):
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price), group=1
     )
+
+...
+def register_all_handlers(application: Application, services: dict):
+    ...
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price), group=1)
+
+    # ✅ سجّل معالج الأخطاء العام
+    register_error_handler(application)
 # --- END OF FILE ---
