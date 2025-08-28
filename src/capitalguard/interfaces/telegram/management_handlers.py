@@ -76,8 +76,8 @@ async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    هذه الدالة تُستدعى عند استلام نص من المستخدم.
-    لن تعمل إلا إذا كان المستخدم في حالة انتظار سعر الإغلاق.
+    تعمل فقط إذا كان المستخدم بانتظار إدخال السعر.
+    لا تنفّذ أي إغلاق هنا — فقط تطلب التأكيد.
     """
     # يعمل فقط إذا كنّا بانتظار السعر
     if AWAITING_CLOSE_PRICE_KEY not in context.user_data:
@@ -87,7 +87,6 @@ async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         rec_id = int(context.user_data[AWAITING_CLOSE_PRICE_KEY])
     except Exception:
-        # نظّف الحالة إن فشلت القراءة
         context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
         await update.message.reply_text("انتهت صلاحية هذه الجلسة. ابدأ من جديد بالأمر /open.")
         return
@@ -100,7 +99,7 @@ async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("⚠️ سعر غير صالح. الرجاء إدخال رقم صحيح.")
         return
 
-    # اطلب التأكيد عبر أزرار
+    # اطلب التأكيد عبر أزرار — لا إغلاق هنا
     await update.message.reply_html(
         f"هل تريد تأكيد إغلاق التوصية <b>#{rec_id}</b> على سعر <code>{exit_price}</code>؟",
         reply_markup=confirm_close_keyboard(rec_id, exit_price),
@@ -124,7 +123,7 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ بيانات التأكيد غير صالحة.")
         return
 
-    # نفّذ الإغلاق
+    # نفّذ الإغلاق فعليًا
     try:
         trade_service: TradeService = _svc(context, "trade_service")
         rec = trade_service.close(rec_id, exit_price)
@@ -133,7 +132,6 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
-        # لا نستخدم rec_id هنا في الرسالة لتجنّب أي NameError
         await query.edit_message_text(f"❌ تعذّر إغلاق التوصية: {e}")
         return
 
@@ -156,7 +154,6 @@ async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             rec_id = None
 
-    # إن كانت حالة انتظار تخص هذه التوصية، نظّفها
     try:
         if rec_id is not None and int(context.user_data.get(AWAITING_CLOSE_PRICE_KEY)) == rec_id:
             context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
