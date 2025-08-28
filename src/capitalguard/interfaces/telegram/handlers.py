@@ -1,4 +1,4 @@
-#--- START OF FILE: src/capitalguard/interfaces/telegram/handlers.py ---
+# --- START OF FILE: src/capitalguard/interfaces/telegram/handlers.py ---
 from functools import partial
 from telegram import Update
 from telegram.ext import (
@@ -9,7 +9,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from capitalguard.config import settings
+from .auth import ALLOWED_FILTER  # ✅ استيراد الفلتر من الملف الجديد
 
 from .conversation_handlers import (
     get_recommendation_conversation_handler,
@@ -25,24 +25,12 @@ from .management_handlers import (
 )
 
 # ======================
-# فلاتر الصلاحيات
-# ======================
-ALLOWED_USERS = {
-    int(uid.strip())
-    for uid in (settings.TELEGRAM_ALLOWED_USERS or "").split(",")
-    if uid.strip()
-}
-ALLOWED_FILTER = filters.User(list(ALLOWED_USERS)) if ALLOWED_USERS else filters.ALL
-
-
-# ======================
 # أوامر عامة
 # ======================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         "👋 أهلاً بك في <b>CapitalGuard Bot</b>.\nاستخدم /help للمساعدة."
     )
-
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
@@ -51,7 +39,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/open</code> — عرض وإدارة التوصيات المفتوحة.\n"
         "• <code>/analytics</code> — عرض ملخص الأداء."
     )
-
 
 async def analytics_cmd(
     update: Update,
@@ -120,4 +107,4 @@ def register_all_handlers(application: Application, services: dict):
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price), group=1
     )
-#--- END OF FILE ---
+# --- END OF FILE ---
