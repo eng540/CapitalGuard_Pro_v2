@@ -19,25 +19,45 @@ from capitalguard.application.services.trade_service import TradeService
 from capitalguard.interfaces.formatting.telegram_templates import format_signal
 from .keyboards import confirm_recommendation_keyboard
 
+# ✅ واردات الحقن الاحتياطي
+from capitalguard.infrastructure.db.repository import RecommendationRepository
+from capitalguard.infrastructure.notify.telegram import TelegramNotifier
+
 # Conversation states
 ASSET, SIDE, ENTRY, STOP_LOSS, TARGETS = range(5)
 
 
-def _get_trade_service(context: ContextTypes.DEFAULT_TYPE) -> TradeService:
+def _get_trade_service(context: ContextTypes.DEFAULT_TYPE) -> TradeService | None:
     """
-    محاولة جلب الخدمة من bot_data بشكل متسامح.
-    إذا لم توجد، نعيد None ونترك النداء الأعلى يتعامل بودّية مع المستخدم.
+    محاولة جلب الخدمة من bot_data.
+    قد تعود None إذا لم تكن محقونة بعد.
     """
-    service = None
     try:
-        # المسار القياسي
-        service = context.application.bot_data.get("trade_service")
-        # مسار احتياطي (لو كانت محقونة على مستوى bot_data العام)
-        if not service:
-            service = context.bot_data.get("trade_service")
+        svc = context.application.bot_data.get("trade_service") or context.bot_data.get("trade_service")
+        if isinstance(svc, TradeService):
+            return svc
     except Exception:
-        service = None
-    return service  # قد تكون None
+        pass
+    return None
+
+
+def _ensure_trade_service(context: ContextTypes.DEFAULT_TYPE) -> TradeService:
+    """
+    ✅ حقن احتياطي (self-healing) في حال الخدمة غير موجودة.
+    ينشئ TradeService ويحقنه داخل bot_data ثم يعيده.
+    """
+    svc = _get_trade_service(context)
+    if svc:
+        return svc
+
+    logging.warning("[Conversation] trade_service not found in bot_data — performing lazy injection.")
+    repo = RecommendationRepository()
+    notifier = TelegramNotifier()
+    svc = TradeService(repo, notifier)
+
+    # نحقنه في application.bot_data ليبقى متاحًا لباقي المعالجات
+    context.application.bot_data["trade_service"] = svc
+    return svc
 
 
 def _format_recap(data: Dict[str, Any]) -> str:
@@ -164,15 +184,8 @@ async def publish_recommendation(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text("انتهت صلاحية هذه الجلسة أو حدث خطأ.")
         return
 
-    # ✅ تحقّق ودّي لوجود الخدمة قبل الإنشاء
-    trade_service = _get_trade_service(context)
-    if not trade_service:
-        await query.edit_message_text(
-            "⚠️ الخدمة غير متوفّرة الآن.\n"
-            "تحقق من أن التطبيق شغّال بنسخة `main.py` التي تقوم بحقن الخدمات في `bot_data` "
-            "وأعد تشغيل الخدمة ثم أعد المحاولة."
-        )
-        return
+    # ✅ نضمن توفر الخدمة حتى لو لم تُحقن من main.py
+    trade_service = _ensure_trade_service(context)
 
     try:
         new_rec = trade_service.create(
