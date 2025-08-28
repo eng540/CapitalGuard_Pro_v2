@@ -1,5 +1,4 @@
 #--- START OF FILE: src/capitalguard/interfaces/telegram/handlers.py ---
-from functools import partial
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -24,10 +23,8 @@ from .management_handlers import (
     cancel_close,
 )
 
-# فلتر المستخدمين المصرّح لهم (إن تم ضبطه في الإعدادات)
-ALLOWED_USERS = {
-    int(uid.strip()) for uid in (settings.TELEGRAM_ALLOWED_USERS or "").split(",") if uid.strip()
-}
+# فلتر المستخدمين المصرّح لهم (إن تم ضبطه)
+ALLOWED_USERS = {int(uid.strip()) for uid in (settings.TELEGRAM_ALLOWED_USERS or "").split(",") if uid.strip()}
 ALLOWED_FILTER = filters.User(list(ALLOWED_USERS)) if ALLOWED_USERS else filters.ALL
 
 # أوامر بسيطة
@@ -42,43 +39,35 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/analytics</code> — عرض ملخص الأداء."
     )
 
-async def analytics_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, analytics_service):
+async def analytics_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    analytics_service = context.application.bot_data.get("analytics_service")
+    if not analytics_service:
+        await update.message.reply_text("⚠️ خدمة التحليلات غير متاحة.")
+        return
     summary = analytics_service.performance_summary()
-    text = "📊 <b>ملخص الأداء</b>\n" + "\n".join(
-        f"• {k.replace('_',' ').title()}: {v}" for k, v in summary.items()
-    )
+    text = "📊 <b>ملخص الأداء</b>\n" + "\n".join([f"• {k.replace('_',' ').title()}: {v}" for k, v in summary.items()])
     await update.message.reply_html(text)
 
-def register_all_handlers(application: Application, services: dict):
+def register_all_handlers(application: Application):
     """
-    تسجيل جميع المعالجات مع حقن الخدمات صراحةً للأوامر،
-    وحقنها في bot_data فقط حيث يلزم (المحادثات وCallbacks).
+    التسجيل المركزي. يفترض أن الخدمات موجودة في application.bot_data.
     """
-    trade_service = services["trade"]
-    analytics_service = services["analytics"]
-
-    # 1) أوامر عامة (تمرير صريح للخدمة)
+    # 1) أوامر عامة
     application.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_FILTER))
     application.add_handler(CommandHandler("help", help_cmd, filters=ALLOWED_FILTER))
-    application.add_handler(CommandHandler(
-        "analytics",
-        partial(analytics_cmd, analytics_service=analytics_service),
-        filters=ALLOWED_FILTER,
-    ))
+    application.add_handler(CommandHandler("analytics", analytics_cmd, filters=ALLOWED_FILTER))
 
-    # 2) محادثة إنشاء توصية + أزرار نشر/إلغاء
-    application.bot_data['trade_service_conv'] = trade_service
+    # 2) محادثة إنشاء التوصية + أزرار نشر/إلغاء
     application.add_handler(get_recommendation_conversation_handler(ALLOWED_FILTER))
     application.add_handler(CallbackQueryHandler(publish_recommendation, pattern=r"^rec:publish:"))
     application.add_handler(CallbackQueryHandler(cancel_publication, pattern=r"^rec:cancel:"))
 
-    # 3) إدارة التوصيات المفتوحة + إغلاق سهل
-    application.add_handler(CommandHandler("open", partial(open_cmd, trade_service=trade_service), filters=ALLOWED_FILTER))
-    application.bot_data['trade_service_mgmt'] = trade_service
-    application.add_handler(CallbackQueryHandler(click_close_now, pattern=r"^rec:close:\d+$"))
-    application.add_handler(CallbackQueryHandler(confirm_close, pattern=r"^rec:confirm_close:\d+:[0-9.]+$"))
-    application.add_handler(CallbackQueryHandler(cancel_close, pattern=r"^rec:cancel_close:\d+$"))
+    # 3) إدارة التوصيات + الإغلاق
+    application.add_handler(CommandHandler("open", open_cmd, filters=ALLOWED_FILTER))
+    application.add_handler(CallbackQueryHandler(click_close_now,   pattern=r"^rec:close:\d+$"))
+    application.add_handler(CallbackQueryHandler(confirm_close,     pattern=r"^rec:confirm_close:\d+:[0-9.]+$"))
+    application.add_handler(CallbackQueryHandler(cancel_close,      pattern=r"^rec:cancel_close:\d+$"))
 
-    # استقبال سعر الخروج عند الحاجة (Group أعلى رقمًا كي لا يتعارض مع المحادثات)
+    # استقبال سعر الخروج (Group أعلى من المحادثة لتجنّب التعارض)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price), group=1)
 #--- END OF FILE ---
