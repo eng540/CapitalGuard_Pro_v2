@@ -11,6 +11,10 @@ from telegram.ext import (
 )
 
 from capitalguard.config import settings
+
+# خدمات/بنية تحتية لتجهيز حقن احتياطي عند الحاجة
+from capitalguard.infrastructure.db.repository import RecommendationRepository
+from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.report_service import ReportService
 from capitalguard.application.services.analytics_service import AnalyticsService  # ✅
@@ -22,7 +26,7 @@ from .conversation_handlers import (
     cancel_publication,
 )
 
-# ✅ إدارة التوصيات المفتوحة والإغلاق السهل
+# إدارة التوصيات المفتوحة والإغلاق السهل
 from .management_handlers import register_management_handlers
 
 # --- Allowed users ---
@@ -56,6 +60,28 @@ def _fmt_analytics(summary: dict) -> str:
         f"• <b>أفضل صفقة:</b> {summary.get('best_trade_pnl_percent', 0)}%\n"
         f"• <b>أسوأ صفقة:</b> {summary.get('worst_trade_pnl_percent', 0)}%"
     )
+
+
+def _ensure_services(application: Application):
+    """
+    ✅ حقن احتياطي للخدمات داخل bot_data إذا كانت مفقودة.
+    هذا يحل مشكلة التشغيل عندما لا يكون main.py هو المُشغّل الذي يحقن الخدمات.
+    """
+    bd = application.bot_data
+    needs_inject = any(k not in bd for k in ("trade_service", "report_service", "analytics_service"))
+    if not needs_inject:
+        return
+
+    # تهيئة البنية التحتية والخدمات
+    repo = RecommendationRepository()
+    notifier = TelegramNotifier()
+    trade = TradeService(repo, notifier)
+    report = ReportService(repo)
+    analytics = AnalyticsService(repo)
+
+    bd["trade_service"] = trade
+    bd["report_service"] = report
+    bd["analytics_service"] = analytics
 
 
 # --- Commands ---
@@ -151,6 +177,9 @@ def register_bot_handlers(
     report_service: ReportService,
     analytics_service: Optional[AnalyticsService] = None,
 ):
+    # ✅ حقن احتياطي قبل التسجيل
+    _ensure_services(application)
+
     # 1) رفض مبكر لغير المصرح لهم
     application.add_handler(MessageHandler(filters.ALL, unauthorized_handler), group=-1)
 
@@ -164,11 +193,11 @@ def register_bot_handlers(
     # 4) بقية الأوامر (مقيدة بالمصرح لهم إن وُجدوا)
     application.add_handler(CommandHandler("start",   start_cmd,  filters=ALLOWED_FILTER))
     application.add_handler(CommandHandler("help",    help_cmd,   filters=ALLOWED_FILTER))
-    application.add_handler(CommandHandler("close",   lambda u, c: close_cmd(u, c, trade_service),   filters=ALLOWED_FILTER))
-    application.add_handler(CommandHandler("list",    lambda u, c: list_cmd(u, c, trade_service),    filters=ALLOWED_FILTER))
-    application.add_handler(CommandHandler("report",  lambda u, c: report_cmd(u, c, report_service), filters=ALLOWED_FILTER))
-    if analytics_service is not None:
-        application.add_handler(CommandHandler("analytics", lambda u, c: analytics_cmd(u, c, analytics_service), filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("close",   lambda u, c: close_cmd(u, c, application.bot_data["trade_service"]),   filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("list",    lambda u, c: list_cmd(u, c, application.bot_data["trade_service"]),    filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("report",  lambda u, c: report_cmd(u, c, application.bot_data["report_service"]), filters=ALLOWED_FILTER))
+    if analytics_service is not None or "analytics_service" in application.bot_data:
+        application.add_handler(CommandHandler("analytics", lambda u, c: analytics_cmd(u, c, application.bot_data["analytics_service"]), filters=ALLOWED_FILTER))
 
     # ✅ أوامر التشخيص
     application.add_handler(CommandHandler("diag_services", diag_services_cmd, filters=ALLOWED_FILTER))
@@ -181,19 +210,18 @@ def register_bot_handlers(
 def register_base_handlers(application: Application):
     """
     توافقية: إذا كان main.py الجديد يستدعي register_base_handlers(application) فقط.
-    يجب أن تكون الخدمات قد حُقنت مسبقًا في bot_data: trade_service, report_service, analytics_service.
+    يجب أن تكون الخدمات قد حُقنت مسبقًا في bot_data؛
+    وإن لم تكن، نقوم بحقن احتياطي هنا.
     """
-    trade_service = application.bot_data.get("trade_service")
-    report_service = application.bot_data.get("report_service")
-    analytics_service = application.bot_data.get("analytics_service")
+    _ensure_services(application)
 
     register_bot_handlers(
         application=application,
-        trade_service=trade_service,
-        report_service=report_service,
-        analytics_service=analytics_service,
+        trade_service=application.bot_data.get("trade_service"),
+        report_service=application.bot_data.get("report_service"),
+        analytics_service=application.bot_data.get("analytics_service"),
     )
 
-    # ✅ تسجيل معالجات الإدارة هنا أيضًا
+    # تسجيل معالجات الإدارة هنا أيضًا
     register_management_handlers(application)
 #--- END OF FILE ---
