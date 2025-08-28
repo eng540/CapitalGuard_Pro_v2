@@ -1,4 +1,5 @@
 #--- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+import logging
 from typing import Any, List, Optional
 from telegram import Update
 from telegram.constants import ParseMode
@@ -21,7 +22,6 @@ def _get_trade_service(context: ContextTypes.DEFAULT_TYPE) -> TradeService:
         raise RuntimeError("TradeService (mgmt) not initialized in bot_data")
     return svc
 
-# تُمرَّر الخدمة صراحةً للأمر /open عبر partial في register_all_handlers
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_service: TradeService):
     items = trade_service.list_open()
     if not items:
@@ -41,12 +41,11 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_ser
         )
         await update.message.reply_html(text, reply_markup=recommendation_management_keyboard(it.id))
 
-# زر “إغلاق الآن” → طلب سعر الخروج
 async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    parts = (query.data or "").split(":")  # pattern: rec:close:<id>
+    parts = (query.data or "").split(":")  # rec:close:<id>
     if len(parts) != 3:
         await query.edit_message_text("تنسيق غير صحيح.")
         return
@@ -63,7 +62,6 @@ async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
     )
 
-# استقبال سعر الخروج ثم عرض تأكيد/تراجع
 async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if AWAITING_CLOSE_PRICE_KEY not in context.user_data:
         return
@@ -80,62 +78,61 @@ async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"هل تريد تأكيد إغلاق التوصية <b>#{rec_id}</b> على سعر <code>{exit_price}</code>؟",
         reply_markup=confirm_close_keyboard(rec_id, exit_price),
     )
-    # ننتظر الضغط على الأزرار
 
-# تأكيد الإغلاق
 async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ملاحظة: لا يوجد finally هنا، ولن نستخدم rec_id إلا بعد تعريفه بنجاح
     query = update.callback_query
     await query.answer()
 
-    rec_id: Optional[int] = None  # ✅ تهيئة مسبقة لمنع NameError
+    logging.info("confirm_close v1.2 started")
+
+    parts = (query.data or "").split(":")  # rec:confirm_close:<rec_id>:<exit_price>
+    if len(parts) != 4:
+        await query.edit_message_text("تنسيق تأكيد غير صحيح.")
+        return
+
+    # 1) قراءة rec_id بأمان
     try:
-        # pattern: rec:confirm_close:<rec_id>:<exit_price>
-        parts = (query.data or "").split(":")
-        if len(parts) != 4:
-            await query.edit_message_text("تنسيق تأكيد غير صحيح.")
-            return
+        rec_id: int = int(parts[2])
+    except ValueError:
+        await query.edit_message_text("معرّف التوصية غير صالح.")
+        return
 
-        try:
-            rec_id = int(parts[2])
-        except ValueError:
-            await query.edit_message_text("معرّف التوصية غير صالح.")
-            return
+    # 2) قراءة السعر بأمان
+    try:
+        exit_price: float = float(parts[3])
+    except ValueError:
+        await query.edit_message_text("سعر غير صالح في التأكيد.")
+        return
 
-        try:
-            exit_price = float(parts[3])
-        except ValueError:
-            await query.edit_message_text("سعر غير صالح في التأكيد.")
-            return
+    # 3) جلب الخدمة
+    try:
+        trade_service = _get_trade_service(context)
+    except RuntimeError:
+        await query.edit_message_text("⚠️ خدمة التداول غير متاحة.")
+        return
 
-        try:
-            trade_service = _get_trade_service(context)
-        except RuntimeError:
-            await query.edit_message_text("⚠️ خدمة التداول غير متاحة.")
-            return
-
+    # 4) محاولة الإغلاق
+    try:
         rec = trade_service.close(rec_id, exit_price)
         await query.edit_message_text(
             f"✅ تم إغلاق التوصية <b>#{rec.id}</b> على سعر <code>{exit_price}</code>.",
             parse_mode=ParseMode.HTML,
         )
-
     except Exception as e:
-        # أي خطأ غير متوقع
         await query.edit_message_text(f"❌ تعذّر إغلاق التوصية: {e}")
+        return
 
-    finally:
-        # ✅ لا نستخدم rec_id إلا إن كان معروفًا فعلًا
-        if rec_id is not None and context.user_data.get(AWAITING_CLOSE_PRICE_KEY) == rec_id:
-            context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
+    # 5) تنظيف الانتظار بأمان (بعد نجاح قراءة rec_id)
+    if context.user_data.get(AWAITING_CLOSE_PRICE_KEY) == rec_id:
+        context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
 
-# تراجع عن الإغلاق
 async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # pattern: rec:cancel_close:<rec_id>
-    parts = (query.data or "").split(":")
-    rec_id = None
+    parts = (query.data or "").split(":")  # rec:cancel_close:<rec_id>
+    rec_id: Optional[int] = None
     if len(parts) == 3:
         try:
             rec_id = int(parts[2])
