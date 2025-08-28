@@ -12,38 +12,36 @@ from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
+# from capitalguard.interfaces.api.routers import auth as auth_router  # اختياري
 
-app = FastAPI(title="CapitalGuard Pro API", version="3.0.1")
+app = FastAPI(title="CapitalGuard Pro API", version="3.1.1")
 
-# نخزن الحزمة هنا لنتمكن من إعادة الحقن بعد initialize
-_services_pack: dict | None = None
+_services_pack: dict | None = None  # نحتفظ بنسخة لنعيد الحقن بعد initialize
 
 def create_ptb_app() -> Application:
     """
-    إنشاء تطبيق تيليجرام مرة واحدة + إنشاء الخدمات وتمريرها صراحةً للمعالجات.
+    إنشاء تطبيق تيليجرام + إنشاء الخدمات وحقنها في bot_data (مبدئيًا).
+    سنعيد الحقن بعد initialize بسبب PicklePersistence.
     """
     global _services_pack
 
     persistence = PicklePersistence(filepath="./telegram_bot_persistence")
-    application = (
-        Application.builder()
-        .token(settings.TELEGRAM_BOT_TOKEN)
-        .persistence(persistence)
-        .build()
-    )
+    application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
 
     # إنشاء الخدمات مرة واحدة
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
     _services_pack = {
-        "trade": TradeService(repo, notifier),
-        "report": ReportService(repo),
-        "analytics": AnalyticsService(repo),
+        "trade_service":     TradeService(repo, notifier),
+        "report_service":    ReportService(repo),
+        "analytics_service": AnalyticsService(repo),
     }
 
-    # تسجيل جميع المعالجات مع تمرير الخدمات صراحةً
-    register_all_handlers(application, _services_pack)
+    # حقن مبدئي (قد يُطغى عليه عند initialize)
+    application.bot_data.update(_services_pack)
 
+    # تسجيل المعالجات (المعالجات تعتمد على قراءة المفاتيح من bot_data)
+    register_all_handlers(application)
     return application
 
 # --- Telegram Webhook Setup ---
@@ -53,21 +51,15 @@ if settings.TELEGRAM_BOT_TOKEN:
 
     @app.on_event("startup")
     async def on_startup():
-        # تحميل الحالة من PicklePersistence
         await ptb_app.initialize()
 
-        # ✅ مهم جدًا: بعد initialize قد يطغى persistence على bot_data
-        # لذلك نُعيد حقن الخدمات اللازمة للمحادثة/الإدارة هنا.
+        # ✅ مهم: إعادة الحقن بعد أن يقوم PicklePersistence بتحميل bot_data
         if _services_pack:
-            ptb_app.bot_data["trade_service_conv"] = _services_pack["trade"]
-            ptb_app.bot_data["trade_service_mgmt"] = _services_pack["trade"]
+            ptb_app.bot_data.update(_services_pack)
             logging.info("Re-injected services into bot_data after initialize().")
 
         if settings.TELEGRAM_WEBHOOK_URL:
-            await ptb_app.bot.set_webhook(
-                url=settings.TELEGRAM_WEBHOOK_URL,
-                allowed_updates=Update.ALL_TYPES,
-            )
+            await ptb_app.bot.set_webhook(url=settings.TELEGRAM_WEBHOOK_URL, allowed_updates=Update.ALL_TYPES)
             logging.info("Telegram webhook set to: %s", settings.TELEGRAM_WEBHOOK_URL)
 
     @app.on_event("shutdown")
@@ -97,10 +89,6 @@ else:
 def root():
     return {"message": "🚀 CapitalGuard API is running"}
 
-# اختيارياً: ضم راوترات أخرى إن وُجدت بدون كسر التشغيل
-try:
-    from capitalguard.interfaces.api.routers import auth as auth_router  # type: ignore
-    app.include_router(auth_router.router)
-except Exception:
-    logging.info("Auth router not found or failed to load — continuing without it.")
+# اختياري: ضم راوترات أخرى
+# app.include_router(auth_router.router)
 #--- END OF FILE ---
