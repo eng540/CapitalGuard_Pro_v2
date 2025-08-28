@@ -4,7 +4,7 @@ uvicorn[standard]==0.30.6
 pydantic==2.8.2
 SQLAlchemy==2.0.32
 psycopg[binary]==3.2.1
-python-telegram-bot==21.4
+python-telegram-bot[persistence]==21.4
 python-dotenv==1.0.1
 python-jose[cryptography]==3.3.0
 python-multipart  # ✅ الاعتمادية الجديدة المضافة
