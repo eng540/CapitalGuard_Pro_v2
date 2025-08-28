@@ -1,9 +1,11 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+
 def confirm_recommendation_keyboard(user_data_key: str) -> InlineKeyboardMarkup:
     """
     أزرار لتأكيد نشر التوصية أو إلغائها.
+    callback_data: rec:publish:<uuid> / rec:cancel:<uuid>
     """
     return InlineKeyboardMarkup([
         [
@@ -12,9 +14,11 @@ def confirm_recommendation_keyboard(user_data_key: str) -> InlineKeyboardMarkup:
         ]
     ])
 
+
 def recommendation_management_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     """
     أزرار لإدارة توصية مفتوحة (تحديث الأهداف، إغلاق).
+    callback_data: rec:update_tp:<id> / rec:close:<id>
     """
     return InlineKeyboardMarkup([
         [
@@ -23,14 +27,22 @@ def recommendation_management_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         ]
     ])
 
+
 def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMarkup:
     """
     أزرار لتأكيد أو إلغاء عملية الإغلاق.
+    callback_data: rec:confirm_close:<id>:<exit_price> / rec:cancel_close:<id>
     """
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ تأكيد الإغلاق", callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"),
-            InlineKeyboardButton("❌ تراجع", callback_data=f"rec:cancel_close:{rec_id}")
+            InlineKeyboardButton(
+                "✅ تأكيد الإغلاق",
+                callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"
+            ),
+            InlineKeyboardButton(
+                "❌ تراجع",
+                callback_data=f"rec:cancel_close:{rec_id}"
+            )
         ]
     ])
 # --- END OF FILE ---
