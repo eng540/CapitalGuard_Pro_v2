@@ -1,14 +1,9 @@
 #--- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
-import logging
 from typing import Any, List, Optional
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     ContextTypes,
-    CallbackQueryHandler,
-    CommandHandler,
-    MessageHandler,
-    filters,
 )
 
 from capitalguard.application.services.trade_service import TradeService
@@ -16,13 +11,19 @@ from .keyboards import recommendation_management_keyboard, confirm_close_keyboar
 
 AWAITING_CLOSE_PRICE_KEY = "awaiting_close_price_for"  # user_data key: int rec_id
 
-def _get_trade_service(context: ContextTypes.DEFAULT_TYPE) -> TradeService:
-    svc = context.application.bot_data.get("trade_service_mgmt")
+def _ts(context: ContextTypes.DEFAULT_TYPE) -> TradeService:
+    svc = context.application.bot_data.get("trade_service")
     if not isinstance(svc, TradeService):
-        raise RuntimeError("TradeService (mgmt) not initialized in bot_data")
+        raise RuntimeError("TradeService not initialized in bot_data")
     return svc
 
-async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_service: TradeService):
+async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        trade_service = _ts(context)
+    except RuntimeError:
+        await update.message.reply_text("⚠️ خدمة التداول غير متاحة.")
+        return
+
     items = trade_service.list_open()
     if not items:
         await update.message.reply_text("لا توجد توصيات مفتوحة.")
@@ -30,10 +31,9 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_ser
 
     for it in items:
         entry_val = getattr(it.entry, "value", it.entry)
-        sl_val = getattr(it.stop_loss, "value", it.stop_loss)
-        targets_vals: List[Any] = getattr(it.targets, "values", it.targets)
-        tps = ", ".join(map(lambda x: str(x), targets_vals))
-
+        sl_val    = getattr(it.stop_loss, "value", it.stop_loss)
+        targets   = getattr(it.targets, "values", it.targets)
+        tps = ", ".join(map(str, targets))
         text = (
             f"<b>#{it.id}</b> — <b>{it.asset.value}</b> ({it.side.value})\n"
             f"Entry: <code>{entry_val}</code> | SL: <code>{sl_val}</code>\n"
@@ -45,7 +45,7 @@ async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    parts = (query.data or "").split(":")  # rec:close:<id>
+    parts = (query.data or "").split(":")  # pattern: rec:close:<id>
     if len(parts) != 3:
         await query.edit_message_text("تنسيق غير صحيح.")
         return
@@ -80,39 +80,33 @@ async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ملاحظة: لا يوجد finally هنا، ولن نستخدم rec_id إلا بعد تعريفه بنجاح
     query = update.callback_query
     await query.answer()
 
-    logging.info("confirm_close v1.2 started")
-
-    parts = (query.data or "").split(":")  # rec:confirm_close:<rec_id>:<exit_price>
+    # pattern: rec:confirm_close:<rec_id>:<exit_price>
+    parts = (query.data or "").split(":")
     if len(parts) != 4:
         await query.edit_message_text("تنسيق تأكيد غير صحيح.")
         return
 
-    # 1) قراءة rec_id بأمان
     try:
-        rec_id: int = int(parts[2])
+        rec_id = int(parts[2])
     except ValueError:
         await query.edit_message_text("معرّف التوصية غير صالح.")
         return
 
-    # 2) قراءة السعر بأمان
     try:
-        exit_price: float = float(parts[3])
+        exit_price = float(parts[3])
     except ValueError:
         await query.edit_message_text("سعر غير صالح في التأكيد.")
         return
 
-    # 3) جلب الخدمة
     try:
-        trade_service = _get_trade_service(context)
+        trade_service = _ts(context)
     except RuntimeError:
         await query.edit_message_text("⚠️ خدمة التداول غير متاحة.")
         return
 
-    # 4) محاولة الإغلاق
     try:
         rec = trade_service.close(rec_id, exit_price)
         await query.edit_message_text(
@@ -123,7 +117,7 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ تعذّر إغلاق التوصية: {e}")
         return
 
-    # 5) تنظيف الانتظار بأمان (بعد نجاح قراءة rec_id)
+    # تنظيف الانتظار إن وُجد
     if context.user_data.get(AWAITING_CLOSE_PRICE_KEY) == rec_id:
         context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
 
