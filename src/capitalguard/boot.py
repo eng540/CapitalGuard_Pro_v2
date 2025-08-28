@@ -1,0 +1,29 @@
+# src/capitalguard/boot.py
+from capitalguard.config import settings
+from capitalguard.infrastructure.db.repository import RecommendationRepository
+from capitalguard.infrastructure.notify.telegram import TelegramNotifier
+from capitalguard.application.services.trade_service import TradeService
+from capitalguard.application.services.report_service import ReportService
+from capitalguard.application.services.analytics_service import AnalyticsService
+
+def build_services() -> dict:
+    """
+    Composition Root: يُنشئ كل الخدمات مرة واحدة ويُعيدها في dict.
+    """
+    repo = RecommendationRepository()
+    notifier = TelegramNotifier(
+        bot_token=getattr(settings, "TELEGRAM_BOT_TOKEN", None),
+        channel_id=getattr(settings, "TELEGRAM_CHAT_ID", None),
+    )
+
+    trade = TradeService(repo=repo, notifier=notifier)
+    report = ReportService(repo=repo)
+    analytics = AnalyticsService(repo=repo)
+
+    return {
+        "repo": repo,
+        "notifier": notifier,
+        "trade_service": trade,
+        "report_service": report,
+        "analytics_service": analytics,
+    }
