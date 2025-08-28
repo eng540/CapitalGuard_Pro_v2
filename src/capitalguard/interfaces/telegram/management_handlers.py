@@ -21,21 +21,16 @@ def _get_trade_service(context: ContextTypes.DEFAULT_TYPE) -> TradeService:
         raise RuntimeError("TradeService (mgmt) not initialized in bot_data")
     return svc
 
-# ✅ تُمرَّر الخدمة صراحةً للأمر /open عبر partial في register_all_handlers
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_service: TradeService):
-    """
-    عرض التوصيات المفتوحة مع أزرار الإدارة لكل توصية.
-    """
     items = trade_service.list_open()
     if not items:
         await update.message.reply_text("لا توجد توصيات مفتوحة.")
         return
 
     for it in items:
-        # نفترض أن خصائص القيم لها .value كما في ValueObject لديك
         entry_val = getattr(it.entry, "value", it.entry)
         sl_val = getattr(it.stop_loss, "value", it.stop_loss)
-        targets_vals: List[Any] = getattr(it.targets, "values", it.targets)  # list[float]
+        targets_vals: List[Any] = getattr(it.targets, "values", it.targets)
         tps = ", ".join(map(lambda x: str(x), targets_vals))
 
         text = (
@@ -45,7 +40,6 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, trade_ser
         )
         await update.message.reply_html(text, reply_markup=recommendation_management_keyboard(it.id))
 
-# زر “إغلاق الآن” → طلب سعر الخروج
 async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -62,7 +56,6 @@ async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
     )
 
-# استقبال سعر الخروج ثم عرض تأكيد/تراجع
 async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if AWAITING_CLOSE_PRICE_KEY not in context.user_data:
         return
@@ -79,15 +72,12 @@ async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"هل تريد تأكيد إغلاق التوصية <b>#{rec_id}</b> على سعر <code>{exit_price}</code>؟",
         reply_markup=confirm_close_keyboard(rec_id, exit_price),
     )
-    # ننتظر الضغط على الأزرار
 
-# تأكيد الإغلاق
 async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # pattern: rec:confirm_close:<rec_id>:<exit_price>
-    parts = (query.data or "").split(":")
+    parts = (query.data or "").split(":")  # rec:confirm_close:<rec_id>:<exit_price>
     if len(parts) != 4:
         await query.edit_message_text("تنسيق تأكيد غير صحيح.")
         return
@@ -117,13 +107,10 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get(AWAITING_CLOSE_PRICE_KEY) == rec_id:
             context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
 
-# تراجع عن الإغلاق
 async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
-    # pattern: rec:cancel_close:<rec_id>
-    parts = (query.data or "").split(":")
+    parts = (query.data or "").split(":")  # rec:cancel_close:<rec_id>
     rec_id = int(parts[2]) if len(parts) == 3 else None
 
     if rec_id is not None and context.user_data.get(AWAITING_CLOSE_PRICE_KEY) == rec_id:
