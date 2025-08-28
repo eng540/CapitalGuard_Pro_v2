@@ -160,7 +160,7 @@ def create_rec(request: Request, payload: RecommendationIn, user: dict = Depends
 )
 def list_recs(request: Request, channel_id: int | None = None):
     items = trade.list_all(channel_id)
-    return [RecommendationOut.model_validate(i) for i in items]
+    return [RecommendationOut.model_validate(i, from_attributes=True) for i in items]
 
 @app.post(
     "/recommendations/{rec_id}/close",
