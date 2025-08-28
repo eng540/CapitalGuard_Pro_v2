@@ -10,12 +10,12 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from .auth import ALLOWED_FILTER
 
 from capitalguard.application.services.trade_service import TradeService
 from .keyboards import recommendation_management_keyboard, confirm_close_keyboard
-from .auth import ALLOWED_FILTER  # ✅ استيراد الفلتر من الملف الجديد
 
-AWAITING_CLOSE_PRICE_KEY = "awaiting_close_price_for"
+AWAITING_CLOSE_PRICE_KEY = "awaiting_close_price_for"  # user_data key: int rec_id
 
 def _svc(context: ContextTypes.DEFAULT_TYPE, name: str):
     svc = context.application.bot_data.get(name)
@@ -23,6 +23,7 @@ def _svc(context: ContextTypes.DEFAULT_TYPE, name: str):
         raise RuntimeError(f"Service '{name}' not initialized in bot_data")
     return svc
 
+# ===== أوامر =====
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service: TradeService):
     items = trade_service.list_open()
     if not items:
@@ -41,18 +42,23 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_
         )
         await update.message.reply_html(text, reply_markup=recommendation_management_keyboard(it.id))
 
+# ===== أزرار الإغلاق =====
 async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    parts = (query.data or "").split(":")
+
+    parts = (query.data or "").split(":")  # pattern: rec:close:<id>
     if len(parts) != 3:
         await query.edit_message_text("تنسيق غير صحيح.")
         return
+
     try:
         rec_id = int(parts[2])
     except ValueError:
         await query.edit_message_text("تعذّر قراءة رقم التوصية.")
         return
+
+    # خزّن rec_id في user_data للمستخدم الحالي
     context.user_data[AWAITING_CLOSE_PRICE_KEY] = rec_id
     await query.edit_message_text(
         f"🔻 أرسل الآن <b>سعر الخروج</b> لإغلاق التوصية <b>#{rec_id}</b>.",
@@ -60,15 +66,19 @@ async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # يتفاعل فقط إذا كنا بانتظار سعر إغلاق
     if AWAITING_CLOSE_PRICE_KEY not in context.user_data:
         return
+
     txt = (update.message.text or "").strip()
     try:
         exit_price = float(txt)
     except ValueError:
         await update.message.reply_text("⚠️ سعر غير صالح. الرجاء إدخال رقم صحيح.")
         return
+
     rec_id = int(context.user_data[AWAITING_CLOSE_PRICE_KEY])
+    # اطلب التأكيد عبر أزرار
     await update.message.reply_html(
         f"هل تريد تأكيد إغلاق التوصية <b>#{rec_id}</b> على سعر <code>{exit_price}</code>؟",
         reply_markup=confirm_close_keyboard(rec_id, exit_price),
@@ -77,16 +87,20 @@ async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    # pattern: rec:confirm_close:<rec_id>:<exit_price>
     parts = (query.data or "").split(":")
     if len(parts) != 4:
         await query.edit_message_text("تنسيق تأكيد غير صحيح.")
         return
+
     try:
         rec_id = int(parts[2])
         exit_price = float(parts[3])
     except ValueError:
-        await query.edit_message_text("⚠️ بيانات غير صالحة.")
+        await query.edit_message_text("⚠️ بيانات التأكيد غير صالحة.")
         return
+
     try:
         trade_service: TradeService = _svc(context, "trade_service")
         rec = trade_service.close(rec_id, exit_price)
@@ -95,33 +109,49 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
+        # لا نمرّر متغيرات غير معرّفة إلى الرسالة
         await query.edit_message_text(f"❌ تعذّر إغلاق التوصية: {e}")
         return
-    if context.user_data.get(AWAITING_CLOSE_PRICE_KEY) == rec_id:
+
+    # تنظيف حالة الانتظار بشكل آمن
+    try:
+        if int(context.user_data.get(AWAITING_CLOSE_PRICE_KEY)) == rec_id:
+            context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
+    except Exception:
         context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
 
 async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    parts = (query.data or "").split(":")
+
+    parts = (query.data or "").split(":")  # rec:cancel_close:<rec_id>
     rec_id: Optional[int] = None
     if len(parts) == 3:
         try:
             rec_id = int(parts[2])
         except ValueError:
             rec_id = None
-    if rec_id is not None and context.user_data.get(AWAITING_CLOSE_PRICE_KEY) == rec_id:
+
+    # نظّف حالة الانتظار لهذه التوصية فقط
+    try:
+        if rec_id is not None and int(context.user_data.get(AWAITING_CLOSE_PRICE_KEY)) == rec_id:
+            context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
+    except Exception:
         context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
+
     await query.edit_message_text("تم التراجع عن الإغلاق.")
 
 def register_management_handlers(app: Application, services: dict):
+    # أمر /open بحقن صريح
     app.add_handler(CommandHandler(
         "open",
         lambda u, c: open_cmd(u, c, trade_service=services["trade_service"]),
         filters=ALLOWED_FILTER,
     ))
-    app.add_handler(CallbackQueryHandler(click_close_now, pattern=r"^rec:close:"))
-    app.add_handler(CallbackQueryHandler(confirm_close, pattern=r"^rec:confirm_close:"))
-    app.add_handler(CallbackQueryHandler(cancel_close, pattern=r"^rec:cancel_close:"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price))
+    # أزرار الإغلاق
+    app.add_handler(CallbackQueryHandler(click_close_now, pattern=r"^rec:close:\d+$"))
+    app.add_handler(CallbackQueryHandler(confirm_close, pattern=r"^rec:confirm_close:\d+:[0-9.]+$"))
+    app.add_handler(CallbackQueryHandler(cancel_close, pattern=r"^rec:cancel_close:\d+$"))
+    # استقبال السعر (group أعلى من المحادثات لتفادي التضارب)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price), group=1)
 # --- END OF FILE ---
