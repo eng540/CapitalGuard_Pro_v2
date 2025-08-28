@@ -9,7 +9,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from .auth import ALLOWED_FILTER  # ✅ استيراد الفلتر من الملف الجديد
+from .auth import ALLOWED_FILTER
 
 from .conversation_handlers import (
     get_recommendation_conversation_handler,
@@ -47,7 +47,8 @@ async def analytics_cmd(
     analytics_service,
 ):
     """عرض ملخص الأداء"""
-    summary = analytics_service.summarize()  # أو performance_summary() حسب خدمتك
+    # 🔧 إصلاح: استعمل performance_summary (وليس summarize)
+    summary = analytics_service.performance_summary()
     text = "📊 <b>ملخص الأداء</b>\n" + "\n".join(
         [f"• {k.replace('_',' ').title()}: {v}" for k, v in summary.items()]
     )
