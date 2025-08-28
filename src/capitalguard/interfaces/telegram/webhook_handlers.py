@@ -22,6 +22,9 @@ from .conversation_handlers import (
     cancel_publication,
 )
 
+# ✅ إدارة التوصيات المفتوحة والإغلاق السهل
+from .management_handlers import register_management_handlers
+
 # --- Allowed users ---
 ALLOWED_USERS = {int(uid.strip()) for uid in (settings.TELEGRAM_ALLOWED_USERS or "").split(",") if uid.strip()}
 ALLOWED_FILTER = filters.User(list(ALLOWED_USERS)) if ALLOWED_USERS else filters.ALL
@@ -63,6 +66,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         "<b>الأوامر المتاحة:</b>\n\n"
         "• <code>/newrec</code> — بدء محادثة تفاعلية لإنشاء توصية.\n"
+        "• <code>/open</code> — عرض التوصيات المفتوحة مع أزرار الإدارة.\n"
         "• <code>/close &lt;id&gt; &lt;exit_price&gt;</code>\n"
         "• <code>/list</code>\n"
         "• <code>/report</code>\n"
@@ -137,6 +141,9 @@ def register_bot_handlers(
     if analytics_service is not None:
         application.add_handler(CommandHandler("analytics", lambda u, c: analytics_cmd(u, c, analytics_service), filters=ALLOWED_FILTER))
 
+    # ✅ 5) تسجيل معالجات الإدارة ( /open + أزرار الإغلاق السهل )
+    register_management_handlers(application)
+
 
 # اسم بديل للتوافق مع استدعاء محتمل في main.py بعد التحديث
 def register_base_handlers(application: Application):
@@ -154,4 +161,7 @@ def register_base_handlers(application: Application):
         report_service=report_service,
         analytics_service=analytics_service,
     )
+
+    # ✅ كذلك نسجّل معالجات الإدارة هنا لضمان توفرها في هذا المسار أيضًا
+    register_management_handlers(application)
 #--- END OF FILE ---
