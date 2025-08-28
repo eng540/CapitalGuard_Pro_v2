@@ -20,8 +20,16 @@ from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.report_service import ReportService
 from capitalguard.application.services.analytics_service import AnalyticsService
-from capitalguard.interfaces.api.schemas import RecommendationIn, RecommendationOut, CloseIn, ReportOut
-from capitalguard.interfaces.telegram.webhook_handlers import register_bot_handlers, unauthorized_handler
+from capitalguard.interfaces.api.schemas import (
+    RecommendationIn,
+    RecommendationOut,
+    CloseIn,
+    ReportOut,
+)
+from capitalguard.interfaces.telegram.webhook_handlers import (
+    register_bot_handlers,
+    unauthorized_handler,
+)
 
 # أمن وصلاحيات + راوتر المصادقة
 from capitalguard.interfaces.api.security.deps import require_roles, get_current_user
@@ -51,7 +59,9 @@ if settings.SENTRY_DSN:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if settings.CORS_ORIGINS == "*" else settings.CORS_ORIGINS.split(","),
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Rate limiting
@@ -98,6 +108,7 @@ if settings.TELEGRAM_BOT_TOKEN:
         await ptb_app.shutdown()
 
     @app.post("/webhook/telegram")
+    @limiter.exempt  # إعفاء الويب هوك من المعدّل
     async def telegram_webhook(request: Request):
         try:
             data = await request.json()
@@ -137,7 +148,11 @@ def favicon():
     response_model=RecommendationOut,
     dependencies=[Depends(require_roles({"analyst"}))],
 )
-def create_rec(request: Request, payload: RecommendationIn, user: dict = Depends(get_current_user)):
+def create_rec(
+    request: Request,
+    payload: RecommendationIn,
+    user: dict = Depends(get_current_user),
+):
     try:
         rec = trade.create(
             asset=payload.asset,
@@ -147,9 +162,10 @@ def create_rec(request: Request, payload: RecommendationIn, user: dict = Depends
             targets=payload.targets,
             channel_id=int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else None,
             user_id=user.get("sub"),
-            notes=getattr(payload, "notes", None),
+            notes=payload.notes if hasattr(payload, "notes") else None,
         )
-        return RecommendationOut.model_validate(rec)
+        # ✅ العودة إلى الطريقة النظيفة بفضل الـ validators
+        return RecommendationOut.model_validate(rec, from_attributes=True)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -160,6 +176,7 @@ def create_rec(request: Request, payload: RecommendationIn, user: dict = Depends
 )
 def list_recs(request: Request, channel_id: int | None = None):
     items = trade.list_all(channel_id)
+    # ✅ العودة إلى الطريقة النظيفة بفضل الـ validators
     return [RecommendationOut.model_validate(i, from_attributes=True) for i in items]
 
 @app.post(
@@ -170,7 +187,8 @@ def list_recs(request: Request, channel_id: int | None = None):
 def close_rec(request: Request, rec_id: int, payload: CloseIn):
     try:
         rec = trade.close(rec_id, payload.exit_price)
-        return RecommendationOut.model_validate(rec)
+        # ✅ العودة إلى الطريقة النظيفة
+        return RecommendationOut.model_validate(rec, from_attributes=True)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
