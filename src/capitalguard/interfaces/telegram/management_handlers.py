@@ -2,31 +2,18 @@
 from typing import Optional
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import (
-    ContextTypes,
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-)
-from .auth import ALLOWED_FILTER
+from telegram.ext import ContextTypes
 from capitalguard.application.services.trade_service import TradeService
 from .keyboards import recommendation_management_keyboard, confirm_close_keyboard
 
 # مفتاح حالة انتظار سعر الإغلاق لكل مستخدم
 AWAITING_CLOSE_PRICE_KEY = "awaiting_close_price_for"
 
-def _svc(context: ContextTypes.DEFAULT_TYPE, name: str):
-    svc = context.application.bot_data.get(name)
-    if not svc:
-        raise RuntimeError(f"Service '{name}' not initialized in bot_data")
-    return svc
-
 # ======================
 # أوامر
 # ======================
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service: TradeService):
+    """يعرض التوصيات المفتوحة برسالة لكل توصية، مع حماية من الحقول المتنوعة."""
     try:
         items = trade_service.list_open()
     except Exception as e:
@@ -38,21 +25,36 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_
         return
 
     for it in items:
-        entry_val = getattr(it.entry, "value", it.entry)
-        sl_val    = getattr(it.stop_loss, "value", it.stop_loss)
-        targets   = getattr(it.targets, "values", it.targets)
-        tps = ", ".join(map(str, targets))
-        text = (
-            f"<b>#{it.id}</b> — <b>{it.asset.value}</b> ({it.side.value})\n"
-            f"Entry: <code>{entry_val}</code> | SL: <code>{sl_val}</code>\n"
-            f"TPs: <code>{tps}</code>"
-        )
-        await update.message.reply_html(text, reply_markup=recommendation_management_keyboard(it.id))
+        try:
+            asset = getattr(getattr(it, "asset", None), "value", getattr(it, "asset", "?"))
+            side  = getattr(getattr(it, "side", None), "value", getattr(it, "side", "?"))
+            entry_val = getattr(getattr(it, "entry", None), "value", getattr(it, "entry", "?"))
+            sl_val    = getattr(getattr(it, "stop_loss", None), "value", getattr(it, "stop_loss", "?"))
+            targets   = getattr(getattr(it, "targets", None), "values", getattr(it, "targets", [])) or []
+            tps = ", ".join(map(str, targets)) if isinstance(targets, (list, tuple)) else str(targets)
+
+            text = (
+                f"<b>#{getattr(it, 'id', '?')}</b> — <b>{asset}</b> ({side})\n"
+                f"Entry: <code>{entry_val}</code> | SL: <code>{sl_val}</code>\n"
+                f"TPs: <code>{tps}</code>"
+            )
+            await update.message.reply_html(text, reply_markup=recommendation_management_keyboard(getattr(it, "id", 0)))
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ عنصر غير متوقع: {e}")
+
+async def list_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service: TradeService):
+    """يعرض عدد التوصيات المفتوحة (تشخيص سريع)."""
+    try:
+        items = trade_service.list_open()
+        await update.message.reply_text(f"📦 مفتوحة الآن: {len(items)}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ تعذّر الجلب: {e}")
 
 # ======================
 # تدفّق الإغلاق
 # ======================
 async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """زر: rec:close:<id> → اطلب من المستخدم إرسال السعر واحفظ rec_id في user_data."""
     query = update.callback_query
     await query.answer()
 
@@ -106,16 +108,15 @@ async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """زر: rec:confirm_close:<rec_id>:<exit_price> → يغلق فعليًا عبر الخدمة."""
     query = update.callback_query
     await query.answer()
 
-    # pattern: rec:confirm_close:<rec_id>:<exit_price>
-    parts = (query.data or "").split(":")
+    parts = (query.data or "").split(":")  # pattern: rec:confirm_close:<rec_id>:<exit_price>
     if len(parts) != 4:
         await query.edit_message_text("تنسيق تأكيد غير صحيح.")
         return
 
-    # استخرج القيم بأمان
     try:
         rec_id = int(parts[2])
         exit_price = float(parts[3])
@@ -123,9 +124,12 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ بيانات التأكيد غير صالحة.")
         return
 
-    # نفّذ الإغلاق فعليًا
     try:
-        trade_service: TradeService = _svc(context, "trade_service")
+        # الخدمة تُحقن من handlers.py عبر partial للأوامر فقط،
+        # أما هنا نعتمد أنها موجودة في application.bot_data (تم حقنها في startup).
+        trade_service: TradeService = context.application.bot_data.get("trade_service")  # type: ignore
+        if not isinstance(trade_service, TradeService):
+            raise RuntimeError("TradeService ليس مهيأً في bot_data")
         rec = trade_service.close(rec_id, exit_price)
         await query.edit_message_text(
             f"✅ تم إغلاق التوصية <b>#{rec.id}</b> على سعر <code>{exit_price}</code>.",
@@ -143,6 +147,7 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
 
 async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """زر: rec:cancel_close:<rec_id> → يلغي العملية وينظّف الحالة إن كانت تخص هذا rec_id."""
     query = update.callback_query
     await query.answer()
 
@@ -161,21 +166,4 @@ async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
 
     await query.edit_message_text("تم التراجع عن الإغلاق.")
-
-# ======================
-# التسجيل
-# ======================
-def register_management_handlers(app: Application, services: dict):
-    # أمر /open بحقن صريح
-    app.add_handler(CommandHandler(
-        "open",
-        lambda u, c: open_cmd(u, c, trade_service=services["trade_service"]),
-        filters=ALLOWED_FILTER,
-    ))
-    # أزرار الإغلاق
-    app.add_handler(CallbackQueryHandler(click_close_now, pattern=r"^rec:close:\d+$"))
-    app.add_handler(CallbackQueryHandler(confirm_close, pattern=r"^rec:confirm_close:\d+:[0-9.]+$"))
-    app.add_handler(CallbackQueryHandler(cancel_close, pattern=r"^rec:cancel_close:\d+$"))
-    # استقبال السعر (group أعلى من المحادثات لتفادي التضارب)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price), group=1)
 # --- END OF FILE ---
