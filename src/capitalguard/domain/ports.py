@@ -1,3 +1,4 @@
+#--- START OF FILE: src/capitalguard/domain/ports.py ---
 from typing import Protocol, Optional, List, Dict, Any
 from .entities import Recommendation
 
@@ -9,7 +10,9 @@ class RecommendationRepoPort(Protocol):
     def update(self, rec: Recommendation) -> Recommendation: ...
 
 class NotifierPort(Protocol):
-    def publish(self, text: str) -> None: ...
+    # ✅ تم تصحيح اسم الدالة هنا
+    def send_message(self, text: str, chat_id: Optional[str | int] = None) -> None: ...
 
 class PriceFeedPort(Protocol):
     def get_price(self, symbol: str) -> float: ...
+#--- END OF FILE ---
