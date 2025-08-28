@@ -12,7 +12,7 @@ from slowapi.util import get_remote_address
 import sentry_sdk
 
 from telegram import Update
-from telegram.ext import Application
+from telegram.ext import Application, PicklePersistence  # ✅ تم إضافة PicklePersistence
 
 from capitalguard.config import settings
 from capitalguard.infrastructure.db.repository import RecommendationRepository
@@ -27,7 +27,7 @@ from capitalguard.interfaces.api.schemas import (
     ReportOut,
 )
 from capitalguard.interfaces.telegram.webhook_handlers import (
-    register_bot_handlers,
+    register_base_handlers,   # ✅ بدلاً من register_bot_handlers
     unauthorized_handler,
 )
 
@@ -49,7 +49,7 @@ try:
 except Exception:
     pass
 
-app = FastAPI(title="CapitalGuard Pro API", version="2.2.0")
+app = FastAPI(title="CapitalGuard Pro API", version="2.3.0")  # ✅ رفع النسخة
 
 # Sentry
 if settings.SENTRY_DSN:
@@ -84,8 +84,23 @@ report = ReportService(repo)
 # --- Telegram via Webhook (مهم: لا تضع RateLimit على هذا المسار) ---
 ptb_app: Application | None = None
 if settings.TELEGRAM_BOT_TOKEN:
-    ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
-    register_bot_handlers(ptb_app, trade, report, analytics)
+    # ✅ تفعيل Persistence لتخزين حالات المحادثات على القرص
+    persistence = PicklePersistence(filepath="./telegram_bot_persistence")
+
+    ptb_app = (
+        Application.builder()
+        .token(settings.TELEGRAM_BOT_TOKEN)
+        .persistence(persistence)
+        .build()
+    )
+
+    # ✅ تمرير الخدمات لتكون متاحة في Handlers عبر context.application.bot_data
+    ptb_app.bot_data["trade_service"] = trade
+    ptb_app.bot_data["report_service"] = report
+    ptb_app.bot_data["analytics_service"] = analytics
+
+    # ✅ تسجيل المعالجات الأساسية (تتضمن محادثة /newrec + أزرار التأكيد/الإلغاء)
+    register_base_handlers(ptb_app)
 
     @app.on_event("startup")
     async def _startup():
@@ -120,7 +135,11 @@ if settings.TELEGRAM_BOT_TOKEN:
             await ptb_app.process_update(update)
         except Exception as e:
             logging.exception("Telegram update processing failed: %s", e)
-            await unauthorized_handler(update, None)
+            # محاولة رد مناسب في حال خطأ صلاحيات أو غيره
+            try:
+                await unauthorized_handler(update, None)  # قد يتجاهل إن لم تكن Message
+            except Exception:
+                pass
         return {"status": "ok"}
 else:
     logging.warning("TELEGRAM_BOT_TOKEN not set; Telegram webhook disabled.")
@@ -162,9 +181,8 @@ def create_rec(
             targets=payload.targets,
             channel_id=int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else None,
             user_id=user.get("sub"),
-            notes=payload.notes if hasattr(payload, "notes") else None,
+            notes=getattr(payload, "notes", None),
         )
-        # ✅ العودة إلى الطريقة النظيفة بفضل الـ validators
         return RecommendationOut.model_validate(rec, from_attributes=True)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -176,7 +194,6 @@ def create_rec(
 )
 def list_recs(request: Request, channel_id: int | None = None):
     items = trade.list_all(channel_id)
-    # ✅ العودة إلى الطريقة النظيفة بفضل الـ validators
     return [RecommendationOut.model_validate(i, from_attributes=True) for i in items]
 
 @app.post(
@@ -187,7 +204,6 @@ def list_recs(request: Request, channel_id: int | None = None):
 def close_rec(request: Request, rec_id: int, payload: CloseIn):
     try:
         rec = trade.close(rec_id, payload.exit_price)
-        # ✅ العودة إلى الطريقة النظيفة
         return RecommendationOut.model_validate(rec, from_attributes=True)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
