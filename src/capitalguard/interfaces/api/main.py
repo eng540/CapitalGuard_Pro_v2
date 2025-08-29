@@ -13,22 +13,32 @@ from capitalguard.interfaces.telegram.handlers import register_all_handlers
 
 app = FastAPI(title="CapitalGuard Pro API", version="4.1.0")
 
+# نبني الحزمة المشتركة من الخدمات مرة واحدة
 _services_pack: dict = build_services()
 app.state.services = _services_pack
 
+# ---------- Telegram PTB (Webhook) ----------
 ptb_app: Application | None = None
 
 def _build_ptb_app() -> Application:
+    """
+    يبني Application واحد لـ PTB ويحقن نفس الخدمات في bot_data
+    ثم يسجل جميع المعالجات عبر register_all_handlers(application, services)
+    """
     persistence = PicklePersistence(filepath="./telegram_bot_persistence")
-    application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
-    # نمرّر الخدمات على شكل dict لمن يحتاجها مستقبلاً
-    application.bot_data.update(_services_pack)
-    # ✅ تمرير الخدمات للدالة كمُعاملات مُسمّاة (وليس dict كامل)
-    register_all_handlers(
-        application,
-        trade_service=_services_pack["trade_service"],
-        analytics_service=_services_pack["analytics_service"],
+    application = (
+        Application
+        .builder()
+        .token(settings.TELEGRAM_BOT_TOKEN)
+        .persistence(persistence)
+        .build()
     )
+
+    # مشاركة نفس الخدمات بين الويب والبوت
+    application.bot_data.update(_services_pack)
+
+    # ⚠️ ملاحظة مهمة: مرر الخدمات كوسيط موضعي واحد (dict) بلا كلمات مفتاحية
+    register_all_handlers(application, _services_pack)
     return application
 
 if settings.TELEGRAM_BOT_TOKEN:
@@ -36,10 +46,15 @@ if settings.TELEGRAM_BOT_TOKEN:
 
     @app.on_event("startup")
     async def on_startup():
+        # تهيئة PTB وربط الـ webhook
         await ptb_app.initialize()
+        # إعادة الحقن بعد initialize() تحسّبًا لتغيّر bot_data بسبب الـ persistence
         ptb_app.bot_data.update(_services_pack)
         if settings.TELEGRAM_WEBHOOK_URL:
-            await ptb_app.bot.set_webhook(url=settings.TELEGRAM_WEBHOOK_URL, allowed_updates=Update.ALL_TYPES)
+            await ptb_app.bot.set_webhook(
+                url=settings.TELEGRAM_WEBHOOK_URL,
+                allowed_updates=Update.ALL_TYPES,
+            )
 
     @app.on_event("shutdown")
     async def on_shutdown():
@@ -64,12 +79,14 @@ if settings.TELEGRAM_BOT_TOKEN:
 else:
     logging.warning("TELEGRAM_BOT_TOKEN not set; Telegram features disabled.")
 
-# -------- REST --------
+# ---------- REST ----------
 @app.get("/recommendations", response_model=list[RecommendationOut], dependencies=[Depends(require_api_key)])
-def list_recs(request: Request,
-              channel_id: int | None = None,
-              symbol: str | None = Query(None),
-              status: str | None = Query(None)):
+def list_recs(
+    request: Request,
+    channel_id: int | None = None,
+    symbol: str | None = Query(None),
+    status: str | None = Query(None),
+):
     trade = request.app.state.services["trade_service"]
     items = trade.list_all(channel_id=channel_id, symbol=symbol, status=status)
     return [RecommendationOut.model_validate(i) for i in items]
@@ -91,12 +108,12 @@ def dashboard(request: Request, symbol: str | None = None, status: str | None = 
     rows = []
     for r in items:
         rid   = getattr(r, "id", "")
-        asset = getattr(getattr(r, "asset", ""), "value", getattr(r, "asset", ""))
-        side  = getattr(getattr(r, "side", ""), "value", getattr(r, "side", ""))
+        asset = getattr(r, "asset", "")
+        side  = getattr(r, "side", "")
         mkt   = getattr(r, "market", "") or "-"
         st    = getattr(r, "status", "")
-        entry = getattr(getattr(r, "entry", ""), "value", getattr(r, "entry", ""))
-        sl    = getattr(getattr(r, "stop_loss", ""), "value", getattr(r, "stop_loss", ""))
+        entry = getattr(r, "entry", "")
+        sl    = getattr(r, "stop_loss", "")
         exitp = getattr(r, "exit_price", "") or "-"
 
         rows.append(
