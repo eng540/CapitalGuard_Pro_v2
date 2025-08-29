@@ -1,7 +1,7 @@
 # --- START OF FILE: src/capitalguard/domain/entities.py ---
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 from .value_objects import Symbol, Price, Targets, Side
 
 @dataclass
