@@ -1,5 +1,54 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from __future__ import annotations
+from typing import List
+
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    KeyboardButton,
+)
+
+# ======================
+# Reply Keyboards (لمراحل الإدخال في المحادثة)
+# ======================
+
+def side_reply_keyboard() -> ReplyKeyboardMarkup:
+    """
+    لوحة اختيار الاتجاه: LONG / SHORT
+    تُستخدم في محادثة /newrec لتحسين تجربة الإدخال.
+    """
+    rows: List[List[KeyboardButton]] = [
+        [KeyboardButton("LONG"), KeyboardButton("SHORT")]
+    ]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True, selective=True)
+
+def market_reply_keyboard() -> ReplyKeyboardMarkup:
+    """
+    لوحة اختيار السوق: Spot / Futures
+    (إن كانت محادثتك تستخدم هذا الحقل).
+    """
+    rows: List[List[KeyboardButton]] = [
+        [KeyboardButton("Spot"), KeyboardButton("Futures")]
+    ]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True, selective=True)
+
+def cancel_reply_keyboard() -> ReplyKeyboardMarkup:
+    """
+    لوحة تحتوي زر إلغاء سريع للمستخدم أثناء المحادثة.
+    """
+    rows: List[List[KeyboardButton]] = [
+        [KeyboardButton("/cancel")]
+    ]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True, selective=True)
+
+# يمكن استخدامه لإزالة لوحة الرد بعد انتهاء المحادثة
+REMOVE_REPLY_KEYBOARD = ReplyKeyboardRemove()
+
+# ======================
+# Inline Keyboards (للمراجعة/النشر والإدارة)
+# ======================
 
 def confirm_recommendation_keyboard(user_data_key: str) -> InlineKeyboardMarkup:
     """
