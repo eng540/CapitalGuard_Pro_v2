@@ -1,4 +1,6 @@
-#--- START OF FILE: src/capitalguard/interfaces/api/main.py --- import logging from fastapi import FastAPI, HTTPException, Depends, Request from fastapi.responses import JSONResponse, HTMLResponse from telegram import Update from telegram.ext import Application, PicklePersistence
+#--- START OF FILE: src/capitalguard/interfaces/api/main.py --- 
+
+import logging from fastapi import FastAPI, HTTPException, Depends, Request from fastapi.responses import JSONResponse, HTMLResponse from telegram import Update from telegram.ext import Application, PicklePersistence
 
 from capitalguard.config import settings from capitalguard.boot import build_services from capitalguard.interfaces.api.deps import require_api_key from capitalguard.interfaces.api.schemas import RecommendationOut, CloseIn from capitalguard.interfaces.telegram.handlers import register_all_handlers
 
@@ -16,7 +18,7 @@ app.state.services = _services_pack
 
 ptb_app: Application | None = None
 
-def _build_ptb_app() -> Application: """ إنشاء تطبيق تيليجرام مرة واحدة، وحقن نفس الخدمات في bot_data، ثم تسجيل جميع الـ handlers بنمط الحقن الصريح للأوامر. """ persistence = PicklePersistence(filepath="./telegram_bot_persistence") application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
+def _build_ptb_app() -> Application: """ إنشاء تطبيق تيليجرام مرة واحدة، وحقن نفس الخدمات في bot_data، ثم تسجيل جميع الـ handlers بنمط الحقن الصريح للأوامر. """ persistence = PicklePersistence(filepath="./telegram_bot_persistence") application = ( Application.builder() .token(settings.TELEGRAM_BOT_TOKEN) .persistence(persistence) .build() )
 
 # حقن نفس الخدمات في bot_data
 application.bot_data.update(_services_pack)
@@ -38,7 +40,10 @@ async def on_startup():
 
     # إعداد Webhook إن كان مضبوطًا
     if settings.TELEGRAM_WEBHOOK_URL:
-        await ptb_app.bot.set_webhook(url=settings.TELEGRAM_WEBHOOK_URL, allowed_updates=Update.ALL_TYPES)
+        await ptb_app.bot.set_webhook(
+            url=settings.TELEGRAM_WEBHOOK_URL,
+            allowed_updates=Update.ALL_TYPES,
+        )
         logging.info("Telegram webhook set to: %s", settings.TELEGRAM_WEBHOOK_URL)
 
 @app.on_event("shutdown")
@@ -76,12 +81,12 @@ else: logging.warning("TELEGRAM_BOT_TOKEN not set; Telegram features disabled.")
 
 rows = []
 for r in items:
-    rid   = getattr(r, "id", "")
+    rid = getattr(r, "id", "")
     asset = getattr(r, "asset", "")
-    side  = getattr(r, "side", "")
-    status= getattr(r, "status", "")
+    side = getattr(r, "side", "")
+    status = getattr(r, "status", "")
     entry = getattr(r, "entry", "")
-    sl    = getattr(r, "stop_loss", "")
+    sl = getattr(r, "stop_loss", "")
     exitp = getattr(r, "exit_price", "") or "-"
 
     rows.append(
@@ -91,7 +96,9 @@ for r in items:
         f"<td>{entry}</td><td>{sl}</td><td>{exitp}</td></tr>"
     )
 
-empty = "<tr><td colspan='7' style='text-align:center;color:#777'>لا توجد بيانات بعد</td></tr>"
+empty = (
+    "<tr><td colspan='7' style='text-align:center;color:#777'>لا توجد بيانات بعد</td></tr>"
+)
 
 html = f"""
 <!doctype html>
