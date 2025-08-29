@@ -1,103 +1,134 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Any, Iterable, List
 
-@dataclass
-class RecCard:
-    id: int
-    asset: str
-    side: str            # LONG/SHORT
-    status: str          # OPEN/CLOSED
-    entry: float
-    stop_loss: float
-    targets: list[float]
-    exit_price: Optional[float] = None
-    market: Optional[str] = None   # Spot/Futures
-    notes: Optional[str] = None
+def _as_str(v: Any) -> str:
+    """يعيد القيمة كسلسلة، ويدعم كائنات Enum/Pydantic (value)."""
+    if v is None:
+        return "-"
+    return str(getattr(v, "value", v))
 
-    def _targets_lines(self) -> str:
-        lines = []
-        base = self.entry
-        # تجنب القسمة على صفر
-        for i, tp in enumerate(self.targets, start=1):
+def _as_float(v: Any) -> float | None:
+    """يحاول تحويل أي قيمة رقمية (أو مغلّفة) إلى float بأمان."""
+    if v is None:
+        return None
+    try:
+        v0 = getattr(v, "value", v)
+        return float(v0)
+    except Exception:
+        return None
+
+def _as_list_of_floats(v: Any) -> List[float]:
+    """
+    يحوّل targets إلى list[float] مهما كان شكلها:
+    - list/tuple
+    - كائن فيه .values أو .items
+    - سلسلة أرقام مفصولة بفواصل/مسافات (احتياط)
+    - None → []
+    """
+    if v is None:
+        return []
+
+    # targets مغلف بـ .values
+    if hasattr(v, "values"):
+        try:
+            seq = getattr(v, "values")
+            if isinstance(seq, dict):
+                seq = seq.values()
+            return [float(x) for x in list(seq)]
+        except Exception:
+            pass
+
+    # Iterable مباشر
+    if isinstance(v, (list, tuple, set)):
+        out: List[float] = []
+        for x in v:
             try:
-                pct = ((tp - base) / base) * 100 if base else 0.0
+                out.append(float(getattr(x, "value", x)))
             except Exception:
-                pct = 0.0
-            lines.append(f"• TP{i}: {tp:g} ({pct:+.2f}%)")
-        return "\n".join(lines) if lines else "—"
+                continue
+        return out
 
-    def to_text(self) -> str:
-        """
-        نص بطاقة مختصر لرسائل الإدارة داخل الخاص.
-        """
-        tps = " • ".join(f"{v:g}" for v in self.targets) if self.targets else "—"
-        exitp = f"{self.exit_price:g}" if self.exit_price is not None else "-"
-        mk = f"{self.market}/ " if self.market else ""
-        return (
-            f"🟢 <b>#{self.id}</b> — <b>{self.asset}</b> 📈\n"
-            f"• الحالة: <b>{self.status}</b>\n"
-            f"• {mk}الاتجاه: {self.side}\n"
-            f"• الدخول: <code>{self.entry:g}</code>\n"
-            f"• وقف الخسارة: <code>{self.stop_loss:g}</code>\n"
-            f"• الأهداف: <code>{tps}</code>\n"
-            f"• الخروج: <code>{exitp}</code>"
-        )
+    # نص مفصول
+    if isinstance(v, str):
+        tokens = v.replace(",", " ").split()
+        out = []
+        for t in tokens:
+            try:
+                out.append(float(t))
+            except Exception:
+                continue
+        return out
+
+    # محاولة أخيرة: عنصر واحد
+    try:
+        f = float(getattr(v, "value", v))
+        return [f]
+    except Exception:
+        return []
+
+def _pct(entry: float | None, target: float | None, side: str) -> str:
+    """نسبة التغير من الدخول إلى الهدف وفق الاتجاه."""
+    if entry is None or target is None or entry == 0:
+        return "-"
+    if side.upper() == "LONG":
+        p = (target - entry) / entry * 100.0
+    else:
+        p = (entry - target) / entry * 100.0
+    return f"{p:.2f}%"
 
 def build_trade_card_text(rec) -> str:
     """
-    نص البطاقة المخصص للنشر في القناة العامة — غني ومهيكل.
-    يقبل كائن Recommendation (أو مماثل له في الخصائص المستخدمة).
+    يبني بطاقة توصية غنية ومرتّبة (HTML) قابلة للنشر في القناة.
+    يتسامح مع أنواع الحقول المختلفة (ORM/Pydantic/Enums/Value Objects).
     """
-    # محاولاتًا لقراءة الحقول حتى لو كانت Enums/ValueObjects
-    def _val(obj, name, default=None):
-        v = getattr(obj, name, default)
-        return getattr(v, "value", v)
+    # حقول أساسية
+    rid   = getattr(rec, "id", None) or 0
+    asset = _as_str(getattr(rec, "asset", "-")).upper()
+    side  = _as_str(getattr(rec, "side", "-")).upper()
+    rtype = _as_str(getattr(rec, "type", "Spot"))  # Spot/Futures إن توفر
+    status= _as_str(getattr(rec, "status", "OPEN")).upper()
 
-    rid   = _val(rec, "id", "?")
-    asset = _val(rec, "asset", "")
-    side  = str(_val(rec, "side", "")).upper()
-    market= _val(rec, "market", None)
-    entry = float(_val(rec, "entry", 0))
-    sl    = float(_val(rec, "stop_loss", 0))
-    tps_v = _val(rec, "targets", []) or []
-    notes = _val(rec, "notes", None)
+    entry = _as_float(getattr(rec, "entry", None))
+    sl    = _as_float(getattr(rec, "stop_loss", None))
+    tps   = _as_list_of_floats(getattr(rec, "targets", None))
+    exitp = _as_float(getattr(rec, "exit_price", None))
+    notes = getattr(rec, "notes", None)
+    notes_str = str(notes).strip() if notes not in (None, "", "-", "None") else "-"
 
-    header_tags = " ".join(filter(None, [
-        f"#{asset}",
-        "#Signal",
-        f"#{market}" if market else None,
-        f"#{side.title()}" if side else None,
-    ]))
+    # تنسيق TPs كسطور
+    tp_lines: List[str] = []
+    for i, tp in enumerate(tps, start=1):
+        pct = _pct(entry, tp, side) if entry is not None else "-"
+        tp_lines.append(f"• TP{i}: {tp:g} ({pct})")
+    tps_block = "\n".join(tp_lines) if tp_lines else "-"
 
-    # بناء قائمة الأهداف مع النسب
-    tps_lines = []
-    for i, tp in enumerate(tps_v, start=1):
-        try:
-            pct = ((float(tp) - entry) / entry) * 100 if entry else 0.0
-        except Exception:
-            pct = 0.0
-        tps_lines.append(f"• TP{i}: {float(tp):g} ({pct:+.2f}%)")
-    tps_block = "\n".join(tps_lines) if tps_lines else "—"
-
-    rr = "-"
-    disclaimer = "(Disclaimer: Not financial advice. Manage your risk.)"
-    notes_line = f"📝 Notes : {notes}\n" if notes else ""
-
-    return (
-        "┌────────────────────────┐\n"
-        f"│ 📣 Trade Signal — #REC{int(rid):04d} │  {header_tags}\n"
-        "└────────────────────────┘\n"
-        f"💎 Symbol : {asset}\n"
-        f"📌 Type   : {market or 'Spot'}/{side or '-'}\n"
-        "────────────────────────\n"
-        f"💰 Entry  : {entry:g}\n"
-        f"🛑 SL     : {sl:g}\n\n"
-        "🎯 TPs\n"
-        f"{tps_block}\n"
-        "────────────────────────\n"
-        f"📊 R/R   : {rr}\n"
-        f"{notes_line}"
-        f"{disclaimer}"
+    header = (
+        f"📣 <b>Trade Signal — #REC{rid:04d}</b>  |  "
+        f"#{asset} #Signal #{rtype.capitalize()} #{side.capitalize()}"
     )
+    lines = [
+        header,
+        "────────────────────────",
+        f"💎 <b>Symbol</b> : {asset}",
+        f"📌 <b>Type</b>   : {rtype} / {side}",
+        "────────────────────────",
+        f"💰 <b>Entry</b>  : {entry if entry is not None else '-'}",
+        f"🛑 <b>SL</b>     : {sl if sl is not None else '-'}",
+        "",
+        "🎯 <b>TPs</b>",
+        tps_block,
+        "────────────────────────",
+        "📊 <b>R/R</b>   : -",
+        f"📝 <b>Notes</b> : {notes_str}",
+        "",
+        "(Disclaimer: Not financial advice. Manage your risk.)",
+    ]
+
+    # سطر الحالة/الخروج إن كانت مغلقة
+    if status == "CLOSED":
+        lines.append(f"\n✅ <b>Closed</b> — #{rid:04d}")
+        if exitp is not None:
+            lines.append(f"• {asset} @ {exitp:g}")
+
+    return "\n".join(lines)
