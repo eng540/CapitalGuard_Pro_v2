@@ -1,60 +1,81 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 from __future__ import annotations
 from typing import Iterable
+from capitalguard.domain.entities import Recommendation
 
-WELCOME = (
-    "👋 أهلاً بك في <b>CapitalGuard Bot</b>.\n"
-    "ابدأ بـ <code>/newrec</code> لإنشاء توصية جديدة، أو <code>/open</code> لإدارة المفتوحة."
-)
+def _pct(cur: float, base: float) -> str:
+    try:
+        return f"{(cur-base)/base*100:.2f}%"
+    except Exception:
+        return "—"
 
-HELP = (
-    "<b>الأوامر المتاحة:</b>\n\n"
-    "• <code>/newrec</code> — إنشاء توصية تفاعليًا (أزرار + إدخالات)\n"
-    "• <code>/open</code> — عرض/إدارة التوصيات المفتوحة\n"
-    "• <code>/list</code> — إحصاء سريع\n"
-    "• <code>/analytics</code> — ملخص أداء\n"
-    "• <code>/ping</code> — فحص اتصال"
-)
-
-def _fmt_targets(targets: Iterable[float], entry: float | None = None) -> str:
-    out = []
-    for i, t in enumerate(targets, 1):
-        if entry:
-            pct = (t - entry) / entry * 100 if entry != 0 else 0.0
-            out.append(f"• TP{i}: {t:g} ({pct:+.1f}%)")
-        else:
-            out.append(f"• TP{i}: {t:g}")
-    return "\n".join(out) if out else "—"
-
-def build_trade_card_text(rec) -> str:
+def build_trade_card_text(rec: Recommendation) -> str:
     """
-    بطاقة القناة (نص فقط، بلا أزرار).
+    نص بطاقة القناة (لا أزرار).
     """
-    asset = getattr(getattr(rec, "asset", ""), "value", getattr(rec, "asset", ""))
-    side  = getattr(getattr(rec, "side", ""),  "value", getattr(rec, "side", ""))
-    entry = float(getattr(getattr(rec, "entry", ""), "value", getattr(rec, "entry", 0.0)) or 0.0)
-    sl    = float(getattr(getattr(rec, "stop_loss", ""), "value", getattr(rec, "stop_loss", 0.0)) or 0.0)
-    tps   = list(getattr(getattr(rec, "targets", ""), "values", getattr(rec, "targets", []) ) or [])
-    market= getattr(rec, "market", None) or "Futures"
-    status= getattr(rec, "status", "OPEN")
-    exitp = getattr(rec, "exit_price", None)
+    symbol = getattr(rec.asset, "value", rec.asset)
+    side   = getattr(rec.side, "value", rec.side)
+    tps: Iterable[float] = getattr(rec.targets, "values", rec.targets) or []
+    entry = getattr(rec.entry, "value", rec.entry)
+    sl    = getattr(rec.stop_loss, "value", rec.stop_loss)
+    status= rec.status.upper()
 
-    header = f"📣 Trade Signal — #{rec.id:04d}   #{asset} #Signal #{market} #{side.upper()}"
-    body = (
-        f"💎 Symbol : {asset}\n"
-        f"📌 Type   : {market} / {side}\n"
-        f"────────────────────────\n"
-        f"💰 Entry  : {entry:g}\n"
-        f"🛑 SL     : {sl:g}\n\n"
-        f"🎯 TPs\n{_fmt_targets(tps, entry)}\n"
-        f"────────────────────────\n"
-    )
-    if status.upper() == "CLOSED" and exitp is not None:
-        body += f"✅ تم الإغلاق على: {exitp:g}\n"
+    lines = []
+    lines.append(f"📣 <b>Trade Signal — #REC{rec.id:04d}</b>  |  <b>#{symbol}</b> #Signal #{getattr(rec.market,'title',lambda:'')() or (rec.market or 'Futures')} #{side}")
+    lines.append("────────────────────────")
+    lines.append(f"💎 <b>Symbol</b> : <code>{symbol}</code>")
+    lines.append(f"📌 <b>Type</b>   : <code>{(rec.market or 'Futures').title()} / {side}</code>")
+    lines.append("────────────────────────")
+    lines.append(f"💰 <b>Entry</b>  : <code>{entry}</code>")
+    lines.append(f"🛑 <b>SL</b>     : <code>{sl}</code>")
+    lines.append("")
+    lines.append("🎯 <b>TPs</b>")
+    for i, tp in enumerate(tps, start=1):
+        lines.append(f"• TP{i}: <code>{tp}</code> (+{_pct(float(tp), float(entry))})")
+    lines.append("")
+    lines.append("📊 <b>R/R</b>   : —")
+    if rec.notes:
+        lines.append(f"📝 <b>Notes</b> : {rec.notes}")
+    lines.append("")
+    if status == "CLOSED":
+        exit_p = rec.exit_price if rec.exit_price is not None else "—"
+        lines.append(f"✅ <b>Closed at:</b> <code>{exit_p}</code>")
+        lines.append("")
+    lines.append("(Disclaimer: Not financial advice. Manage your risk.)")
+    lines.append("")
+    lines.append("🔗 <i>Crypto Radar Bot</i>  |  📣 <i>Official Channel</i>  |  📬 <i>Contact for subscription</i>")
+    return "\n".join(lines)
 
-    footer = (
-        "\n(Disclaimer: Not financial advice. Manage your risk.)\n\n"
-        "🔗 Crybto Radar Bot  |  📣 Official Channel  |  📬 Contact for subscription"
+def build_panel_caption(rec: Recommendation) -> str:
+    """
+    عنوان لوحة التحكّم داخل المحادثة.
+    """
+    symbol = getattr(rec.asset, "value", rec.asset)
+    side   = getattr(rec.side, "value", rec.side)
+    entry  = getattr(rec.entry, "value", rec.entry)
+    sl     = getattr(rec.stop_loss, "value", rec.stop_loss)
+    tps    = getattr(rec.targets, "values", rec.targets) or []
+    st     = rec.status.upper()
+    tps_txt = " • ".join(str(x) for x in tps) if tps else "—"
+    return (
+        f"<b>#{rec.id} — {symbol}</b>\n"
+        f"الحالة: <b>{st}</b>\n"
+        f"الدخول: <code>{entry}</code>\n"
+        f"وقف الخسارة: <code>{sl}</code>\n"
+        f"الأهداف: <code>{tps_txt}</code>"
     )
-    return f"{header}\n{body}{footer}"
+
+def build_close_summary(rec: Recommendation) -> str:
+    symbol = getattr(rec.asset, "value", rec.asset)
+    entry  = float(getattr(rec.entry, "value", rec.entry))
+    exit_p = float(rec.exit_price or 0.0)
+    pnl    = exit_p - entry if rec.side.value == "LONG" else (entry - exit_p)
+    pnl_pct= (pnl / entry * 100.0) if entry else 0.0
+    return (
+        f"✅ تم إغلاق التوصية <b>#{rec.id}</b>\n"
+        f"• <b>{symbol}</b>\n"
+        f"• الدخول: <code>{entry}</code>\n"
+        f"• الخروج: <code>{exit_p}</code>\n"
+        f"• العائد التقريبي: <b>{pnl_pct:.2f}%</b>"
+    )
 # --- END OF FILE ---
