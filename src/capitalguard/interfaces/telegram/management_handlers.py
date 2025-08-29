@@ -1,9 +1,8 @@
-#--- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 from __future__ import annotations
 from typing import Optional
-import re
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
@@ -11,30 +10,33 @@ from capitalguard.application.services.trade_service import TradeService
 from .keyboards import recommendation_management_keyboard, confirm_close_keyboard
 from .ui_texts import RecCard, ASK_EXIT_PRICE, INVALID_PRICE, CLOSE_CONFIRM, CLOSE_DONE, OPEN_EMPTY
 
-# مفتاح حالة انتظار سعر الإغلاق لكل مستخدم
+# مفاتيح حالة انتظار سعر الإغلاق على مستوى المستخدم (User-Scoped)
 AWAITING_CLOSE_PRICE_KEY = "awaiting_close_price_for"
 
-# Regex لقبول "123" أو "123.45" (مع دعم تحويل الأرقام العربية لاحقًا)
-_NUM_RE = re.compile(r"^\s*([0-9]+(\.[0-9]+)?)\s*$")
+# ======================
+# أدوات مساعدة
+# ======================
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
-def _parse_price(text: str) -> Optional[float]:
-    if not text:
-        return None
-    t = text.strip().translate(_ARABIC_DIGITS)
-    m = _NUM_RE.match(t)
-    if not m:
-        return None
+def _to_float_safe(text: str) -> Optional[float]:
     try:
-        return float(m.group(1))
+        if text is None:
+            return None
+        t = text.strip().translate(_ARABIC_DIGITS)
+        t = t.replace(",", ".") if ("," in t and "." not in t) else t
+        return float(t)
     except Exception:
         return None
+
+def _user_state(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> dict:
+    store = context.application.user_data.setdefault(user_id, {})
+    return store
 
 # ======================
 # أوامر
 # ======================
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service: TradeService):
-    """يعرض التوصيات المفتوحة برسالة لكل توصية، مع تنسيق موحّد وبطاقات نظيفة."""
+    """يعرض التوصيات المفتوحة كبطاقات موجزة مع أزرار إدارة."""
     try:
         items = trade_service.list_open()
     except Exception as e:
@@ -48,9 +50,9 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_
     for it in items:
         try:
             asset = getattr(getattr(it, "asset", None), "value", getattr(it, "asset", "?"))
-            side  = getattr(getattr(it, "side", None), "value", getattr(it, "side", "?"))
-            entry_val = getattr(getattr(it, "entry", None), "value", getattr(it, "entry", "?"))
-            sl_val    = getattr(getattr(it, "stop_loss", None), "value", getattr(it, "stop_loss", "?"))
+            side  = getattr(getattr(it, "side", None),  "value", getattr(it, "side",  "?"))
+            entry_val = getattr(getattr(it, "entry", None), "value", getattr(it, "entry", None))
+            sl_val    = getattr(getattr(it, "stop_loss", None), "value", getattr(it, "stop_loss", None))
             targets   = getattr(getattr(it, "targets", None), "values", getattr(it, "targets", [])) or []
 
             card = RecCard(
@@ -77,59 +79,56 @@ async def list_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, 
         await update.message.reply_text(f"❌ تعذّر الجلب: {e}")
 
 # ======================
-# تدفّق الإغلاق
+# تدفّق الإغلاق (قناة → DM)
 # ======================
 async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """زر: rec:close:<id> → اطلب من المستخدم إرسال السعر واحفظ rec_id في user_data."""
+    """زر: rec:close:<id> → أرسل DM لطلب السعر، واحفظ rec_id في مساحة المستخدم."""
     query = update.callback_query
     await query.answer()
 
     parts = (query.data or "").split(":")  # pattern: rec:close:<id>
     if len(parts) != 3:
-        await query.edit_message_text("تنسيق غير صحيح.")
+        await query.answer("تنسيق غير صحيح.", show_alert=True)
         return
 
     try:
         rec_id = int(parts[2])
     except ValueError:
-        await query.edit_message_text("تعذّر قراءة رقم التوصية.")
+        await query.answer("تعذّر قراءة رقم التوصية.", show_alert=True)
         return
 
-    # خزّن rec_id في user_data للمستخدم الحالي
-    context.user_data[AWAITING_CLOSE_PRICE_KEY] = rec_id
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ تراجع", callback_data=f"rec:cancel_close:{rec_id}")]])
-    await query.edit_message_text(ASK_EXIT_PRICE, parse_mode=ParseMode.HTML, reply_markup=kb)
+    uid = query.from_user.id
+    _user_state(context, uid)[AWAITING_CLOSE_PRICE_KEY] = rec_id
+
+    try:
+        await context.bot.send_message(chat_id=uid, text=ASK_EXIT_PRICE, parse_mode=ParseMode.HTML)
+        await query.answer("تم إرسال رسالة خاصة لك لبدء الإغلاق.", show_alert=False)
+    except Exception:
+        await query.edit_message_text(ASK_EXIT_PRICE, parse_mode=ParseMode.HTML)
 
 async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    تعمل فقط إذا كان المستخدم بانتظار إدخال السعر.
-    لا تنفّذ أي إغلاق هنا — فقط تطلب التأكيد.
-    """
-    if AWAITING_CLOSE_PRICE_KEY not in context.user_data:
+    """يعمل فقط إذا كان المستخدم بانتظار إدخال السعر (ضمن DM)."""
+    uid = update.effective_user.id if update.effective_user else None
+    if uid is None:
+        return
+    store = _user_state(context, uid)
+    if AWAITING_CLOSE_PRICE_KEY not in store:
         return
 
-    # استخرج rec_id بأمان
-    try:
-        rec_id = int(context.user_data[AWAITING_CLOSE_PRICE_KEY])
-    except Exception:
-        context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
-        await update.message.reply_text("انتهت صلاحية هذه الجلسة. ابدأ من جديد بالأمر /open.")
-        return
-
-    # حوّل النص إلى رقم (يدعم أرقام عربية)
-    exit_price = _parse_price(update.message.text or "")
+    rec_id = store.get(AWAITING_CLOSE_PRICE_KEY)
+    txt = (update.message.text or "").strip()
+    exit_price = _to_float_safe(txt)
     if exit_price is None:
         await update.message.reply_html(INVALID_PRICE)
         return
 
-    # اطلب التأكيد عبر أزرار — لا إغلاق هنا
     await update.message.reply_html(
         CLOSE_CONFIRM(rec_id, exit_price),
         reply_markup=confirm_close_keyboard(rec_id, exit_price),
     )
 
 async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """زر: rec:confirm_close:<rec_id>:<exit_price> → يغلق فعليًا عبر الخدمة."""
+    """زر: rec:confirm_close:<rec_id>:<exit_price> → يغلق فعليًا عبر الخدمة ثم يحدّث بطاقة القناة."""
     query = update.callback_query
     await query.answer()
 
@@ -158,12 +157,13 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ تعذّر إغلاق التوصية: {e}")
         return
 
-    # تنظيف حالة الانتظار للمستخدم الحالي فقط
     try:
-        if int(context.user_data.get(AWAITING_CLOSE_PRICE_KEY)) == rec_id:
-            context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
+        uid = query.from_user.id
+        store = _user_state(context, uid)
+        if int(store.get(AWAITING_CLOSE_PRICE_KEY)) == rec_id:
+            store.pop(AWAITING_CLOSE_PRICE_KEY, None)
     except Exception:
-        context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
+        pass
 
 async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """زر: rec:cancel_close:<rec_id> → يلغي العملية وينظّف الحالة إن كانت تخص هذا rec_id."""
@@ -179,10 +179,12 @@ async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rec_id = None
 
     try:
-        if rec_id is not None and int(context.user_data.get(AWAITING_CLOSE_PRICE_KEY)) == rec_id:
-            context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
+        uid = query.from_user.id
+        store = _user_state(context, uid)
+        if rec_id is not None and int(store.get(AWAITING_CLOSE_PRICE_KEY)) == rec_id:
+            store.pop(AWAITING_CLOSE_PRICE_KEY, None)
     except Exception:
-        context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
+        pass
 
     await query.edit_message_text("تم التراجع عن الإغلاق.")
-#--- END OF FILE ---
+# --- END OF FILE ---
