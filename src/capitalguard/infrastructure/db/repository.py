@@ -1,7 +1,6 @@
 # --- START OF FILE: src/capitalguard/infrastructure/db/repository.py ---
 from typing import List, Optional
 from datetime import datetime
-from sqlalchemy.orm import Session
 
 from capitalguard.domain.entities import Recommendation
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
@@ -73,7 +72,6 @@ class RecommendationRepository:
     def update(self, rec: Recommendation) -> Recommendation:
         if rec.id is None:
             raise ValueError("Recommendation id is required for update")
-
         with SessionLocal() as s:
             row = s.get(RecommendationORM, rec.id)
             if not row:
