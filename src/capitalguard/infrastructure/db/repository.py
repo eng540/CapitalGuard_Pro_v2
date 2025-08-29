@@ -7,7 +7,9 @@ from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from .models import RecommendationORM, Base
 from .base import engine, SessionLocal
 
+# ✅ إنشاء الجداول عند تشغيل النظام أول مرة
 Base.metadata.create_all(bind=engine)
+
 
 class RecommendationRepository:
     def _to_entity(self, row: RecommendationORM) -> Recommendation:
@@ -76,6 +78,7 @@ class RecommendationRepository:
     def update(self, rec: Recommendation) -> Recommendation:
         if rec.id is None:
             raise ValueError("Recommendation id is required for update")
+
         with SessionLocal() as s:
             row = s.get(RecommendationORM, rec.id)
             if not row:
@@ -101,15 +104,23 @@ class RecommendationRepository:
             s.refresh(row)
             return self._to_entity(row)
 
-    def set_channel_message(self, rec_id: int, channel_id: int, message_id: int, published_at: datetime | None = None) -> Recommendation:
+    def set_channel_message(
+        self,
+        rec_id: int,
+        channel_id: int,
+        message_id: int,
+        published_at: datetime | None = None
+    ) -> Recommendation:
         with SessionLocal() as s:
             row = s.get(RecommendationORM, rec_id)
             if not row:
                 raise ValueError("Recommendation not found")
+
             row.channel_id = channel_id
             row.message_id = message_id
             row.published_at = published_at or datetime.utcnow()
             row.updated_at = datetime.utcnow()
+
             s.commit()
             s.refresh(row)
             return self._to_entity(row)
