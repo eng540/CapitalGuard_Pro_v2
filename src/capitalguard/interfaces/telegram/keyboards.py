@@ -1,12 +1,8 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
+from __future__ import annotations
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-
 def confirm_recommendation_keyboard(user_data_key: str) -> InlineKeyboardMarkup:
-    """
-    أزرار لتأكيد نشر التوصية أو إلغائها.
-    callback_data: rec:publish:<uuid> / rec:cancel:<uuid>
-    """
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ نشر في القناة", callback_data=f"rec:publish:{user_data_key}"),
@@ -14,25 +10,24 @@ def confirm_recommendation_keyboard(user_data_key: str) -> InlineKeyboardMarkup:
         ]
     ])
 
-
 def recommendation_management_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """
-    أزرار لإدارة توصية مفتوحة (تحديث الأهداف، إغلاق).
-    callback_data: rec:update_tp:<id> / rec:close:<id>
-    """
+    # الأزرار في رسائل DM أو /open
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎯 تحديث الأهداف", callback_data=f"rec:update_tp:{rec_id}"),
-            InlineKeyboardButton("🛑 إغلاق الآن", callback_data=f"rec:close:{rec_id}")
-        ]
+            InlineKeyboardButton("🛑 إغلاق الآن", callback_data=f"rec:close:{rec_id}"),
+            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"rec:amend_tp:{rec_id}"),
+            InlineKeyboardButton("🛡️ تعديل SL", callback_data=f"rec:amend_sl:{rec_id}")
+        ],
+        [InlineKeyboardButton("📜 السجل", callback_data=f"rec:history:{rec_id}")]
     ])
 
+def channel_card_keyboard(rec_id: int, is_open: bool = True) -> InlineKeyboardMarkup:
+    # أزرار بطاقة القناة — إن كانت مغلقة نظهر فقط السجل
+    if not is_open:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("📜 السجل", callback_data=f"rec:history:{rec_id}")]])
+    return recommendation_management_keyboard(rec_id)
 
 def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMarkup:
-    """
-    أزرار لتأكيد أو إلغاء عملية الإغلاق.
-    callback_data: rec:confirm_close:<id>:<exit_price> / rec:cancel_close:<id>
-    """
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
