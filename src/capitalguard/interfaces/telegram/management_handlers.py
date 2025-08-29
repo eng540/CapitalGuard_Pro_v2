@@ -1,227 +1,270 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 from __future__ import annotations
-from typing import Optional, List
+from typing import Dict, Any, List, Optional
+import logging
+
 from telegram import Update
-from telegram.constants import ParseMode
-from telegram.ext import ContextTypes, MessageHandler, filters
+from telegram.constants import ChatType
+from telegram.ext import ContextTypes, CallbackQueryHandler, MessageHandler, CommandHandler, filters
 
+from capitalguard.domain.entities import Recommendation
 from capitalguard.application.services.trade_service import TradeService
-from .keyboards import recommendation_management_keyboard, confirm_close_keyboard
+from .keyboards import (
+    control_panel_keyboard,
+    side_reply_keyboard,
+    remove_reply_keyboard,
+)
 
-# مفاتيح حالة إدخال لكل مستخدم
-AWAITING_CLOSE_PRICE = "await_close_price_for"
-AWAITING_NEW_SL      = "await_new_sl_for"
-AWAITING_NEW_TPS     = "await_new_tps_for"
+log = logging.getLogger(__name__)
 
-def _format_rec_line(it) -> str:
-    asset = getattr(getattr(it, "asset", None), "value", getattr(it, "asset", "?"))
-    side  = getattr(getattr(it, "side", None),  "value", getattr(it, "side", "?"))
-    entry = getattr(getattr(it, "entry", None), "value", getattr(it, "entry", "?"))
-    sl    = getattr(getattr(it, "stop_loss", None), "value", getattr(it, "stop_loss", "?"))
-    targets = getattr(getattr(it, "targets", None), "values", getattr(it, "targets", [])) or []
-    tps_txt = " • ".join(f"{t:g}" for t in targets) if isinstance(targets, (list, tuple)) else str(targets)
-    return (
-        f"🟢 #{getattr(it, 'id', '?')} — {asset} {('📈' if side=='LONG' else '📉')}\n"
-        f"• الحالة: {getattr(it, 'status', 'OPEN')}\n"
-        f"• الدخول: {entry}\n"
-        f"• وقف الخسارة: {sl}\n"
-        f"• الأهداف: {tps_txt}"
-    )
+# =========================
+# أدوات مشتركة / صلاحيات
+# =========================
 
-async def _send_management_card(update: Update, rec, *, edit: bool = False):
-    """
-    نُفضّل إرسال رسالة جديدة للحفاظ على ثبات اللوحة وعدم اختفائها من الشاشة.
-    """
-    text = _format_rec_line(rec)
-    await update.effective_chat.send_message(
-        text=text,
-        reply_markup=recommendation_management_keyboard(getattr(rec, "id", 0)),
-        parse_mode=ParseMode.HTML,
-    )
+def _allowed_ids(context: ContextTypes.DEFAULT_TYPE) -> List[int]:
+    raw = (context.application.bot_data.get("settings_allowed_users")  # إن وُضع مسبقًا
+           or context.application.bot_data.get("TELEGRAM_ALLOWED_USERS")
+           or "")
+    if not raw:
+        # أثناء التطوير: السماح للجميع (يمكنك إلزامه لاحقًا)
+        return []
+    parts = [p.strip() for p in str(raw).replace(",", " ").split() if p.strip()]
+    out: List[int] = []
+    for p in parts:
+        try:
+            out.append(int(p))
+        except Exception:
+            pass
+    return out
 
-# ===== أوامر =====
-async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service: TradeService):
-    try:
-        items = trade_service.list_open()
-    except Exception as e:
-        await update.message.reply_text(f"❌ تعذّر جلب التوصيات: {e}")
+def _is_authorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if update.effective_chat and update.effective_chat.type != ChatType.PRIVATE:
+        return False
+    allowed = _allowed_ids(context)
+    if not allowed:
+        return True
+    uid = update.effective_user.id if update.effective_user else None
+    return bool(uid and uid in allowed)
+
+def _svc(context: ContextTypes.DEFAULT_TYPE) -> TradeService:
+    return context.application.bot_data["trade_service"]  # type: ignore
+
+def _fmt_row(r: Recommendation) -> str:
+    sym = getattr(getattr(r, "asset", None), "value", getattr(r, "asset", ""))
+    side = getattr(getattr(r, "side", None), "value", getattr(r, "side", ""))
+    status = getattr(r, "status", "-")
+    entry = getattr(getattr(r, "entry", None), "value", getattr(r, "entry", "-"))
+    sl = getattr(getattr(r, "stop_loss", None), "value", getattr(r, "stop_loss", "-"))
+    tps = getattr(getattr(r, "targets", None), "values", getattr(r, "targets", [])) or []
+    tps_str = " • ".join(str(x) for x in tps[:4]) + (" …" if len(tps) > 4 else "")
+    return f"#{r.id} — {sym} ({side})\nEntry: {entry} | SL: {sl}\nTPs: {tps_str}\nStatus: {status}"
+
+# =========================
+# أوامر نصية عامة
+# =========================
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
         return
+    msg = (
+        "👋 الأوامر المتاحة:\n"
+        "• /newrec — إنشاء توصية جديدة\n"
+        "• /open — عرض التوصيات المفتوحة (موجز)\n"
+        "• /list [SYMBOL] [STATUS] — تصفية (مثال: /list BTCUSDT OPEN)\n"
+        "• /analytics — لمحة سريعة عن أرقام اليوم\n\n"
+        "ملاحظة: الإدارة (تعديل SL/الأهداف/الإغلاق) تتم من لوحة التحكّم الخاصة التي تصلك بعد النشر."
+    )
+    await update.effective_message.reply_text(msg)
 
+async def list_open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
+        return
+    svc = _svc(context)
+    items = svc.list_open()
     if not items:
-        await update.message.reply_text("لا توجد توصيات مفتوحة.")
+        await update.effective_message.reply_text("لا توجد توصيات مفتوحة حاليًا.")
         return
+    # تقسيم دفعات كي لا نتجاوز حدود تيليجرام
+    chunks: List[str] = []
+    buf: List[str] = []
+    total = 0
+    for r in items:
+        txt = _fmt_row(r)
+        if sum(len(x)+1 for x in buf) + len(txt) > 3500:
+            chunks.append("\n\n".join(buf))
+            buf = []
+        buf.append(txt); total += 1
+    if buf:
+        chunks.append("\n\n".join(buf))
+    for ch in chunks:
+        await update.effective_message.reply_text(ch)
 
-    for it in items:
-        await _send_management_card(update, it)
-
-async def list_count_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service: TradeService):
-    try:
-        items = trade_service.list_open()
-        await update.message.reply_text(f"📦 مفتوحة الآن: {len(items)}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ تعذّر الجلب: {e}")
-
-# ===== تدفّق الإغلاق =====
-async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    parts = (q.data or "").split(":")  # rec:close:<id>
-    if len(parts) != 3:
-        await q.edit_message_text("تنسيق غير صحيح.")
+async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
         return
-    try:
-        rec_id = int(parts[2])
-    except ValueError:
-        await q.edit_message_text("تعذّر قراءة رقم التوصية.")
+    args = context.args or []
+    symbol = None
+    status = None
+    if args:
+        symbol = args[0].upper()
+    if len(args) >= 2:
+        status = args[1].upper()
+    svc = _svc(context)
+    items = svc.list_all(symbol=symbol, status=status)
+    if not items:
+        await update.effective_message.reply_text("لا توجد نتائج مطابقة.")
         return
+    chunks: List[str] = []
+    buf: List[str] = []
+    for r in items:
+        txt = _fmt_row(r)
+        if sum(len(x)+1 for x in buf) + len(txt) > 3500:
+            chunks.append("\n\n".join(buf)); buf = []
+        buf.append(txt)
+    if buf:
+        chunks.append("\n\n".join(buf))
+    for ch in chunks:
+        await update.effective_message.reply_text(ch)
 
-    context.user_data[AWAITING_CLOSE_PRICE] = rec_id
-    await q.edit_message_text(
-        f"🔻 أرسل الآن <b>سعر الخروج</b> لإغلاق التوصية <b>#{rec_id}</b>.",
-        parse_mode=ParseMode.HTML,
+async def analytics_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
+        return
+    svc = _svc(context)
+    all_recs = svc.list_all()
+    open_cnt = len([r for r in all_recs if r.status.upper() == "OPEN"])
+    closed_cnt = len([r for r in all_recs if r.status.upper() == "CLOSED"])
+    msg = (
+        "📈 لمحة سريعة:\n"
+        f"• مفتوحة: {open_cnt}\n"
+        f"• مغلقة : {closed_cnt}\n"
+        "— مزيد من التحليلات التفصيلية سنضيفها لاحقًا."
     )
+    await update.effective_message.reply_text(msg)
 
-async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if AWAITING_CLOSE_PRICE not in context.user_data:
-        return
-    try:
-        rec_id = int(context.user_data[AWAITING_CLOSE_PRICE])
-    except Exception:
-        context.user_data.pop(AWAITING_CLOSE_PRICE, None)
-        await update.message.reply_text("انتهت الجلسة. استخدم /open مجددًا.")
-        return
-    try:
-        exit_price = float((update.message.text or "").strip())
-    except ValueError:
-        await update.message.reply_text("⚠️ سعر غير صالح. الرجاء إدخال رقم.")
-        return
+# ==================================
+# (القسم الموجود سابقًا) لوحات الإدارة
+# ==================================
 
-    await update.message.reply_html(
-        f"هل تريد تأكيد إغلاق التوصية <b>#{rec_id}</b> على سعر <code>{exit_price}</code>؟",
-        reply_markup=confirm_close_keyboard(rec_id, exit_price),
-    )
+# مفاتيح الحالات المؤقتة في user_data
+AWAITING_CLOSE_PRICE_KEY = "await_close_price_for"
+AWAITING_NEW_SL_KEY = "await_new_sl_for"
+AWAITING_NEW_TPS_KEY = "await_new_tps_for"
 
-async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    parts = (q.data or "").split(":")  # rec:confirm_close:<rec_id>:<exit_price>
-    if len(parts) != 4:
-        await q.edit_message_text("تنسيق تأكيد غير صحيح.")
+def register_management_callbacks(app) -> None:
+    """
+    تسجيل أزرار لوحة التحكّم الخاصة (Inline) التي تصل للمحلّل في الخاص.
+    """
+    app.add_handler(CallbackQueryHandler(click_close_now, pattern=r"^rec:close:(\d+)$"))
+    app.add_handler(CallbackQueryHandler(click_amend_sl, pattern=r"^rec:amend_sl:(\d+)$"))
+    app.add_handler(CallbackQueryHandler(click_amend_tp, pattern=r"^rec:amend_tp:(\d+)$"))
+
+    # استقبال القيم النصية بعد الضغط على الأزرار
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, receive_followup_values))
+
+
+def _expect_for(user_data: Dict[str, Any], key: str, rec_id: Optional[int] = None) -> Optional[int]:
+    if rec_id is None:
+        return user_data.get(key)
+    user_data[key] = rec_id
+    # حذف المفاتيح الأخرى لتجنّب تداخل الطلبات
+    for k in (AWAITING_CLOSE_PRICE_KEY, AWAITING_NEW_SL_KEY, AWAITING_NEW_TPS_KEY):
+        if k != key and k in user_data:
+            user_data.pop(k, None)
+    return rec_id
+
+def _ensure_private_and_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if not _is_authorized(update, context):
+        return False
+    if update.effective_chat and update.effective_chat.type != ChatType.PRIVATE:
+        return False
+    return True
+
+
+# --------- أزرار لوحة الإدارة ---------
+
+async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _ensure_private_and_auth(update, context):
         return
-    try:
-        rec_id = int(parts[2]); exit_price = float(parts[3])
-    except ValueError:
-        await q.edit_message_text("⚠️ بيانات التأكيد غير صالحة.")
+    query = update.callback_query
+    await query.answer()
+    rec_id = int(query.data.split(":")[-1])
+    _expect_for(context.user_data, AWAITING_CLOSE_PRICE_KEY, rec_id)
+    await query.edit_message_text("⛔ أرسل الآن **سعر الخروج** لإغلاق التوصية:", parse_mode="Markdown")
+
+async def click_amend_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _ensure_private_and_auth(update, context):
         return
+    query = update.callback_query
+    await query.answer()
+    rec_id = int(query.data.split(":")[-1])
+    _expect_for(context.user_data, AWAITING_NEW_SL_KEY, rec_id)
+    await query.edit_message_text("🛡️ أرسل قيمة **SL الجديدة**:", parse_mode="Markdown")
 
-    trade: TradeService = context.application.bot_data.get("trade_service")  # type: ignore
-    try:
-        rec = trade.close(rec_id, exit_price)
-        await q.edit_message_text(
-            f"✅ تم إغلاق التوصية <b>#{rec.id}</b> على سعر <code>{exit_price}</code>.",
-            parse_mode=ParseMode.HTML,
-        )
-        # إعادة عرض لوحة الإدارة ثابتة
-        await _send_management_card(update, rec)
-    except Exception as e:
-        await q.edit_message_text(f"❌ تعذّر إغلاق التوصية: {e}")
-    finally:
-        context.user_data.pop(AWAITING_CLOSE_PRICE, None)
-
-async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    try:
-        rec_id = int((q.data or "").split(":")[2])
-    except Exception:
-        rec_id = None
-    if context.user_data.get(AWAITING_CLOSE_PRICE) == rec_id:
-        context.user_data.pop(AWAITING_CLOSE_PRICE, None)
-    await q.edit_message_text("تم التراجع عن الإغلاق.")
-
-# ===== تعديل SL =====
-async def click_amend_sl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    try:
-        rec_id = int((q.data or "").split(":")[2])  # rec:amend_sl:<id>
-    except Exception:
-        await q.edit_message_text("تنسيق غير صحيح.")
+async def click_amend_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _ensure_private_and_auth(update, context):
         return
-    context.user_data[AWAITING_NEW_SL] = rec_id
-    await q.edit_message_text(
-        f"🛡️ أرسل قيمة <b>SL</b> الجديدة للتوصية <b>#{rec_id}</b>.",
-        parse_mode=ParseMode.HTML,
-    )
+    query = update.callback_query
+    await query.answer()
+    rec_id = int(query.data.split(":")[-1])
+    _expect_for(context.user_data, AWAITING_NEW_TPS_KEY, rec_id)
+    await query.edit_message_text("🎯 أرسل الأهداف الجديدة **مفصولة بمسافة أو فاصلة**:", parse_mode="Markdown")
 
-async def received_new_sl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if AWAITING_NEW_SL not in context.user_data:
-        return
-    try:
-        rec_id = int(context.user_data[AWAITING_NEW_SL])
-    except Exception:
-        context.user_data.pop(AWAITING_NEW_SL, None); return
-    try:
-        new_sl = float((update.message.text or "").strip())
-    except ValueError:
-        await update.message.reply_text("⚠️ قيمة SL غير صالحة. أدخل رقمًا.")
-        return
 
-    trade: TradeService = context.application.bot_data.get("trade_service")  # type: ignore
-    try:
-        rec = trade.update_stop_loss(rec_id, new_sl)
-        await update.message.reply_html(f"✅ تم تحديث SL للتوصية <b>#{rec.id}</b> إلى <code>{new_sl}</code>.")
-        await _send_management_card(update, rec)
-    except Exception as e:
-        await update.message.reply_text(f"❌ تعذّر التحديث: {e}")
-    finally:
-        context.user_data.pop(AWAITING_NEW_SL, None)
+# --------- استقبال النص بعد الضغط على الأزرار ---------
 
-# ===== تعديل الأهداف =====
-async def click_amend_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    try:
-        rec_id = int((q.data or "").split(":")[2])  # rec:amend_tp:<id>
-    except Exception:
-        await q.edit_message_text("تنسيق غير صحيح.")
-        return
-    context.user_data[AWAITING_NEW_TPS] = rec_id
-    await q.edit_message_text(
-        f"🎯 أرسل قائمة الأهداف الجديدة للتوصية <b>#{rec_id}</b> مفصولة بمسافة أو فاصلة.",
-        parse_mode=ParseMode.HTML,
-    )
+def _parse_floats(text: str) -> List[float]:
+    parts = [p for p in text.replace(",", " ").split() if p.strip()]
+    out: List[float] = []
+    for p in parts:
+        try:
+            out.append(float(p))
+        except Exception:
+            pass
+    return out
 
-async def received_new_tps(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if AWAITING_NEW_TPS not in context.user_data:
+async def receive_followup_values(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _ensure_private_and_auth(update, context):
         return
-    try:
-        rec_id = int(context.user_data[AWAITING_NEW_TPS])
-    except Exception:
-        context.user_data.pop(AWAITING_NEW_TPS, None); return
-    try:
-        targets: List[float] = [float(t) for t in (update.message.text or "").replace(",", " ").split() if t]
-        if not targets:
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text("⚠️ قائمة أهداف غير صالحة. أدخل أرقامًا مفصولة بمسافة/فاصلة.")
+    text = (update.effective_message.text or "").strip()
+    svc = _svc(context)
+
+    # إغلاق
+    rec_id = context.user_data.get(AWAITING_CLOSE_PRICE_KEY)
+    if rec_id:
+        try:
+            price = float(text)
+            svc.close(int(rec_id), price)
+            await update.effective_message.reply_text(f"✅ تم إغلاق التوصية #{rec_id} على {price}.")
+        except Exception as e:
+            await update.effective_message.reply_text(f"❌ فشل الإغلاق: {e}")
+        finally:
+            context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
         return
 
-    trade: TradeService = context.application.bot_data.get("trade_service")  # type: ignore
-    try:
-        rec = trade.update_targets(rec_id, targets)
-        await update.message.reply_html(f"✅ تم تحديث الأهداف للتوصية <b>#{rec.id}</b>.")
-        await _send_management_card(update, rec)
-    except Exception as e:
-        await update.message.reply_text(f"❌ تعذّر التحديث: {e}")
-    finally:
-        context.user_data.pop(AWAITING_NEW_TPS, None)
+    # SL
+    rec_id = context.user_data.get(AWAITING_NEW_SL_KEY)
+    if rec_id:
+        try:
+            sl = float(text)
+            svc.update_stop_loss(int(rec_id), sl)
+            await update.effective_message.reply_text(f"✅ تم تحديث SL للتوصية #{rec_id} إلى {sl}.")
+        except Exception as e:
+            await update.effective_message.reply_text(f"❌ فشل تحديث SL: {e}")
+        finally:
+            context.user_data.pop(AWAITING_NEW_SL_KEY, None)
+        return
 
-def get_management_message_handlers():
-    return [
-        MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price),
-        MessageHandler(filters.TEXT & ~filters.COMMAND, received_new_sl),
-        MessageHandler(filters.TEXT & ~filters.COMMAND, received_new_tps),
-    ]
-# --- END OF FILE ---
+    # TPs
+    rec_id = context.user_data.get(AWAITING_NEW_TPS_KEY)
+    if rec_id:
+        try:
+            vals = _parse_floats(text)
+            if not vals:
+                raise ValueError("لم يتم اكتشاف أرقام صالحة.")
+            svc.update_targets(int(rec_id), vals)
+            await update.effective_message.reply_text(f"✅ تم تحديث الأهداف للتوصية #{rec_id}.")
+        except Exception as e:
+            await update.effective_message.reply_text(f"❌ فشل تحديث الأهداف: {e}")
+        finally:
+            context.user_data.pop(AWAITING_NEW_TPS_KEY, None)
+        return
