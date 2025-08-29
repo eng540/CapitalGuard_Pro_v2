@@ -12,11 +12,15 @@ from telegram.ext import (
 )
 
 from .auth import ALLOWED_FILTER
+
+# محادثة إنشاء التوصية + أزرار النشر/الإلغاء
 from .conversation_handlers import (
     get_recommendation_conversation_handler,
     publish_recommendation,
     cancel_publication,
 )
+
+# إدارة التوصيات (عرض/إغلاق) + دالة فحص العدّ
 from .management_handlers import (
     open_cmd,
     list_count_cmd,
@@ -25,7 +29,11 @@ from .management_handlers import (
     confirm_close,
     cancel_close,
 )
+
+# معالج أخطاء عام
 from .errors import register_error_handler
+
+# نصوص موحّدة
 from .ui_texts import WELCOME, HELP
 
 log = logging.getLogger(__name__)
@@ -70,7 +78,7 @@ def register_all_handlers(application: Application, services: dict):
     # 1) أوامر عامة
     application.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_FILTER))
     application.add_handler(CommandHandler("help", help_cmd, filters=ALLOWED_FILTER))
-    application.add_handler(CommandHandler("ping", ping_cmd, filters=filters.ALL))  # فحص توصيل
+    application.add_handler(CommandHandler("ping", ping_cmd, filters=filters.ALL))  # للسماح بفحص التوصيل
     application.add_handler(
         CommandHandler(
             "analytics",
@@ -105,7 +113,7 @@ def register_all_handlers(application: Application, services: dict):
     application.add_handler(CallbackQueryHandler(confirm_close,     pattern=r"^rec:confirm_close:\d+:[0-9.]+$"))
     application.add_handler(CallbackQueryHandler(cancel_close,      pattern=r"^rec:cancel_close:\d+$"))
 
-    # 5) استقبال سعر الخروج في DM (Group أعلى من المحادثة لتجنّب التعارض)
+    # 5) استقبال سعر الخروج (Group أعلى من المحادثة لتجنّب التعارض)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price), group=1)
 
     # 6) لوج لكل نص يصل (تشخيص فقط)
