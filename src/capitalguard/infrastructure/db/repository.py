@@ -22,6 +22,8 @@ class RecommendationRepository:
             channel_id=row.channel_id,
             message_id=row.message_id,
             published_at=row.published_at,
+            market=row.market,
+            notes=row.notes,
             user_id=row.user_id,
             created_at=row.created_at,
             updated_at=row.updated_at,
@@ -41,6 +43,8 @@ class RecommendationRepository:
                 channel_id=rec.channel_id,
                 message_id=rec.message_id,
                 published_at=rec.published_at,
+                market=rec.market,
+                notes=rec.notes,
                 user_id=rec.user_id,
             )
             s.add(row)
@@ -86,6 +90,8 @@ class RecommendationRepository:
             row.channel_id = rec.channel_id
             row.message_id = rec.message_id
             row.published_at = rec.published_at
+            row.market = rec.market
+            row.notes = rec.notes
             row.user_id = rec.user_id
             row.exit_price = rec.exit_price
             row.closed_at = rec.closed_at
