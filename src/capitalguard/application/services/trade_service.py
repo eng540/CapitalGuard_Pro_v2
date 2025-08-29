@@ -1,11 +1,12 @@
 # --- START OF FILE: src/capitalguard/application/services/trade_service.py ---
 from __future__ import annotations
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from capitalguard.domain.entities import Recommendation
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
+
 
 class TradeService:
     def __init__(self, repo: RecommendationRepository, notifier: TelegramNotifier):
@@ -36,11 +37,13 @@ class TradeService:
             notes=(notes or None),
         )
         rec = self.repo.add(rec)
+
         # نشر بطاقة القناة
         posted = self.notifier.post_recommendation_card(rec)
         if posted:
             ch_id, msg_id = posted
             rec = self.repo.set_channel_message(rec.id, ch_id, msg_id)
+
         return rec
 
     def get(self, rec_id: int) -> Recommendation | None:
@@ -53,7 +56,12 @@ class TradeService:
             items = [r for r in items if str(getattr(r.asset, "value", r.asset)).upper() == s]
         return items
 
-    def list_all(self, channel_id: int | None = None, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
+    def list_all(
+        self,
+        channel_id: int | None = None,
+        symbol: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Recommendation]:
         items = self.repo.list_all(channel_id)
         if symbol:
             s = symbol.upper()
@@ -68,6 +76,7 @@ class TradeService:
         rec = self.repo.get(rec_id)
         if not rec:
             raise ValueError("Recommendation not found")
+
         rec.stop_loss = Price(new_stop)
         rec = self.repo.update(rec)
         self.notifier.edit_recommendation_card(rec)
@@ -77,6 +86,7 @@ class TradeService:
         rec = self.repo.get(rec_id)
         if not rec:
             raise ValueError("Recommendation not found")
+
         rec.targets = Targets(new_targets)
         rec = self.repo.update(rec)
         self.notifier.edit_recommendation_card(rec)
@@ -86,6 +96,7 @@ class TradeService:
         rec = self.repo.get(rec_id)
         if not rec:
             raise ValueError("Recommendation not found")
+
         rec.close(exit_price)
         rec = self.repo.update(rec)
         self.notifier.edit_recommendation_card(rec)
