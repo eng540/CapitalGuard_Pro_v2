@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 def _channel_keyboard_json(rec_id: int, *, is_open: bool) -> Dict[str, Any]:
     """
-    نبني JSON خام لأزرار Inline كما تتوقع Telegram API بدون الاعتماد على كائنات PTB.
+    يبني JSON خام لأزرار Inline كما تتوقع Telegram HTTP API بدون الاعتماد على كائنات PTB.
     """
     if is_open:
         inline_keyboard: List[List[Dict[str, str]]] = [
@@ -34,10 +34,11 @@ def _channel_keyboard_json(rec_id: int, *, is_open: bool) -> Dict[str, Any]:
 
 class TelegramNotifier:
     """
-    ناشر بطاقات التوصيات إلى قناة تيليجرام باستخدام Telegram HTTP API (متزامن).
+    ناشر ومحرّر بطاقات التوصيات إلى قناة تيليجرام باستخدام Telegram HTTP API (متزامن).
     يعتمد على:
       - TELEGRAM_BOT_TOKEN
       - TELEGRAM_CHAT_ID
+    لا يستخدم coroutines ولا PTB داخل هذا الملف لتفادي مشاكل await ودورات الاستيراد.
     """
 
     def __init__(self) -> None:
@@ -98,6 +99,7 @@ class TelegramNotifier:
     def post_recommendation_card(self, rec: Recommendation) -> Optional[Tuple[int, int]]:
         """
         ينشر بطاقة توصية إلى القناة ويعيد (channel_id, message_id).
+        يُستدعى عند إنشاء توصية جديدة.
         """
         if not self.channel_id:
             log.warning("TelegramNotifier: TELEGRAM_CHAT_ID is not set; skipping publish")
@@ -124,7 +126,7 @@ class TelegramNotifier:
     def edit_recommendation_card(self, rec: Recommendation) -> bool:
         """
         يحرّر البطاقة (إن أمكن) أو يعيد النشر عند الفشل.
-        يتطلّب أن تكون حقول rec.channel_id و rec.message_id موجودة.
+        يتطلّب أن تكون rec.channel_id و rec.message_id موجودتين.
         """
         ch_id = getattr(rec, "channel_id", None)
         msg_id = getattr(rec, "message_id", None)
