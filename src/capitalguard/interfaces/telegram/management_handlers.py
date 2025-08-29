@@ -1,151 +1,270 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 from __future__ import annotations
-from typing import List, Tuple, Optional
+from typing import Dict, Any, List, Optional
 import logging
-from telegram import Update
-from telegram.ext import ContextTypes, CallbackQueryHandler, MessageHandler, filters
 
-from capitalguard.config import settings
-from capitalguard.interfaces.telegram.keyboards import remove_reply_keyboard
-# الخدمات تُحقن عبر bot_data في main.py:
-# - "trade_service"
-# - "repo"
+from telegram import Update
+from telegram.constants import ChatType
+from telegram.ext import ContextTypes, CallbackQueryHandler, MessageHandler, CommandHandler, filters
+
+from capitalguard.domain.entities import Recommendation
+from capitalguard.application.services.trade_service import TradeService
+from .keyboards import (
+    control_panel_keyboard,
+    side_reply_keyboard,
+    remove_reply_keyboard,
+)
 
 log = logging.getLogger(__name__)
 
-# مفاتيح حالة المحادثة في الخاص
-AWAITING_TP = "awaiting_tp_for_rec"
-AWAITING_SL = "awaiting_sl_for_rec"
-AWAITING_CLOSE = "awaiting_close_for_rec"
+# =========================
+# أدوات مشتركة / صلاحيات
+# =========================
 
-def _allowed_user(user_id: Optional[int]) -> bool:
-    if user_id is None:
-        return False
-    raw = (settings.TELEGRAM_ALLOWED_USERS or "").strip()
+def _allowed_ids(context: ContextTypes.DEFAULT_TYPE) -> List[int]:
+    raw = (context.application.bot_data.get("settings_allowed_users")  # إن وُضع مسبقًا
+           or context.application.bot_data.get("TELEGRAM_ALLOWED_USERS")
+           or "")
     if not raw:
-        return True  # لا توجد قائمة = السماح للجميع (للمرحلة التطويرية)
-    whitelist = {u.strip() for u in raw.replace(",", " ").split() if u.strip()}
-    return str(user_id) in whitelist
-
-def _ensure_private_admin(update: Update) -> Tuple[bool, Optional[int]]:
-    """يتأكد أن التفاعل في الخاص ومن مستخدم مصرح، ويرد Toast عند الرفض."""
-    q = update.callback_query
-    user_id = q.from_user.id if q else (update.effective_user.id if update.effective_user else None)
-    chat = update.effective_chat
-    if chat and chat.type != "private":
-        if q:
-            q.answer("⚠️ استخدم البوت في الخاص لإدارة التوصيات.", show_alert=False)
-        return False, user_id
-    if not _allowed_user(user_id):
-        if q:
-            q.answer("❌ غير مصرح لك بهذه العملية.", show_alert=False)
-        return False, user_id
-    return True, user_id
-
-# ---------------------------
-# Callbacks: من لوحة التحكم الخاصة فقط
-# ---------------------------
-async def click_amend_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ok, uid = _ensure_private_admin(update)
-    if not ok:
-        return
-    q = update.callback_query
-    rec_id = int(q.data.split(":")[-1])
-    context.user_data[AWAITING_TP] = rec_id
-    await q.answer()
-    await q.edit_message_text("🎯 أرسل الأهداف الجديدة مفصولة بمسافة أو فاصلة (مثال: 120000 130000).")
-
-async def click_amend_sl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ok, uid = _ensure_private_admin(update)
-    if not ok:
-        return
-    q = update.callback_query
-    rec_id = int(q.data.split(":")[-1])
-    context.user_data[AWAITING_SL] = rec_id
-    await q.answer()
-    await q.edit_message_text("🛡️ أرسل قيمة SL الجديدة:")
-
-async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ok, uid = _ensure_private_admin(update)
-    if not ok:
-        return
-    q = update.callback_query
-    rec_id = int(q.data.split(":")[-1])
-    context.user_data[AWAITING_CLOSE] = rec_id
-    await q.answer()
-    await q.edit_message_text("🚨 أرسل الآن سعر الخروج لإغلاق التوصية:")
-
-async def click_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ok, _ = _ensure_private_admin(update)
-    if not ok:
-        return
-    q = update.callback_query
-    rec_id = int(q.data.split(":")[-1])
-    await q.answer()
-    await q.edit_message_text(f"📜 السجل: قريبًا سيتم عرض سجل المعاملات للتوصية #{rec_id}.")
-
-# ---------------------------
-# Messages to complete actions (in private)
-# ---------------------------
-def _parse_floats(text: str) -> List[float]:
-    seps = [",", " "]
-    for s in seps:
-        text = text.replace(s, " ")
-    parts = [p for p in text.split(" ") if p]
-    arr: List[float] = []
+        # أثناء التطوير: السماح للجميع (يمكنك إلزامه لاحقًا)
+        return []
+    parts = [p.strip() for p in str(raw).replace(",", " ").split() if p.strip()]
+    out: List[int] = []
     for p in parts:
         try:
-            arr.append(float(p))
+            out.append(int(p))
         except Exception:
             pass
-    return arr
+    return out
 
-async def submit_new_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if AWAITING_TP not in context.user_data:
-        return
-    rec_id = context.user_data.pop(AWAITING_TP)
-    values = _parse_floats(update.effective_message.text)
-    if not values:
-        await update.effective_message.reply_text("⚠️ صيغة غير صحيحة. أرسل أرقامًا مفصولة بمسافة أو فاصلة.")
-        return
-    trade = context.application.bot_data["trade_service"]
-    rec = trade.update_targets(rec_id, values)
-    await update.effective_message.reply_text(f"✅ تم تحديث الأهداف لـ #{rec.id}.", reply_markup=remove_reply_keyboard())
+def _is_authorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if update.effective_chat and update.effective_chat.type != ChatType.PRIVATE:
+        return False
+    allowed = _allowed_ids(context)
+    if not allowed:
+        return True
+    uid = update.effective_user.id if update.effective_user else None
+    return bool(uid and uid in allowed)
 
-async def submit_new_sl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if AWAITING_SL not in context.user_data:
-        return
-    rec_id = context.user_data.pop(AWAITING_SL)
-    try:
-        new_sl = float(update.effective_message.text.strip())
-    except Exception:
-        await update.effective_message.reply_text("⚠️ صيغة غير صحيحة. أرسل رقمًا صحيحًا.")
-        return
-    trade = context.application.bot_data["trade_service"]
-    rec = trade.update_stop_loss(rec_id, new_sl)
-    await update.effective_message.reply_text(f"✅ تم تحديث SL للتوصية #{rec.id}.", reply_markup=remove_reply_keyboard())
+def _svc(context: ContextTypes.DEFAULT_TYPE) -> TradeService:
+    return context.application.bot_data["trade_service"]  # type: ignore
 
-async def submit_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if AWAITING_CLOSE not in context.user_data:
-        return
-    rec_id = context.user_data.pop(AWAITING_CLOSE)
-    try:
-        exit_price = float(update.effective_message.text.strip())
-    except Exception:
-        await update.effective_message.reply_text("⚠️ صيغة غير صحيحة. أرسل رقمًا صحيحًا لسعر الخروج.")
-        return
-    trade = context.application.bot_data["trade_service"]
-    rec = trade.close(rec_id, exit_price)
-    await update.effective_message.reply_text(f"✅ تم إغلاق التوصية #{rec.id} على {exit_price:g}.", reply_markup=remove_reply_keyboard())
+def _fmt_row(r: Recommendation) -> str:
+    sym = getattr(getattr(r, "asset", None), "value", getattr(r, "asset", ""))
+    side = getattr(getattr(r, "side", None), "value", getattr(r, "side", ""))
+    status = getattr(r, "status", "-")
+    entry = getattr(getattr(r, "entry", None), "value", getattr(r, "entry", "-"))
+    sl = getattr(getattr(r, "stop_loss", None), "value", getattr(r, "stop_loss", "-"))
+    tps = getattr(getattr(r, "targets", None), "values", getattr(r, "targets", [])) or []
+    tps_str = " • ".join(str(x) for x in tps[:4]) + (" …" if len(tps) > 4 else "")
+    return f"#{r.id} — {sym} ({side})\nEntry: {entry} | SL: {sl}\nTPs: {tps_str}\nStatus: {status}"
 
-def register_management_handlers(application):
-    application.add_handler(CallbackQueryHandler(click_amend_tp, pattern=r"^rec:amend_tp:\d+$"))
-    application.add_handler(CallbackQueryHandler(click_amend_sl, pattern=r"^rec:amend_sl:\d+$"))
-    application.add_handler(CallbackQueryHandler(click_close_now, pattern=r"^rec:close:\d+$"))
-    application.add_handler(CallbackQueryHandler(click_history, pattern=r"^rec:history:\d+$"))
+# =========================
+# أوامر نصية عامة
+# =========================
 
-    # رسائل إتمام الإجراءات في الخاص
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, submit_new_tp))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, submit_new_sl))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, submit_close))
-# --- END OF FILE ---
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
+        return
+    msg = (
+        "👋 الأوامر المتاحة:\n"
+        "• /newrec — إنشاء توصية جديدة\n"
+        "• /open — عرض التوصيات المفتوحة (موجز)\n"
+        "• /list [SYMBOL] [STATUS] — تصفية (مثال: /list BTCUSDT OPEN)\n"
+        "• /analytics — لمحة سريعة عن أرقام اليوم\n\n"
+        "ملاحظة: الإدارة (تعديل SL/الأهداف/الإغلاق) تتم من لوحة التحكّم الخاصة التي تصلك بعد النشر."
+    )
+    await update.effective_message.reply_text(msg)
+
+async def list_open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
+        return
+    svc = _svc(context)
+    items = svc.list_open()
+    if not items:
+        await update.effective_message.reply_text("لا توجد توصيات مفتوحة حاليًا.")
+        return
+    # تقسيم دفعات كي لا نتجاوز حدود تيليجرام
+    chunks: List[str] = []
+    buf: List[str] = []
+    total = 0
+    for r in items:
+        txt = _fmt_row(r)
+        if sum(len(x)+1 for x in buf) + len(txt) > 3500:
+            chunks.append("\n\n".join(buf))
+            buf = []
+        buf.append(txt); total += 1
+    if buf:
+        chunks.append("\n\n".join(buf))
+    for ch in chunks:
+        await update.effective_message.reply_text(ch)
+
+async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
+        return
+    args = context.args or []
+    symbol = None
+    status = None
+    if args:
+        symbol = args[0].upper()
+    if len(args) >= 2:
+        status = args[1].upper()
+    svc = _svc(context)
+    items = svc.list_all(symbol=symbol, status=status)
+    if not items:
+        await update.effective_message.reply_text("لا توجد نتائج مطابقة.")
+        return
+    chunks: List[str] = []
+    buf: List[str] = []
+    for r in items:
+        txt = _fmt_row(r)
+        if sum(len(x)+1 for x in buf) + len(txt) > 3500:
+            chunks.append("\n\n".join(buf)); buf = []
+        buf.append(txt)
+    if buf:
+        chunks.append("\n\n".join(buf))
+    for ch in chunks:
+        await update.effective_message.reply_text(ch)
+
+async def analytics_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
+        return
+    svc = _svc(context)
+    all_recs = svc.list_all()
+    open_cnt = len([r for r in all_recs if r.status.upper() == "OPEN"])
+    closed_cnt = len([r for r in all_recs if r.status.upper() == "CLOSED"])
+    msg = (
+        "📈 لمحة سريعة:\n"
+        f"• مفتوحة: {open_cnt}\n"
+        f"• مغلقة : {closed_cnt}\n"
+        "— مزيد من التحليلات التفصيلية سنضيفها لاحقًا."
+    )
+    await update.effective_message.reply_text(msg)
+
+# ==================================
+# (القسم الموجود سابقًا) لوحات الإدارة
+# ==================================
+
+# مفاتيح الحالات المؤقتة في user_data
+AWAITING_CLOSE_PRICE_KEY = "await_close_price_for"
+AWAITING_NEW_SL_KEY = "await_new_sl_for"
+AWAITING_NEW_TPS_KEY = "await_new_tps_for"
+
+def register_management_callbacks(app) -> None:
+    """
+    تسجيل أزرار لوحة التحكّم الخاصة (Inline) التي تصل للمحلّل في الخاص.
+    """
+    app.add_handler(CallbackQueryHandler(click_close_now, pattern=r"^rec:close:(\d+)$"))
+    app.add_handler(CallbackQueryHandler(click_amend_sl, pattern=r"^rec:amend_sl:(\d+)$"))
+    app.add_handler(CallbackQueryHandler(click_amend_tp, pattern=r"^rec:amend_tp:(\d+)$"))
+
+    # استقبال القيم النصية بعد الضغط على الأزرار
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, receive_followup_values))
+
+
+def _expect_for(user_data: Dict[str, Any], key: str, rec_id: Optional[int] = None) -> Optional[int]:
+    if rec_id is None:
+        return user_data.get(key)
+    user_data[key] = rec_id
+    # حذف المفاتيح الأخرى لتجنّب تداخل الطلبات
+    for k in (AWAITING_CLOSE_PRICE_KEY, AWAITING_NEW_SL_KEY, AWAITING_NEW_TPS_KEY):
+        if k != key and k in user_data:
+            user_data.pop(k, None)
+    return rec_id
+
+def _ensure_private_and_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if not _is_authorized(update, context):
+        return False
+    if update.effective_chat and update.effective_chat.type != ChatType.PRIVATE:
+        return False
+    return True
+
+
+# --------- أزرار لوحة الإدارة ---------
+
+async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _ensure_private_and_auth(update, context):
+        return
+    query = update.callback_query
+    await query.answer()
+    rec_id = int(query.data.split(":")[-1])
+    _expect_for(context.user_data, AWAITING_CLOSE_PRICE_KEY, rec_id)
+    await query.edit_message_text("⛔ أرسل الآن **سعر الخروج** لإغلاق التوصية:", parse_mode="Markdown")
+
+async def click_amend_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _ensure_private_and_auth(update, context):
+        return
+    query = update.callback_query
+    await query.answer()
+    rec_id = int(query.data.split(":")[-1])
+    _expect_for(context.user_data, AWAITING_NEW_SL_KEY, rec_id)
+    await query.edit_message_text("🛡️ أرسل قيمة **SL الجديدة**:", parse_mode="Markdown")
+
+async def click_amend_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _ensure_private_and_auth(update, context):
+        return
+    query = update.callback_query
+    await query.answer()
+    rec_id = int(query.data.split(":")[-1])
+    _expect_for(context.user_data, AWAITING_NEW_TPS_KEY, rec_id)
+    await query.edit_message_text("🎯 أرسل الأهداف الجديدة **مفصولة بمسافة أو فاصلة**:", parse_mode="Markdown")
+
+
+# --------- استقبال النص بعد الضغط على الأزرار ---------
+
+def _parse_floats(text: str) -> List[float]:
+    parts = [p for p in text.replace(",", " ").split() if p.strip()]
+    out: List[float] = []
+    for p in parts:
+        try:
+            out.append(float(p))
+        except Exception:
+            pass
+    return out
+
+async def receive_followup_values(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _ensure_private_and_auth(update, context):
+        return
+    text = (update.effective_message.text or "").strip()
+    svc = _svc(context)
+
+    # إغلاق
+    rec_id = context.user_data.get(AWAITING_CLOSE_PRICE_KEY)
+    if rec_id:
+        try:
+            price = float(text)
+            svc.close(int(rec_id), price)
+            await update.effective_message.reply_text(f"✅ تم إغلاق التوصية #{rec_id} على {price}.")
+        except Exception as e:
+            await update.effective_message.reply_text(f"❌ فشل الإغلاق: {e}")
+        finally:
+            context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
+        return
+
+    # SL
+    rec_id = context.user_data.get(AWAITING_NEW_SL_KEY)
+    if rec_id:
+        try:
+            sl = float(text)
+            svc.update_stop_loss(int(rec_id), sl)
+            await update.effective_message.reply_text(f"✅ تم تحديث SL للتوصية #{rec_id} إلى {sl}.")
+        except Exception as e:
+            await update.effective_message.reply_text(f"❌ فشل تحديث SL: {e}")
+        finally:
+            context.user_data.pop(AWAITING_NEW_SL_KEY, None)
+        return
+
+    # TPs
+    rec_id = context.user_data.get(AWAITING_NEW_TPS_KEY)
+    if rec_id:
+        try:
+            vals = _parse_floats(text)
+            if not vals:
+                raise ValueError("لم يتم اكتشاف أرقام صالحة.")
+            svc.update_targets(int(rec_id), vals)
+            await update.effective_message.reply_text(f"✅ تم تحديث الأهداف للتوصية #{rec_id}.")
+        except Exception as e:
+            await update.effective_message.reply_text(f"❌ فشل تحديث الأهداف: {e}")
+        finally:
+            context.user_data.pop(AWAITING_NEW_TPS_KEY, None)
+        return
