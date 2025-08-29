@@ -4,32 +4,31 @@ from typing import Iterable
 
 WELCOME = (
     "👋 أهلاً بك في <b>CapitalGuard Bot</b>.\n"
-    "ابدأ بـ <code>/newrec</code> لإنشاء توصية جديدة، أو <code>/open</code> لإدارتها."
+    "ابدأ بـ <code>/newrec</code> لإنشاء توصية جديدة، أو <code>/open</code> لإدارة المفتوحة."
 )
 
 HELP = (
     "<b>الأوامر المتاحة:</b>\n\n"
-    "• <code>/newrec</code> — إنشاء توصية تفاعليًا\n"
-    "• <code>/open</code> — عرض وإدارة التوصيات المفتوحة\n"
-    "• <code>/list</code> — إحصاء سريع للتوصيات المفتوحة\n"
+    "• <code>/newrec</code> — إنشاء توصية تفاعليًا (أزرار + إدخالات)\n"
+    "• <code>/open</code> — عرض/إدارة التوصيات المفتوحة\n"
+    "• <code>/list</code> — إحصاء سريع\n"
     "• <code>/analytics</code> — ملخص أداء\n"
     "• <code>/ping</code> — فحص اتصال"
 )
 
 def _fmt_targets(targets: Iterable[float], entry: float | None = None) -> str:
-    parts = []
+    out = []
     for i, t in enumerate(targets, 1):
-        if entry and entry != 0:
-            pct = (t - entry) / entry * 100
-            parts.append(f"• TP{i}: {t:g} ({pct:+.1f}%)")
+        if entry:
+            pct = (t - entry) / entry * 100 if entry != 0 else 0.0
+            out.append(f"• TP{i}: {t:g} ({pct:+.1f}%)")
         else:
-            parts.append(f"• TP{i}: {t:g}")
-    return "\n".join(parts) if parts else "—"
+            out.append(f"• TP{i}: {t:g}")
+    return "\n".join(out) if out else "—"
 
 def build_trade_card_text(rec) -> str:
     """
-    يبني بطاقة القناة النصية (بدون أزرار).
-    يدعم حقول: id, asset, side, market, entry, stop_loss, targets, status, exit_price.
+    بطاقة القناة (نص فقط، بلا أزرار).
     """
     asset = getattr(getattr(rec, "asset", ""), "value", getattr(rec, "asset", ""))
     side  = getattr(getattr(rec, "side", ""),  "value", getattr(rec, "side", ""))
