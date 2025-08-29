@@ -1,4 +1,3 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 from __future__ import annotations
 from typing import Optional, List
 
@@ -8,7 +7,7 @@ from telegram.ext import ContextTypes
 
 from capitalguard.application.services.trade_service import TradeService
 from .keyboards import recommendation_management_keyboard, confirm_close_keyboard
-from .ui_texts import RecCard, _pct, OPEN  # type: ignore  # (OPEN لن نستخدمها الآن)
+from .ui_texts import RecCard  # ✅ إزالة OPEN و _pct غير المستخدمين
 
 # مفاتيح حالة انتظار الإدخال لكل مستخدم
 AWAITING_CLOSE_PRICE_KEY = "awaiting_close_price_for"
@@ -46,8 +45,9 @@ def _to_float_list(text: str) -> Optional[List[float]]:
 # أوامر
 # ======================
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service: TradeService):
-    """يعرض التوصيات المفتوحة كبطاقات موجزة مع أزرار إدارة."""
-    # دعم فلترة مبسطة: /open BTCUSDT
+    """يعرض التوصيات المفتوحة كبطاقات موجزة مع أزرار إدارة.
+       دعم فلترة مبسطة: /open BTCUSDT
+    """
     args = (update.message.text or "").split(maxsplit=1)
     symbol = args[1].strip().upper() if len(args) == 2 else None
 
@@ -286,4 +286,3 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Status: <b>{rec.status}</b>\n"
     )
     await query.edit_message_text(text, parse_mode=ParseMode.HTML)
-# --- END OF FILE ---
