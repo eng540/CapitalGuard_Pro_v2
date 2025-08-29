@@ -23,12 +23,14 @@ def _to_float_safe(text: str) -> Optional[float]:
         if text is None:
             return None
         t = text.strip().translate(_ARABIC_DIGITS)
+        # السماح بفاصلة كفاصل عشري أيضًا
         t = t.replace(",", ".") if ("," in t and "." not in t) else t
         return float(t)
     except Exception:
         return None
 
 def _user_state(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> dict:
+    # مساحة بيانات على مستوى التطبيق لكل مستخدم
     store = context.application.user_data.setdefault(user_id, {})
     return store
 
@@ -51,6 +53,7 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_
         try:
             asset = getattr(getattr(it, "asset", None), "value", getattr(it, "asset", "?"))
             side  = getattr(getattr(it, "side", None),  "value", getattr(it, "side",  "?"))
+
             entry_val = getattr(getattr(it, "entry", None), "value", getattr(it, "entry", None))
             sl_val    = getattr(getattr(it, "stop_loss", None), "value", getattr(it, "stop_loss", None))
             targets   = getattr(getattr(it, "targets", None), "values", getattr(it, "targets", [])) or []
@@ -98,12 +101,15 @@ async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     uid = query.from_user.id
+    # خزن rec_id في مساحة بيانات المستخدم على مستوى التطبيق
     _user_state(context, uid)[AWAITING_CLOSE_PRICE_KEY] = rec_id
 
+    # أرسل رسالة خاصة للمستخدم لطلب السعر
     try:
         await context.bot.send_message(chat_id=uid, text=ASK_EXIT_PRICE, parse_mode=ParseMode.HTML)
         await query.answer("تم إرسال رسالة خاصة لك لبدء الإغلاق.", show_alert=False)
     except Exception:
+        # fallback: تحرير الرسالة الحالية (إذا كان DM أصلًا)
         await query.edit_message_text(ASK_EXIT_PRICE, parse_mode=ParseMode.HTML)
 
 async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,6 +128,7 @@ async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_html(INVALID_PRICE)
         return
 
+    # اطلب التأكيد عبر أزرار — DM
     await update.message.reply_html(
         CLOSE_CONFIRM(rec_id, exit_price),
         reply_markup=confirm_close_keyboard(rec_id, exit_price),
@@ -149,6 +156,7 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not isinstance(trade_service, TradeService):
             raise RuntimeError("TradeService ليس مهيأً في bot_data")
         rec = trade_service.close(rec_id, exit_price)
+        # أبلغ المستخدم في DM — بطاقة القناة ستتحدّث عبر Notifier.edit
         await query.edit_message_text(
             CLOSE_DONE(rec.id, exit_price),
             parse_mode=ParseMode.HTML,
@@ -157,6 +165,7 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ تعذّر إغلاق التوصية: {e}")
         return
 
+    # تنظيف حالة الانتظار للمستخدم
     try:
         uid = query.from_user.id
         store = _user_state(context, uid)
