@@ -1,43 +1,126 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
-from __future__ import annotations
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+# --- START OF FILE: src/capitalguard/interfaces/telegram/handlers.py ---
+from functools import partial
+import logging
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
-def confirm_recommendation_keyboard(user_data_key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ نشر في القناة", callback_data=f"rec:publish:{user_data_key}"),
-            InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{user_data_key}")
-        ]
-    ])
+from .auth import ALLOWED_FILTER
 
-def recommendation_management_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    # الأزرار في رسائل DM أو /open
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🛑 إغلاق الآن", callback_data=f"rec:close:{rec_id}"),
-            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"rec:amend_tp:{rec_id}"),
-            InlineKeyboardButton("🛡️ تعديل SL", callback_data=f"rec:amend_sl:{rec_id}")
-        ],
-        [InlineKeyboardButton("📜 السجل", callback_data=f"rec:history:{rec_id}")]
-    ])
+# محادثة إنشاء التوصية + أزرار النشر/الإلغاء
+from .conversation_handlers import (
+    get_recommendation_conversation_handler,
+    publish_recommendation,
+    cancel_publication,
+)
 
-def channel_card_keyboard(rec_id: int, is_open: bool = True) -> InlineKeyboardMarkup:
-    # أزرار بطاقة القناة — إن كانت مغلقة نظهر فقط السجل
-    if not is_open:
-        return InlineKeyboardMarkup([[InlineKeyboardButton("📜 السجل", callback_data=f"rec:history:{rec_id}")]])
-    return recommendation_management_keyboard(rec_id)
+# إدارة التوصيات (عرض/إغلاق) + دالة فحص العدّ
+from .management_handlers import (
+    open_cmd,
+    list_count_cmd,
+    click_close_now,
+    received_exit_price,
+    confirm_close,
+    cancel_close,
+)
 
-def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "✅ تأكيد الإغلاق",
-                callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"
-            ),
-            InlineKeyboardButton(
-                "❌ تراجع",
-                callback_data=f"rec:cancel_close:{rec_id}"
-            )
-        ]
-    ])
+# معالج أخطاء عام
+from .errors import register_error_handler
+
+# نصوص موحّدة
+from .ui_texts import WELCOME, HELP
+
+log = logging.getLogger(__name__)
+
+# ======================
+# أوامر عامة
+# ======================
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("START from id=%s username=%s", update.effective_user.id, update.effective_user.username)
+    await update.message.reply_html(WELCOME)
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("HELP from id=%s", update.effective_user.id)
+    await update.message.reply_html(HELP)
+
+async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("PING from id=%s", update.effective_user.id)
+    await update.message.reply_text("pong ✅")
+
+async def analytics_cmd(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    analytics_service,
+):
+    log.info("ANALYTICS from id=%s", update.effective_user.id)
+    summary = analytics_service.performance_summary()
+    text = "📊 <b>ملخص الأداء</b>\n" + "\n".join(
+        [f"• {k.replace('_',' ').title()}: {v}" for k, v in summary.items()]
+    )
+    await update.message.reply_html(text)
+
+# ======================
+# التسجيل المركزي
+# ======================
+def register_all_handlers(application: Application, services: dict):
+    """
+    يسجل جميع Handlers على نفس Application.
+    - الأوامر: حقن صريح عبر partial لتمرير الخدمات المطلوبة.
+    - المحادثات والـ CallbackQueries: تستخدم bot_data أو خدمات الحقن حسب الحاجة.
+    """
+    # 1) أوامر عامة
+    application.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("help", help_cmd, filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("ping", ping_cmd, filters=filters.ALL))  # للسماح بفحص التوصيل
+    application.add_handler(
+        CommandHandler(
+            "analytics",
+            partial(analytics_cmd, analytics_service=services["analytics_service"]),
+            filters=ALLOWED_FILTER,
+        )
+    )
+
+    # 2) أوامر الإدارة (قائمة المفتوحة + عدّ سريع)
+    application.add_handler(
+        CommandHandler(
+            "open",
+            partial(open_cmd, trade_service=services["trade_service"]),
+            filters=ALLOWED_FILTER,
+        )
+    )
+    application.add_handler(
+        CommandHandler(
+            "list",
+            partial(list_count_cmd, trade_service=services["trade_service"]),
+            filters=ALLOWED_FILTER,
+        )
+    )
+
+    # 3) محادثة إنشاء التوصية + أزرار نشر/إلغاء
+    application.add_handler(get_recommendation_conversation_handler(ALLOWED_FILTER))
+    application.add_handler(CallbackQueryHandler(publish_recommendation, pattern=r"^rec:publish:"))
+    application.add_handler(CallbackQueryHandler(cancel_publication, pattern=r"^rec:cancel:"))
+
+    # 4) إدارة التوصيات + الإغلاق (قناة→DM)
+    application.add_handler(CallbackQueryHandler(click_close_now,   pattern=r"^rec:close:\d+$"))
+    application.add_handler(CallbackQueryHandler(confirm_close,     pattern=r"^rec:confirm_close:\d+:[0-9.]+$"))
+    application.add_handler(CallbackQueryHandler(cancel_close,      pattern=r"^rec:cancel_close:\d+$"))
+
+    # 5) استقبال سعر الخروج (Group أعلى من المحادثة لتجنّب التعارض)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price), group=1)
+
+    # 6) لوج لكل نص يصل (تشخيص فقط)
+    async def _log_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        log.info("TEXT '%s' from id=%s", (update.message.text or "").strip(), update.effective_user.id)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _log_text), group=99)
+
+    # 7) معالج الأخطاء العام
+    register_error_handler(application)
 # --- END OF FILE ---
