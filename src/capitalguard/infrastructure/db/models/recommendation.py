@@ -1,4 +1,4 @@
-#--- START OF FILE: src/capitalguard/infrastructure/db/models/recommendation.py ---
+# --- START OF FILE: src/capitalguard/infrastructure/db/models/recommendation.py ---
 from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, JSON, Index
 from datetime import datetime
 from .base import Base
@@ -13,7 +13,9 @@ class RecommendationORM(Base):
     targets = Column(JSON, nullable=False)
     status = Column(String, default="OPEN", nullable=False)
     channel_id = Column(BigInteger, index=True, nullable=True)
-    user_id    = Column(String, nullable=True) # Changed to String for email
+    message_id = Column(BigInteger, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    user_id    = Column(String, nullable=True)
     exit_price = Column(Float, nullable=True)
     closed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -21,4 +23,4 @@ class RecommendationORM(Base):
 
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
 Index("idx_recs_asset_status",  RecommendationORM.asset,  RecommendationORM.status)
-#--- END OF FILE ---
+# --- END OF FILE ---
