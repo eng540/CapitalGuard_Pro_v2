@@ -21,8 +21,14 @@ ptb_app: Application | None = None
 def _build_ptb_app() -> Application:
     persistence = PicklePersistence(filepath="./telegram_bot_persistence")
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
+    # نمرّر الخدمات على شكل dict لمن يحتاجها مستقبلاً
     application.bot_data.update(_services_pack)
-    register_all_handlers(application, _services_pack)
+    # ✅ تمرير الخدمات للدالة كمُعاملات مُسمّاة (وليس dict كامل)
+    register_all_handlers(
+        application,
+        trade_service=_services_pack["trade_service"],
+        analytics_service=_services_pack["analytics_service"],
+    )
     return application
 
 if settings.TELEGRAM_BOT_TOKEN:
@@ -85,12 +91,12 @@ def dashboard(request: Request, symbol: str | None = None, status: str | None = 
     rows = []
     for r in items:
         rid   = getattr(r, "id", "")
-        asset = getattr(r, "asset", "")
-        side  = getattr(r, "side", "")
+        asset = getattr(getattr(r, "asset", ""), "value", getattr(r, "asset", ""))
+        side  = getattr(getattr(r, "side", ""), "value", getattr(r, "side", ""))
         mkt   = getattr(r, "market", "") or "-"
         st    = getattr(r, "status", "")
-        entry = getattr(r, "entry", "")
-        sl    = getattr(r, "stop_loss", "")
+        entry = getattr(getattr(r, "entry", ""), "value", getattr(r, "entry", ""))
+        sl    = getattr(getattr(r, "stop_loss", ""), "value", getattr(r, "stop_loss", ""))
         exitp = getattr(r, "exit_price", "") or "-"
 
         rows.append(
