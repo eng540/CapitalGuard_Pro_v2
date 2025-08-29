@@ -1,7 +1,6 @@
 # --- START OF FILE: src/capitalguard/infrastructure/notify/telegram.py ---
 from __future__ import annotations
-from typing import Optional, Tuple, List, Dict, Any
-
+from typing import Optional, Tuple, Dict, Any, List
 import logging
 import requests
 
@@ -13,9 +12,6 @@ log = logging.getLogger(__name__)
 
 
 def _channel_keyboard_json(rec_id: int, *, is_open: bool) -> Dict[str, Any]:
-    """
-    يبني JSON خام لأزرار Inline كما تتوقع Telegram HTTP API بدون الاعتماد على كائنات PTB.
-    """
     if is_open:
         inline_keyboard: List[List[Dict[str, str]]] = [
             [
@@ -33,14 +29,6 @@ def _channel_keyboard_json(rec_id: int, *, is_open: bool) -> Dict[str, Any]:
 
 
 class TelegramNotifier:
-    """
-    ناشر ومحرّر بطاقات التوصيات إلى قناة تيليجرام باستخدام Telegram HTTP API (متزامن).
-    يعتمد على:
-      - TELEGRAM_BOT_TOKEN
-      - TELEGRAM_CHAT_ID
-    لا يستخدم coroutines ولا PTB داخل هذا الملف لتفادي مشاكل await ودورات الاستيراد.
-    """
-
     def __init__(self) -> None:
         self.bot_token: Optional[str] = settings.TELEGRAM_BOT_TOKEN
         self.channel_id: Optional[int] = (
@@ -48,9 +36,6 @@ class TelegramNotifier:
         )
         self.api_base = f"https://api.telegram.org/bot{self.bot_token}" if self.bot_token else None
 
-    # -------------------------
-    # أدوات داخلية
-    # -------------------------
     def _post(self, method: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not self.api_base:
             log.warning("TelegramNotifier disabled — missing TELEGRAM_BOT_TOKEN")
@@ -69,13 +54,7 @@ class TelegramNotifier:
             log.exception("Telegram API call failed (%s)", method)
             return None
 
-    # -------------------------
-    # رسائل عامة
-    # -------------------------
     def send_message(self, text: str, chat_id: Optional[int | str] = None) -> Optional[int]:
-        """
-        يرسل رسالة نصية بسيطة. يعيد message_id عند النجاح.
-        """
         target = chat_id or self.channel_id
         if not target:
             log.warning("TelegramNotifier: no chat id to send message")
@@ -93,14 +72,7 @@ class TelegramNotifier:
             return int(res["message_id"])
         return None
 
-    # -------------------------
-    # بطاقات التوصيات
-    # -------------------------
     def post_recommendation_card(self, rec: Recommendation) -> Optional[Tuple[int, int]]:
-        """
-        ينشر بطاقة توصية إلى القناة ويعيد (channel_id, message_id).
-        يُستدعى عند إنشاء توصية جديدة.
-        """
         if not self.channel_id:
             log.warning("TelegramNotifier: TELEGRAM_CHAT_ID is not set; skipping publish")
             return None
@@ -124,10 +96,6 @@ class TelegramNotifier:
         return (self.channel_id, msg_id) if msg_id else None
 
     def edit_recommendation_card(self, rec: Recommendation) -> bool:
-        """
-        يحرّر البطاقة (إن أمكن) أو يعيد النشر عند الفشل.
-        يتطلّب أن تكون rec.channel_id و rec.message_id موجودتين.
-        """
         ch_id = getattr(rec, "channel_id", None)
         msg_id = getattr(rec, "message_id", None)
         if not ch_id or not msg_id:
@@ -150,6 +118,6 @@ class TelegramNotifier:
         if res:
             return True
 
-        # إذا فشل التحرير (قيود زمنية مثلاً) نحاول إعادة النشر
         posted = self.post_recommendation_card(rec)
         return bool(posted)
+# --- END OF FILE ---
