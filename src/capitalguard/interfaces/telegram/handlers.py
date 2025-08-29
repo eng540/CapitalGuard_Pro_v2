@@ -20,7 +20,7 @@ from .conversation_handlers import (
     cancel_publication,
 )
 
-# إدارة التوصيات (عرض/إغلاق/تعديل) + دوال إدخال
+# إدارة التوصيات (عرض/إغلاق) + دالة فحص العدّ
 from .management_handlers import (
     open_cmd,
     list_count_cmd,
@@ -29,10 +29,8 @@ from .management_handlers import (
     confirm_close,
     cancel_close,
     click_amend_sl,
-    received_new_sl,
     click_amend_tp,
-    received_new_tps,
-    show_history,
+    click_history,
 )
 
 # معالج أخطاء عام
@@ -45,20 +43,17 @@ log = logging.getLogger(__name__)
 # ======================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("START from id=%s username=%s", update.effective_user.id, update.effective_user.username)
-    await update.message.reply_html(
-        "👋 أهلاً بك في <b>CapitalGuard Bot</b>.\n"
-        "استخدم /help للاطلاع على الأوامر."
-    )
+    await update.message.reply_html("👋 أهلاً بك في <b>CapitalGuard Bot</b>.\nاستخدم /help للمساعدة.")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("HELP from id=%s", update.effective_user.id)
     await update.message.reply_html(
         "<b>الأوامر المتاحة:</b>\n\n"
-        "• <code>/newrec</code> — إنشاء توصية بمحادثة موجّهة\n"
-        "• <code>/open [SYMBOL]</code> — عرض التوصيات المفتوحة (اختياري فلترة بالرمز)\n"
-        "• <code>/list [SYMBOL]</code> — عدّ مفتوحة (اختياري فلترة)\n"
-        "• <code>/analytics</code> — ملخص أداء\n"
-        "• <code>/ping</code> — اختبار الاتصال"
+        "• <code>/newrec</code>\n"
+        "• <code>/open</code>\n"
+        "• <code>/list</code>\n"
+        "• <code>/analytics</code>\n"
+        "• <code>/ping</code> (اختبار)"
     )
 
 async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -120,19 +115,23 @@ def register_all_handlers(application: Application, services: dict):
     application.add_handler(CallbackQueryHandler(publish_recommendation, pattern=r"^rec:publish:"))
     application.add_handler(CallbackQueryHandler(cancel_publication, pattern=r"^rec:cancel:"))
 
-    # 4) إدارة التوصيات + الإغلاق/تعديل/السجل
+    # 4) إدارة التوصيات + الإغلاق
     application.add_handler(CallbackQueryHandler(click_close_now,   pattern=r"^rec:close:\d+$"))
     application.add_handler(CallbackQueryHandler(confirm_close,     pattern=r"^rec:confirm_close:\d+:[0-9.]+$"))
     application.add_handler(CallbackQueryHandler(cancel_close,      pattern=r"^rec:cancel_close:\d+$"))
 
+    # 4.1) أزرار تعديل SL/الأهداف/السجل من بطاقة القناة
     application.add_handler(CallbackQueryHandler(click_amend_sl,    pattern=r"^rec:amend_sl:\d+$"))
     application.add_handler(CallbackQueryHandler(click_amend_tp,    pattern=r"^rec:amend_tp:\d+$"))
-    application.add_handler(CallbackQueryHandler(show_history,      pattern=r"^rec:history:\d+$"))
+    application.add_handler(CallbackQueryHandler(click_history,     pattern=r"^rec:history:\d+$"))
 
-    # استقبال مدخلات المستخدم في DM — Group أعلى من المحادثة لتجنّب التعارض
+    # استقبال سعر الخروج (Group أعلى من المحادثة لتجنّب التعارض)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price), group=1)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_new_sl), group=1)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_new_tps), group=1)
 
-    # 5) معالج الأخطاء العام
+    # 5) لوج لكل نص يصل (تشخيص فقط)
+    async def _log_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        log.info("TEXT '%s' from id=%s", (update.message.text or "").strip(), update.effective_user.id)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _log_text), group=99)
+
+    # 6) معالج الأخطاء العام
     register_error_handler(application)
