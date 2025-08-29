@@ -1,14 +1,14 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/callbacks.py ---
 from __future__ import annotations
-from typing import Dict, Tuple
+from typing import Tuple
 
 # توحيد صيغة callback_data لضمان توسّع مستقبلي سهل
-# الشكل المبدئي الحالي (متوافق مع الموجود):
+# الشكل الحالي (متوافق مع الموجود):
 #   rec:close:<id>
 #   rec:confirm_close:<id>:<exit_price>
 #   rec:cancel_close:<id>
-# ويمكن الترقية لاحقًا إلى:
-#   rec:v1:<id>:<action>[:k=v;...]
+#   rec:publish:<uuid>
+#   rec:cancel:<uuid>
 
 SEP = ":"
 
