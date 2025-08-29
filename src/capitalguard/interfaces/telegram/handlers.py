@@ -1,4 +1,4 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/handlers.py ---
+#--- START OF FILE: src/capitalguard/interfaces/telegram/handlers.py ---
 from functools import partial
 import logging
 from telegram import Update
@@ -33,6 +33,9 @@ from .management_handlers import (
 # معالج أخطاء عام
 from .errors import register_error_handler
 
+# رسائل موحّدة
+from .ui_texts import WELCOME, HELP as HELP_TEXT
+
 log = logging.getLogger(__name__)
 
 # ======================
@@ -40,18 +43,11 @@ log = logging.getLogger(__name__)
 # ======================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("START from id=%s username=%s", update.effective_user.id, update.effective_user.username)
-    await update.message.reply_html("👋 أهلاً بك في <b>CapitalGuard Bot</b>.\nاستخدم /help للمساعدة.")
+    await update.message.reply_html(WELCOME)
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("HELP from id=%s", update.effective_user.id)
-    await update.message.reply_html(
-        "<b>الأوامر المتاحة:</b>\n\n"
-        "• <code>/newrec</code>\n"
-        "• <code>/open</code>\n"
-        "• <code>/list</code>\n"
-        "• <code>/analytics</code>\n"
-        "• <code>/ping</code> (اختبار)"
-    )
+    await update.message.reply_html(HELP_TEXT)
 
 async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("PING from id=%s", update.effective_user.id)
@@ -127,4 +123,4 @@ def register_all_handlers(application: Application, services: dict):
 
     # 6) معالج الأخطاء العام
     register_error_handler(application)
-# --- END OF FILE ---
+#--- END OF FILE ---
