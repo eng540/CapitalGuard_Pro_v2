@@ -2,7 +2,7 @@
 """add market and notes columns to recommendations
 
 Revision ID: 20250829_01
-Revises: <PUT_PREVIOUS_REVISION_ID_HERE>
+Revises: "20250829_add_message_meta"
 Create Date: 2025-08-29 15:40:00.000000
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "20250829_01"
-down_revision = "<PUT_PREVIOUS_REVISION_ID_HERE>"
+down_revision = "20250829_add_message_meta"
 branch_labels = None
 depends_on = None
 
