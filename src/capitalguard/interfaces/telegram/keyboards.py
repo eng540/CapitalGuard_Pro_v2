@@ -1,12 +1,19 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
 from __future__ import annotations
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 
+# ----- Reply Keyboards (للمحادثة في الخاص) -----
+def side_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([["LONG", "SHORT"]], resize_keyboard=True, one_time_keyboard=True, selective=True)
+
+def market_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([["Spot", "Futures"]], resize_keyboard=True, one_time_keyboard=True, selective=True)
+
+def remove_reply_keyboard() -> ReplyKeyboardRemove:
+    return ReplyKeyboardRemove()
+
+# ----- Inline Keyboards (للقناة/الإدارة) -----
 def confirm_recommendation_keyboard(user_data_key: str) -> InlineKeyboardMarkup:
-    """
-    أزرار لتأكيد نشر التوصية أو إلغائها (في الخاص).
-    callback_data: rec:publish:<uuid> / rec:cancel:<uuid>
-    """
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ نشر في القناة", callback_data=f"rec:publish:{user_data_key}"),
@@ -15,9 +22,6 @@ def confirm_recommendation_keyboard(user_data_key: str) -> InlineKeyboardMarkup:
     ])
 
 def recommendation_management_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """
-    أزرار لإدارة توصية مفتوحة (DM أو /open).
-    """
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🛑 إغلاق الآن", callback_data=f"rec:close:{rec_id}"),
@@ -28,27 +32,15 @@ def recommendation_management_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     ])
 
 def channel_card_keyboard(rec_id: int, is_open: bool = True) -> InlineKeyboardMarkup:
-    """
-    أزرار بطاقة القناة — إن كانت مغلقة نظهر فقط السجل.
-    """
     if not is_open:
         return InlineKeyboardMarkup([[InlineKeyboardButton("📜 السجل", callback_data=f"rec:history:{rec_id}")]])
     return recommendation_management_keyboard(rec_id)
 
 def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMarkup:
-    """
-    تأكيد/تراجع إغلاق التوصية (DM).
-    """
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(
-                "✅ تأكيد الإغلاق",
-                callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"
-            ),
-            InlineKeyboardButton(
-                "❌ تراجع",
-                callback_data=f"rec:cancel_close:{rec_id}"
-            )
+            InlineKeyboardButton("✅ تأكيد الإغلاق", callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"),
+            InlineKeyboardButton("❌ تراجع", callback_data=f"rec:cancel_close:{rec_id}")
         ]
     ])
 # --- END OF FILE ---
