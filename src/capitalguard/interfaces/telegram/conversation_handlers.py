@@ -1,249 +1,231 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
 from __future__ import annotations
-from typing import Tuple, List, Dict, Any, Callable, Awaitable
-import re
-
+from typing import List, Dict, Any
+import logging
 from telegram import Update
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    ConversationHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
+    ConversationHandler, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
 )
 
-from capitalguard.application.services.trade_service import TradeService
-from capitalguard.interfaces.telegram.keyboards import bot_control_keyboard
-from capitalguard.interfaces.telegram.ui_texts import build_panel_caption, build_close_summary
+from .auth import ALLOWED_FILTER
+from .keyboards import (
+    choose_side_keyboard, choose_market_keyboard, remove_reply_keyboard,
+    confirm_recommendation_keyboard, control_panel_keyboard, close_confirmation_keyboard
+)
+from .ui_texts import build_review_text
+log = logging.getLogger(__name__)
 
-# حالات محادثة إنشاء توصية
+# حالات المحادثة
 ASK_SYMBOL, ASK_SIDE, ASK_MARKET, ASK_ENTRY, ASK_SL, ASK_TPS, ASK_NOTES, CONFIRM = range(8)
 
-# أدوات صغيرة
-def _parse_float_list(txt: str) -> List[float]:
-    items = re.split(r"[,\s]+", txt.strip())
-    return [float(x) for x in items if x]
+DRAFT_KEY = "draft_rec"           # داخل user_data
+AWAIT_CLOSE_FOR = "await_close_for"  # rec_id أثناء طلب سعر الإغلاق
 
-def _side_validates_prices(side: str, entry: float, sl: float) -> bool:
-    side = side.upper()
-    if side == "LONG":
-        return sl < entry
-    if side == "SHORT":
-        return sl > entry
-    return True
+def _parse_float_list(text: str) -> List[float]:
+    raw = [p for p in text.replace(",", " ").split() if p.strip()]
+    return [float(x) for x in raw]
 
-# --------------- إنشاء توصية ---------------
-async def newrec_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# —————— إنشاء توصية ——————
+async def start_newrec(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop(DRAFT_KEY, None)
     await update.message.reply_text("لنبدأ بإنشاء توصية جديدة. ما هو رمز الأصل؟ (مثال: BTCUSDT)")
-    context.user_data.clear()
     return ASK_SYMBOL
 
-async def newrec_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["asset"] = update.message.text.strip().upper()
-    # أزرار مبسطة بالرسالة التالية: نطلب الاتجاه مباشرة
-    await update.message.reply_text("اختر الاتجاه: أرسل LONG أو SHORT")
+async def ask_side(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[DRAFT_KEY] = {"asset": update.message.text.strip()}
+    await update.message.reply_text("اختر الاتجاه:", reply_markup=choose_side_keyboard())
     return ASK_SIDE
 
-async def newrec_side(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    side = update.message.text.strip().upper()
-    if side not in ("LONG", "SHORT"):
-        await update.message.reply_text("أرسل LONG أو SHORT.")
-        return ASK_SIDE
-    context.user_data["side"] = side
-    await update.message.reply_text("اختر النوع: Spot أو Futures")
+async def ask_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[DRAFT_KEY]["side"] = update.message.text.strip().upper()
+    await update.message.reply_text("اختر النوع:", reply_markup=choose_market_keyboard())
     return ASK_MARKET
 
-async def newrec_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["market"] = update.message.text.strip().title()
-    await update.message.reply_text("ما هو سعر الدخول؟")
+async def ask_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[DRAFT_KEY]["market"] = update.message.text.strip().title()
+    await update.message.reply_text("ما هو سعر الدخول؟", reply_markup=remove_reply_keyboard())
     return ASK_ENTRY
 
-async def newrec_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        context.user_data["entry"] = float(update.message.text.strip())
-    except Exception:
-        await update.message.reply_text("أرسل رقمًا صالحًا.")
-        return ASK_ENTRY
+async def ask_sl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[DRAFT_KEY]["entry"] = float(update.message.text.strip())
     await update.message.reply_text("ما هو سعر وقف الخسارة؟")
     return ASK_SL
 
-async def newrec_sl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        sl = float(update.message.text.strip())
-    except Exception:
-        await update.message.reply_text("أرسل رقمًا صالحًا.")
-        return ASK_SL
-    entry = float(context.user_data["entry"])
-    side  = context.user_data["side"]
-    if not _side_validates_prices(side, entry, sl):
-        hint = "SL يجب أن يكون أقل من الدخول في LONG وأعلى في SHORT."
-        await update.message.reply_text(f"القيمة لا تتوافق مع الاتجاه. {hint}\nأرسل قيمة SL من جديد:")
-        return ASK_SL
-    context.user_data["stop_loss"] = sl
-    await update.message.reply_text("أدخل الأهداف مفصولة بمسافة أو فاصلة (مثال: 70000 72000).")
+async def ask_tps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[DRAFT_KEY]["stop_loss"] = float(update.message.text.strip())
+    await update.message.reply_text("أدخل الأهداف مفصولة بمسافة أو فاصلة (مثال: 68000 70000).")
     return ASK_TPS
 
-async def newrec_tps(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        context.user_data["targets"] = _parse_float_list(update.message.text)
-    except Exception:
-        await update.message.reply_text("صيغة غير صحيحة. أعد إرسال الأهداف.")
-        return ASK_TPS
+async def ask_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[DRAFT_KEY]["targets"] = _parse_float_list(update.message.text)
     await update.message.reply_text("أضف ملاحظة مختصرة أو اكتب '-' لتخطي.")
     return ASK_NOTES
 
-async def newrec_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def preview_and_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     note = update.message.text.strip()
-    context.user_data["notes"] = None if note == "-" else note
+    if note != "-":
+        context.user_data[DRAFT_KEY]["notes"] = note
+    else:
+        context.user_data[DRAFT_KEY]["notes"] = None
 
-    # عرض ملخص ونشر بالأوامر
-    d = context.user_data
-    tps = " • ".join(str(x) for x in d["targets"])
-    txt = (
-        "📝 <b>مراجعة التوصية</b>\n"
-        f"{d['asset']} 💎\n"
-        f"{d['side']} 🔶\n"
-        f"{d['market']} 💼\n"
-        f"الدخول: <code>{d['entry']}</code>\n"
-        f"SL: <code>{d['stop_loss']}</code>\n"
-        f"الأهداف:\n• {tps}\n\n"
-        f"ملاحظة: <i>{d['notes'] or 'None'}</i>\n\n"
-        "أرسل <code>/publish</code> للنشر أو <code>/cancel</code> للإلغاء."
-    )
-    await update.message.reply_text(txt)
+    key = str(update.effective_user.id)  # مفتاح محلي مباشر
+    text = build_review_text(context.user_data[DRAFT_KEY])
+    await update.message.reply_html(text, reply_markup=confirm_recommendation_keyboard(key))
     return CONFIRM
 
-async def newrec_publish(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    svc: TradeService = context.application.bot_data["trade_service"]
-    d = context.user_data
+# نشر/إلغاء
+async def on_publish_click(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service):
+    query = update.callback_query
+    await query.answer()
+    draft = context.user_data.get(DRAFT_KEY)
+    if not draft:
+        await query.edit_message_text("لا توجد مسودة.")
+        return ConversationHandler.END
 
-    rec = svc.create(
-        asset=d["asset"],
-        side=d["side"],
-        entry=d["entry"],
-        stop_loss=d["stop_loss"],
-        targets=d["targets"],
-        market=d["market"],
-        notes=d["notes"],
+    rec = trade_service.create(
+        asset=draft["asset"],
+        side=draft["side"],
+        entry=float(draft["entry"]),
+        stop_loss=float(draft["stop_loss"]),
+        targets=list(draft["targets"]),
+        market=draft["market"],
+        notes=draft.get("notes"),
         user_id=str(update.effective_user.id),
     )
 
-    # إرسال لوحة التحكّم داخل المحادثة
-    await update.message.reply_text(
-        f"✅ تم إنشاء التوصية #{rec.id} ونشرها!",
-        reply_markup=bot_control_keyboard(rec.id, is_open=True),
+    # لوحة تحكم داخل البوت فقط
+    await query.edit_message_text("✅ تم إنشاء التوصية ونشرها بنجاح!")
+    await query.message.reply_html(
+        f"<b>#REC{rec.id:04d}</b> — {rec.asset.value} ({rec.side.value})",
+        reply_markup=control_panel_keyboard(rec.id, is_open=(rec.status.upper() == "OPEN"))
     )
-    # ثم عنوان اللوحة/الوصف
-    await update.message.reply_text(build_panel_caption(rec))
+    context.user_data.pop(DRAFT_KEY, None)
     return ConversationHandler.END
 
-async def newrec_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("تم إلغاء العملية.")
+async def on_cancel_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop(DRAFT_KEY, None)
+    await query.edit_message_text("تم الإلغاء.")
     return ConversationHandler.END
 
-# --------------- لوحات التحكّم (أزرار) ---------------
-async def on_amend_tp_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    _, _, rec_id = q.data.partition("rec:amend_tp:")
-    context.user_data["rec_edit_id"] = int(rec_id)
-    await q.message.reply_text("🎯 أرسل قائمة الأهداف الجديدة مفصولة بمسافة أو فاصلة:")
-    context.user_data["awaiting"] = "tp"
-    return
-
-async def on_amend_sl_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    _, _, rec_id = q.data.partition("rec:amend_sl:")
-    context.user_data["rec_edit_id"] = int(rec_id)
+# —————— إدارة التوصية داخل البوت ——————
+async def click_amend_sl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    rec_id = int(q.data.split(":")[2])
+    context.user_data["await_sl_for"] = rec_id
     await q.message.reply_text("🛡️ أرسل قيمة SL الجديدة:")
-    context.user_data["awaiting"] = "sl"
-    return
+    # لا ننهي؛ ننتظر رسالة المستخدم
+    return ConversationHandler.END
 
-async def on_close_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    _, _, rec_id = q.data.partition("rec:close:")
-    context.user_data["rec_edit_id"] = int(rec_id)
-    await q.message.reply_text("🔻 أرسل الآن <b>سعر الخروج</b> لإغلاق التوصية:")
-    context.user_data["awaiting"] = "close"
-    return
+async def click_amend_tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    rec_id = int(q.data.split(":")[2])
+    context.user_data["await_tp_for"] = rec_id
+    await q.message.reply_text("🎯 أرسل الأهداف الجديدة مفصولة بمسافة أو فاصلة:")
+    return ConversationHandler.END
 
-async def on_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    await q.message.reply_text("🧾 السجل: قريبًا سيتم توفير سجل المعاملات للتوصية.")
-    return
+async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    rec_id = int(q.data.split(":")[2])
+    context.user_data[AWAIT_CLOSE_FOR] = rec_id
+    await q.message.reply_text("🔻 أرسل الآن سعر الخروج لإغلاق التوصية:")
+    return ConversationHandler.END
 
-async def on_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    يلتقط القيم المطلوبة بعد الضغط على الأزرار.
-    """
-    if "awaiting" not in context.user_data or "rec_edit_id" not in context.user_data:
-        return  # ليس لدينا سياق مطلوب
+async def on_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service):
+    """يلتقط رسائل المتابعة بعد ضغط أزرار الإدارة."""
+    text = update.message.text.strip()
 
-    mode = context.user_data["awaiting"]
-    rec_id = int(context.user_data["rec_edit_id"])
-    svc: TradeService = context.application.bot_data["trade_service"]
-
-    try:
-        if mode == "tp":
-            new_targets = _parse_float_list(update.message.text)
-            rec = svc.update_targets(rec_id, new_targets)
-            await update.message.reply_text("✅ تم تحديث الأهداف.", reply_markup=bot_control_keyboard(rec.id, is_open=(rec.status.upper()=="OPEN")))
-            await update.message.reply_text(build_panel_caption(rec))
-        elif mode == "sl":
-            new_sl = float(update.message.text.strip())
-            # تحقق من منطق الاتجاه
-            rec_now = svc.get(rec_id)
-            if rec_now:
-                entry = float(getattr(rec_now.entry, "value", rec_now.entry))
-                side  = rec_now.side.value
-                if not _side_validates_prices(side, entry, new_sl):
-                    await update.message.reply_text("⚠️ القيمة لا تتوافق مع الاتجاه (LONG: SL<ENTRY, SHORT: SL>ENTRY). أعد الإرسال:")
-                    return
-            rec = svc.update_stop_loss(rec_id, new_sl)
-            await update.message.reply_text("✅ تم تحديث SL.", reply_markup=bot_control_keyboard(rec.id, is_open=(rec.status.upper()=="OPEN")))
-            await update.message.reply_text(build_panel_caption(rec))
-        elif mode == "close":
-            exit_p = float(update.message.text.strip())
-            rec = svc.close(rec_id, exit_p)
-            # استبدال اللوحة بملخص الإغلاق
-            await update.message.reply_text(build_close_summary(rec))
-        else:
+    # تعديل SL
+    if "await_sl_for" in context.user_data:
+        rec_id = context.user_data.pop("await_sl_for")
+        try:
+            new_sl = float(text)
+        except ValueError:
+            await update.message.reply_text("الرجاء إرسال رقم صالح.")
             return
-    except Exception as e:
-        await update.message.reply_text(f"❌ حدث خطأ: {e}")
+        rec = trade_service.update_stop_loss(rec_id, new_sl)
+        await update.message.reply_html(
+            f"تم تحديث SL للتوصية <b>#{rec.id}</b> إلى <b>{new_sl:g}</b>."
+        )
         return
-    finally:
-        context.user_data.pop("awaiting", None)
-        context.user_data.pop("rec_edit_id", None)
 
-# --------------- بناء محادثة / ربط ---------------
-def build_newrec_conversation() -> ConversationHandler:
+    # تعديل TPs
+    if "await_tp_for" in context.user_data:
+        rec_id = context.user_data.pop("await_tp_for")
+        try:
+            tps = _parse_float_list(text)
+            if not tps:
+                raise ValueError
+        except Exception:
+            await update.message.reply_text("الرجاء إرسال قائمة أرقام مفصولة بمسافة أو فاصلة.")
+            return
+        rec = trade_service.update_targets(rec_id, tps)
+        await update.message.reply_html(
+            f"تم تحديث الأهداف للتوصية <b>#{rec.id}</b>."
+        )
+        return
+
+    # إغلاق
+    if AWAIT_CLOSE_FOR in context.user_data:
+        rec_id = int(context.user_data.pop(AWAIT_CLOSE_FOR))
+        try:
+            price = float(text)
+        except ValueError:
+            await update.message.reply_text("أرسل رقمًا صالحًا لسعر الخروج.")
+            return
+        # تأكيد
+        await update.message.reply_text(
+            f"هل تؤكد إغلاق التوصية #{rec_id} على سعر {price:g}؟",
+            reply_markup=close_confirmation_keyboard(rec_id, price)
+        )
+        return
+
+async def on_confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service):
+    q = update.callback_query
+    await q.answer()
+    _, _, rec_id_s, price_s = q.data.split(":")
+    rec = trade_service.close(int(rec_id_s), float(price_s))
+    await q.edit_message_text(f"✅ تم إغلاق التوصية #{rec.id} على {float(price_s):g}.")
+
+async def on_cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text("تم إلغاء الإغلاق.")
+
+# —————— بناء محادثة وإنشاء مُعالِجات الاستدعاء ——————
+def build_newrec_conversation(*, trade_service) -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("newrec", newrec_start)],
+        entry_points=[CommandHandler("newrec", start_newrec, filters=ALLOWED_FILTER)],
         states={
-            ASK_SYMBOL: [MessageHandler(filters.TEXT & ~filters.COMMAND, newrec_symbol)],
-            ASK_SIDE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, newrec_side)],
-            ASK_MARKET: [MessageHandler(filters.TEXT & ~filters.COMMAND, newrec_market)],
-            ASK_ENTRY:  [MessageHandler(filters.TEXT & ~filters.COMMAND, newrec_entry)],
-            ASK_SL:     [MessageHandler(filters.TEXT & ~filters.COMMAND, newrec_sl)],
-            ASK_TPS:    [MessageHandler(filters.TEXT & ~filters.COMMAND, newrec_tps)],
-            ASK_NOTES:  [MessageHandler(filters.TEXT & ~filters.COMMAND, newrec_notes)],
+            ASK_SYMBOL: [MessageHandler(ALLOWED_FILTER & filters.TEXT & ~filters.COMMAND, ask_side)],
+            ASK_SIDE:   [MessageHandler(ALLOWED_FILTER & filters.TEXT & ~filters.COMMAND, ask_market)],
+            ASK_MARKET: [MessageHandler(ALLOWED_FILTER & filters.TEXT & ~filters.COMMAND, ask_entry)],
+            ASK_ENTRY:  [MessageHandler(ALLOWED_FILTER & filters.TEXT & ~filters.COMMAND, ask_sl)],
+            ASK_SL:     [MessageHandler(ALLOWED_FILTER & filters.TEXT & ~filters.COMMAND, ask_tps)],
+            ASK_TPS:    [MessageHandler(ALLOWED_FILTER & filters.TEXT & ~filters.COMMAND, ask_notes)],
+            ASK_NOTES:  [MessageHandler(ALLOWED_FILTER & filters.TEXT & ~filters.COMMAND, preview_and_confirm)],
             CONFIRM:    [
-                CommandHandler("publish", newrec_publish),
-                CommandHandler("cancel", newrec_cancel),
+                CallbackQueryHandler(lambda u,c: on_publish_click(u,c,trade_service=trade_service), pattern=r"^rec:publish:"),
+                CallbackQueryHandler(on_cancel_click, pattern=r"^rec:cancel:"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", newrec_cancel)],
-        name="newrec",
-        persistent=True,
+        fallbacks=[CommandHandler("cancel", on_cancel_click, filters=ALLOWED_FILTER)],
+        name="newrec_conversation",
+        persistent=False,
     )
 
-def register_panel_handlers(application: Application):
-    application.add_handler(CallbackQueryHandler(on_amend_tp_start,  pattern=r"^rec:amend_tp:\d+$"))
-    application.add_handler(CallbackQueryHandler(on_amend_sl_start,  pattern=r"^rec:amend_sl:\d+$"))
-    application.add_handler(CallbackQueryHandler(on_close_start,     pattern=r"^rec:close:\d+$"))
-    application.add_handler(CallbackQueryHandler(on_history,         pattern=r"^rec:history:\d+$"))
-    # نص حر بعد الأزرار
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_free_text))
+def management_callback_handlers(*, trade_service) -> List[CallbackQueryHandler]:
+    return [
+        CallbackQueryHandler(click_amend_sl, pattern=r"^rec:amend_sl:\d+$"),
+        CallbackQueryHandler(click_amend_tp, pattern=r"^rec:amend_tp:\d+$"),
+        CallbackQueryHandler(click_close_now, pattern=r"^rec:close:\d+$"),
+        CallbackQueryHandler(lambda u,c: on_confirm_close(u,c,trade_service=trade_service), pattern=r"^rec:confirm_close:\d+:\d+(\.\d+)?$"),
+        CallbackQueryHandler(on_cancel_close, pattern=r"^rec:cancel_close:\d+$"),
+        # رسائل المتابعة (أرقام) تُلتقط عبر on_free_text في handlers.py
+    ]
 # --- END OF FILE ---
