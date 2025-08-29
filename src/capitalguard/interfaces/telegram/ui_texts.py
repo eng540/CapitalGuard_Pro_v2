@@ -1,80 +1,86 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 from __future__ import annotations
-from typing import Iterable, Optional
-from capitalguard.domain.entities import Recommendation
+from typing import Iterable, List, Optional
 
-# تنسيقات عامة
-BOLD = "<b>{}</b>"
-MONO = "<code>{}</code>"
-HR   = "─" * 40
+def _pct(entry: float, target: float, side: str) -> float:
+    """يحسِب نسبة الهدف بالنسبة لسعر الدخول مع مراعاة الاتجاه."""
+    if entry == 0:
+        return 0.0
+    side = (side or "").upper()
+    if side == "LONG":
+        return (target - entry) / entry * 100.0
+    return (entry - target) / entry * 100.0  # SHORT
 
-FOOTER = (
-    "\n\n"
-    "🔗 <b>Crybto Radar Bot</b>  |  📣 <b>Official Channel</b>  |  📬 <b>Contact for subscription</b>"
-)
+def _format_targets(entry: float, side: str, tps: Iterable[float]) -> str:
+    lines: List[str] = []
+    for i, tp in enumerate(tps, start=1):
+        lines.append(f"• TP{i}: {tp:g} ({_pct(entry, float(tp), side):+.2f}%)")
+    return "\n".join(lines) if lines else "—"
 
-def _fmt_pct(base: float, target: float, side: str) -> str:
-    try:
-        if base == 0:
-            return "0.00%"
-        diff = (target - base) / base if side.upper() == "LONG" else (base - target) / base
-        return f"{diff * 100:.2f}%"
-    except Exception:
-        return "-"
+def build_trade_card_text(rec) -> str:
+    """
+    يبني نص بطاقة القناة (HTML) اعتمادًا على كائن Recommendation.
+    الحقول المتوقعة في rec:
+      id, asset(str|Symbol.value), side(str|Side.value), market(str), entry(Price.value|float),
+      stop_loss(Price.value|float), targets(Targets.values|list), notes(str|None),
+      status('OPEN'|'CLOSED'), exit_price(float|None)
+    """
+    rid = getattr(rec, "id", None)
+    asset = str(getattr(rec.asset, "value", getattr(rec, "asset", ""))).upper()
+    side = str(getattr(rec.side, "value", getattr(rec, "side", ""))).upper()
+    market = str(getattr(rec, "market", "Futures")).title()
+    entry = float(getattr(rec.entry, "value", getattr(rec, "entry", 0.0)))
+    sl = float(getattr(rec.stop_loss, "value", getattr(rec, "stop_loss", 0.0)))
+    tps = list(getattr(getattr(rec, "targets", []), "values", getattr(rec, "targets", [])) or [])
+    notes: Optional[str] = getattr(rec, "notes", None)
+    status = str(getattr(rec, "status", "OPEN")).upper()
+    exit_price = getattr(rec, "exit_price", None)
 
-def _iter_targets(v: Iterable[float]) -> list[float]:
-    # يُضمن أن targets قابلة للتكرار
-    return list(v or [])
-
-def build_trade_card_text(rec: Recommendation) -> str:
-    """بطاقة النشر في القناة (بدون أزرار)."""
-    asset = getattr(rec.asset, "value", rec.asset)
-    side  = getattr(rec.side,  "value", rec.side)
-    entry = float(getattr(rec.entry, "value", rec.entry))
-    sl    = float(getattr(rec.stop_loss, "value", rec.stop_loss))
-    tps   = _iter_targets(getattr(rec.targets, "values", rec.targets))
-    mkt   = rec.market or "Futures"
-
-    # ترويسة مع هاشتاقات
-    rec_code = f"#REC{rec.id:04d}" if rec.id else "#REC"
-    head = (
-        f"📣 <b>Trade Signal</b> — {rec_code}  |  "
-        f"#{str(asset).upper()} #Signal #{mkt} #{side.upper()}\n"
-        f"{'└' + '─'*22 + '┘'}"
+    header = (
+        f"📣 <b>Trade Signal</b> — <code>#REC{rid:04d}</code>  |  "
+        f"<code>#{asset}</code> #Signal #{market.replace(' ', '')} #{side}\n"
+    )
+    body = (
+        f"💎 <b>Symbol</b> : {asset}\n"
+        f"📌 <b>Type</b>   : {market} / {side}\n"
+        f"────────────────────────\n"
+        f"💰 <b>Entry</b>  : {entry:g}\n"
+        f"🛑 <b>SL</b>     : {sl:g}\n\n"
+        f"🎯 <b>TPs</b>\n{_format_targets(entry, side, tps)}\n"
+        f"────────────────────────\n"
+        f"📊 <b>R/R</b>   : —\n"
+        f"📝 <b>Notes</b> : {notes or '-'}\n\n"
+        f"(Disclaimer: Not financial advice. Manage your risk.)\n"
     )
 
-    # الجسم
-    body = [
-        f"💎 {BOLD.format('Symbol')} : {str(asset).upper()}",
-        f"📌 {BOLD.format('Type')}   : {mkt} / {side.upper()}",
-        HR,
-        f"💰 {BOLD.format('Entry')}  : {entry:g}",
-        f"🛑 {BOLD.format('SL')}     : {sl:g}",
-        "",
-        f"🎯 {BOLD.format('TPs')}",
-    ]
-    for i, tp in enumerate(tps, start=1):
-        inc = _fmt_pct(entry, float(tp), side)
-        body.append(f"• TP{i}: {float(tp):g} ({inc})")
+    footer = ""
+    if status == "CLOSED":
+        footer = f"\n✅ <b>Closed at</b>: {exit_price:g}"
 
-    body += [
-        "",
-        HR,
-        f"📊 {BOLD.format('R/R')}   : —",
-        f"📝 {BOLD.format('Notes')} : {rec.notes or '—'}",
-        "\n(Disclaimer: Not financial advice. Manage your risk.)",
-    ]
+    promo = "\n\n🔗 <b>Crybto Radar Bot</b>  |  📣 <b>Official Channel</b>  |  📬 <b>Contact for subscription</b>"
 
-    # إغلاق إن كان مغلقًا
-    if str(rec.status).upper() == "CLOSED":
-        ep = rec.exit_price if rec.exit_price is not None else "—"
-        body.append(f"\n✅ <b>Closed at</b>: {ep}")
+    return header + body + footer + promo
 
-    return head + "\n" + "\n".join(body) + FOOTER
+def build_review_text(draft: dict) -> str:
+    """نص المراجعة داخل البوت قبل النشر."""
+    asset = draft["asset"].upper()
+    side = draft["side"].upper()
+    market = draft["market"].title()
+    entry = float(draft["entry"])
+    sl = float(draft["stop_loss"])
+    tps = draft["targets"]
 
-def build_admin_panel_caption(rec: Recommendation) -> str:
-    """نص لوحة التحكم الخاصة (DM للإدارة)."""
-    asset = getattr(rec.asset, "value", rec.asset)
-    side  = getattr(rec.side,  "value", rec.side)
-    return f"لوحة تحكم #REC{rec.id:04d} — {str(asset).upper()} ({side})"
+    lines = "\n".join([f"• TP{i}: {tp:g}" for i, tp in enumerate(tps, start=1)])
+    notes = draft.get("notes") or "-"
+
+    return (
+        "📝 <b>مراجعة التوصية</b>\n"
+        f"<b>{asset}</b> 💎\n"
+        f"{market} / {side} 📌\n"
+        f"الدخول 💰: {entry:g}\n"
+        f"ووقف الخسارة 🛑: {sl:g}\n"
+        f"الأهداف 🎯:\n{lines}\n"
+        f"ملاحظة 📝: {notes}\n"
+        "\nهل تريد نشر هذه التوصية في القناة؟"
+    )
 # --- END OF FILE ---
