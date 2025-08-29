@@ -13,7 +13,7 @@ WELCOME = (
 HELP = (
     "<b>الأوامر المتاحة:</b>\n\n"
     "• <code>/newrec</code> — إنشاء توصية\n"
-    "• <code>/open</code> — عرض المفتوحة\n"
+    "• <code>/open</code> — عرض المفتوحة كبطاقات قابلة للإدارة\n"
     "• <code>/list</code> — عرض مختصر/عدد\n"
     "• <code>/analytics</code> — ملخص أداء\n"
     "• <code>/ping</code> — اختبار"
