@@ -1,19 +1,40 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+#--- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+from __future__ import annotations
 from typing import Optional
-from telegram import Update
+import re
+
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
+
 from capitalguard.application.services.trade_service import TradeService
 from .keyboards import recommendation_management_keyboard, confirm_close_keyboard
+from .ui_texts import RecCard, ASK_EXIT_PRICE, INVALID_PRICE, CLOSE_CONFIRM, CLOSE_DONE, OPEN_EMPTY
 
 # مفتاح حالة انتظار سعر الإغلاق لكل مستخدم
 AWAITING_CLOSE_PRICE_KEY = "awaiting_close_price_for"
+
+# Regex لقبول "123" أو "123.45" (مع دعم تحويل الأرقام العربية لاحقًا)
+_NUM_RE = re.compile(r"^\s*([0-9]+(\.[0-9]+)?)\s*$")
+_ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+def _parse_price(text: str) -> Optional[float]:
+    if not text:
+        return None
+    t = text.strip().translate(_ARABIC_DIGITS)
+    m = _NUM_RE.match(t)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except Exception:
+        return None
 
 # ======================
 # أوامر
 # ======================
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_service: TradeService):
-    """يعرض التوصيات المفتوحة برسالة لكل توصية، مع حماية من الحقول المتنوعة."""
+    """يعرض التوصيات المفتوحة برسالة لكل توصية، مع تنسيق موحّد وبطاقات نظيفة."""
     try:
         items = trade_service.list_open()
     except Exception as e:
@@ -21,7 +42,7 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_
         return
 
     if not items:
-        await update.message.reply_text("لا توجد توصيات مفتوحة.")
+        await update.message.reply_text(OPEN_EMPTY)
         return
 
     for it in items:
@@ -31,14 +52,19 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *, trade_
             entry_val = getattr(getattr(it, "entry", None), "value", getattr(it, "entry", "?"))
             sl_val    = getattr(getattr(it, "stop_loss", None), "value", getattr(it, "stop_loss", "?"))
             targets   = getattr(getattr(it, "targets", None), "values", getattr(it, "targets", [])) or []
-            tps = ", ".join(map(str, targets)) if isinstance(targets, (list, tuple)) else str(targets)
 
-            text = (
-                f"<b>#{getattr(it, 'id', '?')}</b> — <b>{asset}</b> ({side})\n"
-                f"Entry: <code>{entry_val}</code> | SL: <code>{sl_val}</code>\n"
-                f"TPs: <code>{tps}</code>"
+            card = RecCard(
+                id=int(getattr(it, "id", 0)),
+                asset=str(asset),
+                side=str(side),
+                status=str(getattr(it, "status", "OPEN")),
+                entry=float(entry_val),
+                stop_loss=float(sl_val),
+                targets=list(targets) if isinstance(targets, (list, tuple)) else [],
+                exit_price=getattr(it, "exit_price", None),
             )
-            await update.message.reply_html(text, reply_markup=recommendation_management_keyboard(getattr(it, "id", 0)))
+            kb = recommendation_management_keyboard(card.id)
+            await update.message.reply_html(card.to_text(), reply_markup=kb)
         except Exception as e:
             await update.message.reply_text(f"⚠️ عنصر غير متوقع: {e}")
 
@@ -71,17 +97,14 @@ async def click_close_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # خزّن rec_id في user_data للمستخدم الحالي
     context.user_data[AWAITING_CLOSE_PRICE_KEY] = rec_id
-    await query.edit_message_text(
-        f"🔻 أرسل الآن <b>سعر الخروج</b> لإغلاق التوصية <b>#{rec_id}</b>.",
-        parse_mode=ParseMode.HTML,
-    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ تراجع", callback_data=f"rec:cancel_close:{rec_id}")]])
+    await query.edit_message_text(ASK_EXIT_PRICE, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     تعمل فقط إذا كان المستخدم بانتظار إدخال السعر.
     لا تنفّذ أي إغلاق هنا — فقط تطلب التأكيد.
     """
-    # يعمل فقط إذا كنّا بانتظار السعر
     if AWAITING_CLOSE_PRICE_KEY not in context.user_data:
         return
 
@@ -93,17 +116,15 @@ async def received_exit_price(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("انتهت صلاحية هذه الجلسة. ابدأ من جديد بالأمر /open.")
         return
 
-    # حوّل النص إلى رقم
-    txt = (update.message.text or "").strip()
-    try:
-        exit_price = float(txt)
-    except ValueError:
-        await update.message.reply_text("⚠️ سعر غير صالح. الرجاء إدخال رقم صحيح.")
+    # حوّل النص إلى رقم (يدعم أرقام عربية)
+    exit_price = _parse_price(update.message.text or "")
+    if exit_price is None:
+        await update.message.reply_html(INVALID_PRICE)
         return
 
     # اطلب التأكيد عبر أزرار — لا إغلاق هنا
     await update.message.reply_html(
-        f"هل تريد تأكيد إغلاق التوصية <b>#{rec_id}</b> على سعر <code>{exit_price}</code>؟",
+        CLOSE_CONFIRM(rec_id, exit_price),
         reply_markup=confirm_close_keyboard(rec_id, exit_price),
     )
 
@@ -125,14 +146,12 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # الخدمة تُحقن من handlers.py عبر partial للأوامر فقط،
-        # أما هنا نعتمد أنها موجودة في application.bot_data (تم حقنها في startup).
         trade_service: TradeService = context.application.bot_data.get("trade_service")  # type: ignore
         if not isinstance(trade_service, TradeService):
             raise RuntimeError("TradeService ليس مهيأً في bot_data")
         rec = trade_service.close(rec_id, exit_price)
         await query.edit_message_text(
-            f"✅ تم إغلاق التوصية <b>#{rec.id}</b> على سعر <code>{exit_price}</code>.",
+            CLOSE_DONE(rec.id, exit_price),
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
@@ -166,4 +185,4 @@ async def cancel_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(AWAITING_CLOSE_PRICE_KEY, None)
 
     await query.edit_message_text("تم التراجع عن الإغلاق.")
-# --- END OF FILE ---
+#--- END OF FILE ---
