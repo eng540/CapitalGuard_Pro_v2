@@ -1,51 +1,127 @@
-from typing import Dict, Any, List  
-from capitalguard.domain.ports import RecommendationRepoPort  
-from capitalguard.domain.entities import Recommendation  
+# --- START OF FILE: src/capitalguard/application/services/analytics_service.py ---
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Iterable, List, Optional, Tuple, Dict
+from datetime import datetime
+from math import isfinite
 
-class AnalyticsService:  
-    def __init__(self, repo: RecommendationRepoPort) -> None:  
-        self.repo = repo  
+@dataclass
+class AnalyticsService:
+    """تحليلات متقدمة دون تعديل مخطط DB."""
+    repo: any  # RecommendationRepository
 
-    def _calculate_pnl(self, rec: Recommendation) -> float:  
-        """يحسب الربح/الخسارة كنسبة مئوية."""  
-        if rec.status != "CLOSED" or rec.exit_price is None:  
-            return 0.0  
+    @staticmethod
+    def _pnl_percent(side: str, entry: float, exit_price: float) -> float:
+        s = (side or "").upper()
+        if not entry or not exit_price:
+            return 0.0
+        if s == "LONG":
+            return (exit_price / entry - 1.0) * 100.0
+        return (entry / exit_price - 1.0) * 100.0
 
-        entry = rec.entry.value  
-        exit_p = rec.exit_price  
+    @staticmethod
+    def _rr(entry: float, sl: float, tp1: Optional[float], side: str) -> Optional[float]:
+        try:
+            risk = abs(entry - sl)
+            reward = abs((tp1 - entry)) if (side.upper() == "LONG") else abs((entry - tp1))
+            if risk <= 0 or reward <= 0:
+                return None
+            r = reward / risk
+            return r if isfinite(r) else None
+        except Exception:
+            return None
 
-        if rec.side.value == "LONG":  
-            return ((exit_p - entry) / entry) * 100  
-        elif rec.side.value == "SHORT":  
-            return ((entry - exit_p) / entry) * 100  
-        return 0.0  
+    def list_filtered(
+        self,
+        user_id: Optional[int] = None,
+        symbol: Optional[str] = None,
+        status: Optional[str] = None,
+        market: Optional[str] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+    ) -> List:
+        items = self.repo.list_all()
+        res = []
+        for r in items:
+            if user_id is not None and getattr(r, "user_id", None) != user_id:
+                continue
+            if symbol and str(getattr(r.asset, "value", r.asset)).upper() != symbol.upper():
+                continue
+            if status and str(getattr(r, "status", "")).upper() != status.upper():
+                continue
+            if market:
+                m = str(getattr(getattr(r, "market", None), "value", getattr(r, "market", ""))).lower()
+                if market.lower() not in m:
+                    continue
+            if date_from and getattr(r, "created_at", None) and r.created_at < date_from:
+                continue
+            if date_to and getattr(r, "created_at", None) and r.created_at > date_to:
+                continue
+            res.append(r)
+        return res
 
-    def performance_summary(self, channel_id: int | None = None) -> Dict[str, Any]:  
-        all_recs = self.repo.list_all(channel_id)  
-        closed_recs = [r for r in all_recs if r.status == "CLOSED"]  
+    def win_rate(self, items: Iterable) -> float:
+        closed = [r for r in items if str(r.status).upper() == "CLOSED" and r.exit_price is not None]
+        if not closed:
+            return 0.0
+        wins = 0
+        for r in closed:
+            pnl = self._pnl_percent(getattr(r.side, "value", r.side), float(getattr(r.entry, "value", r.entry)), float(r.exit_price))
+            if pnl > 0:
+                wins += 1
+        return wins * 100.0 / len(closed)
 
-        if not closed_recs:  
-            return {  
-                "total_closed_trades": 0,  
-                "win_rate_percent": 0,  
-                "total_pnl_percent": 0,  
-                "average_pnl_percent": 0,  
-                "best_trade_pnl_percent": 0,  
-                "worst_trade_pnl_percent": 0,  
-            }  
+    def total_pnl_by_user(self, user_id: Optional[int]) -> float:
+        items = self.list_filtered(user_id=user_id)
+        closed = [r for r in items if str(r.status).upper() == "CLOSED" and r.exit_price is not None]
+        s = 0.0
+        for r in closed:
+            s += self._pnl_percent(getattr(r.side, "value", r.side), float(getattr(r.entry, "value", r.entry)), float(r.exit_price))
+        return s
 
-        pnl_list = [self._calculate_pnl(rec) for rec in closed_recs]  
+    def pnl_curve(self, items: Iterable) -> List[Tuple[str, float]]:
+        closed = [r for r in items if str(r.status).upper() == "CLOSED" and r.exit_price is not None and r.closed_at]
+        closed.sort(key=lambda r: r.closed_at)
+        curve, c = [], 0.0
+        for r in closed:
+            pnl = self._pnl_percent(getattr(r.side, "value", r.side), float(getattr(r.entry, "value", r.entry)), float(r.exit_price))
+            c += pnl
+            day = r.closed_at.strftime("%Y-%m-%d")
+            curve.append((day, c))
+        return curve
 
-        wins = sum(1 for pnl in pnl_list if pnl > 0)  
-        win_rate = (wins / len(closed_recs)) * 100 if closed_recs else 0  
+    def summary_by_market(self, items: Iterable) -> Dict[str, Dict[str, float]]:
+        buckets: Dict[str, List] = {}
+        for r in items:
+            m = str(getattr(getattr(r, "market", None), "value", getattr(r, "market", "Unknown")))
+            buckets.setdefault(m, []).append(r)
+        out: Dict[str, Dict[str, float]] = {}
+        for m, arr in buckets.items():
+            out[m] = {
+                "count": float(len(arr)),
+                "win_rate": self.win_rate(arr),
+                "sum_pnl": sum(
+                    self._pnl_percent(getattr(x.side, "value", x.side), float(getattr(x.entry, "value", x.entry)), float(getattr(x, "exit_price", 0) or 0))
+                    for x in arr if str(x.status).upper() == "CLOSED" and x.exit_price is not None
+                ),
+            }
+        return out
 
-        total_pnl = sum(pnl_list)  
-
-        return {  
-            "total_closed_trades": len(closed_recs),  
-            "win_rate_percent": round(win_rate, 2),  
-            "total_pnl_percent": round(total_pnl, 2),  
-            "average_pnl_percent": round(total_pnl / len(closed_recs), 2),  
-            "best_trade_pnl_percent": round(max(pnl_list), 2),  
-            "worst_trade_pnl_percent": round(min(pnl_list), 2),  
-        }
+    def rr_actual(self, r) -> Optional[float]:
+        try:
+            side = getattr(r.side, "value", r.side)
+            entry = float(getattr(r.entry, "value", r.entry))
+            sl    = float(getattr(r.stop_loss, "value", r.stop_loss))
+            tps   = list(getattr(r.targets, "values", r.targets or []))
+            tp1   = float(tps[0]) if tps else None
+            base_rr = self._rr(entry, sl, tp1, side)
+            if r.exit_price is None or base_rr is None:
+                return None
+            reward = abs((r.exit_price - entry)) if side.upper()=="LONG" else abs((entry - r.exit_price))
+            risk   = abs(entry - sl)
+            if risk <= 0: return None
+            rr = reward / risk
+            return rr if isfinite(rr) else None
+        except Exception:
+            return None
+# --- END OF FILE ---
