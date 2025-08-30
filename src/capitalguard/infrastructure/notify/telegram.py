@@ -1,9 +1,7 @@
 # --- START OF FILE: src/capitalguard/infrastructure/notify/telegram.py ---
 from __future__ import annotations
 from typing import Optional, Tuple, Dict, Any
-import logging
-import requests
-
+import logging, requests
 from capitalguard.config import settings
 from capitalguard.domain.entities import Recommendation
 from capitalguard.interfaces.telegram.ui_texts import build_trade_card_text
@@ -11,66 +9,66 @@ from capitalguard.interfaces.telegram.ui_texts import build_trade_card_text
 log = logging.getLogger(__name__)
 
 class TelegramNotifier:
-    """
-    للنشر/التحرير في القناة فقط (بدون أزرار).
-    يعتمد على TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
-    """
-    def __init__(self) -> None:
-        self.bot_token: Optional[str] = settings.TELEGRAM_BOT_TOKEN
-        self.channel_id: Optional[int] = (
-            int(settings.TELEGRAM_CHAT_ID) if getattr(settings, "TELEGRAM_CHAT_ID", None) else None
-        )
-        self.api_base = f"https://api.telegram.org/bot{self.bot_token}" if self.bot_token else None
+    BASE = "https://api.telegram.org/bot{token}/{method}"
+    settings = settings  # متاح داخليًا
 
-    # ------------------------
     def _post(self, method: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        if not self.api_base:
-            log.warning("TelegramNotifier disabled — missing TELEGRAM_BOT_TOKEN")
+        if not settings.TELEGRAM_BOT_TOKEN:
             return None
         try:
-            r = requests.post(f"{self.api_base}/{method}", json=payload, timeout=15)
-            if r.status_code != 200:
-                log.error("Telegram API %s failed: %s", method, r.text)
+            url = self.BASE.format(token=settings.TELEGRAM_BOT_TOKEN, method=method)
+            resp = requests.post(url, json=payload, timeout=8)
+            if not resp.ok:
+                log.error("Telegram API %s failed: %s", method, resp.text[:200])
                 return None
-            data = r.json()
-            if not data.get("ok"):
-                log.error("Telegram API %s not ok: %s", method, data)
-                return None
-            return data.get("result")
+            return resp.json().get("result")
         except Exception:
-            log.exception("Telegram API call error (%s)", method)
             return None
 
-    # ------------------------
-    def send_message(self, text: str, chat_id: Optional[int | str] = None) -> Optional[int]:
-        target = chat_id or self.channel_id
-        if not target:
-            return None
-        res = self._post("sendMessage", {"chat_id": target, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True})
-        return int(res["message_id"]) if res and "message_id" in res else None
+    def _notify_all(self, method: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        res = self._post(method, payload)
+        if getattr(settings, "SECONDARY_CHAT_ID", None):
+            mirror_payload = dict(payload)
+            mirror_payload["chat_id"] = int(settings.SECONDARY_CHAT_ID)
+            self._post(method, mirror_payload)
+        return res
 
-    def post_recommendation_card(self, rec: Recommendation) -> Optional[Tuple[int, int]]:
-        """ينشر البطاقة في القناة ويعيد (channel_id, message_id)."""
-        if not self.channel_id:
-            log.warning("No TELEGRAM_CHAT_ID — skipping publish")
+    def publish_recommendation_card(self, rec: Recommendation) -> Optional[Tuple[int, int]]:
+        if not settings.TELEGRAM_CHAT_ID:
             return None
         text = build_trade_card_text(rec)
-        res = self._post(
-            "sendMessage",
-            {"chat_id": self.channel_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
-        )
+        res = self._notify_all("sendMessage", {
+            "chat_id": int(settings.TELEGRAM_CHAT_ID),
+            "text": text, "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        })
         if not res:
             return None
-        return (int(res["chat"]["id"]), int(res["message_id"]))
+        return int(res["chat"]["id"]), int(res["message_id"])
 
     def edit_recommendation_card(self, rec: Recommendation) -> bool:
-        """تحرير البطاقة بعد التعديل/الإغلاق؛ إن فشل التحريك، يمكن إعادة النشر من طبقة أعلى."""
-        if not rec.channel_id or not rec.message_id:
+        if not (rec.channel_id and rec.message_id):
             return False
         text = build_trade_card_text(rec)
-        res = self._post(
-            "editMessageText",
-            {"chat_id": rec.channel_id, "message_id": rec.message_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
-        )
+        res = self._notify_all("editMessageText", {
+            "chat_id": rec.channel_id,
+            "message_id": rec.message_id,
+            "text": text, "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        })
         return bool(res)
+
+    def publish_or_update(self, rec: Recommendation) -> tuple[bool, Optional[Tuple[int,int]]]:
+        if rec.channel_id and rec.message_id:
+            if self.edit_recommendation_card(rec):
+                return True, (rec.channel_id, rec.message_id)
+        text = build_trade_card_text(rec) + "\n<i>(Updated)</i>"
+        res = self._notify_all("sendMessage", {
+            "chat_id": int(settings.TELEGRAM_CHAT_ID),
+            "text": text, "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        })
+        if not res:
+            return False, None
+        return True, (int(res["chat"]["id"]), int(res["message_id"]))
 # --- END OF FILE ---
