@@ -1,4 +1,4 @@
---- START OF FILE: src/capitalguard/interfaces/telegram/handlers.py ---
+#--- START OF FILE: src/capitalguard/interfaces/telegram/handlers.py ---
 from __future__ import annotations
 import logging
 from telegram import Update
@@ -52,4 +52,4 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("استخدم /newrec للبدء. سيتم التدقيق قبل النشر، والقناة للعرض فقط بلا أزرار.")
---- END OF FILE ---
+#--- END OF FILE ---
