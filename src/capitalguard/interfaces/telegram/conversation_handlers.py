@@ -3,7 +3,7 @@ import uuid
 import logging
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import Application, ContextTypes, ConversationHandler, CommandHandler, MessageHandler, CallbackQueryHandler, filters, BaseFilter
-from .helpers import get_service
+from .helpers import get_service # ✅ يستخدم الطريقة الصحيحة
 from .keyboards import confirm_recommendation_keyboard
 from .ui_texts import build_review_text
 
@@ -11,7 +11,7 @@ from .ui_texts import build_review_text
 
 async def publish_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ...
-    trade_service = get_service(context, "trade_service")
+    trade_service = get_service(context, "trade_service") # ✅ يستخدم الطريقة الصحيحة
     # ... (rest of the function)
 
 def get_recommendation_conversation_handler(allowed_filter: BaseFilter) -> ConversationHandler:
