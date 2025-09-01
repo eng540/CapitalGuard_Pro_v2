@@ -1,27 +1,24 @@
 #--- START OF FILE: src/capitalguard/infrastructure/db/models.py ---
-from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, JSON, ForeignKey, Index  
-from datetime import datetime  
-from .base import Base  
-  
-class RecommendationORM(Base):  
-    __tablename__ = "recommendations"  
-    id = Column(Integer, primary_key=True, index=True)  
-    asset = Column(String, index=True, nullable=False)  
-    side = Column(String, nullable=False)  
-    entry = Column(Float, nullable=False)  
-    stop_loss = Column(Float, nullable=False)  
-    targets = Column(JSON, nullable=False)  
-    status = Column(String, default="OPEN", nullable=False)  
-    channel_id = Column(BigInteger, index=True, nullable=True)  
-    user_id    = Column(BigInteger, nullable=True)  
-    exit_price = Column(Float, nullable=True)  
-    closed_at = Column(DateTime, nullable=True)  
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)  
-    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)  
-  
-Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())  
-Index("idx_recs_asset_status",  RecommendationORM.asset,  RecommendationORM.status)
+#--- START OF FILE: src/capitalguard/infrastructure/db/models.py ---
+# ✅ تم التعديل: هذا الملف يعمل الآن كنقطة وصول مركزية لنماذج ORM.
+# يقوم باستيرادها من وحداتها المخصصة لضمان وجود مصدر واحد للحقيقة ومنع التعارضات.
 
-# ✅ ทำให้ Alembic สามารถมองเห็นโมเดลการพิสูจน์ตัวตนได้ (Make auth models visible to Alembic)
-from .models.auth import * # noqa
+# استيراد النموذج الأساسي الذي ترث منه جميع النماذج الأخرى
+from .models.base import Base
+
+# استيراد نماذج المصادقة (المستخدمون والأدوار)
+from .models.auth import User, Role, UserRole
+
+# استيراد نموذج التوصيات الكامل والصحيح من موقعه المخصص
+from .models.recommendation import RecommendationORM
+
+# هذا السطر اختياري ولكنه ممارسة جيدة.
+# يحدد بشكل صريح ما الذي يتم "تصديره" عندما يستخدم ملف آخر `from .models import *`
+__all__ = [
+    "Base",
+    "RecommendationORM",
+    "User",
+    "Role",
+    "UserRole",
+]
 #--- END OF FILE ---
