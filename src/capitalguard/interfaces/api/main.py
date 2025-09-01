@@ -16,45 +16,34 @@ from capitalguard.interfaces.telegram.handlers import register_all_handlers
 log = logging.getLogger(__name__)
 app = FastAPI(title="CapitalGuard Pro API", version="5.0.0")
 
-# حزمة الخدمات جاهزة للاستخدام في كل نقاط النهاية
 _services_pack: dict = build_services()
 app.state.services = _services_pack
 
-# كائن تطبيق تيليجرام (PTB)
 ptb_app: Application | None = None
 
-
-# =========================
-#   Webhook-only Startup
-# =========================
+# ===== Webhook-only Startup =====
 @app.on_event("startup")
 async def on_startup():
-    """
-    تشغيل بوت تيليجرام بنمط Webhook فقط:
-    - لا Polling إطلاقًا
-    - يجب ضبط TELEGRAM_WEBHOOK_URL إلى المسار العام لمستقبل الويبهوك (HTTPS)
-    - (اختياري) TELEGRAM_WEBHOOK_SECRET للتحقق من المصدر
-    """
     global ptb_app
-
     if not settings.TELEGRAM_BOT_TOKEN:
         log.warning("TELEGRAM_BOT_TOKEN not set; bot disabled.")
         return
 
-    persistence = PicklePersistence(filepath=settings.TELEGRAM_STATE_FILE) if settings.TELEGRAM_STATE_FILE else None
+    # ✅ استخدام getattr بدلاً من الوصول المباشر (AttributeError fix)
+    state_file = getattr(settings, "TELEGRAM_STATE_FILE", None)
+    persistence = PicklePersistence(filepath=state_file) if state_file else None
+
     ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
     ptb_app.bot_data["services"] = _services_pack
 
-    # تسجيل جميع Handlers من طبقة التلغرام (تشمل Quick Adjust من management_handlers)
     register_all_handlers(ptb_app, services=_services_pack)
 
-    # جدولة التنبيهات الدورية (إن كانت مفعّلة داخل AlertService)
+    # جدولة التنبيهات (إن كانت متاحة)
     try:
         _services_pack["alert_service"].schedule_job(ptb_app, interval_sec=30)
     except Exception as e:
         log.warning("Alert schedule failed: %s", e)
 
-    # تهيئة وتشغيل التطبيق + تعيين Webhook فقط
     await ptb_app.initialize()
     await ptb_app.start()
 
@@ -66,10 +55,8 @@ async def on_startup():
     await ptb_app.bot.set_webhook(url=settings.TELEGRAM_WEBHOOK_URL, secret_token=secret)
     log.info("Telegram bot started (webhook-only) -> %s", settings.TELEGRAM_WEBHOOK_URL)
 
-
 @app.on_event("shutdown")
 async def on_shutdown():
-    """إيقاف نظيف للبوت وحذف الويبهوك (اختياري)."""
     global ptb_app
     try:
         if ptb_app:
@@ -81,46 +68,28 @@ async def on_shutdown():
     except Exception:
         pass
 
-
-# =========================
-#   Telegram Webhook Route
-# =========================
+# ===== Telegram Webhook Route =====
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: str | None = Header(default=None)):
-    """
-    نقطة الاستقبال الرسمية لتحديثات Telegram.
-    يجب أن يشير TELEGRAM_WEBHOOK_URL لهذا المسار.
-    إذا حدّدت TELEGRAM_WEBHOOK_SECRET، نتحقق من رأس Telegram المطابق.
-    """
-    global ptb_app
     secret = getattr(settings, "TELEGRAM_WEBHOOK_SECRET", None)
     if secret and x_telegram_bot_api_secret_token != secret:
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
-
     if not ptb_app:
         raise HTTPException(status_code=503, detail="Bot not initialized")
-
     try:
         payload = await request.json()
     except Exception:
         payload = {}
-
     update = Update.de_json(payload, ptb_app.bot)
     await ptb_app.process_update(update)
     return {"ok": True}
 
-
-# ================
-#   Health
-# ================
+# ---------- Health ----------
 @app.get("/healthz")
 def healthz():
     return {"db": ping_db(), "version": app.version, "env": settings.ENV}
 
-
-# ======================
-#   Recommendations API
-# ======================
+# ---------- Recommendations ----------
 @app.get("/recommendations", response_model=list[RecommendationOut], dependencies=[Depends(require_api_key)])
 def list_recommendations(
     user = Depends(get_current_user),
@@ -140,7 +109,6 @@ def list_recommendations(
     )
     return [RecommendationOut.model_validate(i) for i in items]
 
-
 @app.post("/recommendations/{rec_id}/close", response_model=RecommendationOut, dependencies=[Depends(require_api_key)])
 def close_recommendation(rec_id: int, payload: CloseIn):
     trade = _services_pack["trade_service"]
@@ -150,10 +118,7 @@ def close_recommendation(rec_id: int, payload: CloseIn):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-
-# ======================
-#   Dashboard (HTML)
-# ======================
+# ---------- Dashboard (Charts + Filters) ----------
 @app.get("/dashboard", response_class=HTMLResponse, dependencies=[Depends(require_api_key)])
 def dashboard(
     user = Depends(get_current_user),
@@ -223,10 +188,7 @@ new Chart(document.getElementById('pnlCurve'), {{
 """
     return HTMLResponse(content=html)
 
-
-# ======================
-#   Report (CSV/HTML)
-# ======================
+# ---------- Report (CSV/HTML) ----------
 @app.get("/report", dependencies=[Depends(require_api_key)])
 def report(
     user = Depends(get_current_user),
@@ -299,10 +261,7 @@ def report(
     headers = {"Content-Disposition": "attachment; filename=report.csv"}
     return StreamingResponse(io.BytesIO(data), media_type="text/csv", headers=headers)
 
-
-# ======================
-#   Risk & Sizing
-# ======================
+# ---------- Risk & Sizing ----------
 @app.get("/risk/size", dependencies=[Depends(require_api_key)])
 def risk_size(symbol: str, side: str, market: str, entry: float, sl: float, x_risk_pct: float | None = Header(default=None)):
     risk_pct = x_risk_pct if x_risk_pct is not None else 1.0
@@ -314,10 +273,7 @@ def risk_size(symbol: str, side: str, market: str, entry: float, sl: float, x_ri
     res = risk.compute_qty(symbol=symbol, side=side, market=market, account_usdt=bal, risk_pct=risk_pct, entry=entry, sl=sl)
     return {"qty": res.qty, "notional": res.notional, "risk_usdt": res.risk_usdt, "step_size": res.step_size, "tick_size": res.tick_size, "entry": res.entry}
 
-
-# ======================
-#   Auto-Trade
-# ======================
+# ---------- Auto-Trade ----------
 @app.post("/autotrade/execute/{rec_id}", dependencies=[Depends(require_api_key)])
 def autotrade_execute(rec_id: int, risk_pct: float | None = Query(default=None), order_type: str = Query(default="MARKET")):
     at = _services_pack["autotrade_service"]
@@ -326,36 +282,24 @@ def autotrade_execute(rec_id: int, risk_pct: float | None = Query(default=None),
         raise HTTPException(status_code=400, detail=out.get("msg", "failed"))
     return out
 
-
-# ======================
-#   TradingView Webhook
-# ======================
+# ---------- TV Webhook (اختياري) ----------
 @app.post("/webhook/tradingview", dependencies=[Depends(require_api_key)])
 async def tv_webhook(request: Request):
-    """
-    نقطة ويبهوك اختيارية لاستقبال إشارات TradingView.
-    المثال هنا يُظهر التنفيذ الفوري فقط عند توفّر المعطيات الدنيا.
-    """
     try:
         data = await request.json()
     except Exception:
         data = {}
-
     symbol = (data.get("symbol") or data.get("SYMBOL") or "").upper()
     side   = (data.get("side") or data.get("SIDE") or "").upper()
     market = (data.get("market") or data.get("MARKET") or "Futures").title()
     entry  = float(data.get("entry") or data.get("ENTRY") or 0)
     sl     = float(data.get("sl") or data.get("SL") or 0)
-
     if symbol and side and entry and sl:
         at = _services_pack["autotrade_service"]
         out = at.execute_for_rec(rec_id = data.get("rec_id") or 0, override_risk_pct = None, order_type = "MARKET")
         return JSONResponse({"ok": True, "executed": out})
-
     return JSONResponse({"ok": True, "note": "Draft only"})
-
 
 @app.get("/")
 def root():
     return {"message": "🚀 CapitalGuard API is running", "version": app.version}
-# --- END OF FILE ---
