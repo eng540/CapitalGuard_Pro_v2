@@ -1,25 +1,14 @@
 #--- START OF FILE: src/capitalguard/interfaces/telegram/handlers.py ---
-from telegram.ext import Application, MessageHandler, filters
+from telegram.ext import Application
 from .commands import register_commands
-from .callbacks import register_callbacks
-from .conversation_handlers import get_recommendation_conversation_handler
-from .management_handlers import received_exit_price # Note: management_handlers might be deprecated
+from .conversation_handlers import register_conversation_handlers
+from .management_handlers import register_management_handlers
 
 def register_all_handlers(application: Application):
     """
-    الدالة المركزية والوحيدة لتسجيل جميع معالجات البوت.
+    الدالة المركزية التي تجمع وتسجل جميع معالجات البوت.
     """
-    from .auth import ALLOWED_FILTER
-    
-    # 1. تسجيل الأوامر
     register_commands(application)
-
-    # 2. تسجيل استجابات الأزرار
-    register_callbacks(application)
-    
-    # 3. تسجيل المحادثة
-    application.add_handler(get_recommendation_conversation_handler(ALLOWED_FILTER))
-
-    # 4. تسجيل معالج الرسائل العامة (لأسعار الإغلاق)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_exit_price), group=1)
+    register_conversation_handlers(application)
+    register_management_handlers(application)
 #--- END OF FILE ---
