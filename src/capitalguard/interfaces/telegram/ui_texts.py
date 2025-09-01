@@ -1,4 +1,4 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
+--- START OF FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 from __future__ import annotations
 from typing import Iterable, List, Optional
 from math import isfinite
@@ -12,15 +12,13 @@ def _format_targets(entry: float, side: str, tps: Iterable[float]) -> str:
     for i, tp in enumerate(tps, start=1):
         pct = _pct(entry, float(tp), side)
         lines.append(f"• TP{i}: {float(tp):g} ({pct:+.2f}%)")
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else "—"
 
 def _rr(entry: float, sl: float, tp1: Optional[float], side: str) -> str:
     try:
         risk = abs(entry - sl)
-        if risk <= 0: return "—"
-        if tp1 is None: return "—"
+        if risk <= 0 or tp1 is None: return "—"
         reward = abs(tp1 - entry) if side.upper()=="LONG" else abs(entry - tp1)
-        if reward <= 0: return "—"
         ratio = reward / risk
         return f"{ratio:.2f}" if isfinite(ratio) else "—"
     except Exception:
@@ -98,4 +96,4 @@ def build_review_text_with_price(draft: dict, preview_price: float | None) -> st
     if preview_price is None:
         return base + "\n\n🔎 Price: —"
     return base + f"\n\n🔎 Price: <b>{preview_price:g}</b>"
-# --- END OF FILE ---
+--- END OF FILE ---
