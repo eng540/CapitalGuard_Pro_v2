@@ -1,11 +1,13 @@
 # --- START OF FILE: src/capitalguard/interfaces/api/deps.py ---
 from __future__ import annotations
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 from typing import Optional, List
 from dataclasses import dataclass
 
 from capitalguard.config import settings
 from capitalguard.infrastructure.db.base import SessionLocal, engine
+from capitalguard.application.services.trade_service import TradeService
+from capitalguard.application.services.analytics_service import AnalyticsService
 
 @dataclass
 class CurrentUser:
@@ -16,6 +18,17 @@ def require_api_key(x_api_key: str | None = Header(default=None)):
     if settings.API_KEY and x_api_key != settings.API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
+
+# ✅ إضافة: دوال جديدة لحقن الخدمات.
+# هذه هي الطريقة الموصى بها في FastAPI للوصول إلى الخدمات المشتركة.
+def get_trade_service(request: Request) -> TradeService:
+    """Dependency to get the TradeService instance."""
+    return request.app.state.services["trade_service"]
+
+def get_analytics_service(request: Request) -> AnalyticsService:
+    """Dependency to get the AnalyticsService instance."""
+    return request.app.state.services["analytics_service"]
+
 
 def get_current_user(x_user_id: Optional[int] = Header(default=None)) -> CurrentUser:
     roles: List[str] = []
