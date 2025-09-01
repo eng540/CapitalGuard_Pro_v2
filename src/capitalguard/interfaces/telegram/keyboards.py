@@ -1,4 +1,4 @@
---- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
+#--- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
 from __future__ import annotations
 from telegram import (
     InlineKeyboardButton, InlineKeyboardMarkup,
@@ -45,4 +45,4 @@ def control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("TP1 -0.5%", callback_data=f"qa|TP|{rec_id}|-0.5"),
          InlineKeyboardButton("TP1 +0.5%", callback_data=f"qa|TP|{rec_id}|0.5")],
     ])
---- END OF FILE --
+#--- END OF FILE --
