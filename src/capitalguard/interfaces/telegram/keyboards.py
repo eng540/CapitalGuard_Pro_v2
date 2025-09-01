@@ -1,48 +1,26 @@
 #--- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
-from __future__ import annotations
-from telegram import (
-    InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-# ========== لوحات المحادثة أثناء الإنشاء ==========
-def choose_side_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton("LONG"), KeyboardButton("SHORT")]],
-        resize_keyboard=True, one_time_keyboard=True
-    )
-
-def choose_market_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton("Spot"), KeyboardButton("Futures")]],
-        resize_keyboard=True, one_time_keyboard=True
-    )
-
-def remove_reply_keyboard() -> ReplyKeyboardRemove:
-    return ReplyKeyboardRemove()
-
-# ========== لوحات Inline للمراجعة/النشر ==========
-def confirm_recommendation_keyboard() -> InlineKeyboardMarkup:
+def confirm_recommendation_keyboard(user_data_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ نشر", callback_data="pub|yes"),
-         InlineKeyboardButton("❌ إلغاء", callback_data="pub|no")]
+        [
+            InlineKeyboardButton("✅ نشر في القناة", callback_data=f"rec:publish:{user_data_key}"),
+            InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{user_data_key}")
+        ]
     ])
 
-def skip_notes_keyboard() -> InlineKeyboardMarkup:
+def recommendation_management_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("تخطي الملاحظات", callback_data="notes|-")]
+        [
+            InlineKeyboardButton("🛑 إغلاق الآن", callback_data=f"rec:close:{rec_id}")
+        ]
     ])
 
-# ========== لوحة التحكم الخاصة بالمحلّل (في الخاص فقط) ==========
-def control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"tp|{rec_id}"),
-         InlineKeyboardButton("🛡️ تعديل SL", callback_data=f"sl|{rec_id}")],
-        [InlineKeyboardButton("🛑 إغلاق الآن", callback_data=f"close|{rec_id}"),
-         InlineKeyboardButton("📜 السجل", callback_data=f"hist|{rec_id}")],
-        [InlineKeyboardButton("SL -0.5%", callback_data=f"qa|SL|{rec_id}|-0.5"),
-         InlineKeyboardButton("SL +0.5%", callback_data=f"qa|SL|{rec_id}|0.5")],
-        [InlineKeyboardButton("TP1 -0.5%", callback_data=f"qa|TP|{rec_id}|-0.5"),
-         InlineKeyboardButton("TP1 +0.5%", callback_data=f"qa|TP|{rec_id}|0.5")],
+        [
+            InlineKeyboardButton("✅ تأكيد الإغلاق", callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"),
+            InlineKeyboardButton("❌ تراجع", callback_data=f"rec:cancel_close:{rec_id}")
+        ]
     ])
-#--- END OF FILE --
+#--- END OF FILE ---
