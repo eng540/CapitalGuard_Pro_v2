@@ -1,4 +1,3 @@
-# --- START OF FILE: src/capitalguard/interfaces/api/main.py ---
 from __future__ import annotations
 import logging, csv, io, json
 from datetime import datetime
@@ -14,14 +13,13 @@ from capitalguard.interfaces.api.schemas import RecommendationOut, CloseIn
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
 
 log = logging.getLogger(__name__)
-app = FastAPI(title="CapitalGuard Pro API", version="5.0.0")
+app = FastAPI(title="CapitalGuard Pro API", version="5.0.1")
 
 _services_pack: dict = build_services()
 app.state.services = _services_pack
 
 ptb_app: Application | None = None
 
-# ===== Webhook-only Startup =====
 @app.on_event("startup")
 async def on_startup():
     global ptb_app
@@ -29,16 +27,15 @@ async def on_startup():
         log.warning("TELEGRAM_BOT_TOKEN not set; bot disabled.")
         return
 
-    # ✅ استخدام getattr بدلاً من الوصول المباشر (AttributeError fix)
+    # آمن حتى لو الإعداد غير موجود
     state_file = getattr(settings, "TELEGRAM_STATE_FILE", None)
     persistence = PicklePersistence(filepath=state_file) if state_file else None
 
     ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
     ptb_app.bot_data["services"] = _services_pack
-
     register_all_handlers(ptb_app, services=_services_pack)
 
-    # جدولة التنبيهات (إن كانت متاحة)
+    # جدولة التنبيهات: فقط إن كان job_queue متاحاً
     try:
         _services_pack["alert_service"].schedule_job(ptb_app, interval_sec=30)
     except Exception as e:
@@ -68,11 +65,10 @@ async def on_shutdown():
     except Exception:
         pass
 
-# ===== Telegram Webhook Route =====
-@app.post("/telegram/webhook")
-async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: str | None = Header(default=None)):
+# ========= Telegram Webhook Routes (المساران معًا) =========
+async def _process_telegram_update(request: Request, header_secret: str | None):
     secret = getattr(settings, "TELEGRAM_WEBHOOK_SECRET", None)
-    if secret and x_telegram_bot_api_secret_token != secret:
+    if secret and header_secret != secret:
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
     if not ptb_app:
         raise HTTPException(status_code=503, detail="Bot not initialized")
@@ -84,12 +80,20 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
     await ptb_app.process_update(update)
     return {"ok": True}
 
-# ---------- Health ----------
+@app.post("/telegram/webhook")
+async def telegram_webhook_a(request: Request, x_telegram_bot_api_secret_token: str | None = Header(default=None)):
+    return await _process_telegram_update(request, x_telegram_bot_api_secret_token)
+
+@app.post("/webhook/telegram")
+async def telegram_webhook_b(request: Request, x_telegram_bot_api_secret_token: str | None = Header(default=None)):
+    return await _process_telegram_update(request, x_telegram_bot_api_secret_token)
+
+# ---------------- Health ----------------
 @app.get("/healthz")
 def healthz():
     return {"db": ping_db(), "version": app.version, "env": settings.ENV}
 
-# ---------- Recommendations ----------
+# ------------- Recommendations -----------
 @app.get("/recommendations", response_model=list[RecommendationOut], dependencies=[Depends(require_api_key)])
 def list_recommendations(
     user = Depends(get_current_user),
@@ -118,7 +122,7 @@ def close_recommendation(rec_id: int, payload: CloseIn):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-# ---------- Dashboard (Charts + Filters) ----------
+# ---------------- Dashboard --------------
 @app.get("/dashboard", response_class=HTMLResponse, dependencies=[Depends(require_api_key)])
 def dashboard(
     user = Depends(get_current_user),
@@ -188,7 +192,7 @@ new Chart(document.getElementById('pnlCurve'), {{
 """
     return HTMLResponse(content=html)
 
-# ---------- Report (CSV/HTML) ----------
+# ---------------- Report -----------------
 @app.get("/report", dependencies=[Depends(require_api_key)])
 def report(
     user = Depends(get_current_user),
@@ -244,7 +248,6 @@ def report(
         html_buf.write("</table></body></html>")
         return HTMLResponse(content=html_buf.getvalue())
 
-    # CSV
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["ID","Asset","Side","Status","Entry","SL","Exit","PnL%","RR_actual","Created","Closed"])
@@ -261,7 +264,7 @@ def report(
     headers = {"Content-Disposition": "attachment; filename=report.csv"}
     return StreamingResponse(io.BytesIO(data), media_type="text/csv", headers=headers)
 
-# ---------- Risk & Sizing ----------
+# --------------- Risk / Auto ---------------
 @app.get("/risk/size", dependencies=[Depends(require_api_key)])
 def risk_size(symbol: str, side: str, market: str, entry: float, sl: float, x_risk_pct: float | None = Header(default=None)):
     risk_pct = x_risk_pct if x_risk_pct is not None else 1.0
@@ -273,7 +276,6 @@ def risk_size(symbol: str, side: str, market: str, entry: float, sl: float, x_ri
     res = risk.compute_qty(symbol=symbol, side=side, market=market, account_usdt=bal, risk_pct=risk_pct, entry=entry, sl=sl)
     return {"qty": res.qty, "notional": res.notional, "risk_usdt": res.risk_usdt, "step_size": res.step_size, "tick_size": res.tick_size, "entry": res.entry}
 
-# ---------- Auto-Trade ----------
 @app.post("/autotrade/execute/{rec_id}", dependencies=[Depends(require_api_key)])
 def autotrade_execute(rec_id: int, risk_pct: float | None = Query(default=None), order_type: str = Query(default="MARKET")):
     at = _services_pack["autotrade_service"]
@@ -282,7 +284,6 @@ def autotrade_execute(rec_id: int, risk_pct: float | None = Query(default=None),
         raise HTTPException(status_code=400, detail=out.get("msg", "failed"))
     return out
 
-# ---------- TV Webhook (اختياري) ----------
 @app.post("/webhook/tradingview", dependencies=[Depends(require_api_key)])
 async def tv_webhook(request: Request):
     try:
