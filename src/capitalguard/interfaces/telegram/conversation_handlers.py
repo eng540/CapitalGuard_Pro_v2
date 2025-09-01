@@ -1,9 +1,18 @@
-#--- START OF FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
+# --- START OF FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
 import uuid
 import logging
 from telegram import Update, ReplyKeyboardRemove
-from telegram.ext import Application, ContextTypes, ConversationHandler, CommandHandler, MessageHandler, CallbackQueryHandler, filters, BaseFilter
-from .helpers import get_service # ✅ يستخدم الطريقة الصحيحة
+# ✅ تعديل: تم إزالة BaseFilter من هذا الاستيراد
+from telegram.ext import (
+    Application, 
+    ContextTypes, 
+    ConversationHandler, 
+    CommandHandler, 
+    MessageHandler, 
+    CallbackQueryHandler, 
+    filters
+)
+from .helpers import get_service
 from .keyboards import confirm_recommendation_keyboard
 from .ui_texts import build_review_text
 
@@ -11,10 +20,11 @@ from .ui_texts import build_review_text
 
 async def publish_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ...
-    trade_service = get_service(context, "trade_service") # ✅ يستخدم الطريقة الصحيحة
+    trade_service = get_service(context, "trade_service")
     # ... (rest of the function)
 
-def get_recommendation_conversation_handler(allowed_filter: BaseFilter) -> ConversationHandler:
+# ✅ تعديل: تم تحديث نوع التلميح من BaseFilter إلى filters.BaseFilter
+def get_recommendation_conversation_handler(allowed_filter: filters.BaseFilter) -> ConversationHandler:
     # ... (returns the ConversationHandler)
     pass
 
@@ -23,4 +33,4 @@ def register_conversation_handlers(app: Application):
     app.add_handler(get_recommendation_conversation_handler(ALLOWED_FILTER))
     app.add_handler(CallbackQueryHandler(publish_recommendation, pattern=r"^rec:publish:"))
     # ... (register other conversation-related callbacks)
-#--- END OF FILE ---
+# --- END OF FILE ---
