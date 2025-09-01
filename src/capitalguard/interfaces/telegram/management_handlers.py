@@ -1,4 +1,4 @@
---- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+#--- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 from __future__ import annotations
 from typing import List
 import logging, re
@@ -295,4 +295,4 @@ def build_management_commands():
         CommandHandler("list", cmd_list),
         CommandHandler("analytics", cmd_analytics),
     ]
---- END OF FILE ---
+#--- END OF FILE ---
