@@ -1,11 +1,11 @@
-#--- START OF FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 from __future__ import annotations
 from typing import Iterable, List, Optional
 from math import isfinite
 
 def _pct(entry: float, target: float, side: str) -> float:
-    if not entry: return 0.0
-    return (target - entry) / entry * 100.0 if (side or "").upper()=="LONG" else (entry - target) / entry * 100.0
+    if not entry:
+        return 0.0
+    return (target - entry) / entry * 100.0 if (side or "").upper() == "LONG" else (entry - target) / entry * 100.0
 
 def _format_targets(entry: float, side: str, tps: Iterable[float]) -> str:
     lines: List[str] = []
@@ -17,8 +17,9 @@ def _format_targets(entry: float, side: str, tps: Iterable[float]) -> str:
 def _rr(entry: float, sl: float, tp1: Optional[float], side: str) -> str:
     try:
         risk = abs(entry - sl)
-        if risk <= 0 or tp1 is None: return "—"
-        reward = abs(tp1 - entry) if side.upper()=="LONG" else abs(entry - tp1)
+        if risk <= 0 or tp1 is None:
+            return "—"
+        reward = abs(tp1 - entry) if side.upper() == "LONG" else abs(entry - tp1)
         ratio = reward / risk
         return f"{ratio:.2f}" if isfinite(ratio) else "—"
     except Exception:
@@ -26,10 +27,12 @@ def _rr(entry: float, sl: float, tp1: Optional[float], side: str) -> str:
 
 def _rr_actual(entry: float, sl: float, exit_price: Optional[float], side: str) -> str:
     try:
-        if exit_price is None: return "—"
+        if exit_price is None:
+            return "—"
         risk = abs(entry - sl)
-        if risk <= 0: return "—"
-        reward = abs(exit_price - entry) if side.upper()=="LONG" else abs(entry - exit_price)
+        if risk <= 0:
+            return "—"
+        reward = abs(exit_price - entry) if side.upper() == "LONG" else abs(entry - exit_price)
         ratio = reward / risk
         return f"{ratio:.2f}" if isfinite(ratio) else "—"
     except Exception:
@@ -74,8 +77,10 @@ def build_review_text(draft: dict) -> str:
         raw = [x for x in raw.replace(",", " ").split() if x]
     tps: List[float] = []
     for x in (raw or []):
-        try: tps.append(float(x))
-        except: pass
+        try:
+            tps.append(float(x))
+        except:
+            pass
     tp1 = float(tps[0]) if tps else None
     planned_rr = _rr(entry, sl, tp1, side)
     notes = draft.get("notes") or "-"
@@ -96,4 +101,3 @@ def build_review_text_with_price(draft: dict, preview_price: float | None) -> st
     if preview_price is None:
         return base + "\n\n🔎 Price: —"
     return base + f"\n\n🔎 Price: <b>{preview_price:g}</b>"
-#--- END OF FILE ---
