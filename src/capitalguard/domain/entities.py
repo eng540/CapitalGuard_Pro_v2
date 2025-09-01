@@ -1,4 +1,4 @@
-# --- START OF FILE: src/capitalguard/domain/entities.py ---
+#--- START OF FILE: src/capitalguard/domain/entities.py ---
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List
@@ -13,20 +13,22 @@ class Recommendation:
     targets: Targets
     id: Optional[int] = None
 
-    # قناة/رسالة
+    # الحقول المتعلقة بالنشر في قناة تليجرام
     channel_id: Optional[int] = None
     message_id: Optional[int] = None
     published_at: Optional[datetime] = None
 
-    # تعريفات إضافية
-    market: Optional[str] = None         # "Spot" | "Futures"
-    notes: Optional[str] = None          # ملاحظة اختيارية
+    # حقول إضافية لتجربة المستخدم
+    market: Optional[str] = "Futures"
+    notes: Optional[str] = None
     user_id: Optional[str] = None
 
-    # حالة/تتبع
+    # حقول تتبع الحالة والإغلاق
     status: str = "OPEN"
     exit_price: Optional[float] = None
     closed_at: Optional[datetime] = None
+    
+    # حقول التوقيت
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -37,4 +39,4 @@ class Recommendation:
         self.exit_price = exit_price
         self.updated_at = datetime.utcnow()
         self.closed_at = self.updated_at
-# --- END OF FILE ---
+#--- END OF FILE ---
