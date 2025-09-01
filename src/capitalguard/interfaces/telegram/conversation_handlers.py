@@ -1,4 +1,4 @@
---- START OF FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
+#--- START OF FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import logging, re
@@ -243,4 +243,4 @@ def management_callback_handlers():
     return [
         CallbackQueryHandler(lambda u,c: None, pattern=r"^$")  # placeholder
     ]
---- END OF FILE ---
+#--- END OF FILE ---
