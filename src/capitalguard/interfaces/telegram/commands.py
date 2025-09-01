@@ -1,6 +1,6 @@
 #--- START OF FILE: src/capitalguard/interfaces/telegram/commands.py ---
 from telegram import Update
-from telegram.ext import ContextTypes, CommandHandler
+from telegram.ext import Application, ContextTypes, CommandHandler
 from .helpers import get_service
 from .keyboards import recommendation_management_keyboard
 from .auth import ALLOWED_FILTER
@@ -32,7 +32,7 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (f"<b>#{it.id}</b> — <b>{it.asset.value}</b> ({it.side.value})")
         await update.message.reply_html(text, reply_markup=recommendation_management_keyboard(it.id))
 
-def register_commands(app):
+def register_commands(app: Application):
     app.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_FILTER))
     app.add_handler(CommandHandler("help", help_cmd, filters=ALLOWED_FILTER))
     app.add_handler(CommandHandler("analytics", analytics_cmd, filters=ALLOWED_FILTER))
