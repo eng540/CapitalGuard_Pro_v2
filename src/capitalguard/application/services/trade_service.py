@@ -79,7 +79,19 @@ class TradeService:
             raise
 
         # 5. Final step: Edit the live card with the correct DB ID
-        self.notifier.edit_recommendation_card(saved_rec)
+        # ✅ إضافة: تحسين معالجة الأخطاء هنا
+        try:
+            success = self.notifier.edit_recommendation_card(saved_rec)
+            if not success:
+                log.warning(
+                    f"Failed to edit Telegram message {message_id} for recommendation #{saved_rec.id}. "
+                    "The card in the channel will be missing its ID."
+                )
+        except Exception as e:
+            log.error(
+                f"An exception occurred while editing Telegram message {message_id} for rec #{saved_rec.id}.",
+                exc_info=True
+            )
         
         return saved_rec
 
