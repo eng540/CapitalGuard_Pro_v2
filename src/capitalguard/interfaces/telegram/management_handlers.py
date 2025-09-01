@@ -3,11 +3,13 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from .keyboards import recommendation_management_keyboard, confirm_close_keyboard
+from .helpers import get_service # ✅ إضافة: استيراد دالة المساعدة الآمنة
 
 AWAITING_CLOSE_PRICE_KEY = "awaiting_close_price_for"
 
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    trade_service = context.application.bot_data["services"]["trade_service"]
+    # ✅ تعديل: استخدام الطريقة الآمنة للوصول إلى الخدمة
+    trade_service = get_service(context, "trade_service")
     items = trade_service.list_open()
     if not items:
         await update.message.reply_text("لا توجد توصيات مفتوحة.")
@@ -43,7 +45,8 @@ async def confirm_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rec_id = int(query.data.split(':')[2])
     exit_price = float(query.data.split(':')[3])
     
-    trade_service = context.application.bot_data["services"]["trade_service"]
+    # ✅ تعديل: استخدام الطريقة الآمنة للوصول إلى الخدمة
+    trade_service = get_service(context, "trade_service")
     try:
         rec = trade_service.close(rec_id, exit_price)
         await query.edit_message_text(f"✅ تم إغلاق التوصية <b>#{rec.id}</b>.", parse_mode=ParseMode.HTML)
