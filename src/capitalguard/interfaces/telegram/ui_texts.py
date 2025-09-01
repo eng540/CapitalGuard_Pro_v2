@@ -1,4 +1,4 @@
---- START OF FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
+#--- START OF FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 from __future__ import annotations
 from typing import Iterable, List, Optional
 from math import isfinite
@@ -96,4 +96,4 @@ def build_review_text_with_price(draft: dict, preview_price: float | None) -> st
     if preview_price is None:
         return base + "\n\n🔎 Price: —"
     return base + f"\n\n🔎 Price: <b>{preview_price:g}</b>"
---- END OF FILE ---
+#--- END OF FILE ---
