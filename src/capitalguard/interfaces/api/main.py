@@ -1,29 +1,34 @@
 #--- START OF FILE: src/capitalguard/interfaces/api/main.py ---
 import logging
-from fastapi import FastAPI, Request
+import json
+import io
+import csv
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, Depends, Request, Query
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from telegram import Update
 from telegram.ext import Application, PicklePersistence
+
 from capitalguard.config import settings
 from capitalguard.boot import build_services
+from capitalguard.interfaces.api.security.deps import get_current_user, require_roles, is_admin
+from capitalguard.interfaces.api.schemas import RecommendationOut, CloseIn
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
+from capitalguard.interfaces.api.routers import auth as auth_router
 
-app = FastAPI(title="CapitalGuard Pro API", version="5.2.0")
-
-# --- Composition Root ---
-# إنشاء جميع الخدمات مرة واحدة عند بدء تشغيل التطبيق
+# --- التطبيق وجذر التجميع ---
+app = FastAPI(title="CapitalGuard Pro API", version="6.0.0 Final")
 services = build_services()
+app.state.services = services
 
+# --- إعداد بوت تليجرام ---
 def create_ptb_app() -> Application:
     persistence = PicklePersistence(filepath="./telegram_bot_persistence")
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
-
-    # حقن حزمة الخدمات الموحدة في bot_data
     application.bot_data["services"] = services
-
     register_all_handlers(application)
     return application
 
-# --- Telegram Webhook Setup ---
 ptb_app: Application | None = None
 if settings.TELEGRAM_BOT_TOKEN:
     ptb_app = create_ptb_app()
@@ -31,8 +36,9 @@ if settings.TELEGRAM_BOT_TOKEN:
     @app.on_event("startup")
     async def on_startup():
         await ptb_app.initialize()
-        
-        # ✅ تفعيل خدمة التنبيهات وجدولتها لتعمل كل 60 ثانية
+        # إعادة حقن الخدمات بعد التهيئة (مهم لـ PicklePersistence)
+        ptb_app.bot_data["services"] = services
+        # تفعيل خدمة التنبيهات
         alert_service = services["alert_service"]
         alert_service.schedule_job(ptb_app, interval_sec=60)
         
@@ -55,14 +61,112 @@ if settings.TELEGRAM_BOT_TOKEN:
                 logging.exception("Error processing Telegram update: %s", e)
         return {"status": "ok"}
 
+# --- نقاط النهاية الأساسية ---
 @app.get("/")
 def root():
-    return {"message": "🚀 CapitalGuard API v5.2 is running"}
+    return {"message": f"🚀 CapitalGuard API v{app.version} is running"}
 
-# --- API Endpoints ---
-# يمكنك إضافة نقاط نهاية API هنا لاحقًا لتستهلك الخدمات من `services`
-# مثال:
-# @app.get("/api/status")
-# def api_status():
-#     return {"status": "ok", "services": list(services.keys())}
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok", "version": app.version, "env": settings.ENV}
+
+# --- نقاط النهاية للتوصيات (محمية بـ JWT) ---
+@app.get("/recommendations", response_model=list[RecommendationOut])
+def list_recommendations(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    symbol: str = Query(None),
+    status: str = Query(None)
+):
+    trade_service = request.app.state.services["trade_service"]
+    items = trade_service.list_all(symbol=symbol, status=status)
+    return [RecommendationOut.from_orm(item) for item in items]
+
+@app.post("/recommendations/{rec_id}/close", response_model=RecommendationOut, dependencies=[Depends(require_roles({"analyst"}))])
+def close_recommendation(request: Request, rec_id: int, payload: CloseIn):
+    trade_service = request.app.state.services["trade_service"]
+    try:
+        rec = trade_service.close(rec_id, payload.exit_price)
+        return RecommendationOut.from_orm(rec)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# --- لوحة التحكم والتقارير (محمية بـ JWT) ---
+@app.get("/dashboard", response_class=HTMLResponse, dependencies=[Depends(get_current_user)])
+def dashboard(request: Request, symbol: str = Query(None), status: str = Query(None)):
+    analytics_service = request.app.state.services["analytics_service"]
+    items = analytics_service.list_filtered(symbol=symbol, status=status)
+    rows = "".join(
+        f"<tr><td>{r.id}</td><td>{r.asset.value}</td><td>{r.side.value}</td><td>{r.status}</td></tr>"
+        for r in items
+    )
+    html = f"<html><body><h1>Dashboard</h1><table><thead><tr><th>ID</th><th>Asset</th><th>Side</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></body></html>"
+    return HTMLResponse(content=html)
+
+@app.get("/report", dependencies=[Depends(get_current_user)])
+def get_report(request: Request):
+    analytics_service = request.app.state.services["analytics_service"]
+    items = analytics_service.list_filtered()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Asset", "Side", "Status", "Entry", "SL", "Exit", "PnL %"])
+    for item in items:
+        pnl = analytics_service._pnl_percent(item.side.value, item.entry.value, item.exit_price) if item.exit_price else None
+        writer.writerow([item.id, item.asset.value, item.side.value, item.status, item.entry.value, item.stop_loss.value, item.exit_price, pnl])
+    
+    output.seek(0)
+    return StreamingResponse(output, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=report.csv"})
+
+# --- نقاط النهاية للتداول الآلي (محمية بـ JWT للأدمن) ---
+@app.get("/risk/size", dependencies=[Depends(require_roles({"admin"}))])
+def risk_size(request: Request, symbol: str, side: str, market: str, entry: float, sl: float, risk_pct: float = 1.0):
+    risk_service = request.app.state.services["risk_service"]
+    autotrade_service = request.app.state.services["autotrade_service"]
+    ex = autotrade_service.exec_spot if market.lower().startswith("spot") else autotrade_service.exec_futu
+    balance = ex.account_balance() or 0.0
+    if balance <= 0:
+        raise HTTPException(status_code=400, detail="No balance or credentials error")
+    result = risk_service.compute_qty(symbol=symbol, side=side, market=market, account_usdt=balance, risk_pct=risk_pct, entry=entry, sl=sl)
+    return result.__dict__
+
+@app.post("/autotrade/execute/{rec_id}", dependencies=[Depends(require_roles({"admin"}))])
+def autotrade_execute(request: Request, rec_id: int, risk_pct: float = Query(None)):
+    autotrade_service = request.app.state.services["autotrade_service"]
+    result = autotrade_service.execute_for_rec(rec_id, override_risk_pct=risk_pct)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("msg", "Execution failed"))
+    return result
+
+# --- تسجيل الراوترات ---
+app.include_router(auth_router.router)
+--- END OF FILE ---```
+
+##### **2. `src/capitalguard/interfaces/telegram/handlers.py`**
+*   **الوصف:** النسخة النهائية للمسجل. بسيطة ونظيفة، وتعتمد على أن `main.py` قد قام بحقن حزمة الخدمات الكاملة في `bot_data`.
+
+```python
+--- START OF FILE: src/capitalguard/interfaces/telegram/handlers.py ---
+from telegram import Update
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from .auth import ALLOWED_FILTER
+from .conversation_handlers import get_recommendation_conversation_handler
+from .management_handlers import register_management_handlers
+from .commands import start_cmd, help_cmd, analytics_cmd
+
+def register_all_handlers(application: Application):
+    """
+    الدالة المركزية والوحيدة لتسجيل جميع معالجات البوت.
+    تعتمد على أن الخدمات محقونة مسبقًا في application.bot_data["services"].
+    """
+    # 1. الأوامر الأساسية
+    application.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("help", help_cmd, filters=ALLOWED_FILTER))
+    application.add_handler(CommandHandler("analytics", analytics_cmd, filters=ALLOWED_FILTER))
+    
+    # 2. محادثة إنشاء التوصية
+    application.add_handler(get_recommendation_conversation_handler())
+
+    # 3. معالجات إدارة التوصيات المفتوحة
+    register_management_handlers(application)
 #--- END OF FILE ---
