@@ -1,4 +1,5 @@
 #--- START OF FILE: src/capitalguard/boot.py ---
+#--- START OF FILE: src/capitalguard/boot.py ---
 import os
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.report_service import ReportService
@@ -19,7 +20,9 @@ def build_services() -> dict:
     # Infrastructure Components
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
-    price_provider = BinancePricing() # مزود السعر الفعلي
+    
+    # ✅ ملاحظة: PriceService لم يعد يأخذ أي معاملات في مُنشئه لأنه يعتمد على طرق ثابتة
+    # لذلك، سنقوم بإنشائه مباشرة.
 
     # Binance Execution Credentials
     spot_creds = BinanceCreds(
@@ -37,10 +40,11 @@ def build_services() -> dict:
     trade_service = TradeService(repo=repo, notifier=notifier)
     report_service = ReportService(repo=repo)
     analytics_service = AnalyticsService(repo=repo)
-    price_service = PriceService(price_provider=price_provider)
+    price_service = PriceService() # ✅ إصلاح: تم إنشاء الخدمة بدون معاملات كما يتوقع تعريفها
     risk_service = RiskService(exec_spot=exec_spot, exec_futu=exec_futu)
     autotrade_service = AutoTradeService(
-        repo=repo, notifier=notifier, risk_service=risk_service,
+        repo=repo, notifier=notifier, 
+        risk=risk_service, # ✅ إصلاح: تم تغيير اسم المعامل من "risk_service" إلى "risk" لمطابقة تعريف الـ dataclass
         exec_spot=exec_spot, exec_futu=exec_futu
     )
     alert_service = AlertService(
