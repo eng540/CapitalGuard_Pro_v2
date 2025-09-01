@@ -3,10 +3,8 @@ from fastapi import APIRouter, Request, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from capitalguard.application.services.trade_service import TradeService
-
-# ✅ سنقوم بحقن الخدمة باستخدام نظام FastAPI's Dependency Injection
-def get_trade_service(request: Request) -> TradeService:
-    return request.app.state.services["trade_service"]
+# ✅ تعديل: استيراد الاعتمادية من deps
+from capitalguard.interfaces.api.deps import get_trade_service 
 
 router = APIRouter(prefix="/webhook", tags=["Webhooks"])
 
@@ -23,6 +21,7 @@ class TVSignal(BaseModel):
 async def tradingview_webhook(
     payload: TVSignal,
     request: Request,
+    # ✅ تعديل: تم حقن الخدمة مباشرة
     trade_service: TradeService = Depends(get_trade_service)
 ):
     # ... (TV_WEBHOOK_SECRET check remains the same)
