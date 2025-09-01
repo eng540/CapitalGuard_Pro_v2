@@ -1,104 +1,152 @@
 # --- START OF FILE: src/capitalguard/application/services/trade_service.py ---
 from __future__ import annotations
-from typing import List, Optional
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Iterable
 
-from capitalguard.domain.entities import Recommendation
-from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
-from capitalguard.infrastructure.db.repository import RecommendationRepository
-from capitalguard.infrastructure.notify.telegram import TelegramNotifier
-
-
+@dataclass
 class TradeService:
-    def __init__(self, repo: RecommendationRepository, notifier: TelegramNotifier):
-        self.repo = repo
-        self.notifier = notifier
+    repo: Any
+    notifier: Any
 
-    # ---------- CRUD ----------
-    def create(
-        self,
-        *,
-        asset: str,
-        side: str,
-        entry: float,
-        stop_loss: float,
-        targets: List[float],
-        user_id: Optional[str] = None,
-        market: Optional[str] = None,   # "Spot" | "Futures"
-        notes: Optional[str] = None,
-    ) -> Recommendation:
-        rec = Recommendation(
-            asset=Symbol(asset),
-            side=Side(side.upper()),
-            entry=Price(entry),
-            stop_loss=Price(stop_loss),
-            targets=Targets(targets),
-            user_id=user_id,
-            market=(market or "Futures").title(),
-            notes=(notes or None),
-        )
-        rec = self.repo.add(rec)
+    # ---------- Utilities ----------
+    @staticmethod
+    def _extract_msg_ids(posted) -> tuple[int | None, int | None]:
+        """
+        يقبل إما (chat_id, message_id) كزوج قديم،
+        أو قاموس {'ok': True, 'chat_id': x, 'message_id': y}.
+        يعيد (chat_id, message_id) أو (None, None) لو تعذر.
+        """
+        if isinstance(posted, tuple) and len(posted) >= 2:
+            try:
+                ch, msg = int(posted[0]), int(posted[1])
+                return ch, msg
+            except Exception:
+                return None, None
+        if isinstance(posted, dict):
+            ch = posted.get("chat_id")
+            msg = posted.get("message_id")
+            try:
+                return (int(ch) if ch is not None else None,
+                        int(msg) if msg is not None else None)
+            except Exception:
+                return None, None
+        return None, None
 
-        # نشر بطاقة القناة
-        posted = self.notifier.post_recommendation_card(rec)
-        if posted:
-            ch_id, msg_id = posted
-            rec = self.repo.set_channel_message(rec.id, ch_id, msg_id)
-
-        return rec
-
-    def get(self, rec_id: int) -> Recommendation | None:
+    # ---------- CRUD / Actions ----------
+    def get(self, rec_id: int):
         return self.repo.get(rec_id)
 
-    def list_open(self, symbol: Optional[str] = None) -> List[Recommendation]:
-        items = self.repo.list_open()
-        if symbol:
-            s = symbol.upper()
-            items = [r for r in items if str(getattr(r.asset, "value", r.asset)).upper() == s]
-        return items
+    def create(self, *, asset: str, side: str, market: str,
+               entry: float, stop_loss: float, targets: Iterable[float] | None = None,
+               notes: str | None = None, user_id: int | None = None):
+        # التحقق الأساسي
+        if side.upper() == "LONG" and not (stop_loss < entry):
+            raise ValueError("SL must be < Entry for LONG")
+        if side.upper() == "SHORT" and not (stop_loss > entry):
+            raise ValueError("SL must be > Entry for SHORT")
+        tps = list(targets or [])
+        # يمكن فرض ترتيب منطقي (اختياريًا)
+        # if side.upper() == "LONG": tps.sort()
+        # else: tps.sort(reverse=True)
 
-    def list_all(
-        self,
-        channel_id: int | None = None,
-        symbol: Optional[str] = None,
-        status: Optional[str] = None,
-    ) -> List[Recommendation]:
-        items = self.repo.list_all(channel_id)
-        if symbol:
-            s = symbol.upper()
-            items = [r for r in items if str(getattr(r.asset, "value", r.asset)).upper() == s]
-        if status:
-            st = status.upper()
-            items = [r for r in items if r.status.upper() == st]
-        return items
+        # إنشاء في المستودع
+        rec = self.repo.create(
+            asset=asset, side=side, market=market,
+            entry=entry, stop_loss=stop_loss, targets=tps,
+            notes=notes, user_id=user_id, status="OPEN",
+            published_at=datetime.utcnow()
+        )
 
-    # ---------- Updates ----------
-    def update_stop_loss(self, rec_id: int, new_stop: float) -> Recommendation:
-        rec = self.repo.get(rec_id)
-        if not rec:
-            raise ValueError("Recommendation not found")
+        # نشر البطاقة
+        try:
+            posted = self.notifier.post_recommendation_card(rec)
+        except Exception as e:
+            # لا نكسر الإنشاء—نترك النشر للفشل الناعم
+            posted = {"ok": False, "msg": str(e)}
 
-        rec.stop_loss = Price(new_stop)
-        rec = self.repo.update(rec)
-        self.notifier.edit_recommendation_card(rec)
+        ch_id, msg_id = self._extract_msg_ids(posted)
+        if ch_id and msg_id:
+            # حفظ مرجع الرسالة بالقناة
+            # ندعم كلا الواجهتين إن وُجدت:
+            updated = None
+            if hasattr(self.repo, "attach_channel_message"):
+                updated = self.repo.attach_channel_message(rec.id, ch_id, msg_id)
+            elif hasattr(self.repo, "set_channel_message"):
+                updated = self.repo.set_channel_message(rec.id, ch_id, msg_id)
+            else:
+                # آخر حل: عدّل الحقول ثم حدّث
+                try:
+                    rec.channel_id = ch_id
+                    rec.message_id = msg_id
+                    updated = self.repo.update(rec)
+                except Exception:
+                    pass
+            if updated is not None:
+                rec = updated
         return rec
 
-    def update_targets(self, rec_id: int, new_targets: List[float]) -> Recommendation:
+    def update_sl(self, rec_id: int, new_sl: float, publish: bool = False):
         rec = self.repo.get(rec_id)
         if not rec:
             raise ValueError("Recommendation not found")
-
-        rec.targets = Targets(new_targets)
-        rec = self.repo.update(rec)
-        self.notifier.edit_recommendation_card(rec)
+        side  = str(getattr(rec.side, "value", rec.side)).upper()
+        entry = float(getattr(rec.entry, "value", rec.entry))
+        if side == "LONG" and not (new_sl < entry):
+            raise ValueError("SL must be < Entry for LONG")
+        if side == "SHORT" and not (new_sl > entry):
+            raise ValueError("SL must be > Entry for SHORT")
+        # تحديث
+        if hasattr(self.repo, "update_sl"):
+            rec = self.repo.update_sl(rec_id, new_sl)
+        else:
+            rec.stop_loss = new_sl
+            rec = self.repo.update(rec)
+        if publish and hasattr(self.notifier, "publish_or_update"):
+            try:
+                self.notifier.publish_or_update(rec)
+            except Exception:
+                pass
         return rec
 
-    def close(self, rec_id: int, exit_price: float) -> Recommendation:
+    def update_targets(self, rec_id: int, tps: Iterable[float], publish: bool = False):
         rec = self.repo.get(rec_id)
         if not rec:
             raise ValueError("Recommendation not found")
+        tps = list(tps or [])
+        side = str(getattr(rec.side, "value", rec.side)).upper()
+        # يمكن فرض الترتيب المنطقي (اختياري)
+        # if side == "LONG": tps.sort()
+        # else: tps.sort(reverse=True)
+        if hasattr(self.repo, "update_targets"):
+            rec = self.repo.update_targets(rec_id, tps)
+        else:
+            rec.targets = tps
+            rec = self.repo.update(rec)
+        if publish and hasattr(self.notifier, "publish_or_update"):
+            try:
+                self.notifier.publish_or_update(rec)
+            except Exception:
+                pass
+        return rec
 
-        rec.close(exit_price)
-        rec = self.repo.update(rec)
-        self.notifier.edit_recommendation_card(rec)
+    def close(self, rec_id: int, exit_price: float):
+        rec = self.repo.get(rec_id)
+        if not rec:
+            raise ValueError("Recommendation not found")
+        # إغلاق
+        if hasattr(self.repo, "close"):
+            rec = self.repo.close(rec_id, exit_price)
+        else:
+            rec.status = "CLOSED"
+            rec.exit_price = exit_price
+            rec.closed_at = datetime.utcnow()
+            rec = self.repo.update(rec)
+        # تحديث البطاقة في القناة (تحرير/إعادة نشر)
+        if hasattr(self.notifier, "publish_or_update"):
+            try:
+                self.notifier.publish_or_update(rec)
+            except Exception:
+                pass
         return rec
 # --- END OF FILE ---
