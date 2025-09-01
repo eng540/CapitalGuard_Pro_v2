@@ -1,7 +1,7 @@
 # --- START OF FILE: src/capitalguard/application/services/analytics_service.py ---
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple, Dict
+from typing import Iterable, List, Optional, Tuple, Dict, Any
 from datetime import datetime
 from math import isfinite
 
@@ -124,4 +124,28 @@ class AnalyticsService:
             return rr if isfinite(rr) else None
         except Exception:
             return None
+    
+    # ✅ إضافة: الدالة الجديدة التي يستدعيها أمر التليجرام
+    def performance_summary(self) -> Dict[str, Any]:
+        """
+        تجمع ملخصًا شاملاً للأداء العام.
+        """
+        all_items = self.repo.list_all()
+        closed_items = [r for r in all_items if str(r.status).upper() == "CLOSED" and r.exit_price is not None]
+        
+        total_pnl = sum(
+            self._pnl_percent(
+                getattr(r.side, "value", r.side), 
+                float(getattr(r.entry, "value", r.entry)), 
+                float(r.exit_price)
+            ) for r in closed_items
+        )
+
+        return {
+            "total_recommendations": len(all_items),
+            "open_recommendations": len(all_items) - len(closed_items),
+            "closed_recommendations": len(closed_items),
+            "overall_win_rate": f"{self.win_rate(closed_items):.2f}%",
+            "total_pnl_percent": f"{total_pnl:.2f}%",
+        }
 # --- END OF FILE ---
