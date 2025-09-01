@@ -4,90 +4,123 @@ import logging, csv, io, json
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Request, Query, Header
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
-from telegram.ext import Application, PicklePersistence, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import Application, PicklePersistence
 
 from capitalguard.config import settings
 from capitalguard.boot import build_services
 from capitalguard.interfaces.api.deps import require_api_key, get_current_user, is_admin, ping_db
-from capitalguard.interfaces.api.schemas import RecommendationOut, CloseIn, ReportRow
+from capitalguard.interfaces.api.schemas import RecommendationOut, CloseIn
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
 
 log = logging.getLogger(__name__)
 app = FastAPI(title="CapitalGuard Pro API", version="5.0.0")
 
+# حزمة الخدمات جاهزة للاستخدام في كل نقاط النهاية
 _services_pack: dict = build_services()
 app.state.services = _services_pack
 
+# كائن تطبيق تيليجرام (PTB)
 ptb_app: Application | None = None
 
-# ---- Quick-Adjust callback (مضمّن هنا لعدم تعديل ملفات البوت لديك) ----
-async def quick_adjust_handler(update, context):
-    q = update.callback_query
-    await q.answer()
-    try:
-        _, kind, rec_id, delta = q.data.split("|")
-        rec_id = int(rec_id); delta = float(delta)
-        trade = _services_pack["trade_service"]
-        rec = trade.get(rec_id)
-        if not rec:
-            await q.edit_message_text("❌ Recommendation not found.")
-            return
-        side = getattr(rec.side, "value", rec.side)
-        entry = float(getattr(rec.entry,"value",rec.entry))
-        if kind == "SL":
-            sl = float(getattr(rec.stop_loss,"value",rec.stop_loss))
-            new_sl = sl * (1.0 + delta/100.0)
-            if (side == "LONG" and not (new_sl < entry)) or (side == "SHORT" and not (new_sl > entry)):
-                await q.edit_message_text("⚠️ تعديل غير صالح بالنسبة للدخول.")
-                return
-            trade.update_sl(rec_id, new_sl, publish=True)
-            await q.edit_message_text("✅ تم ضبط SL سريعًا.")
-        else:
-            tps = list(getattr(rec.targets, "values", rec.targets or []))
-            if not tps:
-                await q.edit_message_text("⚠️ لا توجد أهداف لتعديلها.")
-                return
-            tps[0] = float(tps[0]) * (1.0 + delta/100.0)
-            trade.update_targets(rec_id, tps, publish=True)
-            await q.edit_message_text("✅ تم ضبط TP1 سريعًا.")
-    except Exception:
-        await q.edit_message_text("❌ فشل الضبط السريع.")
 
+# =========================
+#   Webhook-only Startup
+# =========================
 @app.on_event("startup")
 async def on_startup():
+    """
+    تشغيل بوت تيليجرام بنمط Webhook فقط:
+    - لا Polling إطلاقًا
+    - يجب ضبط TELEGRAM_WEBHOOK_URL إلى المسار العام لمستقبل الويبهوك (HTTPS)
+    - (اختياري) TELEGRAM_WEBHOOK_SECRET للتحقق من المصدر
+    """
     global ptb_app
+
     if not settings.TELEGRAM_BOT_TOKEN:
         log.warning("TELEGRAM_BOT_TOKEN not set; bot disabled.")
-    else:
-        persistence = PicklePersistence(filepath=settings.TELEGRAM_STATE_FILE) if settings.TELEGRAM_STATE_FILE else None
-        ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
-        ptb_app.bot_data["services"] = _services_pack
-        register_all_handlers(ptb_app, services=_services_pack)
-        # تسجيل الضبط السريع
-        ptb_app.add_handler(CallbackQueryHandler(quick_adjust_handler, pattern=r"^qa\|"))
-        # جدولة التنبيهات
+        return
+
+    persistence = PicklePersistence(filepath=settings.TELEGRAM_STATE_FILE) if settings.TELEGRAM_STATE_FILE else None
+    ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
+    ptb_app.bot_data["services"] = _services_pack
+
+    # تسجيل جميع Handlers من طبقة التلغرام (تشمل Quick Adjust من management_handlers)
+    register_all_handlers(ptb_app, services=_services_pack)
+
+    # جدولة التنبيهات الدورية (إن كانت مفعّلة داخل AlertService)
+    try:
         _services_pack["alert_service"].schedule_job(ptb_app, interval_sec=30)
-        if settings.TELEGRAM_WEBHOOK_URL:
-            await ptb_app.initialize()
-            await ptb_app.start()
-            await ptb_app.bot.set_webhook(settings.TELEGRAM_WEBHOOK_URL)
-            log.info("Telegram bot started (webhook).")
+    except Exception as e:
+        log.warning("Alert schedule failed: %s", e)
+
+    # تهيئة وتشغيل التطبيق + تعيين Webhook فقط
+    await ptb_app.initialize()
+    await ptb_app.start()
+
+    if not getattr(settings, "TELEGRAM_WEBHOOK_URL", None):
+        log.error("TELEGRAM_WEBHOOK_URL not set; webhook mode requires a public HTTPS URL.")
+        return
+
+    secret = getattr(settings, "TELEGRAM_WEBHOOK_SECRET", None)
+    await ptb_app.bot.set_webhook(url=settings.TELEGRAM_WEBHOOK_URL, secret_token=secret)
+    log.info("Telegram bot started (webhook-only) -> %s", settings.TELEGRAM_WEBHOOK_URL)
+
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    """إيقاف نظيف للبوت وحذف الويبهوك (اختياري)."""
     global ptb_app
     try:
         if ptb_app:
+            try:
+                await ptb_app.bot.delete_webhook()
+            except Exception:
+                pass
             await ptb_app.stop()
     except Exception:
         pass
 
-# ---------- Health ----------
+
+# =========================
+#   Telegram Webhook Route
+# =========================
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: str | None = Header(default=None)):
+    """
+    نقطة الاستقبال الرسمية لتحديثات Telegram.
+    يجب أن يشير TELEGRAM_WEBHOOK_URL لهذا المسار.
+    إذا حدّدت TELEGRAM_WEBHOOK_SECRET، نتحقق من رأس Telegram المطابق.
+    """
+    global ptb_app
+    secret = getattr(settings, "TELEGRAM_WEBHOOK_SECRET", None)
+    if secret and x_telegram_bot_api_secret_token != secret:
+        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+
+    if not ptb_app:
+        raise HTTPException(status_code=503, detail="Bot not initialized")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    update = Update.de_json(payload, ptb_app.bot)
+    await ptb_app.process_update(update)
+    return {"ok": True}
+
+
+# ================
+#   Health
+# ================
 @app.get("/healthz")
 def healthz():
     return {"db": ping_db(), "version": app.version, "env": settings.ENV}
 
-# ---------- Recommendations ----------
+
+# ======================
+#   Recommendations API
+# ======================
 @app.get("/recommendations", response_model=list[RecommendationOut], dependencies=[Depends(require_api_key)])
 def list_recommendations(
     user = Depends(get_current_user),
@@ -107,6 +140,7 @@ def list_recommendations(
     )
     return [RecommendationOut.model_validate(i) for i in items]
 
+
 @app.post("/recommendations/{rec_id}/close", response_model=RecommendationOut, dependencies=[Depends(require_api_key)])
 def close_recommendation(rec_id: int, payload: CloseIn):
     trade = _services_pack["trade_service"]
@@ -116,7 +150,10 @@ def close_recommendation(rec_id: int, payload: CloseIn):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-# ---------- Dashboard (Charts + Filters) ----------
+
+# ======================
+#   Dashboard (HTML)
+# ======================
 @app.get("/dashboard", response_class=HTMLResponse, dependencies=[Depends(require_api_key)])
 def dashboard(
     user = Depends(get_current_user),
@@ -186,7 +223,10 @@ new Chart(document.getElementById('pnlCurve'), {{
 """
     return HTMLResponse(content=html)
 
-# ---------- Report (CSV/HTML) ----------
+
+# ======================
+#   Report (CSV/HTML)
+# ======================
 @app.get("/report", dependencies=[Depends(require_api_key)])
 def report(
     user = Depends(get_current_user),
@@ -222,21 +262,27 @@ def report(
     rows = [row(r) for r in items]
 
     if format == "html":
-        trs = "".join(
-            f"<tr><td>{x['id']}</td><td>{x['asset']}</td><td>{x['side']}</td><td>{x['status']}</td>"
-            f"<td>{x['entry']:g}</td><td>{x['stop_loss']:g}</td><td>{'' if x['exit_price'] is None else float(x['exit_price']):g}</td>"
-            f"<td>{'' if x['pnl_percent'] is None else f'{x['pnl_percent']:.2f}%'}</td>"
-            f"<td>{'' if x['rr_actual'] is None else f'{x['rr_actual']:.2f}'}</td></tr>"
-            for x in rows
-        )
-        html = f"""<!doctype html><html><head><meta charset="utf-8"><title>Report</title></head><body>
-        <h3>Report</h3>
-        <table border="1" cellpadding="6">
-        <tr><th>ID</th><th>Asset</th><th>Side</th><th>Status</th><th>Entry</th><th>SL</th><th>Exit</th><th>PnL%</th><th>R/R act</th></tr>
-        {trs or '<tr><td colspan="9">No data</td></tr>'}
-        </table></body></html>"""
-        return HTMLResponse(content=html)
+        html_buf = io.StringIO()
+        html_buf.write("<!doctype html><html><head><meta charset='utf-8'><title>Report</title></head><body>")
+        html_buf.write("<h3>Report</h3>")
+        html_buf.write("<table border='1' cellpadding='6'>")
+        html_buf.write("<tr><th>ID</th><th>Asset</th><th>Side</th><th>Status</th><th>Entry</th><th>SL</th><th>Exit</th><th>PnL%</th><th>R/R act</th></tr>")
+        if not rows:
+            html_buf.write("<tr><td colspan='9'>No data</td></tr>")
+        else:
+            for x in rows:
+                pnl_str  = "" if x["pnl_percent"] is None else f"{x['pnl_percent']:.2f}%"
+                rr_str   = "" if x["rr_actual"]   is None else f"{x['rr_actual']:.2f}"
+                exit_str = "" if x["exit_price"]  is None else f"{float(x['exit_price']):g}"
+                html_buf.write(
+                    f"<tr><td>{x['id']}</td><td>{x['asset']}</td><td>{x['side']}</td><td>{x['status']}</td>"
+                    f"<td>{x['entry']:g}</td><td>{x['stop_loss']:g}</td><td>{exit_str}</td>"
+                    f"<td>{pnl_str}</td><td>{rr_str}</td></tr>"
+                )
+        html_buf.write("</table></body></html>")
+        return HTMLResponse(content=html_buf.getvalue())
 
+    # CSV
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["ID","Asset","Side","Status","Entry","SL","Exit","PnL%","RR_actual","Created","Closed"])
@@ -245,15 +291,18 @@ def report(
             x["id"], x["asset"], x["side"], x["status"], f"{x['entry']:g}", f"{x['stop_loss']:g}",
             "" if x["exit_price"] is None else f"{float(x['exit_price']):g}",
             "" if x["pnl_percent"] is None else f"{x['pnl_percent']:.2f}",
-            "" if x["rr_actual"] is None else f"{x['rr_actual']:.2f}",
+            "" if x["rr_actual"]   is None else f"{x['rr_actual']:.2f}",
             x["created_at"].isoformat() if x["created_at"] else "",
-            x["closed_at"].isoformat() if x["closed_at"] else "",
+            x["closed_at"].isoformat()  if x["closed_at"]  else "",
         ])
     data = buf.getvalue().encode("utf-8")
     headers = {"Content-Disposition": "attachment; filename=report.csv"}
     return StreamingResponse(io.BytesIO(data), media_type="text/csv", headers=headers)
 
-# ---------- Risk & Sizing ----------
+
+# ======================
+#   Risk & Sizing
+# ======================
 @app.get("/risk/size", dependencies=[Depends(require_api_key)])
 def risk_size(symbol: str, side: str, market: str, entry: float, sl: float, x_risk_pct: float | None = Header(default=None)):
     risk_pct = x_risk_pct if x_risk_pct is not None else 1.0
@@ -265,7 +314,10 @@ def risk_size(symbol: str, side: str, market: str, entry: float, sl: float, x_ri
     res = risk.compute_qty(symbol=symbol, side=side, market=market, account_usdt=bal, risk_pct=risk_pct, entry=entry, sl=sl)
     return {"qty": res.qty, "notional": res.notional, "risk_usdt": res.risk_usdt, "step_size": res.step_size, "tick_size": res.tick_size, "entry": res.entry}
 
-# ---------- Auto-Trade ----------
+
+# ======================
+#   Auto-Trade
+# ======================
 @app.post("/autotrade/execute/{rec_id}", dependencies=[Depends(require_api_key)])
 def autotrade_execute(rec_id: int, risk_pct: float | None = Query(default=None), order_type: str = Query(default="MARKET")):
     at = _services_pack["autotrade_service"]
@@ -274,23 +326,34 @@ def autotrade_execute(rec_id: int, risk_pct: float | None = Query(default=None),
         raise HTTPException(status_code=400, detail=out.get("msg", "failed"))
     return out
 
-# ---------- TV Webhook (اختياري) ----------
+
+# ======================
+#   TradingView Webhook
+# ======================
 @app.post("/webhook/tradingview", dependencies=[Depends(require_api_key)])
 async def tv_webhook(request: Request):
+    """
+    نقطة ويبهوك اختيارية لاستقبال إشارات TradingView.
+    المثال هنا يُظهر التنفيذ الفوري فقط عند توفّر المعطيات الدنيا.
+    """
     try:
         data = await request.json()
     except Exception:
         data = {}
+
     symbol = (data.get("symbol") or data.get("SYMBOL") or "").upper()
     side   = (data.get("side") or data.get("SIDE") or "").upper()
     market = (data.get("market") or data.get("MARKET") or "Futures").title()
     entry  = float(data.get("entry") or data.get("ENTRY") or 0)
     sl     = float(data.get("sl") or data.get("SL") or 0)
-    at = _services_pack["autotrade_service"]
+
     if symbol and side and entry and sl:
+        at = _services_pack["autotrade_service"]
         out = at.execute_for_rec(rec_id = data.get("rec_id") or 0, override_risk_pct = None, order_type = "MARKET")
         return JSONResponse({"ok": True, "executed": out})
+
     return JSONResponse({"ok": True, "note": "Draft only"})
+
 
 @app.get("/")
 def root():
