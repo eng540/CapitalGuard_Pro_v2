@@ -1,7 +1,8 @@
-#--- START OF FILE: src/capitalguard/infrastructure/notify/telegram.py ---
+# --- START OF FILE: src/capitalguard/infrastructure/notify/telegram.py ---
 import logging
 from typing import Optional, Tuple, Dict, Any
 import httpx
+from telegram import InlineKeyboardMarkup
 from capitalguard.config import settings
 from capitalguard.domain.entities import Recommendation
 from capitalguard.interfaces.telegram.ui_texts import build_trade_card_text
@@ -15,6 +16,7 @@ class TelegramNotifier:
         self.api_base = f"https://api.telegram.org/bot{self.bot_token}" if self.bot_token else None
 
     def _post(self, method: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        # ... (this method is unchanged)
         if not self.api_base: return None
         try:
             with httpx.Client() as client:
@@ -29,34 +31,54 @@ class TelegramNotifier:
             log.exception("Telegram API call '%s' failed", method)
             return None
 
-    def post_recommendation_card(self, rec: Recommendation) -> Optional[Tuple[int, int]]:
+    def post_recommendation_card(self, rec: Recommendation, keyboard: Optional[InlineKeyboardMarkup] = None) -> Optional[Tuple[int, int]]:
         if not self.channel_id:
             log.warning("Cannot post card: TELEGRAM_CHAT_ID is not set.")
             return None
         text = build_trade_card_text(rec)
-        result = self._post("sendMessage", {
+        payload = {
             "chat_id": self.channel_id,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True
-        })
+        }
+        if keyboard:
+            payload["reply_markup"] = keyboard.to_dict()
+
+        result = self._post("sendMessage", payload)
         if result and "message_id" in result:
             return (int(result["chat"]["id"]), int(result["message_id"]))
         return None
 
-    def edit_recommendation_card(self, rec: Recommendation) -> bool:
+    def send_private_message(self, chat_id: int, rec: Recommendation, keyboard: Optional[InlineKeyboardMarkup] = None):
+        text = "Panel de control para la recomendación:\n\n" + build_trade_card_text(rec)
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        if keyboard:
+            payload["reply_markup"] = keyboard.to_dict()
+        self._post("sendMessage", payload)
+
+    def edit_recommendation_card(self, rec: Recommendation, keyboard: Optional[InlineKeyboardMarkup] = None) -> bool:
+        # ... (this method can be updated to also accept a keyboard if needed)
         if not rec.channel_id or not rec.message_id: return False
         text = build_trade_card_text(rec)
-        result = self._post("editMessageText", {
+        payload = {
             "chat_id": rec.channel_id,
             "message_id": rec.message_id,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True
-        })
+        }
+        if keyboard:
+            payload["reply_markup"] = keyboard.to_dict()
+        result = self._post("editMessageText", payload)
         return bool(result)
 
     def send_admin_alert(self, text: str) -> None:
         if self.channel_id:
             self._post("sendMessage", {"chat_id": self.channel_id, "text": f"🔔 ADMIN ALERT 🔔\n{text}"})
-#--- END OF FILE ---
+# --- END OF FILE ---
