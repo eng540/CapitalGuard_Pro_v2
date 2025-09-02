@@ -12,7 +12,6 @@ class TradeService:
         self.repo = repo
         self.notifier = notifier
 
-    # ... (الدوال الخاصة بالتحقق وإنشاء التوصيات تبقى كما هي) ...
     # --- Private Validation Helpers ---
     def _validate_sl_vs_entry(self, side: str, entry: float, sl: float):
         side_upper = side.upper()
@@ -38,22 +37,30 @@ class TradeService:
         stop_loss: float, targets: List[float], notes: Optional[str],
         user_id: Optional[str]
     ) -> Recommendation:
-        # ... (هذا الجزء لا يتغير)
+        """
+        Creates, validates, publishes, and then saves a recommendation.
+        """
         log.info(f"Attempting to create recommendation for {asset} by user {user_id}")
+
         self._validate_sl_vs_entry(side, entry, stop_loss)
         self._validate_targets(side, entry, targets)
+
         temp_rec = Recommendation(
             asset=Symbol(asset), side=Side(side), entry=Price(entry),
             stop_loss=Price(stop_loss), targets=Targets(targets),
             market=market, notes=notes, user_id=user_id
         )
+        
         posted_location = self.notifier.post_recommendation_card(temp_rec)
+        
         if not posted_location:
             log.error("Failed to publish card to Telegram channel. Aborting creation.")
             raise RuntimeError("Could not publish to Telegram. The recommendation was not saved.")
+            
         channel_id, message_id = posted_location
         temp_rec.channel_id = channel_id
         temp_rec.message_id = message_id
+        
         try:
             saved_rec = self.repo.add(temp_rec)
             log.info(f"Successfully created and saved recommendation #{saved_rec.id}")
@@ -64,6 +71,7 @@ class TradeService:
                 f"Please manually delete the message from the channel. Error: {e}"
             )
             raise
+
         try:
             success = self.notifier.edit_recommendation_card(saved_rec)
             if not success:
@@ -76,6 +84,7 @@ class TradeService:
                 f"An exception occurred while editing Telegram message {message_id} for rec #{saved_rec.id}.",
                 exc_info=True
             )
+        
         return saved_rec
 
     def close(self, rec_id: int, exit_price: float) -> Recommendation:
@@ -90,7 +99,7 @@ class TradeService:
         
         return updated_rec
 
-    # ✅ إضافة: الدوال الجديدة التي كانت مفقودة
+    # ✅ إضافة: الدوال الجديدة التي كانت مفقودة لحل مشكلة AttributeError
     def list_open(self) -> List[Recommendation]:
         """Returns a list of all recommendations with OPEN status."""
         return self.repo.list_open()
@@ -98,4 +107,4 @@ class TradeService:
     def list_all(self, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
         """Returns a list of all recommendations, with optional filters."""
         return self.repo.list_all(symbol=symbol, status=status)
-#--- END OF FILE ---
+# --- END OF FILE ---
