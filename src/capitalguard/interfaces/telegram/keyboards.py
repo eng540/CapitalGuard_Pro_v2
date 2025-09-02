@@ -1,10 +1,9 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-BOT_USERNAME = "YourBotName" # Important: Replace with your bot's actual username
+from capitalguard.config import settings
 
 def confirm_recommendation_keyboard(user_data_key: str) -> InlineKeyboardMarkup:
-    # ... (this function remains the same)
+    """Keyboard for the final review step in a conversation."""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ نشر في القناة", callback_data=f"rec:publish:{user_data_key}"),
@@ -17,7 +16,9 @@ def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     Generates the keyboard for the public message in the channel.
     Simple and focused on the follower.
     """
-    follow_url = f"https://t.me/{BOT_USERNAME}?start=follow_{rec_id}"
+    # Important: Ensure your bot's username is set in the .env file or config
+    bot_username = getattr(settings, "TELEGRAM_BOT_USERNAME", "YourBotName") # Fallback
+    follow_url = f"https://t.me/{bot_username}?start=follow_{rec_id}"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}"),
@@ -36,15 +37,15 @@ def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("🛡️ نقل للـ BE", callback_data=f"rec:move_be:{rec_id}"),
-            InlineKeyboardButton("💰 إغلاق جزئي (ملاحظة)", callback_data=f"rec:close_partial:{rec_id}")
+            InlineKeyboardButton("💰 إغلاق 50% (ملاحظة)", callback_data=f"rec:close_partial:{rec_id}")
         ],
         [
             InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_start:{rec_id}")
         ]
     ])
 
-# ... (other keyboards like confirm_close_keyboard can remain)
 def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMarkup:
+    """Keyboard to confirm closing a recommendation at a specific price."""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ تأكيد الإغلاق", callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"),
