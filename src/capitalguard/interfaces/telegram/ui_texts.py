@@ -2,17 +2,21 @@
 from __future__ import annotations
 from typing import Iterable, List, Optional
 from math import isfinite
+from datetime import datetime, timezone
 
 def _pct(entry: float, target: float, side: str) -> float:
-    if not entry:
+    if not entry or entry == 0:
         return 0.0
-    return (target - entry) / entry * 100.0 if (side or "").upper() == "LONG" else (entry - target) / entry * 100.0
+    return ((target - entry) / entry * 100.0) if (side or "").upper() == "LONG" else ((entry - target) / entry * 100.0)
 
 def _format_targets(entry: float, side: str, tps: Iterable[float]) -> str:
     lines: List[str] = []
     for i, tp in enumerate(tps, start=1):
-        pct = _pct(entry, float(tp), side)
-        lines.append(f"• TP{i}: {float(tp):g} ({pct:+.2f}%)")
+        try:
+            pct = _pct(entry, float(tp), side)
+            lines.append(f"• TP{i}: {float(tp):g} ({pct:+.2f}%)")
+        except (ValueError, TypeError):
+            continue
     return "\n".join(lines) if lines else "—"
 
 def _rr(entry: float, sl: float, tp1: Optional[float], side: str) -> str:
@@ -40,33 +44,46 @@ def _rr_actual(entry: float, sl: float, exit_price: Optional[float], side: str) 
         return "—"
 
 def build_trade_card_text(rec) -> str:
+    # Safely extract all attributes
     rec_id = getattr(rec, "id", None)
-    asset = getattr(rec.asset, "value", rec.asset)
-    side  = getattr(rec.side, "value", rec.side)
-    entry = float(getattr(rec.entry, "value", rec.entry))
-    sl    = float(getattr(rec.stop_loss, "value", rec.stop_loss))
-    tps   = list(getattr(rec.targets, "values", rec.targets or []))
-    tp1   = float(tps[0]) if tps else None
+    asset = getattr(getattr(rec, "asset", None), "value", getattr(rec, "asset", "N/A"))
+    side = getattr(getattr(rec, "side", None), "value", getattr(rec, "side", "N/A"))
+    entry = float(getattr(getattr(rec, "entry", None), "value", getattr(rec, "entry", 0)))
+    sl = float(getattr(getattr(rec, "stop_loss", None), "value", getattr(rec, "stop_loss", 0)))
+    tps = list(getattr(getattr(rec, "targets", None), "values", getattr(rec, "targets", [])))
+    tp1 = float(tps[0]) if tps else None
+    notes = getattr(rec, "notes", None) or "—"
+    status = str(getattr(rec, "status", "OPEN")).upper()
 
-    # ✅ تعديل: بناء العنوان بناءً على وجود الـ ID لحل مشكلة 400 Bad Request
+    # --- Dynamic Title ---
     title_line = f"<b>{asset}</b> — {side}"
     if rec_id:
         title_line = f"Signal #{rec_id} | <b>{asset}</b> — {side}"
 
-    planned_rr = _rr(entry, sl, tp1, side)
-    status = str(getattr(rec, "status", "OPEN")).upper()
+    # --- Status Line ---
     if status == "CLOSED":
         exit_p = getattr(rec, 'exit_price', None)
         rr_act = _rr_actual(entry, sl, float(exit_p or 0), side)
-        status_line = f"✅ <b>CLOSED</b> at {exit_p} (R/R act: {rr_act})"
+        status_line = f"✅ <b>CLOSED</b> at {exit_p:g} (R/R act: {rr_act})"
     else:
-        status_line = "🟢 <b>OPEN</b>"
+        status_line = f"🟢 <b>OPEN</b>"
 
-    notes = getattr(rec, "notes", None) or "—"
+    # --- Live Price & PnL Line (only if available and trade is open) ---
+    live_price = getattr(rec, "live_price", None)
+    live_price_line = ""
+    if live_price and status == 'OPEN':
+        pnl = _pct(entry, live_price, side)
+        now_utc = datetime.now(timezone.utc).strftime('%H:%M %Z')
+        live_price_line = f"<i>Live Price ({now_utc}): {live_price:g} (PnL: {pnl:+.2f}%)</i>\n"
+
+    # --- Planned R/R ---
+    planned_rr = _rr(entry, sl, tp1, side)
     
+    # --- Assemble the card ---
     return (
         f"{title_line}\n"
-        f"Status: {status_line}\n\n"
+        f"Status: {status_line}\n"
+        f"{live_price_line}\n"
         f"Entry 💰: {entry:g}\n"
         f"SL 🛑: {sl:g}\n"
         f"<u>Targets</u>:\n{_format_targets(entry, side, tps)}\n\n"
@@ -80,7 +97,7 @@ def build_review_text(draft: dict) -> str:
     side = (draft.get("side","") or "").upper()
     market = (draft.get("market","") or "-")
     entry = float(draft.get("entry",0) or 0)
-    sl    = float(draft.get("stop_loss",0) or 0)
+    sl = float(draft.get("stop_loss",0) or 0)
     raw = draft.get("targets")
     if isinstance(raw, str):
         raw = [x for x in raw.replace(",", " ").split() if x]
