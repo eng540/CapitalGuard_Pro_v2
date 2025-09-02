@@ -16,8 +16,7 @@ def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     Generates the keyboard for the public message in the channel.
     Simple and focused on the follower.
     """
-    # Important: Ensure your bot's username is set in the .env file or config
-    bot_username = getattr(settings, "TELEGRAM_BOT_USERNAME", "YourBotName") # Fallback
+    bot_username = getattr(settings, "TELEGRAM_BOT_USERNAME", "YourBotName")
     follow_url = f"https://t.me/{bot_username}?start=follow_{rec_id}"
     return InlineKeyboardMarkup([
         [
@@ -41,6 +40,21 @@ def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_start:{rec_id}")
+        ]
+    ])
+
+# ✅ --- NEW KEYBOARD FOR THE EDIT SUB-MENU ---
+def analyst_edit_menu_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+    """
+    Shows the editing options for a recommendation.
+    """
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=f"rec:edit_sl:{rec_id}"),
+            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"rec:edit_tp:{rec_id}")
+        ],
+        [
+            InlineKeyboardButton("⬅️ العودة للوحة التحكم", callback_data=f"rec:back_to_main:{rec_id}")
         ]
     ])
 
