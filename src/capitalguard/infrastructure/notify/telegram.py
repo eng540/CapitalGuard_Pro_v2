@@ -16,8 +16,9 @@ class TelegramNotifier:
         self.api_base = f"https://api.telegram.org/bot{self.bot_token}" if self.bot_token else None
 
     def _post(self, method: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        # ... (this method is unchanged)
-        if not self.api_base: return None
+        if not self.api_base:
+            log.warning("TelegramNotifier is not configured. Skipping API call.")
+            return None
         try:
             with httpx.Client() as client:
                 r = client.post(f"{self.api_base}/{method}", json=payload, timeout=15)
@@ -27,6 +28,9 @@ class TelegramNotifier:
                     log.error("Telegram API Error (%s): %s", method, data.get("description"))
                     return None
                 return data.get("result")
+        except httpx.HTTPStatusError as e:
+            log.error("Telegram API HTTP Error: %s - Response: %s", e, e.response.text)
+            return None
         except Exception as e:
             log.exception("Telegram API call '%s' failed", method)
             return None
@@ -50,11 +54,12 @@ class TelegramNotifier:
             return (int(result["chat"]["id"]), int(result["message_id"]))
         return None
 
-    def send_private_message(self, chat_id: int, rec: Recommendation, keyboard: Optional[InlineKeyboardMarkup] = None):
-        text = "Panel de control para la recomendación:\n\n" + build_trade_card_text(rec)
+    def send_private_message(self, chat_id: int, rec: Recommendation, keyboard: Optional[InlineKeyboardMarkup] = None, text_header: str = ""):
+        card_text = build_trade_card_text(rec)
+        final_text = f"{text_header}\n\n{card_text}" if text_header else card_text
         payload = {
             "chat_id": chat_id,
-            "text": text,
+            "text": final_text.strip(),
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }
@@ -63,7 +68,6 @@ class TelegramNotifier:
         self._post("sendMessage", payload)
 
     def edit_recommendation_card(self, rec: Recommendation, keyboard: Optional[InlineKeyboardMarkup] = None) -> bool:
-        # ... (this method can be updated to also accept a keyboard if needed)
         if not rec.channel_id or not rec.message_id: return False
         text = build_trade_card_text(rec)
         payload = {
