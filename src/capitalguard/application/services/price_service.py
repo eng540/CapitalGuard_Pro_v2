@@ -9,9 +9,6 @@ class PriceService:
     """
     A service layer for fetching prices, with built-in caching to prevent rate limiting.
     """
-    # Note: We are keeping this a dataclass for consistency, but it could be a regular class.
-    # The dependencies are now accessed via imports rather than passed in the constructor
-    # for simplicity in this iteration.
 
     def get_cached_price(self, symbol: str, market: str) -> float | None:
         """
