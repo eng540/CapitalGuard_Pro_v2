@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Iterable, List, Optional
 from math import isfinite
 
-# ... (الدوال المساعدة _pct, _format_targets, _rr, _rr_actual تبقى كما هي) ...
 def _pct(entry: float, target: float, side: str) -> float:
-    if not entry: return 0.0
+    if not entry:
+        return 0.0
     return (target - entry) / entry * 100.0 if (side or "").upper() == "LONG" else (entry - target) / entry * 100.0
 
 def _format_targets(entry: float, side: str, tps: Iterable[float]) -> str:
@@ -18,32 +18,37 @@ def _format_targets(entry: float, side: str, tps: Iterable[float]) -> str:
 def _rr(entry: float, sl: float, tp1: Optional[float], side: str) -> str:
     try:
         risk = abs(entry - sl)
-        if risk <= 0 or tp1 is None: return "—"
+        if risk <= 0 or tp1 is None:
+            return "—"
         reward = abs(tp1 - entry) if side.upper() == "LONG" else abs(entry - tp1)
         ratio = reward / risk
         return f"{ratio:.2f}" if isfinite(ratio) else "—"
-    except Exception: return "—"
+    except Exception:
+        return "—"
 
 def _rr_actual(entry: float, sl: float, exit_price: Optional[float], side: str) -> str:
     try:
-        if exit_price is None: return "—"
+        if exit_price is None:
+            return "—"
         risk = abs(entry - sl)
-        if risk <= 0: return "—"
+        if risk <= 0:
+            return "—"
         reward = abs(exit_price - entry) if side.upper() == "LONG" else abs(entry - exit_price)
         ratio = reward / risk
         return f"{ratio:.2f}" if isfinite(ratio) else "—"
-    except Exception: return "—"
+    except Exception:
+        return "—"
 
 def build_trade_card_text(rec) -> str:
-    rec_id = getattr(rec, "id", None) # نحصل على الـ ID
+    rec_id = getattr(rec, "id", None)
     asset = getattr(rec.asset, "value", rec.asset)
     side  = getattr(rec.side, "value", rec.side)
     entry = float(getattr(rec.entry, "value", rec.entry))
     sl    = float(getattr(rec.stop_loss, "value", rec.stop_loss))
     tps   = list(getattr(rec.targets, "values", rec.targets or []))
     tp1   = float(tps[0]) if tps else None
-    
-    # ✅ تعديل: بناء العنوان بناءً على وجود الـ ID
+
+    # ✅ تعديل: بناء العنوان بناءً على وجود الـ ID لحل مشكلة 400 Bad Request
     title_line = f"<b>{asset}</b> — {side}"
     if rec_id:
         title_line = f"Signal #{rec_id} | <b>{asset}</b> — {side}"
@@ -59,7 +64,6 @@ def build_trade_card_text(rec) -> str:
 
     notes = getattr(rec, "notes", None) or "—"
     
-    # ✅ تعديل: تضمين العنوان الجديد في النص النهائي
     return (
         f"{title_line}\n"
         f"Status: {status_line}\n\n"
@@ -72,7 +76,6 @@ def build_trade_card_text(rec) -> str:
     )
 
 def build_review_text(draft: dict) -> str:
-    # ... (هذه الدالة لا تتغير)
     asset = (draft.get("asset","") or "").upper()
     side = (draft.get("side","") or "").upper()
     market = (draft.get("market","") or "-")
@@ -101,9 +104,8 @@ def build_review_text(draft: dict) -> str:
     )
 
 def build_review_text_with_price(draft: dict, preview_price: float | None) -> str:
-    # ... (هذه الدالة لا تتغير)
     base = build_review_text(draft)
     if preview_price is None:
-        return base + "\n🔎 Current Price: —"
-    return base + f"\n🔎 Current Price: <b>{preview_price:g}</b>"
+        return base + "\n\n🔎 Current Price: —"
+    return base + f"\n\n🔎 Current Price: <b>{preview_price:g}</b>"
 # --- END OF FILE ---
