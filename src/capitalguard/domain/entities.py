@@ -5,11 +5,16 @@ from typing import Optional, List
 from enum import Enum
 from .value_objects import Symbol, Price, Targets, Side
 
-# ✅ --- NEW: Define recommendation statuses as an Enum ---
 class RecommendationStatus(Enum):
     PENDING = "PENDING"
     ACTIVE = "ACTIVE"
     CLOSED = "CLOSED"
+
+# ✅ --- NEW: Define the core order types ---
+class OrderType(Enum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    STOP_MARKET = "STOP_MARKET"
 
 @dataclass
 class Recommendation:
@@ -18,6 +23,8 @@ class Recommendation:
     entry: Price
     stop_loss: Price
     targets: Targets
+    # ✅ --- ADDED: OrderType is now a fundamental part of a recommendation ---
+    order_type: OrderType
     id: Optional[int] = None
 
     # --- Publication Fields ---
@@ -30,21 +37,24 @@ class Recommendation:
     notes: Optional[str] = None
     user_id: Optional[str] = None
 
-    # ✅ --- REVISED: Lifecycle & Status Fields ---
+    # --- Lifecycle & Status Fields ---
     status: RecommendationStatus = RecommendationStatus.PENDING
     exit_price: Optional[float] = None
     
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
-    activated_at: Optional[datetime] = None # Timestamp for when the trade becomes active
+    activated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
 
-    def activate(self) -> None:
-        """Marks the recommendation as active."""
+    def activate(self, activation_price: float) -> None:
+        """Marks the recommendation as active and sets the official entry price for market orders."""
         if self.status == RecommendationStatus.PENDING:
             self.status = RecommendationStatus.ACTIVE
             self.updated_at = datetime.utcnow()
             self.activated_at = self.updated_at
+            # For market orders, the activation price becomes the official entry price
+            if self.order_type == OrderType.MARKET:
+                self.entry = Price(activation_price)
 
     def close(self, exit_price: float) -> None:
         """Closes the recommendation with a given exit price."""
