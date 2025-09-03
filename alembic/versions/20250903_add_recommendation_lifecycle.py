@@ -2,7 +2,7 @@
 """add recommendation lifecycle status and timestamps
 
 Revision ID: 20250903_add_lifecycle
-Revises: 20250829_add_message_meta
+Revises: 20250829_01
 Create Date: 2025-09-03 15:00:00.000000
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 revision = '20250903_add_lifecycle'
 # ⚠️ هام جداً: تأكد من أن هذا الرقم يطابق آخر ملف ترحيل لديك بالفعل.
 # بناءً على الملفات السابقة، آخر ملف كان 20250829_01...
-down_revision = "20250829_add_message_meta"
+down_revision = "20250829_01"
 branch_labels = None
 depends_on = None
 
