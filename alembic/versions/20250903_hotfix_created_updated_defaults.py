@@ -2,7 +2,7 @@
 """Hotfix: enforce DEFAULT now() for created_at/updated_at and backfill NULLs
 
 Revision ID: 20250903_hotfix_created_updated_defaults
-Revises: 20250903_fix_created_updated_defaults
+Revises: 20250903_set_defaults_for_timestamps
 Create Date: 2025-09-03 22:05:00.000000
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "20250903_hotfix_created_updated_defaults"
-down_revision = "20250903_fix_created_updated_defaults"
+down_revision = "20250903_set_defaults_for_timestamps"
 branch_labels = None
 depends_on = None
 
