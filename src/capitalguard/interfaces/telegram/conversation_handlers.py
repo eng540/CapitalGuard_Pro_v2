@@ -15,7 +15,6 @@ from .helpers import get_service
 from .ui_texts import build_review_text_with_price
 from .keyboards import confirm_recommendation_keyboard
 from .commands import main_creation_keyboard, change_method_keyboard, newrec_entry_point, settings_cmd
-# ✅ --- NEW IMPORT FOR THE PARSING ENGINE ---
 from .parsers import parse_quick_command, parse_text_editor
 
 log = logging.getLogger(__name__)
@@ -32,8 +31,6 @@ async def process_parsed_data(update: Update, context: ContextTypes.DEFAULT_TYPE
     A unified function to handle data after it has been parsed by any method.
     It validates, shows a review, and prepares for publishing.
     """
-    # TODO: Add Smart Price Validation here
-    
     price_service = get_service(context, "price_service")
     preview_price = price_service.get_preview_price(data["asset"], data.get("market", "Futures"))
     
@@ -79,14 +76,14 @@ async def quick_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
     data = parse_quick_command(update.message.text)
     if not data:
         await update.message.reply_text("❌ Invalid format. Please check your command and try again.")
-        return QUICK_COMMAND # Stay in this state
+        return QUICK_COMMAND
     return await process_parsed_data(update, context, data)
 
 async def text_editor_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = parse_text_editor(update.message.text)
     if not data:
         await update.message.reply_text("❌ Could not parse text. Ensure required fields (Asset, Side, Entry, Stop, Targets) are present.")
-        return TEXT_EDITOR # Stay in this state
+        return TEXT_EDITOR
     return await process_parsed_data(update, context, data)
 
 # --- Handlers for the Interactive Flow ---
@@ -105,16 +102,11 @@ async def received_prices(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         parts = update.message.text.strip().replace(',', ' ').split()
         if len(parts) < 3: raise ValueError("At least Entry, Stop, and one Target are required.")
-        
-        # Entry can be multiple values, but for interactive we'll keep it simple: one entry price.
-        entry_price = float(parts[0])
-        stop_loss = float(parts[1])
-        targets = []
+        entry_price = float(parts[0]); stop_loss = float(parts[1]); targets = []
         for t in parts[2:]:
             t = t.strip().lower()
             if 'k' in t: targets.append(float(t.replace('k', '')) * 1000)
             else: targets.append(float(t))
-
         context.user_data[CONVERSATION_DATA_KEY]["entry"] = entry_price
         context.user_data[CONVERSATION_DATA_KEY]["stop_loss"] = stop_loss
         context.user_data[CONVERSATION_DATA_KEY]["targets"] = targets
@@ -125,7 +117,6 @@ async def received_prices(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def received_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     notes = update.message.text.strip()
     context.user_data[CONVERSATION_DATA_KEY]["notes"] = notes if notes.lower() not in ['skip', 'none'] else None
-    # Add default market
     context.user_data[CONVERSATION_DATA_KEY]["market"] = "Futures"
     data = context.user_data.pop(CONVERSATION_DATA_KEY)
     return await process_parsed_data(update, context, data)
@@ -135,20 +126,16 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer("Publishing...")
     review_key = query.data.split(":")[2]; draft = context.bot_data.get(review_key)
     if not draft:
-        await query.edit_message_text("❌ Error: Review data not found. It may have expired."); return
+        await query.edit_message_text("❌ Error: Review data not found."); return
     trade_service = get_service(context, "trade_service")
     try:
-        # The draft is now more complex, handle single or multi-entry
         entry_val = draft["entry"]
         if isinstance(entry_val, list):
-            # For now, let's just take the first entry price for the simple domain model.
-            # A future improvement would be to adapt the domain model to accept entry zones.
             entry_price = entry_val[0]
             if "notes" not in draft or draft["notes"] is None: draft["notes"] = ""
             draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
         else:
             entry_price = entry_val
-
         rec = trade_service.create_and_publish_recommendation(
             asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
             entry=entry_price, stop_loss=draft["stop_loss"], targets=draft["targets"],
@@ -168,6 +155,9 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 def register_conversation_handlers(app: Application):
+    # ✅ --- FIX: Import the ALLOWED_FILTER here ---
+    from .auth import ALLOWED_FILTER
+
     creation_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("newrec", newrec_entry_point, filters=ALLOWED_FILTER),
