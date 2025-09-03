@@ -163,9 +163,16 @@ async def start_interactive_builder(update: Update, context: ContextTypes.DEFAUL
     return I_ASSET_CHOICE
 
 async def asset_chosen_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """التعامل مع أزرار اختيار الأصل، بما فيها زر الإضافة asset_new."""
     query = update.callback_query
     await query.answer()
-    asset = query.data.split('_', 1)[1]
+    asset = query.data.split('_', 1)[1]  # مثال: BTCUSDT أو new
+
+    # ✅ أي قيمة 'new' تعني "أدخل الرمز يدويًا" وليست أصلًا حقيقيًا
+    if asset.lower() == "new":
+        await query.message.edit_text("✍️ أرسل رمز الأصل الآن (مثال: BTCUSDT).")
+        return I_ASSET_CHOICE
+
     draft = context.user_data[CONVERSATION_DATA_KEY]
     draft['asset'] = asset.upper()
     market = context.user_data.get('preferred_market', 'Futures')
@@ -177,6 +184,7 @@ async def asset_chosen_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     return I_SIDE_MARKET
 
 async def asset_chosen_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """التعامل مع إدخال الرمز كتابةً، مع حماية من NEW/جديد."""
     last_message_id = context.user_data.pop('last_interactive_message_id', None)
     if last_message_id:
         try:
@@ -184,7 +192,15 @@ async def asset_chosen_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception:
             pass
 
-    asset = update.message.text.strip().upper()
+    raw = (update.message.text or "").strip()
+
+    # ✅ حماية: لا نسمح باعتبار NEW/جديد كرمز
+    if raw.lower() in {"new", "جديد"}:
+        sent = await update.message.reply_text("⚠️ هذا زر إضافة. من فضلك اكتب رمزًا حقيقيًا مثل: BTCUSDT")
+        context.user_data['last_interactive_message_id'] = sent.message_id
+        return I_ASSET_CHOICE
+
+    asset = raw.upper()
     draft = context.user_data[CONVERSATION_DATA_KEY]
     draft['asset'] = asset
     market = context.user_data.get('preferred_market', 'Futures')
