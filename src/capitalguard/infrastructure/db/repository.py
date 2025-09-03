@@ -1,6 +1,7 @@
 # --- START OF FILE: src/capitalguard/infrastructure/db/repository.py ---
 from typing import List, Optional
 from datetime import datetime
+import sqlalchemy as sa
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from .models import RecommendationORM
@@ -93,4 +94,16 @@ class RecommendationRepository:
             s.commit()
             s.refresh(row)
             return self._to_entity(row)
+            
+    def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
+        """Fetches the most recently used unique assets for a given user."""
+        with SessionLocal() as s:
+            subquery = s.query(
+                RecommendationORM.asset,
+                sa.func.max(RecommendationORM.created_at).label('max_created_at')
+            ).filter(RecommendationORM.user_id == user_id).group_by(RecommendationORM.asset).subquery()
+            
+            results = s.query(subquery.c.asset).order_by(subquery.c.max_created_at.desc()).limit(limit).all()
+            
+            return [r[0] for r in results]
 # --- END OF FILE ---
