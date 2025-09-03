@@ -15,6 +15,7 @@ class TradeService:
         self.notifier = notifier
 
     def _update_cards(self, rec: Recommendation):
+        """Private helper to update public and private cards after a change."""
         public_keyboard = public_channel_keyboard(rec.id)
         self.notifier.edit_recommendation_card(rec, keyboard=public_keyboard)
         if rec.user_id and rec.user_id.isdigit():
@@ -25,6 +26,7 @@ class TradeService:
             )
 
     def _validate_sl_vs_entry(self, side: str, entry: float, sl: float):
+        """Validates that stop loss is logical compared to entry price."""
         side_upper = side.upper()
         if side_upper == "LONG" and not (sl < entry):
             raise ValueError("For LONG trades, Stop Loss must be less than the Entry price.")
@@ -32,6 +34,7 @@ class TradeService:
             raise ValueError("For SHORT trades, Stop Loss must be greater than the Entry price.")
 
     def _validate_targets(self, side: str, entry: float, tps: List[float]):
+        """Validates that targets are logical compared to entry price."""
         if not tps: raise ValueError("At least one target price is required.")
         side_upper = side.upper()
         if side_upper == "LONG":
@@ -46,16 +49,15 @@ class TradeService:
         stop_loss: float, targets: List[float], notes: Optional[str], 
         user_id: Optional[str], order_type: str, live_price: Optional[float] = None
     ) -> Recommendation:
+        """The main business logic for creating and publishing a new recommendation."""
         log.info(f"Creating recommendation for {asset} with order_type={order_type} by user={user_id}")
         order_type_enum = OrderType(order_type.upper())
         
         if order_type_enum == OrderType.MARKET:
             if not live_price: raise ValueError("Live price is required for Market orders.")
-            status = RecommendationStatus.ACTIVE
-            final_entry = live_price
+            status, final_entry = RecommendationStatus.ACTIVE, live_price
         else:
-            status = RecommendationStatus.PENDING
-            final_entry = entry
+            status, final_entry = RecommendationStatus.PENDING, entry
 
         self._validate_sl_vs_entry(side, final_entry, stop_loss)
         self._validate_targets(side, final_entry, targets)
@@ -74,8 +76,7 @@ class TradeService:
         posted_location = self.notifier.post_recommendation_card(saved_rec, keyboard=public_keyboard)
         if posted_location:
             channel_id, message_id = posted_location
-            saved_rec.channel_id = channel_id
-            saved_rec.message_id = message_id
+            saved_rec.channel_id, saved_rec.message_id = channel_id, message_id
             self.repo.update(saved_rec)
         else:
             self.notifier.send_admin_alert(f"Failed to publish rec #{saved_rec.id} to channel.")
@@ -122,8 +123,7 @@ class TradeService:
 
     def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
         rec = self.repo.get(rec_id)
-        if not rec or rec.status == RecommendationStatus.CLOSED:
-            raise ValueError("Recommendation not found or is closed.")
+        if not rec or rec.status == RecommendationStatus.CLOSED: raise ValueError("Recommendation not found or is closed.")
         self._validate_sl_vs_entry(rec.side.value, rec.entry.value, new_sl)
         rec.stop_loss = Price(new_sl)
         rec.notes = (rec.notes or "") + f"\n- SL updated to {new_sl}."
@@ -133,8 +133,7 @@ class TradeService:
 
     def update_targets(self, rec_id: int, new_targets: List[float]) -> Recommendation:
         rec = self.repo.get(rec_id)
-        if not rec or rec.status == RecommendationStatus.CLOSED:
-            raise ValueError("Recommendation not found or is closed.")
+        if not rec or rec.status == RecommendationStatus.CLOSED: raise ValueError("Recommendation not found or is closed.")
         self._validate_targets(rec.side.value, rec.entry.value, new_targets)
         rec.targets = Targets(new_targets)
         targets_str = ", ".join(map(str, new_targets))
@@ -142,4 +141,8 @@ class TradeService:
         updated_rec = self.repo.update(rec)
         self._update_cards(updated_rec)
         return updated_rec
+
+    def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
+        """Pass-through method to get recent assets from the repository."""
+        return self.repo.get_recent_assets_for_user(user_id, limit)
 # --- END OF FILE ---
