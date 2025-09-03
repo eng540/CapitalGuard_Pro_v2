@@ -1,8 +1,15 @@
-#--- START OF FILE: src/capitalguard/domain/entities.py ---
+# --- START OF FILE: src/capitalguard/domain/entities.py ---
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List
+from enum import Enum
 from .value_objects import Symbol, Price, Targets, Side
+
+# ✅ --- NEW: Define recommendation statuses as an Enum ---
+class RecommendationStatus(Enum):
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    CLOSED = "CLOSED"
 
 @dataclass
 class Recommendation:
@@ -13,30 +20,38 @@ class Recommendation:
     targets: Targets
     id: Optional[int] = None
 
-    # الحقول المتعلقة بالنشر في قناة تليجرام
+    # --- Publication Fields ---
     channel_id: Optional[int] = None
     message_id: Optional[int] = None
     published_at: Optional[datetime] = None
 
-    # حقول إضافية لتجربة المستخدم
+    # --- User Experience Fields ---
     market: Optional[str] = "Futures"
     notes: Optional[str] = None
     user_id: Optional[str] = None
 
-    # حقول تتبع الحالة والإغلاق
-    status: str = "OPEN"
+    # ✅ --- REVISED: Lifecycle & Status Fields ---
+    status: RecommendationStatus = RecommendationStatus.PENDING
     exit_price: Optional[float] = None
-    closed_at: Optional[datetime] = None
     
-    # حقول التوقيت
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
+    activated_at: Optional[datetime] = None # Timestamp for when the trade becomes active
+    closed_at: Optional[datetime] = None
+
+    def activate(self) -> None:
+        """Marks the recommendation as active."""
+        if self.status == RecommendationStatus.PENDING:
+            self.status = RecommendationStatus.ACTIVE
+            self.updated_at = datetime.utcnow()
+            self.activated_at = self.updated_at
 
     def close(self, exit_price: float) -> None:
-        if self.status == "CLOSED":
+        """Closes the recommendation with a given exit price."""
+        if self.status == RecommendationStatus.CLOSED:
             return
-        self.status = "CLOSED"
+        self.status = RecommendationStatus.CLOSED
         self.exit_price = exit_price
         self.updated_at = datetime.utcnow()
         self.closed_at = self.updated_at
-#--- END OF FILE ---
+# --- END OF FILE ---
