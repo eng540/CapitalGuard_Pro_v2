@@ -231,4 +231,14 @@ def register_conversation_handlers(app: Application):
             I_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received_interactive)],
             I_REVIEW: [
                 CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
-                CallbackQueryHandler(publish_handler, pattern=r"^
+                CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
+                CallbackQueryHandler(cancel_publish_handler, pattern=r"^rec:cancel:")
+            ],
+            I_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_conv_handler)],
+        per_message=False,
+        allow_reentry=True
+    )
+    app.add_handler(creation_conv_handler)
+# --- END OF FILE ---
