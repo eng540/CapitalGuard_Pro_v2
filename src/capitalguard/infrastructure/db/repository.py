@@ -1,20 +1,18 @@
 # --- START OF FILE: src/capitalguard/infrastructure/db/repository.py ---
 from typing import List, Optional
 from datetime import datetime
-# ✅ --- Import OrderType as well ---
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from .models import RecommendationORM
 from .base import SessionLocal
 
 class RecommendationRepository:
-    def _to_entity(self, row: RecommendationORM) in -> Recommendation:
+    def _to_entity(self, row: RecommendationORM) -> Recommendation:
         """Converts a SQLAlchemy ORM row to a domain Recommendation entity."""
         return Recommendation(
             id=row.id, asset=Symbol(row.asset), side=Side(row.side),
             entry=Price(row.entry), stop_loss=Price(row.stop_loss),
             targets=Targets(list(row.targets or [])),
-            # ✅ --- FIX: Read and convert order_type from the DB row ---
             order_type=OrderType(row.order_type),
             status=RecommendationStatus(row.status),
             channel_id=row.channel_id, message_id=row.message_id,
@@ -25,20 +23,19 @@ class RecommendationRepository:
             closed_at=row.closed_at,
         )
 
-    def add(self, rec: Recommendation) in -> Recommendation:
+    def add(self, rec: Recommendation) -> Recommendation:
         """Adds a new Recommendation to the database."""
         with SessionLocal() as s:
             row = RecommendationORM(
                 asset=rec.asset.value, side=rec.side.value,
                 entry=rec.entry.value, stop_loss=rec.stop_loss.value,
                 targets=rec.targets.values,
-                # ✅ --- FIX: Provide the order_type value when creating the ORM object ---
                 order_type=rec.order_type.value,
                 status=rec.status.value,
                 channel_id=rec.channel_id, message_id=rec.message_id,
                 published_at=rec.published_at, market=rec.market,
                 notes=rec.notes, user_id=rec.user_id,
-                activated_at=rec.activated_at # Make sure to save activation time if present
+                activated_at=rec.activated_at
             )
             s.add(row)
             s.commit()
@@ -68,7 +65,7 @@ class RecommendationRepository:
             rows = q.order_by(RecommendationORM.created_at.desc()).all()
             return [self._to_entity(r) for r in rows]
 
-    def update(self, rec: Recommendation) in -> Recommendation:
+    def update(self, rec: Recommendation) -> Recommendation:
         """Updates an existing recommendation in the database."""
         if rec.id is None: raise ValueError("Recommendation ID is required for update")
         with SessionLocal() as s:
@@ -77,7 +74,6 @@ class RecommendationRepository:
             
             row.asset = rec.asset.value; row.side = rec.side.value; row.entry = rec.entry.value
             row.stop_loss = rec.stop_loss.value; row.targets = rec.targets.values
-            # ✅ --- FIX: Update order_type and status using their .value attribute ---
             row.order_type = rec.order_type.value
             row.status = rec.status.value
             row.channel_id = rec.channel_id; row.message_id = rec.message_id; row.published_at = rec.published_at
