@@ -37,10 +37,11 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
         review_key = str(uuid.uuid4()); context.user_data['current_review_key'] = review_key; context.bot_data[review_key] = data.copy()
     keyboard = review_final_keyboard(review_key)
     try:
-        # We need the original message from the query to edit it.
         target_message = update.callback_query.message if hasattr(update, 'callback_query') and update.callback_query else message
-        if is_edit: await target_message.edit_text(text=review_text, reply_markup=keyboard, parse_mode='HTML')
-        else: await target_message.reply_html(text=review_text, reply_markup=keyboard)
+        if is_edit and hasattr(target_message, 'edit_text'):
+            await target_message.edit_text(text=review_text, reply_markup=keyboard, parse_mode='HTML')
+        else:
+            await target_message.reply_html(text=review_text, reply_markup=keyboard)
     except Exception as e:
         log.warning(f"Could not edit review card, sending new one. Error: {e}"); await message.reply_html(text=review_text, reply_markup=keyboard)
     return I_REVIEW
@@ -79,7 +80,6 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("Operation cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# --- Main Conversation Flow Handlers ---
 async def change_method_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     await query.message.edit_text("⚙️ Choose your preferred method:", reply_markup=main_creation_keyboard())
@@ -91,47 +91,52 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     elif choice == "quick": await query.message.edit_text("⚡️ Quick Command mode.\n\nSend `/rec` command.", reply_markup=change_method_keyboard()); return QUICK_COMMAND
     elif choice == "editor": await query.message.edit_text("📋 Text Editor mode.\n\nPaste recommendation text.", reply_markup=change_method_keyboard()); return TEXT_EDITOR
     return ConversationHandler.END
+
 async def quick_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = parse_quick_command(update.message.text)
     if not data: await update.message.reply_text("❌ Invalid format. Please try again."); return QUICK_COMMAND
+    if 'order_type' not in data or not data['order_type']: data['order_type'] = 'LIMIT'
     context.user_data[CONVERSATION_DATA_KEY] = data; return await show_review_card(update, context)
+
 async def text_editor_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = parse_text_editor(update.message.text)
     if not data: await update.message.reply_text("❌ Could not parse text. Ensure required fields are present."); return TEXT_EDITOR
+    if 'order_type' not in data or not data['order_type']: data['order_type'] = 'LIMIT'
     context.user_data[CONVERSATION_DATA_KEY] = data; return await show_review_card(update, context)
 
-# --- Interactive Builder Flow ---
 async def start_interactive_builder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    message = update.message or update.callback_query.message
-    context.user_data[CONVERSATION_DATA_KEY] = {}
+    message = update.message or update.callback_query.message; context.user_data[CONVERSATION_DATA_KEY] = {}
     trade_service = get_service(context, "trade_service"); user_id = str(update.effective_user.id)
     recent_assets = trade_service.get_recent_assets_for_user(user_id, limit=5)
     sent_message = await message.edit_text(
         "🚀 Interactive Builder\n\n1️⃣ Choose a recent asset, or **type a new symbol directly**:",
         reply_markup=asset_choice_keyboard(recent_assets)
-    )
-    context.user_data['last_message_id'] = sent_message.message_id
+    ); context.user_data['last_message_id'] = sent_message.message_id
     return I_ASSET_CHOICE
 
 async def _handle_asset_selection(asset: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.message or update.callback_query.message
     draft = context.user_data[CONVERSATION_DATA_KEY]; draft['asset'] = asset.upper()
     market = context.user_data.get('preferred_market', 'Futures'); draft['market'] = market
-    await message.edit_text(f"✅ Asset: {asset.upper()}\n\n2️⃣ Select direction:", reply_markup=side_market_keyboard(market))
+    sent_message = await message.edit_text(f"✅ Asset: {asset.upper()}\n\n2️⃣ Select direction:", reply_markup=side_market_keyboard(market))
+    context.user_data['last_message_id'] = sent_message.message_id
     return I_SIDE_MARKET
+    
 async def asset_chosen_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer(); asset = query.data.split('_', 1)[1]
+    if asset == "new":
+        await query.message.edit_text("✍️ Please type the new asset symbol (e.g., ADAUSDT).")
+        return I_ASSET_CHOICE
     return await _handle_asset_selection(asset, update, context)
+
 async def asset_chosen_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     last_message_id = context.user_data.pop('last_message_id', None)
     if last_message_id:
         try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=last_message_id)
         except Exception: pass
-    asset = update.message.text; draft = context.user_data[CONVERSATION_DATA_KEY]; draft['asset'] = asset.upper()
-    market = context.user_data.get('preferred_market', 'Futures'); draft['market'] = market
-    sent_message = await update.message.reply_text(f"✅ Asset: {asset.upper()}\n\n2️⃣ Select direction:", reply_markup=side_market_keyboard(market))
-    context.user_data['last_message_id'] = sent_message.message_id
-    return I_SIDE_MARKET
+    update.callback_query = None
+    return await _handle_asset_selection(update.message.text, update, context)
+
 async def side_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer(); side = query.data.split('_')[1]
     context.user_data[CONVERSATION_DATA_KEY]['side'] = side; asset = context.user_data[CONVERSATION_DATA_KEY]['asset']
@@ -158,7 +163,7 @@ async def prices_received_interactive(update: Update, context: ContextTypes.DEFA
         return await show_review_card(update, context)
     except (ValueError, IndexError): await update.message.reply_text("❌ Invalid price format. Please try again."); return I_PRICES
 
-# ✅ --- FIX: Re-add the missing handler function ---
+# ✅ --- FIX: Re-add the missing handler functions ---
 async def change_market_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     await query.message.edit_reply_markup(reply_markup=market_choice_keyboard())
