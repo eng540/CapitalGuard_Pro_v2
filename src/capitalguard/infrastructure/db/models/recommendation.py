@@ -2,10 +2,13 @@
 from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, JSON, Text, Index, Enum
 from datetime import datetime
 from .base import Base
-# ✅ --- Import both Enums ---
 from capitalguard.domain.entities import RecommendationStatus, OrderType
 
 class RecommendationORM(Base):
+    """
+    SQLAlchemy ORM model for the 'recommendations' table.
+    This model mirrors the structure of the database, including Enums for status and order_type.
+    """
     __tablename__ = "recommendations"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -15,22 +18,27 @@ class RecommendationORM(Base):
     stop_loss = Column(Float, nullable=False)
     targets = Column(JSON, nullable=False)
     
-    # ✅ --- ADDED: New order_type column with its own Enum ---
+    # --- New Enum column for order_type ---
     order_type = Column(Enum(OrderType, name="ordertype", create_type=False),
                         default=OrderType.LIMIT,
                         nullable=False)
     
+    # --- Status column updated to use Enum ---
     status = Column(Enum(RecommendationStatus, name="recommendationstatus", create_type=False), 
                     default=RecommendationStatus.PENDING, 
                     index=True, 
                     nullable=False)
 
-    # --- (Other fields remain the same) ---
+    # --- Publication Fields ---
     channel_id = Column(BigInteger, index=True, nullable=True)
     message_id = Column(BigInteger, nullable=True)
     published_at = Column(DateTime(timezone=True), nullable=True)
+
+    # --- User Experience Fields ---
     market = Column(String, nullable=True)
     notes = Column(Text, nullable=True)
+
+    # --- Tracking & Lifecycle Fields ---
     user_id = Column(String, nullable=True)
     exit_price = Column(Float, nullable=True)
     activated_at = Column(DateTime(timezone=True), nullable=True)
