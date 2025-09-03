@@ -1,5 +1,4 @@
-#--- START OF FILE: src/capitalguard/boot.py ---
-#--- START OF FILE: src/capitalguard/boot.py ---
+# --- START OF FILE: src/capitalguard/boot.py ---
 import os
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.report_service import ReportService
@@ -11,20 +10,15 @@ from capitalguard.application.services.autotrade_service import AutoTradeService
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.infrastructure.execution.binance_exec import BinanceExec, BinanceCreds
-from capitalguard.infrastructure.pricing.binance import BinancePricing
 
 def build_services() -> dict:
     """
-    Composition Root: يبني كل الخدمات مرة واحدة ويعيدها في قاموس.
+    Composition Root: Builds all services once and returns them in a dictionary.
     """
     # Infrastructure Components
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
     
-    # ✅ ملاحظة: PriceService لم يعد يأخذ أي معاملات في مُنشئه لأنه يعتمد على طرق ثابتة
-    # لذلك، سنقوم بإنشائه مباشرة.
-
-    # Binance Execution Credentials
     spot_creds = BinanceCreds(
         api_key=os.getenv("BINANCE_API_KEY", ""),
         api_secret=os.getenv("BINANCE_API_SECRET", "")
@@ -37,14 +31,13 @@ def build_services() -> dict:
     exec_futu = BinanceExec(futu_creds, futures=True)
 
     # Application Services
+    price_service = PriceService()
     trade_service = TradeService(repo=repo, notifier=notifier)
     report_service = ReportService(repo=repo)
     analytics_service = AnalyticsService(repo=repo)
-    price_service = PriceService() # ✅ إصلاح: تم إنشاء الخدمة بدون معاملات كما يتوقع تعريفها
     risk_service = RiskService(exec_spot=exec_spot, exec_futu=exec_futu)
     autotrade_service = AutoTradeService(
-        repo=repo, notifier=notifier, 
-        risk=risk_service, # ✅ إصلاح: تم تغيير اسم المعامل من "risk_service" إلى "risk" لمطابقة تعريف الـ dataclass
+        repo=repo, notifier=notifier, risk=risk_service,
         exec_spot=exec_spot, exec_futu=exec_futu
     )
     alert_service = AlertService(
@@ -60,5 +53,7 @@ def build_services() -> dict:
         "alert_service": alert_service,
         "risk_service": risk_service,
         "autotrade_service": autotrade_service,
+        # ✅ --- FIX: Add the notifier to the shared services dictionary ---
+        "notifier": notifier,
     }
-#--- END OF FILE ---
+# --- END OF FILE ---
