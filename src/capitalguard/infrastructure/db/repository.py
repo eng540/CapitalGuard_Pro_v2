@@ -72,13 +72,22 @@ class RecommendationRepository:
             row = s.get(RecommendationORM, rec.id)
             if not row: raise ValueError(f"Recommendation with id {rec.id} not found")
             
-            row.asset = rec.asset.value; row.side = rec.side.value; row.entry = rec.entry.value
-            row.stop_loss = rec.stop_loss.value; row.targets = rec.targets.values
+            row.asset = rec.asset.value
+            row.side = rec.side.value
+            row.entry = rec.entry.value
+            row.stop_loss = rec.stop_loss.value
+            row.targets = rec.targets.values
             row.order_type = rec.order_type.value
             row.status = rec.status.value
-            row.channel_id = rec.channel_id; row.message_id = rec.message_id; row.published_at = rec.published_at
-            row.market = rec.market; row.notes = rec.notes; row.user_id = rec.user_id
-            row.exit_price = rec.exit_price; row.activated_at = rec.activated_at; row.closed_at = rec.closed_at
+            row.channel_id = rec.channel_id
+            row.message_id = rec.message_id
+            row.published_at = rec.published_at
+            row.market = rec.market
+            row.notes = rec.notes
+            row.user_id = rec.user_id
+            row.exit_price = rec.exit_price
+            row.activated_at = rec.activated_at
+            row.closed_at = rec.closed_at
             row.updated_at = datetime.utcnow()
             
             s.commit()
