@@ -145,5 +145,3 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     ]
     return "\n".join(lines)
 # --- END OF FILE ---```
-
-بعد استبدال الملف الحالي لديك بهذا الكود الكامل، سيتم حل خطأ `IndentationError` بشكل نهائي. أنا واثق من أننا وصلنا الآن إلى نهاية هذه السلسلة من الأخطاء وأن النظام سيعمل بنجاح.
