@@ -6,24 +6,28 @@ from enum import Enum
 from .value_objects import Symbol, Price, Targets, Side
 
 class RecommendationStatus(Enum):
+    """Defines the possible lifecycle states of a recommendation."""
     PENDING = "PENDING"
     ACTIVE = "ACTIVE"
     CLOSED = "CLOSED"
 
-# ✅ --- NEW: Define the core order types ---
 class OrderType(Enum):
+    """Defines the supported entry order types for a recommendation."""
     MARKET = "MARKET"
     LIMIT = "LIMIT"
     STOP_MARKET = "STOP_MARKET"
 
 @dataclass
 class Recommendation:
+    """
+    The core entity of the system, representing a single trade recommendation.
+    It encapsulates all data and business logic related to a trade's lifecycle.
+    """
     asset: Symbol
     side: Side
     entry: Price
     stop_loss: Price
     targets: Targets
-    # ✅ --- ADDED: OrderType is now a fundamental part of a recommendation ---
     order_type: OrderType
     id: Optional[int] = None
 
@@ -46,14 +50,16 @@ class Recommendation:
     activated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
 
-    def activate(self, activation_price: float) -> None:
-        """Marks the recommendation as active and sets the official entry price for market orders."""
+    def activate(self, activation_price: Optional[float] = None) -> None:
+        """
+        Marks the recommendation as active. For MARKET orders, it sets the official entry price.
+        """
         if self.status == RecommendationStatus.PENDING:
             self.status = RecommendationStatus.ACTIVE
             self.updated_at = datetime.utcnow()
             self.activated_at = self.updated_at
-            # For market orders, the activation price becomes the official entry price
-            if self.order_type == OrderType.MARKET:
+            # For market orders, the provided activation price becomes the official entry price.
+            if self.order_type == OrderType.MARKET and activation_price is not None:
                 self.entry = Price(activation_price)
 
     def close(self, exit_price: float) -> None:
