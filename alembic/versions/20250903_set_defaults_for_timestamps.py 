@@ -1,0 +1,92 @@
+# --- START OF FILE: alembic/versions/20250903_set_defaults_for_timestamps.py ---
+"""set server defaults for created_at and updated_at
+
+Revision ID: 20250903_set_defaults_for_timestamps
+Revises: 20250903_add_order_type
+Create Date: 2025-09-03 19:30:00.000000
+
+"""
+from alembic import op
+import sqlalchemy as sa
+
+# revision identifiers, used by Alembic.
+revision = '20250903_set_defaults_for_timestamps'
+down_revision = '20250903_add_order_type'
+branch_labels = None
+depends_on = None
+
+# ✅ --- Best Practice: Create a trigger function for auto-updating timestamps ---
+TRIGGER_NAME = 'recommendations_update_updated_at'
+FUNCTION_NAME = 'update_updated_at_column'
+TABLE_NAME = 'recommendations'
+
+def upgrade() -> None:
+    """
+    Applies server defaults for created_at and a trigger for updated_at.
+    """
+    # Set server_default=sa.func.now() for created_at
+    op.alter_column(
+        TABLE_NAME,
+        'created_at',
+        existing_type=sa.DateTime(timezone=True), # Match the model type
+        nullable=False,
+        server_default=sa.text('NOW()')
+    )
+
+    # For updated_at, we create a trigger for automatic updates on the DB side.
+    op.alter_column(
+        TABLE_NAME,
+        'updated_at',
+        existing_type=sa.DateTime(timezone=True), # Match the model type
+        nullable=False,
+        server_default=sa.text('NOW()')
+    )
+
+    # SQL for the trigger function
+    trigger_function_sql = f"""
+        CREATE OR REPLACE FUNCTION {FUNCTION_NAME}()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            NEW.updated_at = NOW();
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    """
+    
+    # SQL to create the trigger
+    create_trigger_sql = f"""
+        CREATE TRIGGER {TRIGGER_NAME}
+        BEFORE UPDATE ON {TABLE_NAME}
+        FOR EACH ROW
+        EXECUTE FUNCTION {FUNCTION_NAME}();
+    """
+    
+    op.execute(trigger_function_sql)
+    op.execute(create_trigger_sql)
+
+
+def downgrade() -> None:
+    """
+    Reverts the defaults and drops the trigger.
+    """
+    # Drop the trigger and the function
+    op.execute(f"DROP TRIGGER IF EXISTS {TRIGGER_NAME} ON {TABLE_NAME};")
+    op.execute(f"DROP FUNCTION IF EXISTS {FUNCTION_NAME};")
+
+    # Revert the columns
+    op.alter_column(
+        TABLE_NAME,
+        'created_at',
+        existing_type=sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=None
+    )
+
+    op.alter_column(
+        TABLE_NAME,
+        'updated_at',
+        existing_type=sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=None
+    )
+# --- END OF FILE ---
