@@ -25,30 +25,54 @@ log = logging.getLogger(__name__)
 USER_PREFERENCE_KEY = "preferred_creation_method"
 CONVERSATION_DATA_KEY = "new_rec_draft"
 
-# --- Unified Post-Parsing & Final Handlers ---
-async def process_parsed_data(update: Update, context: ContextTypes.DEFAULT_TYPE, data: dict) -> int:
+# --- Unified Logic ---
+async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, is_edit: bool = False) -> int:
+    """Central function to show or edit the review card and stay in the review state."""
+    message = update.message or update.callback_query.message
+    review_key = context.user_data.get('current_review_key')
+    
+    if review_key and review_key in context.bot_data:
+        data = context.bot_data[review_key]
+    else:
+        data = context.user_data.get(CONVERSATION_DATA_KEY, {})
+
+    if not data.get("asset"):
+        await message.reply_text("Something went wrong, please start over with /newrec.")
+        return ConversationHandler.END
+
     price_service = get_service(context, "price_service")
     preview_price = price_service.get_preview_price(data["asset"], data.get("market", "Futures"))
     review_text = build_review_text_with_price(data, preview_price)
-    review_key = str(uuid.uuid4()); context.bot_data[review_key] = data.copy()
-    message = update.message or update.callback_query.message
-    await message.reply_html(text=review_text, reply_markup=review_final_keyboard(review_key))
-    context.user_data.pop(CONVERSATION_DATA_KEY, None)
-    return ConversationHandler.END
+    
+    if not review_key:
+        review_key = str(uuid.uuid4())
+        context.user_data['current_review_key'] = review_key
+        context.bot_data[review_key] = data.copy()
 
-# ... (publish_handler, cancel_publish_handler, cancel_conv_handler etc. are unchanged)
-async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = review_final_keyboard(review_key)
+    try:
+        if is_edit:
+            await message.edit_text(text=review_text, reply_markup=keyboard, parse_mode='HTML')
+        else:
+            await message.reply_html(text=review_text, reply_markup=keyboard)
+    except Exception as e:
+        log.warning(f"Could not edit review card, sending new one. Error: {e}")
+        await message.reply_html(text=review_text, reply_markup=keyboard)
+
+    return I_REVIEW
+
+async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer("Publishing...")
     review_key = query.data.split(":")[2]; draft = context.bot_data.get(review_key)
-    if not draft: await query.edit_message_text("❌ Error: Review data not found."); return
+    if not draft:
+        await query.edit_message_text("❌ Error: Review data not found."); return ConversationHandler.END
     trade_service = get_service(context, "trade_service")
     try:
         entry_val = draft["entry"]
+        entry_price = entry_val[0] if isinstance(entry_val, list) else entry_val
         if isinstance(entry_val, list):
-            entry_price = entry_val[0]
             if "notes" not in draft or draft["notes"] is None: draft["notes"] = ""
             draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
-        else: entry_price = entry_val
         rec = trade_service.create_and_publish_recommendation(
             asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
             entry=entry_price, stop_loss=draft["stop_loss"], targets=draft["targets"],
@@ -57,16 +81,22 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.exception("Failed to publish recommendation."); await query.edit_message_text(f"❌ Publication failed: {e}")
     finally: context.bot_data.pop(review_key, None)
-async def cancel_publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return ConversationHandler.END
+
+async def cancel_publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     review_key = query.data.split(":")[2]; context.bot_data.pop(review_key, None)
+    context.user_data.pop('current_review_key', None)
     await query.edit_message_text("Publication cancelled.")
+    return ConversationHandler.END
+
 async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop(CONVERSATION_DATA_KEY, None)
+    context.user_data.pop('current_review_key', None)
     await update.message.reply_text("Operation cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# --- Main Conversation Flow Handlers ---
+# --- Main Conversation Flow ---
 async def change_method_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     await query.message.edit_text("⚙️ Choose your preferred method:", reply_markup=main_creation_keyboard())
@@ -81,13 +111,15 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def quick_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = parse_quick_command(update.message.text)
     if not data: await update.message.reply_text("❌ Invalid format. Please try again."); return QUICK_COMMAND
-    return await process_parsed_data(update, context, data)
+    context.user_data[CONVERSATION_DATA_KEY] = data
+    return await show_review_card(update, context)
 async def text_editor_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = parse_text_editor(update.message.text)
     if not data: await update.message.reply_text("❌ Could not parse text. Ensure required fields are present."); return TEXT_EDITOR
-    return await process_parsed_data(update, context, data)
+    context.user_data[CONVERSATION_DATA_KEY] = data
+    return await show_review_card(update, context)
 
-# --- Fully Interactive Builder Flow ---
+# --- Interactive Builder Flow ---
 async def start_interactive_builder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.message or update.callback_query.message
     context.user_data[CONVERSATION_DATA_KEY] = {}
@@ -120,45 +152,38 @@ async def market_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data[CONVERSATION_DATA_KEY]['market'] = market
     await query.message.edit_reply_markup(reply_markup=side_market_keyboard(market)); return I_SIDE_MARKET
 
-# ✅ --- NEW HELPER FUNCTION & CORRECTED HANDLER ---
 def _parse_price_string(price_str: str) -> float:
-    """Helper function to parse a single price string, handling 'k' suffix."""
-    s = price_str.strip().lower()
-    if 'k' in s:
-        return float(s.replace('k', '')) * 1000
+    s = price_str.strip().lower();
+    if 'k' in s: return float(s.replace('k', '')) * 1000
     return float(s)
-
 async def prices_received_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
-        parts = update.message.text.strip().replace(',', ' ').split()
-        if len(parts) < 3:
-            raise ValueError("At least Entry, Stop, and one Target are required.")
-        
-        # Use the helper function for all parts
-        entry_price = _parse_price_string(parts[0])
-        stop_loss = _parse_price_string(parts[1])
+        parts = update.message.text.strip().replace(',', ' ').split();
+        if len(parts) < 3: raise ValueError("At least Entry, Stop, and one Target are required.")
+        entry_price = _parse_price_string(parts[0]); stop_loss = _parse_price_string(parts[1])
         targets = [_parse_price_string(t) for t in parts[2:]]
-        
         draft = context.user_data[CONVERSATION_DATA_KEY]
-        draft["entry"] = entry_price
-        draft["stop_loss"] = stop_loss
-        draft["targets"] = targets
-        
-        return await process_parsed_data(update, context, draft)
+        draft["entry"] = entry_price; draft["stop_loss"] = stop_loss; draft["targets"] = targets
+        return await show_review_card(update, context)
     except (ValueError, IndexError):
-        await update.message.reply_text("❌ Invalid format. Please try again:\n`ENTRY STOP TARGETS...`")
-        return I_PRICES
+        await update.message.reply_text("❌ Invalid format. Try again:\n`ENTRY STOP TARGETS...`"); return I_PRICES
 
 async def add_notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
-    review_key = query.data.split(':')[2]; context.user_data['review_key_for_notes'] = review_key
-    await query.message.edit_text(f"{query.message.text}\n\n✍️ Please send your notes now."); return I_NOTES
+    review_key = query.data.split(':')[2]; context.user_data['current_review_key'] = review_key
+    await query.message.edit_text(f"{query.message.text}\n\n✍️ Please send your notes now.")
+    return I_NOTES
 async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    notes = update.message.text.strip(); review_key = context.user_data.pop('review_key_for_notes', None)
+    notes = update.message.text.strip(); review_key = context.user_data.get('current_review_key')
     if review_key and review_key in context.bot_data:
         draft = context.bot_data[review_key]
         draft['notes'] = notes if notes.lower() not in ['skip', 'none'] else None
-        return await process_parsed_data(update, context, draft)
+        # Use the query from the context if available to edit the message
+        # This is a conceptual fix; the `update` object here is from a MessageHandler,
+        # so we cannot edit the original query message directly. We send a new review card.
+        await update.message.delete()
+        new_update_for_review = Update(update.update_id + 1, message=update.message) # Conceptual
+        return await show_review_card(new_update_for_review, context, is_edit=False)
     await update.message.reply_text("Something went wrong. Please start over."); return ConversationHandler.END
 
 # --- Registration Function ---
@@ -168,10 +193,9 @@ def register_conversation_handlers(app: Application):
         entry_points=[
             CommandHandler("newrec", newrec_entry_point, filters=ALLOWED_FILTER),
             CommandHandler("settings", settings_cmd, filters=ALLOWED_FILTER),
-            CallbackQueryHandler(change_method_handler, pattern="^change_method$"),
         ],
         states={
-            CHOOSE_METHOD: [CallbackQueryHandler(method_chosen, pattern="^method_")],
+            CHOOSE_METHOD: [CallbackQueryHandler(method_chosen, pattern="^method_"), CallbackQueryHandler(change_method_handler, pattern="^change_method$")],
             QUICK_COMMAND: [MessageHandler(filters.COMMAND & filters.Regex(r'^\/rec'), quick_command_handler)],
             TEXT_EDITOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, text_editor_handler)],
             I_ASSET_CHOICE: [CallbackQueryHandler(asset_chosen, pattern="^asset_")],
@@ -182,13 +206,16 @@ def register_conversation_handlers(app: Application):
                 CallbackQueryHandler(market_chosen, pattern="^market_")
             ],
             I_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received_interactive)],
+            I_REVIEW: [
+                CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
+                CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
+                CallbackQueryHandler(cancel_publish_handler, pattern=r"^rec:cancel:")
+            ],
             I_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)],
         },
         fallbacks=[CommandHandler("cancel", cancel_conv_handler)],
+        per_message=False,
         allow_reentry=True
     )
     app.add_handler(creation_conv_handler)
-    app.add_handler(CallbackQueryHandler(publish_handler, pattern="^rec:publish:"))
-    app.add_handler(CallbackQueryHandler(cancel_publish_handler, pattern="^rec:cancel:"))
-    app.add_handler(CallbackQueryHandler(add_notes_handler, pattern="^rec:add_notes:"))
 # --- END OF FILE ---
