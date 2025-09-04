@@ -2,6 +2,7 @@
 import logging
 from typing import List, Optional
 import sqlalchemy as sa
+from sqlalchemy import or_
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
@@ -47,8 +48,8 @@ class RecommendationRepository:
                     entry=rec.entry.value,
                     stop_loss=rec.stop_loss.value,
                     targets=rec.targets.values,
-                    order_type=rec.order_type,  # Enum(OrderType)
-                    status=rec.status,          # Enum(RecommendationStatus)
+                    order_type=rec.order_type,
+                    status=rec.status,
                     channel_id=rec.channel_id,
                     message_id=rec.message_id,
                     published_at=rec.published_at,
@@ -56,7 +57,6 @@ class RecommendationRepository:
                     notes=rec.notes,
                     user_id=rec.user_id,
                     activated_at=rec.activated_at,
-                    # created_at / updated_at تُدار بواسطة قاعدة البيانات
                 )
                 s.add(row)
                 s.commit()
@@ -72,16 +72,35 @@ class RecommendationRepository:
             row = s.get(RecommendationORM, rec_id)
             return self._to_entity(row) if row else None
 
-    def list_open(self, symbol: Optional[str] = None) -> List[Recommendation]:
-        # ✅ IMPROVEMENT: Added optional symbol filter for high-performance lookups (e.g., by the watcher).
+    def list_open(
+        self,
+        symbol: Optional[str] = None,
+        side: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Recommendation]:
+        """
+        ✅ NEW (Phase 3): Enhanced to support filtering by side and status,
+        and partial matching for symbol.
+        """
         with SessionLocal() as s:
-            q = (
-                s.query(RecommendationORM)
-                .filter(RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE]))
+            q = s.query(RecommendationORM).filter(
+                or_(
+                    RecommendationORM.status == RecommendationStatus.PENDING,
+                    RecommendationORM.status == RecommendationStatus.ACTIVE,
+                )
             )
+
             if symbol:
-                q = q.filter(RecommendationORM.asset == symbol.upper())
-            
+                q = q.filter(RecommendationORM.asset.ilike(f"%{symbol.upper()}%"))
+            if side:
+                q = q.filter(RecommendationORM.side == side.upper())
+            if status:
+                try:
+                    status_enum = RecommendationStatus(status.upper())
+                    q = q.filter(RecommendationORM.status == status_enum)
+                except ValueError:
+                    log.warning("Invalid status filter provided to list_open: %s", status)
+
             rows = q.order_by(RecommendationORM.created_at.desc()).all()
             return [self._to_entity(r) for r in rows]
 
@@ -89,7 +108,7 @@ class RecommendationRepository:
         with SessionLocal() as s:
             q = s.query(RecommendationORM)
             if symbol:
-                q = q.filter(RecommendationORM.asset == symbol.upper())
+                q = q.filter(RecommendationORM.asset.ilike(f"%{symbol.upper()}%"))
             if status:
                 try:
                     status_enum = RecommendationStatus(status.upper())
@@ -126,7 +145,6 @@ class RecommendationRepository:
                 row.exit_price = rec.exit_price
                 row.activated_at = rec.activated_at
                 row.closed_at = rec.closed_at
-                # updated_at يُدار تلقائياً من قاعدة البيانات
 
                 s.commit()
                 s.refresh(row)
@@ -155,4 +173,6 @@ class RecommendationRepository:
                 .all()
             )
             return [r[0] for r in results]
-# --- END OF FILE ---
+# --- END OF FILE ---```
+
+أنا جاهز للملف التالي عندما تعطيني إشارة المتابعة.
