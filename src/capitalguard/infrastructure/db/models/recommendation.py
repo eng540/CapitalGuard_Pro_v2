@@ -3,6 +3,8 @@ from sqlalchemy import (
     Column, Integer, BigInteger, String, Float,
     DateTime, JSON, Text, Index, Enum, func
 )
+# ✅ NEW: Import JSONB for PostgreSQL specific type
+from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
 from capitalguard.domain.entities import RecommendationStatus, OrderType
 
@@ -20,14 +22,12 @@ class RecommendationORM(Base):
     stop_loss = Column(Float, nullable=False)
     targets = Column(JSON, nullable=False)
     
-    # --- Enum column for order_type ---
     order_type = Column(
         Enum(OrderType, name="ordertype", create_type=False),
         default=OrderType.LIMIT,
         nullable=False
     )
     
-    # --- Enum column for status ---
     status = Column(
         Enum(RecommendationStatus, name="recommendationstatus", create_type=False),
         default=RecommendationStatus.PENDING,
@@ -35,16 +35,13 @@ class RecommendationORM(Base):
         nullable=False
     )
 
-    # --- Publication Fields ---
     channel_id = Column(BigInteger, index=True, nullable=True)
     message_id = Column(BigInteger, nullable=True)
     published_at = Column(DateTime(timezone=True), nullable=True)
 
-    # --- User Experience Fields ---
     market = Column(String, nullable=True)
     notes = Column(Text, nullable=True)
 
-    # --- Tracking & Lifecycle Fields ---
     user_id = Column(String, nullable=True)
     exit_price = Column(Float, nullable=True)
     activated_at = Column(DateTime(timezone=True), nullable=True)
@@ -52,7 +49,11 @@ class RecommendationORM(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
+    # ✅ NEW (Alert System): Add a stateful field to store alert metadata.
+    # This prevents duplicate alerts on application restart.
+    alert_meta = Column(JSONB, nullable=False, server_default=sa.text("'{}'::jsonb"))
+
+
 # --- Indexes for performance ---
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
-Index("idx_recs_asset_status",  RecommendationORM.asset, RecommendationORM.status)
-# --- END OF FILE ---
+Index("idx_rec
