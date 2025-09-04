@@ -1,4 +1,6 @@
 # --- START OF FILE: src/capitalguard/infrastructure/db/models/recommendation.py ---
+# ✅ NEW: Import sqlalchemy as sa to fix the NameError
+import sqlalchemy as sa
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float,
     DateTime, JSON, Text, Index, Enum, func
@@ -52,7 +54,6 @@ class RecommendationORM(Base):
 
 
 # --- Indexes for performance ---
-# ✅ FIX: Corrected the unterminated string literal. The full lines are restored.
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
 Index("idx_recs_asset_status",  RecommendationORM.asset, RecommendationORM.status)
 # --- END OF FILE ---
