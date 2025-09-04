@@ -1,14 +1,17 @@
+# --- START OF FILE: entrypoint.sh ---
 #!/bin/sh
 
 # Exit immediately if a command exits with a non-zero status.
+# This ensures that the container won't start if migrations fail.
 set -e
 
-# Run database migrations
+# Run database migrations using Alembic.
 echo "Running database migrations..."
 alembic upgrade head
 
-# Now, execute the command passed to this script (the Docker CMD)
-# The 'exec' command is important because it replaces the shell process with the new process,
-# allowing signals (like SIGTERM from 'docker stop') to be passed directly to the application.
+# Execute the CMD passed from the Dockerfile using a shell.
+# This ensures that shell variables like ${PORT:-8000} are correctly expanded
+# before the application starts.
 echo "Starting application..."
-exec "$@"
+exec sh -c "$@"
+# --- END OF FIILE ---
