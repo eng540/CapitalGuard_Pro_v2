@@ -19,13 +19,13 @@ from capitalguard.interfaces.api.metrics import router as metrics_router
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 
---- Application Setup & Composition Root ---
+#--- Application Setup & Composition Root ---
 
 app = FastAPI(title="CapitalGuard Pro API", version="8.0.0-stable")
 services = build_services()
 app.state.services = services
 
---- Telegram Bot Setup ---
+#--- Telegram Bot Setup ---
 
 def create_ptb_app() -> Application:
 persistence = PicklePersistence(filepath="./telegram_bot_persistence")
@@ -78,7 +78,7 @@ except Exception as e:
 logging.exception("Error processing Telegram update: %s", e)
 return {"status": "ok"}
 
---- API Endpoints ---
+#--- API Endpoints ---
 
 @app.get("/")
 def root():
@@ -121,7 +121,7 @@ rows = "".join(f"<tr><td>{r.id}</td><td>{r.asset.value}</td><td>{r.side.value}</
 html = f"<html><body><h1>Dashboard</h1><table><thead><tr><th>ID</th><th>Asset</th><th>Side</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></body></html>"
 return HTMLResponse(content=html)
 
---- Include Routers ---
+#--- Include Routers ---
 
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
