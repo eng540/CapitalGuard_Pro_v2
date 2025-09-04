@@ -18,11 +18,9 @@ RUN python -m pip install --upgrade pip \
 COPY src /app/src
 COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini
-
 COPY entrypoint.sh /app/entrypoint.sh
-RUN dos2unix /app/entrypoint.sh \
- && sed -i '1s/^\xEF\xBB\xBF//' /app/entrypoint.sh \
- && chmod +x /app/entrypoint.sh
+
+RUN dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 ENV PYTHONPATH=/app/src
 RUN chown -R appuser:appuser /app
@@ -33,4 +31,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fsS http://127.0.0.1:${PORT:-8000}/ || exit 1
 
 ENTRYPOINT ["/bin/sh", "/app/entrypoint.sh"]
-CMD uvicorn capitalguard.interfaces.api.main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD ["uvicorn", "capitalguard.interfaces.api.main:app"]
