@@ -13,6 +13,9 @@ services:
       - pgdata:/var/lib/postgresql/data  
 
   api:  
+    # ✅ FIX: Explicitly set the target platform for the build.
+    # This ensures the image is compatible with the production server (e.g., Railway).
+    platform: linux/amd64
     build:  
       context: .  
       dockerfile: Dockerfile
@@ -25,11 +28,12 @@ services:
     depends_on: ["db"]  
 
   watcher:  
+    # ✅ FIX: Also set the platform here for consistency.
+    platform: linux/amd64
     build:  
       context: .  
       dockerfile: Dockerfile.watcher  
     environment:  
-      # ✅ FIX: Corrected the typo in the database URL scheme.
       DATABASE_URL: postgresql+psycopg://cg:cgpass@db:5432/capitalguard
       # ... (أضف باقي متغيرات البيئة الخاصة بك هنا)
     depends_on: ["db"]  
