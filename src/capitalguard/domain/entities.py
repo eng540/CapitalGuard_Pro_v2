@@ -50,6 +50,9 @@ class Recommendation:
     activated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
 
+    # ✅ NEW (Alert System): Add a stateful field to store alert metadata.
+    alert_meta: dict = field(default_factory=dict)
+
     def activate(self, activation_price: Optional[float] = None) -> None:
         """
         Marks the recommendation as active. For MARKET orders, it sets the official entry price.
