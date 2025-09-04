@@ -174,5 +174,3 @@ class RecommendationRepository:
             )
             return [r[0] for r in results]
 # --- END OF FILE ---```
-
-أنا جاهز للملف التالي عندما تعطيني إشارة المتابعة.
