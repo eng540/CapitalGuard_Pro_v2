@@ -166,6 +166,3 @@ def review_final_keyboard(review_key: str) -> InlineKeyboardMarkup:
         ]
     ])
 # --- END OF FILE ---```
-
-**الخطوة التالية:**
-قم باستبدال محتوى ملف `src/capitalguard/interfaces/telegram/keyboards.py` لديك بهذا المحتوى وأعد النشر. هذا سيحل مشكلة `ImportError` بشكل نهائي.
