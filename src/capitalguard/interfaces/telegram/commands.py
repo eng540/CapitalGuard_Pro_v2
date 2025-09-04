@@ -6,13 +6,16 @@ from telegram.ext import Application, ContextTypes, CommandHandler
 from .helpers import get_service
 from .auth import ALLOWED_FILTER
 from .ui_texts import build_analyst_stats_text
+from .keyboards import build_open_recs_keyboard
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
+from capitalguard.application.services.price_service import PriceService
+from capitalguard.domain.entities import RecommendationStatus
 
-# يجب أن تتطابق مع conversation_handlers.py
 (CHOOSE_METHOD, QUICK_COMMAND, TEXT_EDITOR) = range(3)
 (I_ASSET_CHOICE, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_NOTES, I_REVIEW) = range(3, 9)
 USER_PREFERENCE_KEY = "preferred_creation_method"
+
 
 def main_creation_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -25,20 +28,13 @@ def change_method_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ تغيير طريقة الإدخال", callback_data="change_method")]])
 
 async def newrec_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    نقطة الدخول الذكية. تعرض لوحة الاختيار أو تنقل المستخدم مباشرة
-    للحالة المناسبة. (بدون أي استدعاءات لروبوتات أخرى لتجنب الارتباط الدائري)
-    """
     preferred_method = context.user_data.get(USER_PREFERENCE_KEY)
     if preferred_method == "interactive":
-        # سيتولى ConversationHandler تحويل التدفق إلى start_interactive_builder
         await update.message.reply_text(
             "🚀 سنبدأ المُنشئ التفاعلي.\n(اختر الأصل من الأزرار أو اكتب الرمز مباشرة)",
             reply_markup=change_method_keyboard()
         )
-        # نعيد حالة البداية لكي يلتقطها conversation_handlers.start_interactive_builder
         return CHOOSE_METHOD
-
     if preferred_method == "quick":
         await update.message.reply_text(
             "⚡️ وضع الأمر السريع.\n\n"
@@ -47,7 +43,6 @@ async def newrec_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=change_method_keyboard()
         )
         return QUICK_COMMAND
-
     if preferred_method == "editor":
         await update.message.reply_text(
             "📋 وضع المحرّر النصي.\n\n"
@@ -56,7 +51,6 @@ async def newrec_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=change_method_keyboard()
         )
         return TEXT_EDITOR
-
     await update.message.reply_text(
         "🚀 إنشاء توصية جديدة.\n\nاختر طريقتك المفضلة للإدخال:",
         reply_markup=main_creation_keyboard()
@@ -70,22 +64,56 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         "<b>Available Commands:</b>\n\n"
         "• <code>/newrec</code> — إنشاء توصية جديدة.\n"
-        "• <code>/open</code> — عرض التوصيات المفتوحة.\n"
+        "• <code>/open [filter]</code> — عرض لوحة القيادة (يمكن الفلترة بـ btc, long, short, pending, active).\n"
         "• <code>/stats</code> — ملخّص الأداء.\n"
         "• <code>/export</code> — تصدير التوصيات.\n"
         "• <code>/settings</code> — إدارة التفضيلات."
     )
 
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    ✅ NEW (Phase 3): Parses command arguments to filter the results.
+    Saves the filter in user_data for pagination to use.
+    """
     trade_service: TradeService = get_service(context, "trade_service")
-    items = trade_service.list_open()
+    price_service: PriceService = get_service(context, "price_service")
+    
+    # Parse filters from command arguments
+    filters = {}
+    filter_text_parts = []
+    if context.args:
+        for arg in context.args:
+            arg_lower = arg.lower()
+            if arg_lower in ["long", "short"]:
+                filters["side"] = arg_lower
+                filter_text_parts.append(f"الاتجاه: {arg_lower.upper()}")
+            elif arg_lower in ["pending", "active"]:
+                filters["status"] = arg_lower
+                filter_text_parts.append(f"الحالة: {arg_lower.upper()}")
+            else:
+                filters["symbol"] = arg_lower
+                filter_text_parts.append(f"الرمز: {arg_lower.upper()}")
+
+    # Save the filter for pagination handlers
+    context.user_data['last_open_filters'] = filters
+    
+    items = trade_service.list_open(**filters)
+    
     if not items:
-        await update.message.reply_text("لا توجد توصيات مفتوحة حالياً.")
+        await update.message.reply_text("✅ لا توجد توصيات مفتوحة تطابق الفلتر الحالي.")
         return
-    lines = ["<b>التوصيات المفتوحة:</b>"]
-    for it in items:
-        lines.append(f"• #{it.id} — {it.asset.value} ({it.side.value})")
-    await update.message.reply_html("\n".join(lines))
+        
+    keyboard = build_open_recs_keyboard(items, current_page=1, price_service=price_service)
+    
+    header_text = "<b>📊 لوحة قيادة التوصيات المفتوحة</b>"
+    if filter_text_parts:
+        header_text += f"\n<i>فلترة حسب: {', '.join(filter_text_parts)}</i>"
+    
+    await update.message.reply_html(
+        f"{header_text}\nاختر توصية لعرض لوحة التحكم الخاصة بها:",
+        reply_markup=keyboard
+    )
+
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     analytics_service: AnalyticsService = get_service(context, "analytics_service")
@@ -122,6 +150,7 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bytes_buffer = io.BytesIO(output.getvalue().encode('utf-8'))
     csv_file = InputFile(bytes_buffer, filename="capitalguard_export.csv")
     await update.message.reply_document(document=csv_file, caption="تم إنشاء التصدير.")
+
 
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
