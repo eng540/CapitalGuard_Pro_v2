@@ -5,7 +5,6 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-# ✅ --- Add supervisor to system packages ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential gcc libpq-dev curl ca-certificates dos2unix supervisor \
  && rm -rf /var/lib/apt/lists/*
@@ -21,7 +20,6 @@ COPY src /app/src
 COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini
 
-# ✅ --- Copy supervisor config and entrypoint ---
 COPY config/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /app/entrypoint.sh
 RUN dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh
@@ -32,9 +30,7 @@ USER appuser
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:${PORT:-8000}/ || exit 1
+  CMD curl -fsS http://127.0.0.1:${PORT:-8000}/health || exit 1
 
-# ✅ --- The CMD now starts supervisord via the entrypoint ---
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
 # --- END OF FILE ---
