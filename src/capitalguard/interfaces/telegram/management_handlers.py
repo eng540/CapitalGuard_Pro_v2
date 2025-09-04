@@ -22,10 +22,6 @@ log = logging.getLogger(__name__)
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 
 async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    ✅ NEW (Phase 3): Retrieves saved filters from user_data to maintain
-    the filtered view during pagination.
-    """
     query = update.callback_query
     await query.answer()
 
@@ -37,7 +33,6 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
     
-    # Retrieve the last used filter from user_data
     filters = context.user_data.get('last_open_filters', {})
     
     items = trade_service.list_open(**filters)
@@ -99,7 +94,6 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
         disable_web_page_preview=True
     )
 
-
 async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
@@ -135,7 +129,7 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         setattr(rec, "live_price", live_price)
         new_text = build_trade_card_text(rec)
-        new_keyboard = public_channel_keyboard(rec.id)
+        new_keyboard = public_channel_keyboard(rec_id)
 
         try:
             if query.message.text != new_text or str(query.message.reply_markup) != str(new_keyboard):
@@ -176,9 +170,10 @@ async def partial_close_note_handler(update: Update, context: ContextTypes.DEFAU
 async def start_close_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rec_id = int(query.data.split(':')[2])
+    # Store the message we are editing, so we can restore it on error
     context.user_data[AWAITING_INPUT_KEY] = {"action": "close", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    await query.edit_message_text(text=f"{query.message.text}\n\n<b>🔻 Please reply with the exit price for #{rec_id}.</b>", parse_mode=ParseMode.HTML)
+    await query.edit_message_text(text=f"{query.message.text}\n\n<b>🔻 Please reply to this message with the exit price for #{rec_id}.</b>", parse_mode=ParseMode.HTML)
 
 async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -194,12 +189,12 @@ async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         await query.edit_message_text(f"❌ Failed to close recommendation: {e}")
     finally:
-        if context.user_data.get(AWAITING_INPUT_KEY, {}).get("rec_id") == rec_id:
-            context.user_data.pop(AWAITING_INPUT_KEY, None)
+        context.user_data.pop(AWAITING_INPUT_KEY, None)
 
 async def cancel_close_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    context.user_data.pop(AWAITING_INPUT_KEY, None)
     await show_rec_panel_handler(update, context)
 
 async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -219,19 +214,32 @@ async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TY
     rec_id = int(query.data.split(':')[2])
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_sl", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    await query.edit_message_text(text=f"{query.message.text}\n\n<b>✏️ Please reply with the new Stop Loss value for #{rec_id}.</b>", parse_mode=ParseMode.HTML)
+    await query.edit_message_text(text=f"{query.message.text}\n\n<b>✏️ Please reply to this message with the new Stop Loss value for #{rec_id}.</b>", parse_mode=ParseMode.HTML)
 
 async def start_edit_tp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rec_id = int(query.data.split(':')[2])
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_tp", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    await query.edit_message_text(text=f"{query.message.text}\n\n<b>🎯 Please reply with the new targets for #{rec_id} (separated by space).</b>", parse_mode=ParseMode.HTML)
-
+    await query.edit_message_text(text=f"{query.message.text}\n\n<b>🎯 Please reply to this message with the new targets for #{rec_id} (separated by space).</b>", parse_mode=ParseMode.HTML)
 
 async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if AWAITING_INPUT_KEY not in context.user_data: return
-    state = context.user_data.pop(AWAITING_INPUT_KEY) # Pop the state to prevent re-entry
+    if AWAITING_INPUT_KEY not in context.user_data: 
+        return
+
+    state = context.user_data.get(AWAITING_INPUT_KEY)
+    
+    # ✅ HYBRID LOGIC: Check if the reply is to the correct message, otherwise proceed
+    if update.message.reply_to_message:
+        original_message = state.get("original_message")
+        if not original_message or update.message.reply_to_message.message_id != original_message.message_id:
+            # This is a reply, but not to the message we are waiting for. Ignore it.
+            return
+            
+    # If we are here, it's either a direct reply to the correct message, or a new message.
+    # In both cases, we process it.
+    
+    context.user_data.pop(AWAITING_INPUT_KEY) # Pop the state to prevent re-entry
     action, rec_id = state["action"], state["rec_id"]
     original_message = state.get("original_message")
     user_input = update.message.text.strip()
@@ -252,7 +260,7 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
     try:
         if action == "close":
             exit_price = float(user_input)
-            text = f"Confirm closing <b>#{rec_id}</b> at <code>{exit_price}</code>?"
+            text = f"Confirm closing <b>#{rec_id}</b> at <b>{exit_price}</b>?"
             keyboard = confirm_close_keyboard(rec_id, exit_price)
             await original_message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         elif action == "edit_sl":
@@ -272,7 +280,6 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
         log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ An error occurred: {e}")
 
-
 def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(navigate_open_recs_handler, pattern=r"^open_nav:page:"))
     application.add_handler(CallbackQueryHandler(show_rec_panel_handler, pattern=r"^rec:show_panel:"))
@@ -287,5 +294,8 @@ def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(start_edit_tp_handler, pattern=r"^rec:edit_tp:"))
     application.add_handler(CallbackQueryHandler(confirm_close_handler, pattern=r"^rec:confirm_close:"))
     application.add_handler(CallbackQueryHandler(cancel_close_handler, pattern=r"^rec:cancel_close:"))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.REPLY, received_input_handler), group=1)
+    
+    # ✅ HYBRID HANDLER: This handler now captures ANY non-command text message
+    # and has internal logic to differentiate between a relevant reply and other messages.
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_input_handler), group=1)
 # --- END OF FILE ---
