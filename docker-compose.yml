@@ -15,7 +15,7 @@ services:
   api:  
     build:  
       context: .  
-      dockerfile: Dockerfile  # ✅ تم التغيير هنا
+      dockerfile: Dockerfile
     environment:  
       DATABASE_URL: postgresql+psycopg://cg:cgpass@db:5432/capitalguard  
       API_KEY: ${API_KEY}
@@ -29,7 +29,8 @@ services:
       context: .  
       dockerfile: Dockerfile.watcher  
     environment:  
-      DATABASE_URL: postgresql+ps psycopg://cg:cgpass@db:5432/capitalguard
+      # ✅ FIX: Corrected the typo in the database URL scheme.
+      DATABASE_URL: postgresql+psycopg://cg:cgpass@db:5432/capitalguard
       # ... (أضف باقي متغيرات البيئة الخاصة بك هنا)
     depends_on: ["db"]  
 
