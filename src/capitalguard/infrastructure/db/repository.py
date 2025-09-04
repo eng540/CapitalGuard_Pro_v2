@@ -29,7 +29,7 @@ class RecommendationRepository:
             published_at=row.published_at,
             market=row.market,
             notes=row.notes,
-            user_id=row.user_id,
+            user_id=str(row.user_id) if row.user_id is not None else None,
             created_at=row.created_at,
             updated_at=row.updated_at,
             exit_price=row.exit_price,
@@ -72,14 +72,17 @@ class RecommendationRepository:
             row = s.get(RecommendationORM, rec_id)
             return self._to_entity(row) if row else None
 
-    def list_open(self) -> List[Recommendation]:
+    def list_open(self, symbol: Optional[str] = None) -> List[Recommendation]:
+        # ✅ IMPROVEMENT: Added optional symbol filter for high-performance lookups (e.g., by the watcher).
         with SessionLocal() as s:
-            rows = (
+            q = (
                 s.query(RecommendationORM)
                 .filter(RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE]))
-                .order_by(RecommendationORM.created_at.desc())
-                .all()
             )
+            if symbol:
+                q = q.filter(RecommendationORM.asset == symbol.upper())
+            
+            rows = q.order_by(RecommendationORM.created_at.desc()).all()
             return [self._to_entity(r) for r in rows]
 
     def list_all(self, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
@@ -88,7 +91,12 @@ class RecommendationRepository:
             if symbol:
                 q = q.filter(RecommendationORM.asset == symbol.upper())
             if status:
-                q = q.filter(RecommendationORM.status == RecommendationStatus(status.upper()))
+                try:
+                    status_enum = RecommendationStatus(status.upper())
+                    q = q.filter(RecommendationORM.status == status_enum)
+                except ValueError:
+                    log.warning("Invalid status filter provided: %s", status)
+
             rows = q.order_by(RecommendationORM.created_at.desc()).all()
             return [self._to_entity(r) for r in rows]
 
