@@ -201,8 +201,16 @@ class TradeService:
         log.info("Rec #%s closed at price=%s (status=%s)", rec_id, exit_price, updated_rec.status.value)
         return updated_rec
 
-    def list_open(self, symbol: Optional[str] = None) -> List[Recommendation]:
-        return self.repo.list_open(symbol=symbol)
+    def list_open(
+        self,
+        symbol: Optional[str] = None,
+        side: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Recommendation]:
+        """
+        ✅ NEW (Phase 3): Pass-through for enhanced filtering capabilities.
+        """
+        return self.repo.list_open(symbol=symbol, side=side, status=status)
 
     def list_all(self, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
         return self.repo.list_all(symbol=symbol, status=status)
