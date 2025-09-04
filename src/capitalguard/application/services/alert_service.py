@@ -1,15 +1,12 @@
 # --- START OF FILE: src/capitalguard/application/services/alert_service.py ---
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Set, Tuple, List, Optional
-import logging, os
-
-# ملاحظة: لا نعتمد على JobQueue في التعيين إلا إن كان متاحًا
-# لذلك لا حاجة لاستيراد Application هنا، لتجنب أي التزامات على المستورد.
-# from telegram.ext import Application
+from dataclasses import dataclass
+import logging
+import os
+from typing import Optional
 
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.domain.entities import RecommendationStatus
+from capitalguard.domain.entities import RecommendationStatus, Recommendation
 
 log = logging.getLogger(__name__)
 
@@ -29,145 +26,138 @@ def _env_float(name: str, default: float) -> float:
 @dataclass
 class AlertService:
     """
-    - Near-touch alerts (اقتراب السعر من SL/TP1)
-    - Trailing Stop: نقل SL إلى BE عند تحقق TP1
-    - Auto-Close: إغلاق تلقائي عند SL أو آخر TP
-    * لا يغير المخطط؛ يستخدم trade_service لتحديث/إغلاق ونشر البطاقة.
+    Stateful alert service that uses the database for persistence.
+    - Near-touch alerts (one-time).
+    - Trailing Stop to BE on TP1 hit (one-time).
+    - Auto-Close on SL or final TP.
     """
     price_service: PriceService
     notifier: any
     repo: any
     trade_service: any
 
-    _alerted: Set[Tuple[int, str, int]] = field(default_factory=set)   # (rec_id, kind['TP'/'SL'/'NEAR'], idx)
-    _trailing_applied: Set[int] = field(default_factory=set)
-
-    # --------- Scheduling (آمن عند غياب JobQueue) ---------
     def schedule_job(self, app, interval_sec: int = 30):
-        """
-        يحاول جدولة مهمة متكرّرة عبر PTB JobQueue إن كانت متاحة.
-        إذا لم تتوفر، يطبع تحذيرًا فقط ولا ينهار التطبيق.
-        """
+        """Schedules the periodic check job if JobQueue is available."""
         jq = getattr(app, "job_queue", None)
         if jq is None:
-            log.warning("JobQueue is not available; skipping alert scheduling. "
-                        "Install python-telegram-bot[job-queue] to enable.")
+            log.warning("JobQueue is not available; skipping alert scheduling.")
             return
         try:
-            # PTB v20+: run_repeating(callback, interval=..., first=...)
             jq.run_repeating(self._job, interval=interval_sec, first=10)
             log.info("Alert job scheduled every %ss", interval_sec)
         except Exception as e:
             log.warning("Failed to schedule alert job: %s", e)
 
-    # ملاحظة: توقيع الـ job في PTB يمرر CallbackContext. لا نستخدمه إلا للاتساق.
     async def _job(self, context):
+        """The callback executed by the JobQueue."""
         try:
-            n = self.check_once()
-            if n:
-                log.info("Alert job: %s actions", n)
+            # Running the synchronous method in a thread to avoid blocking asyncio event loop
+            await context.application.create_task(self.check_once)
         except Exception as e:
-            log.warning("Alert job exception: %s", e)
+            log.exception("Alert job exception: %s", e)
 
-    # --------- المنطق الرئيسي (قابل للاستدعاء يدويًا أيضًا) ---------
     def check_once(self) -> int:
+        """
+        Main logic for checking all active recommendations for alert conditions.
+        This is now a synchronous method.
+        """
         count = 0
-        # ✅ FIX: Fetch only open recommendations directly from the database.
-        # This is massively more efficient than fetching all and filtering in Python.
         items = self.repo.list_open()
 
-        auto_close   = _env_bool("AUTO_CLOSE_ENABLED", False)
-        trailing_en  = _env_bool("TRAILING_STOP_ENABLED", True)
-        near_pct     = _env_float("NEAR_ALERT_PCT", 1.5)
+        auto_close = _env_bool("AUTO_CLOSE_ENABLED", False)
+        trailing_en = _env_bool("TRAILING_STOP_ENABLED", True)
+        near_pct = _env_float("NEAR_ALERT_PCT", 1.5) / 100.0  # Convert to fraction
 
         for rec in items:
-            try:
-                # We only care about ACTIVE trades for real-time price alerts.
-                if rec.status != RecommendationStatus.ACTIVE:
-                    continue
+            if rec.status != RecommendationStatus.ACTIVE:
+                continue
 
-                asset  = getattr(rec.asset, "value", rec.asset)
-                market = getattr(rec, "market", "Spot")
-                price  = self.price_service.get_preview_price(asset, getattr(market, "value", market))
+            try:
+                asset, market = rec.asset.value, rec.market
+                price = self.price_service.get_preview_price(asset, market)
                 if price is None:
                     continue
 
-                side  = getattr(rec.side, "value", rec.side).upper()
-                entry = float(getattr(rec.entry, "value", rec.entry))
-                sl    = float(getattr(rec.stop_loss, "value", rec.stop_loss))
-                tps   = list(getattr(rec.targets, "values", rec.targets or []))
-                last_tp: Optional[float] = float(tps[-1]) if tps else None
+                side, entry = rec.side.value.upper(), rec.entry.value
+                sl, tps = rec.stop_loss.value, rec.targets.values
+                
+                # --- Trailing Stop Logic (Stateful) ---
+                if trailing_en and tps and not rec.alert_meta.get("trailing_applied"):
+                    tp1 = tps[0]
+                    tp1_hit = (side == "LONG" and price >= tp1) or \
+                              (side == "SHORT" and price <= tp1)
+                    if tp1_hit:
+                        self.trade_service.move_sl_to_be(rec.id)
+                        # The service call updates the entity, but we'll re-fetch for safety
+                        updated_rec = self.repo.get(rec.id)
+                        updated_rec.alert_meta["trailing_applied"] = True
+                        self.repo.update(updated_rec)
+                        count += 1
+                        self._notify(f"🔄 Trailing SL → BE for {asset} (rec #{rec.id})")
 
-                # -------- Trailing → BE عند تحقق TP1 --------
-                if trailing_en and tps:
-                    tp1 = float(tps[0])
-                    tp_hit = (side == "LONG" and price >= tp1) or (side == "SHORT" and price <= tp1)
-                    if tp_hit and rec.id not in self._trailing_applied:
-                        new_sl = entry
-                        try:
-                            # Use the trade_service to handle the update and notifications
-                            self.trade_service.update_sl(rec.id, new_sl)
-                            self._trailing_applied.add(rec.id)
-                            count += 1
-                            self._notify(f"🔄 Trailing SL → BE for {asset} (rec #{rec.id})")
-                        except Exception as e:
-                            log.warning("Trailing update failed rec=%s: %s", rec.id, e)
-
-                # -------- Near-touch (SL & TP1) --------
-                if near_pct > 0 and entry:
-                    # قرب SL
-                    dist_sl = abs((price - sl) / entry) * 100.0
-                    if dist_sl <= near_pct:
-                        key = (rec.id, "NEAR", 0)
-                        if key not in self._alerted:
-                            self._alerted.add(key)
+                # --- Near-Touch Logic (Stateful & Corrected) ---
+                if near_pct > 0:
+                    rec_updated = False
+                    # Near SL
+                    if not rec.alert_meta.get("near_sl_alerted"):
+                        is_near = (side == "LONG" and sl < price <= sl * (1 + near_pct)) or \
+                                  (side == "SHORT" and sl > price >= sl * (1 - near_pct))
+                        if is_near:
+                            rec.alert_meta["near_sl_alerted"] = True
+                            rec_updated = True
                             self._notify(f"⏳ Near SL {asset}: price={price:g} ~ SL={sl:g} (rec #{rec.id})")
                             count += 1
-
-                    # قرب TP1
-                    if tps:
-                        tp1 = float(tps[0])
-                        dist_tp1 = abs((tp1 - price) / entry) * 100.0
-                        if dist_tp1 <= near_pct:
-                            key = (rec.id, "NEAR", 1)
-                            if key not in self._alerted:
-                                self._alerted.add(key)
-                                self._notify(f"⏳ Near TP1 {asset}: price={price:g} ~ TP1={tp1:g} (rec #{rec.id})")
-                                count += 1
-
-                # -------- Auto-Close --------
+                    
+                    # Near TP1
+                    if tps and not rec.alert_meta.get("near_tp1_alerted"):
+                        tp1 = tps[0]
+                        is_near = (side == "LONG" and tp1 > price >= tp1 * (1 - near_pct)) or \
+                                  (side == "SHORT" and tp1 < price <= tp1 * (1 + near_pct))
+                        if is_near:
+                            rec.alert_meta["near_tp1_alerted"] = True
+                            rec_updated = True
+                            self._notify(f"⏳ Near TP1 {asset}: price={price:g} ~ TP1={tp1:g} (rec #{rec.id})")
+                            count += 1
+                    
+                    if rec_updated:
+                        self.repo.update(rec)
+                
+                # --- Auto-Close Logic ---
                 if auto_close:
-                    # SL hit
-                    if (side == "LONG" and price <= sl) or (side == "SHORT" and price >= sl):
-                        self._close(rec, price, reason="SL hit")
+                    sl_hit = (side == "LONG" and price <= sl) or \
+                             (side == "SHORT" and price >= sl)
+                    if sl_hit:
+                        self._close(rec, price, "SL hit")
                         count += 1
                         continue
-                    # Final TP hit
-                    if last_tp is not None:
-                        if (side == "LONG" and price >= last_tp) or (side == "SHORT" and price <= last_tp):
-                            self._close(rec, price, reason="Final TP hit")
+
+                    if tps:
+                        last_tp = tps[-1]
+                        last_tp_hit = (side == "LONG" and price >= last_tp) or \
+                                      (side == "SHORT" and price <= last_tp)
+                        if last_tp_hit:
+                            self._close(rec, price, "Final TP hit")
                             count += 1
                             continue
-
+            
             except Exception as e:
-                log.warning("Alert check error rec=%s: %s", getattr(rec, "id", "?"), e)
+                log.exception("Alert check error for rec=%s: %s", rec.id, e)
+        
+        if count > 0:
+            log.info("Alert job finished, triggered %d actions.", count)
         return count
 
-    # --------- مساعدات داخلية ---------
     def _notify(self, text: str):
         try:
-            # استخدام notifier.low-level لتفادي أي تبعيات على البوت أو PTB
             chat_id = int(self.notifier.channel_id)
             self.notifier._post("sendMessage", {"chat_id": chat_id, "text": text})
         except Exception:
-            # لا نكسر المهمة بسبب إشعار
-            pass
+            log.warning("Failed to send alert notification: '%s'", text, exc_info=True)
 
-    def _close(self, rec, price: float, reason: str):
+    def _close(self, rec: Recommendation, price: float, reason: str):
         try:
-            # The trade_service already handles updating cards and notifications
             self.trade_service.close(rec.id, price)
             self._notify(f"✅ Auto-Closed #{rec.id} ({reason}) @ {price:g}")
         except Exception as e:
-            log.warning("Auto-close failed rec=%s: %s", getattr(rec, "id", "?"), e)
+            log.warning("Auto-close failed for rec=%s: %s", rec.id, e, exc_info=True)
 # --- END OF FILE ---
