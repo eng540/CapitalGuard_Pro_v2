@@ -28,9 +28,13 @@ COPY src /app/src
 COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini
 
-# نسخ سكربت نقطة الدخول وجعله قابلاً للتنفيذ
+# نسخ سكربت نقطة الدخول
 COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+
+# ✅ FIX: Convert Windows line endings (CRLF) to Unix (LF) and make the script executable.
+# This prevents the "Exec format error".
+RUN sed -i 's/\r$//' /app/entrypoint.sh \
+ && chmod +x /app/entrypoint.sh
 
 # إعداد المسار + صلاحيات
 ENV PYTHONPATH=/app/src
