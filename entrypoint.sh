@@ -9,5 +9,3 @@ export
 
 echo "Entrypoint: Migrations complete. Starting supervisor..."
 exec "$@"
-
-#```إضافة `export` قد لا تكون ضرورية في Railway،
