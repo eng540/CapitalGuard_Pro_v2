@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 class RecommendationRepository:
     def _to_entity(self, row: RecommendationORM) -> Recommendation:
-        """Map ORM row -> Domain entity (يتعامل بأمان مع Enum أو قيمة نصية)."""
+        """Map ORM row -> Domain entity."""
         status = row.status if isinstance(row.status, RecommendationStatus) else RecommendationStatus(row.status)
         order_type = row.order_type if isinstance(row.order_type, OrderType) else OrderType(row.order_type)
         return Recommendation(
@@ -36,10 +36,12 @@ class RecommendationRepository:
             exit_price=row.exit_price,
             activated_at=row.activated_at,
             closed_at=row.closed_at,
+            # ✅ NEW (Alert System): Map the alert metadata field.
+            alert_meta=dict(row.alert_meta or {}),
         )
 
     def add(self, rec: Recommendation) -> Recommendation:
-        """Adds a new Recommendation, relying on DB server defaults for timestamps."""
+        """Adds a new Recommendation."""
         with SessionLocal() as s:
             try:
                 row = RecommendationORM(
@@ -57,6 +59,7 @@ class RecommendationRepository:
                     notes=rec.notes,
                     user_id=rec.user_id,
                     activated_at=rec.activated_at,
+                    alert_meta=rec.alert_meta,
                 )
                 s.add(row)
                 s.commit()
@@ -78,10 +81,7 @@ class RecommendationRepository:
         side: Optional[str] = None,
         status: Optional[str] = None,
     ) -> List[Recommendation]:
-        """
-        ✅ NEW (Phase 3): Enhanced to support filtering by side and status,
-        and partial matching for symbol.
-        """
+        """Enhanced to support filtering by side and status, and partial matching for symbol."""
         with SessionLocal() as s:
             q = s.query(RecommendationORM).filter(
                 or_(
@@ -120,7 +120,7 @@ class RecommendationRepository:
             return [self._to_entity(r) for r in rows]
 
     def update(self, rec: Recommendation) -> Recommendation:
-        """Update existing recommendation; timestamps handled by DB trigger/onupdate."""
+        """Update existing recommendation."""
         if rec.id is None:
             raise ValueError("Recommendation ID is required for update")
         with SessionLocal() as s:
@@ -145,6 +145,8 @@ class RecommendationRepository:
                 row.exit_price = rec.exit_price
                 row.activated_at = rec.activated_at
                 row.closed_at = rec.closed_at
+                # ✅ NEW (Alert System): Persist changes to alert metadata.
+                row.alert_meta = rec.alert_meta
 
                 s.commit()
                 s.refresh(row)
@@ -155,7 +157,7 @@ class RecommendationRepository:
                 raise
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
-        """Return most recently used unique assets for a user (ordered by last created_at)."""
+        """Return most recently used unique assets for a user."""
         with SessionLocal() as s:
             subquery = (
                 s.query(
@@ -173,4 +175,4 @@ class RecommendationRepository:
                 .all()
             )
             return [r[0] for r in results]
-# --- END OF FILE ---```
+# --- END OF FILE ---
