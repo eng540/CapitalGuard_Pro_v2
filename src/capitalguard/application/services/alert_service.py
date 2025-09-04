@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import os
+import asyncio # ✅ NEW: Import asyncio
 from typing import Optional
 
 from capitalguard.application.services.price_service import PriceService
@@ -51,15 +52,18 @@ class AlertService:
     async def _job(self, context):
         """The callback executed by the JobQueue."""
         try:
-            # Running the synchronous method in a thread to avoid blocking asyncio event loop
-            await context.application.create_task(self.check_once)
+            # ✅ FIX: Use asyncio.to_thread to run the synchronous, blocking DB/API
+            # code in a separate thread, preventing it from blocking the main async loop.
+            num_actions = await asyncio.to_thread(self.check_once)
+            if num_actions and num_actions > 0:
+                log.info("Alert job finished, triggered %d actions.", num_actions)
         except Exception as e:
             log.exception("Alert job exception: %s", e)
 
     def check_once(self) -> int:
         """
         Main logic for checking all active recommendations for alert conditions.
-        This is now a synchronous method.
+        This is a synchronous method that can perform blocking I/O (DB calls).
         """
         count = 0
         items = self.repo.list_open()
@@ -88,7 +92,6 @@ class AlertService:
                               (side == "SHORT" and price <= tp1)
                     if tp1_hit:
                         self.trade_service.move_sl_to_be(rec.id)
-                        # The service call updates the entity, but we'll re-fetch for safety
                         updated_rec = self.repo.get(rec.id)
                         updated_rec.alert_meta["trailing_applied"] = True
                         self.repo.update(updated_rec)
@@ -98,7 +101,6 @@ class AlertService:
                 # --- Near-Touch Logic (Stateful & Corrected) ---
                 if near_pct > 0:
                     rec_updated = False
-                    # Near SL
                     if not rec.alert_meta.get("near_sl_alerted"):
                         is_near = (side == "LONG" and sl < price <= sl * (1 + near_pct)) or \
                                   (side == "SHORT" and sl > price >= sl * (1 - near_pct))
@@ -108,7 +110,6 @@ class AlertService:
                             self._notify(f"⏳ Near SL {asset}: price={price:g} ~ SL={sl:g} (rec #{rec.id})")
                             count += 1
                     
-                    # Near TP1
                     if tps and not rec.alert_meta.get("near_tp1_alerted"):
                         tp1 = tps[0]
                         is_near = (side == "LONG" and tp1 > price >= tp1 * (1 - near_pct)) or \
@@ -143,8 +144,6 @@ class AlertService:
             except Exception as e:
                 log.exception("Alert check error for rec=%s: %s", rec.id, e)
         
-        if count > 0:
-            log.info("Alert job finished, triggered %d actions.", count)
         return count
 
     def _notify(self, text: str):
