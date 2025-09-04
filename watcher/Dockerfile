@@ -1,26 +1,26 @@
-# --- watcher/Dockerfile ---
+# --- START OF FILE: Dockerfile.watcher ---
 FROM --platform=linux/amd64 mirror.gcr.io/library/python:3.11.9-slim-bookworm
 
+WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libpq-dev curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
  && pip install --no-cache-dir -r /app/requirements.txt
 
 COPY src /app/src
-COPY alembic /app/alembic
-COPY alembic.ini /app/alembic.ini
-COPY watcher/entrypoint_watcher.sh /app/entrypoint_watcher.sh
-
 ENV PYTHONPATH=/app/src
 
-RUN apt-get update && apt-get install -y --no-install-recommends dos2unix \
- && dos2unix /app/entrypoint_watcher.sh \
- && chmod +x /app/entrypoint_watcher.sh \
- && rm -rf /var/lib/apt/lists/*
+RUN useradd -m -u 10002 appuser-watcher
+RUN chown -R appuser-watcher:appuser-watcher /app
+USER appuser-watcher
 
-ENTRYPOINT ["/bin/sh", "/app/entrypoint_watcher.sh"]
+# الأمر الرئيسي لتشغيل سكربت المراقب
+CMD ["python", "-m", "capitalguard.infrastructure.sched.watcher_ws"]
+# --- END OF FILE ---
