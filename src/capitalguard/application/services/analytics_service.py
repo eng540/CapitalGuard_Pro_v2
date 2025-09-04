@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple, Dict, Any
 from datetime import datetime
 from math import isfinite
+from capitalguard.domain.entities import RecommendationStatus
 
 @dataclass
 class AnalyticsService:
@@ -13,7 +14,7 @@ class AnalyticsService:
     @staticmethod
     def _pnl_percent(side: str, entry: float, exit_price: float) -> float:
         s = (side or "").upper()
-        if not entry or not exit_price:
+        if not entry or not exit_price or entry == 0:
             return 0.0
         if s == "LONG":
             return (exit_price / entry - 1.0) * 100.0
@@ -22,6 +23,7 @@ class AnalyticsService:
     @staticmethod
     def _rr(entry: float, sl: float, tp1: Optional[float], side: str) -> Optional[float]:
         try:
+            if tp1 is None: return None
             risk = abs(entry - sl)
             reward = abs((tp1 - entry)) if (side.upper() == "LONG") else abs((entry - tp1))
             if risk <= 0 or reward <= 0:
@@ -33,21 +35,21 @@ class AnalyticsService:
 
     def list_filtered(
         self,
-        user_id: Optional[int] = None,
+        user_id: Optional[str] = None,
         symbol: Optional[str] = None,
         status: Optional[str] = None,
         market: Optional[str] = None,
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
     ) -> List:
-        items = self.repo.list_all()
+        # ✅ FIX: Delegate the most common filters (symbol, status) to the database.
+        # This prevents loading the entire table into memory.
+        items = self.repo.list_all(symbol=symbol, status=status)
+        
+        # Apply remaining filters in Python
         res = []
         for r in items:
-            if user_id is not None and getattr(r, "user_id", None) != user_id:
-                continue
-            if symbol and str(getattr(r.asset, "value", r.asset)).upper() != symbol.upper():
-                continue
-            if status and str(getattr(r, "status", "")).upper() != status.upper():
+            if user_id is not None and str(getattr(r, "user_id", None)) != str(user_id):
                 continue
             if market:
                 m = str(getattr(getattr(r, "market", None), "value", getattr(r, "market", ""))).lower()
@@ -61,7 +63,7 @@ class AnalyticsService:
         return res
 
     def win_rate(self, items: Iterable) -> float:
-        closed = [r for r in items if str(r.status).upper() == "CLOSED" and r.exit_price is not None]
+        closed = [r for r in items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
         if not closed:
             return 0.0
         wins = 0
@@ -71,16 +73,16 @@ class AnalyticsService:
                 wins += 1
         return wins * 100.0 / len(closed)
 
-    def total_pnl_by_user(self, user_id: Optional[int]) -> float:
+    def total_pnl_by_user(self, user_id: Optional[str]) -> float:
         items = self.list_filtered(user_id=user_id)
-        closed = [r for r in items if str(r.status).upper() == "CLOSED" and r.exit_price is not None]
+        closed = [r for r in items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
         s = 0.0
         for r in closed:
             s += self._pnl_percent(getattr(r.side, "value", r.side), float(getattr(r.entry, "value", r.entry)), float(r.exit_price))
         return s
 
     def pnl_curve(self, items: Iterable) -> List[Tuple[str, float]]:
-        closed = [r for r in items if str(r.status).upper() == "CLOSED" and r.exit_price is not None and r.closed_at]
+        closed = [r for r in items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None and r.closed_at]
         closed.sort(key=lambda r: r.closed_at)
         curve, c = [], 0.0
         for r in closed:
@@ -102,7 +104,7 @@ class AnalyticsService:
                 "win_rate": self.win_rate(arr),
                 "sum_pnl": sum(
                     self._pnl_percent(getattr(x.side, "value", x.side), float(getattr(x.entry, "value", x.entry)), float(getattr(x, "exit_price", 0) or 0))
-                    for x in arr if str(x.status).upper() == "CLOSED" and x.exit_price is not None
+                    for x in arr if x.status == RecommendationStatus.CLOSED and x.exit_price is not None
                 ),
             }
         return out
@@ -125,13 +127,13 @@ class AnalyticsService:
         except Exception:
             return None
     
-    # ✅ إضافة: الدالة الجديدة التي يستدعيها أمر التليجرام
     def performance_summary(self) -> Dict[str, Any]:
         """
         تجمع ملخصًا شاملاً للأداء العام.
         """
         all_items = self.repo.list_all()
-        closed_items = [r for r in all_items if str(r.status).upper() == "CLOSED" and r.exit_price is not None]
+        closed_items = [r for r in all_items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
+        open_items = [r for r in all_items if r.status != RecommendationStatus.CLOSED]
         
         total_pnl = sum(
             self._pnl_percent(
@@ -143,7 +145,7 @@ class AnalyticsService:
 
         return {
             "total_recommendations": len(all_items),
-            "open_recommendations": len(all_items) - len(closed_items),
+            "open_recommendations": len(open_items),
             "closed_recommendations": len(closed_items),
             "overall_win_rate": f"{self.win_rate(closed_items):.2f}%",
             "total_pnl_percent": f"{total_pnl:.2f}%",
