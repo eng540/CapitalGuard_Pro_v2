@@ -1,4 +1,3 @@
-#-- START OF FILE: Dockerfile ---
 FROM --platform=linux/amd64 mirror.gcr.io/library/python:3.11.9-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
@@ -20,7 +19,6 @@ COPY src /app/src
 COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini
 
-# نسخ الـ entrypoint ثم: إزالة CRLF + إزالة BOM + إعطاء صلاحيات
 COPY entrypoint.sh /app/entrypoint.sh
 RUN dos2unix /app/entrypoint.sh \
  && sed -i '1s/^\xEF\xBB\xBF//' /app/entrypoint.sh \
@@ -34,9 +32,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fsS http://127.0.0.1:${PORT:-8000}/ || exit 1
 
-# ملاحظة مهمة: شغّل السكربت عبر /bin/sh لتجاوز Exec format error
 ENTRYPOINT ["/bin/sh", "/app/entrypoint.sh"]
-
-# shell-form حتى تتوسع ${PORT}; سيصل كوسيط لـ entrypoint.sh
 CMD uvicorn capitalguard.interfaces.api.main:app --host 0.0.0.0 --port ${PORT:-8000}
-#-- END OF FILE: Dockerfile ---
