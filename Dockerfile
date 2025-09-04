@@ -28,6 +28,10 @@ COPY src /app/src
 COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini
 
+# ✅ FIX: Copy the new entrypoint script and make it executable
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # إعداد المسار + صلاحيات
 ENV PYTHONPATH=/app/src
 RUN chown -R appuser:appuser /app
@@ -38,6 +42,11 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fsS http://127.0.0.1:${PORT:-8000}/ || exit 1
 
-# تشغيل: الهجرات ثم السيرفر (يحترم PORT إن وُجد)
-CMD ["sh", "-lc", "alembic upgrade head && uvicorn capitalguard.interfaces.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# ✅ FIX: Use an entrypoint script to safely run migrations before starting the server.
+# This prevents the container from crash-looping if migrations fail.
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# The CMD now specifies the default command that the entrypoint will execute.
+# It respects the PORT variable if it exists.
+CMD ["uvicorn", "capitalguard.interfaces.api.main:app", "--host", "0.0.0.0", "--port", "${PORT:-8000}"]
 # --- END OF FILE ---
