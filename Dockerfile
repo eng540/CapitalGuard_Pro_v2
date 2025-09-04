@@ -1,8 +1,7 @@
 # --- START OF FILE: Dockerfile ---
-# إنتاجي ومستقر: نستخدم مرآة Google لصورة بايثون لتفادي TLS timeouts في Docker Hub
-# بإمكانك العودة لاحقًا لـ Docker Hub بتغيير سطر FROM الأول (المعلّق بالأسفل).
-# FROM python:3.11.9-slim-bookworm
-FROM mirror.gcr.io/library/python:3.11.9-slim-bookworm
+# ✅ FIX: Force the base image to be for the linux/amd64 platform.
+# This is the first step to prevent CPU architecture mismatch issues.
+FROM --platform=linux/amd64 mirror.gcr.io/library/python:3.11.9-slim-bookworm
 
 # بيئة تشغيل
 ENV PYTHONUNBUFFERED=1 \
@@ -10,8 +9,9 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 # تثبيت حزم نظامية خفيفة لازمة للـ psycopg/sqlalchemy/httpx وغيرها
+# (Adding 'dos2unix' to ensure script compatibility)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential gcc libpq-dev curl ca-certificates \
+      build-essential gcc libpq-dev curl ca-certificates dos2unix \
  && rm -rf /var/lib/apt/lists/*
 
 # إنشاء مستخدم غير جذري
@@ -31,9 +31,8 @@ COPY alembic.ini /app/alembic.ini
 # نسخ سكربت نقطة الدخول
 COPY entrypoint.sh /app/entrypoint.sh
 
-# ✅ FIX: Convert Windows line endings (CRLF) to Unix (LF) and make the script executable.
-# This prevents the "Exec format error".
-RUN sed -i 's/\r$//' /app/entrypoint.sh \
+# ✅ FIX 2: Use dos2unix which is a more robust way to fix line endings, then chmod.
+RUN dos2unix /app/entrypoint.sh \
  && chmod +x /app/entrypoint.sh
 
 # إعداد المسار + صلاحيات
@@ -41,7 +40,7 @@ ENV PYTHONPATH=/app/src
 RUN chown -R appuser:appuser /app
 USER appuser
 
-# Healthcheck بسيط (يتعامل مع متغير PORT بشكل صحيح)
+# Healthcheck بسيط
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fsS http://127.0.0.1:${PORT:-8000}/ || exit 1
@@ -50,6 +49,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 ENTRYPOINT ["/app/entrypoint.sh"]
 
 # الأمر الافتراضي الذي سيتم تشغيله بواسطة نقطة الدخول.
-# تم التغيير إلى صيغة Shell للسماح بتوسيع متغير ${PORT}.
 CMD uvicorn capitalguard.interfaces.api.main:app --host 0.0.0.0 --port ${PORT:-8000}
 # --- END OF FILE ---
