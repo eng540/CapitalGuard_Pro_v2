@@ -9,6 +9,7 @@ import logging, os
 # from telegram.ext import Application
 
 from capitalguard.application.services.price_service import PriceService
+from capitalguard.domain.entities import RecommendationStatus
 
 log = logging.getLogger(__name__)
 
@@ -71,8 +72,9 @@ class AlertService:
     # --------- المنطق الرئيسي (قابل للاستدعاء يدويًا أيضًا) ---------
     def check_once(self) -> int:
         count = 0
-        # نحصر على المفتوحة فقط
-        items = [r for r in self.repo.list_all() if str(r.status).upper() == "OPEN"]
+        # ✅ FIX: Fetch only open recommendations directly from the database.
+        # This is massively more efficient than fetching all and filtering in Python.
+        items = self.repo.list_open()
 
         auto_close   = _env_bool("AUTO_CLOSE_ENABLED", False)
         trailing_en  = _env_bool("TRAILING_STOP_ENABLED", True)
@@ -80,6 +82,10 @@ class AlertService:
 
         for rec in items:
             try:
+                # We only care about ACTIVE trades for real-time price alerts.
+                if rec.status != RecommendationStatus.ACTIVE:
+                    continue
+
                 asset  = getattr(rec.asset, "value", rec.asset)
                 market = getattr(rec, "market", "Spot")
                 price  = self.price_service.get_preview_price(asset, getattr(market, "value", market))
@@ -99,7 +105,8 @@ class AlertService:
                     if tp_hit and rec.id not in self._trailing_applied:
                         new_sl = entry
                         try:
-                            self.trade_service.update_sl(rec.id, new_sl, publish=True)
+                            # Use the trade_service to handle the update and notifications
+                            self.trade_service.update_sl(rec.id, new_sl)
                             self._trailing_applied.add(rec.id)
                             count += 1
                             self._notify(f"🔄 Trailing SL → BE for {asset} (rec #{rec.id})")
@@ -150,7 +157,7 @@ class AlertService:
     def _notify(self, text: str):
         try:
             # استخدام notifier.low-level لتفادي أي تبعيات على البوت أو PTB
-            chat_id = int(self.notifier.settings.TELEGRAM_CHAT_ID)
+            chat_id = int(self.notifier.channel_id)
             self.notifier._post("sendMessage", {"chat_id": chat_id, "text": text})
         except Exception:
             # لا نكسر المهمة بسبب إشعار
@@ -158,10 +165,8 @@ class AlertService:
 
     def _close(self, rec, price: float, reason: str):
         try:
-            rec2 = self.trade_service.close(rec.id, price)
-            # إن توفر ناشر القناة، نحدّث البطاقة
-            if hasattr(self.notifier, "publish_or_update"):
-                self.notifier.publish_or_update(rec2)
+            # The trade_service already handles updating cards and notifications
+            self.trade_service.close(rec.id, price)
             self._notify(f"✅ Auto-Closed #{rec.id} ({reason}) @ {price:g}")
         except Exception as e:
             log.warning("Auto-close failed rec=%s: %s", getattr(rec, "id", "?"), e)
