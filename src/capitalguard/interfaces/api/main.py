@@ -1,4 +1,4 @@
---- START OF FILE: src/capitalguard/interfaces/api/main.py ---
+#--- START OF FILE: src/capitalguard/interfaces/api/main.py ---
 
 import logging
 from fastapi import FastAPI, HTTPException, Depends, Request, Query
