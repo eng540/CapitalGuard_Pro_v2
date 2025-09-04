@@ -3,7 +3,6 @@ from sqlalchemy import (
     Column, Integer, BigInteger, String, Float,
     DateTime, JSON, Text, Index, Enum, func
 )
-# ✅ NEW: Import JSONB for PostgreSQL specific type
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
 from capitalguard.domain.entities import RecommendationStatus, OrderType
@@ -49,11 +48,11 @@ class RecommendationORM(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    # ✅ NEW (Alert System): Add a stateful field to store alert metadata.
-    # This prevents duplicate alerts on application restart.
     alert_meta = Column(JSONB, nullable=False, server_default=sa.text("'{}'::jsonb"))
 
 
 # --- Indexes for performance ---
+# ✅ FIX: Corrected the unterminated string literal. The full lines are restored.
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
-Index("idx_rec
+Index("idx_recs_asset_status",  RecommendationORM.asset, RecommendationORM.status)
+# --- END OF FILE ---
