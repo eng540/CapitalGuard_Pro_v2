@@ -23,9 +23,10 @@ def upgrade() -> None:
     Adds a non-nullable JSONB column to store alert state, with a default value.
     """
     # Add the column, allowing it to be nullable initially to handle existing rows.
+    # ✅ FIX: Removed the unsupported 'astext_for_array' keyword argument.
     op.add_column('recommendations', sa.Column(
         'alert_meta',
-        postgresql.JSONB(astext_for_array=False),
+        postgresql.JSONB(),
         nullable=True
     ))
     
