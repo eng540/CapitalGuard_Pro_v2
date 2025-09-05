@@ -135,7 +135,7 @@ return None
 
 ---------- Telegram Handlers ----------
 
-لاستخدامه كـ callback لا يفعل شيئًا عند بناء dummy_query
+#لاستخدامه كـ callback لا يفعل شيئًا عند بناء dummy_query
 
 async def _noop_answer(*args, **kwargs):
 return None
