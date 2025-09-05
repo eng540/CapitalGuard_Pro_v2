@@ -94,7 +94,6 @@ class TradeService:
     def _validate_sl_vs_entry(self, side: str, entry: float, sl: float) -> None:
         """Validates that stop loss is logical compared to entry price."""
         side_upper = side.upper()
-        # Allow SL == entry (break-even)
         if side_upper == "LONG" and not (sl <= entry):
             raise ValueError("في صفقات الشراء (LONG)، يجب أن يكون وقف الخسارة ≤ سعر الدخول.")
         if side_upper == "SHORT" and not (sl >= entry):
@@ -126,10 +125,7 @@ class TradeService:
         order_type: str,
         live_price: Optional[float] = None,
     ) -> Recommendation:
-        log.info(
-            "Creating recommendation: asset=%s side=%s order_type=%s user=%s",
-            asset, side, order_type, user_id
-        )
+        log.info(f"Creating recommendation: asset={asset} side={side} order_type={order_type} user={user_id}")
         asset = self._validate_symbol_exists(asset)
         try:
             order_type_enum = OrderType(order_type.upper())
@@ -187,7 +183,7 @@ class TradeService:
         if not rec or rec.status != RecommendationStatus.PENDING:
             return None
 
-        log.warning(f"Activating recommendation #{rec.id} for {rec.asset.value}")
+        log.info(f"Activating recommendation #{rec.id} for {rec.asset.value}")
         rec.activate()
         updated_rec = self.repo.update(rec)
 
@@ -210,7 +206,7 @@ class TradeService:
         rec.close(exit_price)
         updated_rec = self.repo.update(rec)
         self._update_cards(updated_rec)
-        log.info("Rec #%s closed at price=%s (status=%s)", rec_id, exit_price, updated_rec.status.value)
+        log.info(f"Rec #{rec.id} closed at price={exit_price} (status={updated_rec.status.value})")
         return updated_rec
 
     # -------- Queries & small helpers --------
@@ -239,7 +235,7 @@ class TradeService:
         rec.notes = (rec.notes or "") + note
         updated_rec = self.repo.update(rec)
         self._update_cards(updated_rec)
-        log.info("Rec #%s partial close note added", rec_id)
+        log.info(f"Rec #{rec.id} partial close note added")
         return updated_rec
 
     def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
@@ -252,7 +248,7 @@ class TradeService:
         rec.notes = (rec.notes or "") + note_text
         updated_rec = self.repo.update(rec)
         self._update_cards(updated_rec)
-        log.info("Rec #%s SL updated to %s", rec_id, new_sl)
+        log.info(f"Rec #{rec.id} SL updated to {new_sl}")
         return updated_rec
 
     def update_targets(self, rec_id: int, new_targets: List[float]) -> Recommendation:
@@ -265,7 +261,7 @@ class TradeService:
         rec.notes = (rec.notes or "") + f"\n- تم تحديث الأهداف إلى [{targets_str}]."
         updated_rec = self.repo.update(rec)
         self._update_cards(updated_rec)
-        log.info("Rec #%s targets updated to [%s]", rec_id, targets_str)
+        log.info(f"Rec #{rec.id} targets updated to [{targets_str}]")
         return updated_rec
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
