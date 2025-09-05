@@ -23,16 +23,19 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
         return None
 
 class TradeService:
-    # ... (Symbol validation cache logic remains unchanged)
+    # ------------------------------
+    # Symbol validation cache (Binance spot)
+    # ------------------------------
     _SYMBOLS_CACHE: set[str] = set()
     _SYMBOLS_CACHE_TS: float = 0.0
-    _SYMBOLS_CACHE_TTL_SEC: int = 6 * 60 * 60
+    _SYMBOLS_CACHE_TTL_SEC: int = 6 * 60 * 60  # 6 hours
 
     def __init__(self, repo: RecommendationRepoPort, notifier: NotifierPort):
         self.repo = repo
         self.notifier = notifier
 
     def _ensure_symbols_cache(self) -> None:
+        """Fetch & cache Binance symbols (spot) if cache is empty/expired."""
         now = time.time()
         if self._SYMBOLS_CACHE and (now - self._SYMBOLS_CACHE_TS) < self._SYMBOLS_CACHE_TTL_SEC:
             return
@@ -57,6 +60,10 @@ class TradeService:
             log.exception("Failed to refresh Binance symbols: %s", e)
 
     def _validate_symbol_exists(self, asset: str) -> str:
+        """
+        Normalize + validate that asset exists on Binance (spot);
+        raises ValueError otherwise. Returns normalized symbol (uppercased).
+        """
         norm = asset.strip().upper()
         self._ensure_symbols_cache()
         if self._SYMBOLS_CACHE and norm not in self._SYMBOLS_CACHE:
@@ -67,6 +74,7 @@ class TradeService:
         return norm
 
     def _update_cards(self, rec: Recommendation) -> None:
+        """Private helper to update public and private cards after a change."""
         public_keyboard = public_channel_keyboard(rec.id)
         self.notifier.edit_recommendation_card(rec, keyboard=public_keyboard)
 
@@ -81,13 +89,16 @@ class TradeService:
             )
 
     def _validate_sl_vs_entry(self, side: str, entry: float, sl: float) -> None:
+        """Validates that stop loss is logical compared to entry price."""
         side_upper = side.upper()
+        # Allow SL == entry (break-even)
         if side_upper == "LONG" and not (sl <= entry):
             raise ValueError("For LONG trades, Stop Loss must be less than or equal to the Entry price.")
         if side_upper == "SHORT" and not (sl >= entry):
             raise ValueError("For SHORT trades, Stop Loss must be greater than or equal to the Entry price.")
 
     def _validate_targets(self, side: str, entry: float, tps: List[float]) -> None:
+        """Validates that targets are logical compared to entry price."""
         if not tps:
             raise ValueError("At least one target price is required.")
         side_upper = side.upper()
@@ -169,14 +180,17 @@ class TradeService:
         """
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.PENDING:
-            # Already activated or closed, do nothing.
             return None
 
         log.warning(f"Activating recommendation #{rec.id} for {rec.asset.value} at price {activation_price}")
-        rec.activate(activation_price)
+        
+        # The `activate` method on the entity handles the state change.
+        # We pass the intended activation_price, but it will only be used for MARKET orders
+        # (which shouldn't happen here, but it's safe). For LIMIT/STOP, the entry price is already set.
+        rec.activate() 
         updated_rec = self.repo.update(rec)
 
-        # Update cards and notify analyst
+        # Update cards and notify the analyst
         self._update_cards(updated_rec)
         
         uid = _parse_int_user_id(rec.user_id)
