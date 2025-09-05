@@ -95,6 +95,11 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    ✅ REMOVED: The logic for activating PENDING recommendations has been removed.
+    This handler is now only responsible for updating the visual price data.
+    The watcher_ws is the single source of truth for automatic activation.
+    """
     query = update.callback_query
     try:
         rec_id = int(query.data.split(':')[2])
@@ -114,18 +119,6 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not live_price:
             await query.answer("Could not fetch live price.", show_alert=True)
             return
-
-        if rec.status == RecommendationStatus.PENDING:
-            entry_price, side = rec.entry.value, rec.side.value
-            is_triggered = (side == 'LONG' and live_price >= entry_price) or (side == 'SHORT' and live_price <= entry_price)
-            if is_triggered:
-                rec.activate(live_price)
-                rec = trade_service.repo.update(rec)
-                log.info(f"Recommendation #{rec.id} for {asset} activated at {live_price}.")
-                if rec.user_id and rec.user_id.isdigit():
-                    get_service(context, 'notifier').send_private_message(
-                        chat_id=int(rec.user_id), rec=rec, text_header=f"🔥 Your recommendation #{rec.id} ({asset}) is now ACTIVE!"
-                    )
         
         setattr(rec, "live_price", live_price)
         new_text = build_trade_card_text(rec)
@@ -170,7 +163,6 @@ async def partial_close_note_handler(update: Update, context: ContextTypes.DEFAU
 async def start_close_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rec_id = int(query.data.split(':')[2])
-    # Store the message we are editing, so we can restore it on error
     context.user_data[AWAITING_INPUT_KEY] = {"action": "close", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
     await query.edit_message_text(text=f"{query.message.text}\n\n<b>🔻 Please reply to this message with the exit price for #{rec_id}.</b>", parse_mode=ParseMode.HTML)
@@ -229,17 +221,12 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     state = context.user_data.get(AWAITING_INPUT_KEY)
     
-    # ✅ HYBRID LOGIC: Check if the reply is to the correct message, otherwise proceed
     if update.message.reply_to_message:
         original_message = state.get("original_message")
         if not original_message or update.message.reply_to_message.message_id != original_message.message_id:
-            # This is a reply, but not to the message we are waiting for. Ignore it.
             return
             
-    # If we are here, it's either a direct reply to the correct message, or a new message.
-    # In both cases, we process it.
-    
-    context.user_data.pop(AWAITING_INPUT_KEY) # Pop the state to prevent re-entry
+    context.user_data.pop(AWAITING_INPUT_KEY)
     action, rec_id = state["action"], state["rec_id"]
     original_message = state.get("original_message")
     user_input = update.message.text.strip()
@@ -294,8 +281,5 @@ def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(start_edit_tp_handler, pattern=r"^rec:edit_tp:"))
     application.add_handler(CallbackQueryHandler(confirm_close_handler, pattern=r"^rec:confirm_close:"))
     application.add_handler(CallbackQueryHandler(cancel_close_handler, pattern=r"^rec:cancel_close:"))
-    
-    # ✅ HYBRID HANDLER: This handler now captures ANY non-command text message
-    # and has internal logic to differentiate between a relevant reply and other messages.
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_input_handler), group=1)
 # --- END OF FILE ---
