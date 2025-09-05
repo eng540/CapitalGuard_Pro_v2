@@ -23,19 +23,16 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
         return None
 
 class TradeService:
-    # ------------------------------
-    # Symbol validation cache (Binance spot)
-    # ------------------------------
+    # ... (Symbol validation cache logic remains unchanged)
     _SYMBOLS_CACHE: set[str] = set()
     _SYMBOLS_CACHE_TS: float = 0.0
-    _SYMBOLS_CACHE_TTL_SEC: int = 6 * 60 * 60  # 6 hours
+    _SYMBOLS_CACHE_TTL_SEC: int = 6 * 60 * 60
 
     def __init__(self, repo: RecommendationRepoPort, notifier: NotifierPort):
         self.repo = repo
         self.notifier = notifier
 
     def _ensure_symbols_cache(self) -> None:
-        """Fetch & cache Binance symbols (spot) if cache is empty/expired."""
         now = time.time()
         if self._SYMBOLS_CACHE and (now - self._SYMBOLS_CACHE_TS) < self._SYMBOLS_CACHE_TTL_SEC:
             return
@@ -60,10 +57,6 @@ class TradeService:
             log.exception("Failed to refresh Binance symbols: %s", e)
 
     def _validate_symbol_exists(self, asset: str) -> str:
-        """
-        Normalize + validate that asset exists on Binance (spot);
-        raises ValueError otherwise. Returns normalized symbol (uppercased).
-        """
         norm = asset.strip().upper()
         self._ensure_symbols_cache()
         if self._SYMBOLS_CACHE and norm not in self._SYMBOLS_CACHE:
@@ -74,7 +67,6 @@ class TradeService:
         return norm
 
     def _update_cards(self, rec: Recommendation) -> None:
-        """Private helper to update public and private cards after a change."""
         public_keyboard = public_channel_keyboard(rec.id)
         self.notifier.edit_recommendation_card(rec, keyboard=public_keyboard)
 
@@ -89,16 +81,13 @@ class TradeService:
             )
 
     def _validate_sl_vs_entry(self, side: str, entry: float, sl: float) -> None:
-        """Validates that stop loss is logical compared to entry price."""
         side_upper = side.upper()
-        # Allow SL == entry (break-even)
         if side_upper == "LONG" and not (sl <= entry):
             raise ValueError("For LONG trades, Stop Loss must be less than or equal to the Entry price.")
         if side_upper == "SHORT" and not (sl >= entry):
             raise ValueError("For SHORT trades, Stop Loss must be greater than or equal to the Entry price.")
 
     def _validate_targets(self, side: str, entry: float, tps: List[float]) -> None:
-        """Validates that targets are logical compared to entry price."""
         if not tps:
             raise ValueError("At least one target price is required.")
         side_upper = side.upper()
@@ -122,15 +111,11 @@ class TradeService:
         order_type: str,
         live_price: Optional[float] = None,
     ) -> Recommendation:
-        """The main business logic for creating and publishing a new recommendation."""
         log.info(
             "Creating recommendation: asset=%s side=%s order_type=%s user=%s",
             asset, side, order_type, user_id
         )
-
-        # Normalize + validate symbol against Binance spot markets
         asset = self._validate_symbol_exists(asset)
-
         try:
             order_type_enum = OrderType(order_type.upper())
         except ValueError:
@@ -148,28 +133,19 @@ class TradeService:
         self._validate_targets(side, final_entry, targets)
 
         rec_to_save = Recommendation(
-            asset=Symbol(asset),
-            side=Side(side),
-            entry=Price(final_entry),
-            stop_loss=Price(stop_loss),
-            targets=Targets(targets),
-            order_type=order_type_enum,
-            status=status,
-            market=market,
-            notes=notes,
-            user_id=user_id,
+            asset=Symbol(asset), side=Side(side), entry=Price(final_entry),
+            stop_loss=Price(stop_loss), targets=Targets(targets),
+            order_type=order_type_enum, status=status, market=market,
+            notes=notes, user_id=user_id,
         )
         if rec_to_save.status == RecommendationStatus.ACTIVE:
             rec_to_save.activated_at = datetime.now(timezone.utc)
 
         saved_rec = self.repo.add(rec_to_save)
-
-        # Publish to public channel
         public_keyboard = public_channel_keyboard(saved_rec.id)
         posted_location = self.notifier.post_recommendation_card(saved_rec, keyboard=public_keyboard)
         if posted_location:
             channel_id, message_id = posted_location
-            # Persist location + published_at
             saved_rec.channel_id = channel_id
             saved_rec.message_id = message_id
             saved_rec.published_at = datetime.now(timezone.utc)
@@ -177,18 +153,40 @@ class TradeService:
         else:
             self.notifier.send_admin_alert(f"Failed to publish rec #{saved_rec.id} to channel.")
 
-        # DM analyst with control panel (if we have a valid int chat id)
         uid = _parse_int_user_id(user_id)
         if uid is not None:
             analyst_keyboard = analyst_control_panel_keyboard(saved_rec.id)
             self.notifier.send_private_message(
-                chat_id=uid,
-                rec=saved_rec,
-                keyboard=analyst_keyboard,
+                chat_id=uid, rec=saved_rec, keyboard=analyst_keyboard,
                 text_header="🚀 Published! Here is your private control panel:",
             )
-
         return saved_rec
+
+    def activate_recommendation(self, rec_id: int, activation_price: float) -> Optional[Recommendation]:
+        """
+        ✅ NEW: Centralized logic to activate a PENDING recommendation.
+        This is now the single point of truth for activation.
+        """
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status != RecommendationStatus.PENDING:
+            # Already activated or closed, do nothing.
+            return None
+
+        log.warning(f"Activating recommendation #{rec.id} for {rec.asset.value} at price {activation_price}")
+        rec.activate(activation_price)
+        updated_rec = self.repo.update(rec)
+
+        # Update cards and notify analyst
+        self._update_cards(updated_rec)
+        
+        uid = _parse_int_user_id(rec.user_id)
+        if uid is not None:
+            self.notifier.send_private_message(
+                chat_id=uid,
+                rec=updated_rec,
+                text_header=f"🔥 Your recommendation #{rec.id} ({rec.asset.value}) is now ACTIVE!"
+            )
+        return updated_rec
 
     def close(self, rec_id: int, exit_price: float) -> Recommendation:
         rec = self.repo.get(rec_id)
@@ -207,9 +205,6 @@ class TradeService:
         side: Optional[str] = None,
         status: Optional[str] = None,
     ) -> List[Recommendation]:
-        """
-        ✅ NEW (Phase 3): Pass-through for enhanced filtering capabilities.
-        """
         return self.repo.list_open(symbol=symbol, side=side, status=status)
 
     def list_all(self, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
@@ -219,7 +214,6 @@ class TradeService:
         rec = self.repo.get(rec_id)
         if not rec or rec.status == RecommendationStatus.CLOSED:
             return None
-        # Use update_sl to keep validation & card updates consistent
         return self.update_sl(rec_id, rec.entry.value)
 
     def add_partial_close_note(self, rec_id: int) -> Optional[Recommendation]:
@@ -237,10 +231,7 @@ class TradeService:
         rec = self.repo.get(rec_id)
         if not rec or rec.status == RecommendationStatus.CLOSED:
             raise ValueError("Recommendation not found or is closed.")
-
-        # Validation (supports BE)
         self._validate_sl_vs_entry(rec.side.value, rec.entry.value, new_sl)
-
         rec.stop_loss = Price(new_sl)
         note_text = "\n- SL moved to BE." if new_sl == rec.entry.value else f"\n- SL updated to {new_sl}."
         rec.notes = (rec.notes or "") + note_text
@@ -263,6 +254,5 @@ class TradeService:
         return updated_rec
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
-        """Pass-through method to get recent assets from the repository."""
         return self.repo.get_recent_assets_for_user(user_id, limit)
 # --- END OF FILE ---
