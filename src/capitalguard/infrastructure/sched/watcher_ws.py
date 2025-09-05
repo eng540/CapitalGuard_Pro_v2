@@ -1,6 +1,7 @@
 # --- START OF FILE: src/capitalguard/infrastructure/sched/watcher_ws.py ---
 import asyncio
 import logging
+import os
 import websockets
 from dotenv import load_dotenv
 
@@ -19,9 +20,8 @@ log = logging.getLogger("capitalguard.watcher")
 
 async def main():
     """
-    WebSocket loop: subscribe to symbols for all open recommendations and react to price ticks:
-    1) Activate PENDING based on order type logic.
-    2) Close ACTIVE immediately on SL hit.
+    The main WebSocket client loop. Subscribes to price streams for all
+    open recommendations and triggers actions based on price movements.
     """
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
@@ -29,9 +29,14 @@ async def main():
     ws_client = BinanceWS()
 
     async def on_price_update(symbol: str, price: float, _raw_data):
+        """
+        Core handler for every price tick. It checks for two main conditions:
+        1. Activating PENDING recommendations with the correct logic.
+        2. Rapidly auto-closing ACTIVE recommendations on SL hit.
+        """
         log.debug(f"[WS] {symbol} -> {price}")
 
-        # --- 1) Activate PENDING recommendations ---
+        # --- 1. Activate PENDING recommendations ---
         try:
             pending_recs = await asyncio.to_thread(
                 trade_service.list_open, symbol=symbol, status="PENDING"
@@ -42,19 +47,21 @@ async def main():
                 is_triggered = False
 
                 if order_type_val == OrderType.LIMIT.value:
-                    # LONG triggers when price <= entry, SHORT when price >= entry
-                    is_triggered = (side == "LONG" and price <= entry) or (side == "SHORT" and price >= entry)
+                    if (side == "LONG" and price <= entry) or (side == "SHORT" and price >= entry):
+                        is_triggered = True
+
                 elif order_type_val == OrderType.STOP_MARKET.value:
-                    # LONG triggers when price >= entry, SHORT when price <= entry
-                    is_triggered = (side == "LONG" and price >= entry) or (side == "SHORT" and price <= entry)
+                    if (side == "LONG" and price >= entry) or (side == "SHORT" and price <= entry):
+                        is_triggered = True
 
                 if is_triggered:
+                    # Use the dedicated activation function in TradeService
                     await asyncio.to_thread(trade_service.activate_recommendation, rec.id)
 
         except Exception as e:
-            log.error(f"Error checking PENDING for {symbol}: {e}", exc_info=True)
+            log.error(f"Error checking PENDING recommendations for {symbol}: {e}", exc_info=True)
 
-        # --- 2) Close ACTIVE on SL hit (fast path) ---
+        # --- 2. Fast-path SL auto-close for ACTIVE recommendations ---
         try:
             active_recs = await asyncio.to_thread(
                 trade_service.list_open, symbol=symbol, status="ACTIVE"
@@ -63,18 +70,20 @@ async def main():
                 sl, side = rec.stop_loss.value, rec.side.value
                 sl_hit = (side == "LONG" and price <= sl) or (side == "SHORT" and price >= sl)
                 if sl_hit:
-                    log.warning(f"SL HIT for REC #{rec.id} ({symbol}) @ {price}. Closing...")
+                    log.warning(f"SL HIT DETECTED for REC #{rec.id} ({symbol}) at price {price}. Closing...")
                     await asyncio.to_thread(trade_service.close, rec.id, price)
         except Exception as e:
-            log.error(f"Error checking ACTIVE for {symbol}: {e}", exc_info=True)
+            log.error(f"Error checking ACTIVE recommendations for {symbol}: {e}", exc_info=True)
 
     while True:
         try:
             open_recs_for_symbols = await asyncio.to_thread(trade_service.list_open)
-            symbols_to_watch = {rec.asset.value for rec in open_recs_for_symbols} or {"BTCUSDT"}
+            symbols_to_watch = {rec.asset.value for rec in open_recs_for_symbols}
+            if not symbols_to_watch:
+                symbols_to_watch = {"BTCUSDT"}
 
-            log.info(f"Refreshing WebSocket connections. Symbols: {symbols_to_watch}")
-
+            log.info(f"Watching symbols: {symbols_to_watch}")
+            
             tasks = [ws_client.mini_ticker(sym, on_price_update) for sym in symbols_to_watch]
             await asyncio.gather(*tasks)
 
@@ -82,8 +91,8 @@ async def main():
             log.warning("WebSocket connection closed. Reconnecting in 10s...")
             await asyncio.sleep(10)
         except asyncio.CancelledError:
-            log.info("Watcher cancelled. Shutting down gracefully.")
-            raise
+            log.info("Watcher has been cancelled. Shutting down.")
+            break # Exit the loop gracefully
         except Exception as e:
             log.exception(f"Main WebSocket loop error: {e}. Reconnecting in 30s...")
             await asyncio.sleep(30)
