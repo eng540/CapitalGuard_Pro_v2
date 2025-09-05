@@ -1,4 +1,3 @@
-# --- START OF FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional
@@ -34,6 +33,7 @@ class TradeService:
         self.repo = repo
         self.notifier = notifier
 
+    # -------- Symbol validation helpers --------
     def _ensure_symbols_cache(self) -> None:
         """Fetch & cache Binance symbols (spot) if cache is empty/expired."""
         now = time.time()
@@ -73,6 +73,7 @@ class TradeService:
             )
         return norm
 
+    # -------- UI card updates --------
     def _update_cards(self, rec: Recommendation) -> None:
         """Private helper to update public and private cards after a change."""
         public_keyboard = public_channel_keyboard(rec.id)
@@ -88,6 +89,7 @@ class TradeService:
                 text_header="✅ Recommendation updated successfully:",
             )
 
+    # -------- Validation helpers --------
     def _validate_sl_vs_entry(self, side: str, entry: float, sl: float) -> None:
         """Validates that stop loss is logical compared to entry price."""
         side_upper = side.upper()
@@ -109,6 +111,7 @@ class TradeService:
             if not all(tp < entry for tp in tps):
                 raise ValueError("For SHORT trades, all targets must be less than the Entry price.")
 
+    # -------- Core business actions --------
     def create_and_publish_recommendation(
         self,
         asset: str,
@@ -153,6 +156,8 @@ class TradeService:
             rec_to_save.activated_at = datetime.now(timezone.utc)
 
         saved_rec = self.repo.add(rec_to_save)
+
+        # Publish to public channel
         public_keyboard = public_channel_keyboard(saved_rec.id)
         posted_location = self.notifier.post_recommendation_card(saved_rec, keyboard=public_keyboard)
         if posted_location:
@@ -164,6 +169,7 @@ class TradeService:
         else:
             self.notifier.send_admin_alert(f"Failed to publish rec #{saved_rec.id} to channel.")
 
+        # DM analyst with control panel
         uid = _parse_int_user_id(user_id)
         if uid is not None:
             analyst_keyboard = analyst_control_panel_keyboard(saved_rec.id)
@@ -173,26 +179,21 @@ class TradeService:
             )
         return saved_rec
 
-    def activate_recommendation(self, rec_id: int, activation_price: float) -> Optional[Recommendation]:
+    def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
         """
-        ✅ NEW: Centralized logic to activate a PENDING recommendation.
-        This is now the single point of truth for activation.
+        Centralized logic to activate a PENDING recommendation.
+        For LIMIT/STOP orders, entry price is already set in the entity.
         """
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.PENDING:
             return None
 
-        log.warning(f"Activating recommendation #{rec.id} for {rec.asset.value} at price {activation_price}")
-        
-        # The `activate` method on the entity handles the state change.
-        # We pass the intended activation_price, but it will only be used for MARKET orders
-        # (which shouldn't happen here, but it's safe). For LIMIT/STOP, the entry price is already set.
-        rec.activate() 
+        log.info("Activating recommendation #%s for %s", rec.id, rec.asset.value)
+        rec.activate()
         updated_rec = self.repo.update(rec)
 
         # Update cards and notify the analyst
         self._update_cards(updated_rec)
-        
         uid = _parse_int_user_id(rec.user_id)
         if uid is not None:
             self.notifier.send_private_message(
@@ -213,6 +214,7 @@ class TradeService:
         log.info("Rec #%s closed at price=%s (status=%s)", rec_id, exit_price, updated_rec.status.value)
         return updated_rec
 
+    # -------- Queries & small helpers --------
     def list_open(
         self,
         symbol: Optional[str] = None,
@@ -269,4 +271,3 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FILE ---
