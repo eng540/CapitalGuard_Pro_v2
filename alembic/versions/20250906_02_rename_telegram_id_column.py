@@ -1,4 +1,4 @@
-"""Rename telegram_id to telegram_user_id in users table
+"""Rename telegram_id to telegram_user_id in users table (Idempotent)
 
 Revision ID: 20250906_02_rename_telegram_id
 Revises: 20250905_01_add_user_foundation
@@ -18,22 +18,32 @@ depends_on = None
 
 def upgrade() -> None:
     """
-    Renames the column 'telegram_id' to 'telegram_user_id' for consistency
-    with the SQLAlchemy model.
+    Safely renames the column 'telegram_id' to 'telegram_user_id' for consistency.
+    This script now checks if the column exists before attempting to rename it.
     """
-    try:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [c.get('name') for c in inspector.get_columns('users')]
+
+    # Only attempt the rename if the old column name exists and the new one doesn't
+    if 'telegram_id' in columns and 'telegram_user_id' not in columns:
         op.alter_column('users', 'telegram_id', new_column_name='telegram_user_id')
-    except Exception as e:
-        # This might fail if a previous, failed migration was manually fixed.
-        # We can safely ignore the error if the column is already renamed.
-        print(f"Could not rename telegram_id, it might already be correct. Error: {e}")
+    else:
+        # If the old column doesn't exist, we assume the migration is already
+        # effectively complete or not needed. We can safely do nothing.
+        print("Column 'telegram_id' not found in 'users' table, or 'telegram_user_id' already exists. Skipping rename.")
 
 
 def downgrade() -> None:
     """
-    Reverts the column name from 'telegram_user_id' back to 'telegram_id'.
+    Safely reverts the column name from 'telegram_user_id' back to 'telegram_id'.
     """
-    try:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [c.get('name') for c in inspector.get_columns('users')]
+    
+    # Only attempt the rename if the new column name exists and the old one doesn't
+    if 'telegram_user_id' in columns and 'telegram_id' not in columns:
         op.alter_column('users', 'telegram_user_id', new_column_name='telegram_id')
-    except Exception as e:
-        print(f"Could not rename telegram_user_id, it might already be correct. Error: {e}")
+    else:
+        print("Column 'telegram_user_id' not found in 'users' table, or 'telegram_id' already exists. Skipping rename.")
