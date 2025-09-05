@@ -1,4 +1,3 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 from telegram import Update
 from telegram.constants import ParseMode
@@ -33,9 +32,8 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
     
-    filters = context.user_data.get('last_open_filters', {})
-    
-    items = trade_service.list_open(**filters)
+    filters_map = context.user_data.get('last_open_filters', {})
+    items = trade_service.list_open(**filters_map)
     
     if not items:
         await query.edit_message_text("✅ لا توجد توصيات مفتوحة تطابق الفلتر الحالي.")
@@ -44,10 +42,8 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
     keyboard = build_open_recs_keyboard(items, current_page=page, price_service=price_service)
     
     header_text = "<b>📊 لوحة قيادة التوصيات المفتوحة</b>"
-    if filters:
-        filter_text_parts = []
-        for key, value in filters.items():
-            filter_text_parts.append(f"{key.capitalize()}: {value.upper()}")
+    if filters_map:
+        filter_text_parts = [f"{k.capitalize()}: {str(v).upper()}" for k, v in filters_map.items()]
         header_text += f"\n<i>فلترة حسب: {', '.join(filter_text_parts)}</i>"
     
     try:
@@ -96,16 +92,14 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    ✅ REMOVED: The logic for activating PENDING recommendations has been removed.
-    This handler is now only responsible for updating the visual price data.
-    The watcher_ws is the single source of truth for automatic activation.
+    Only refreshes the visual data. Auto-activation lives in watcher_ws.
     """
     query = update.callback_query
     try:
         rec_id = int(query.data.split(':')[2])
+        trade_service: TradeService = get_service(context, "trade_service")
         price_service: PriceService = get_service(context, "price_service")
-        # Use repo directly for a read-only operation to be slightly faster
-        rec = get_service(context, "trade_service").repo.get(rec_id)
+        rec = trade_service.repo.get(rec_id)
 
         if not rec:
             await query.answer("This recommendation seems to be deleted.", show_alert=True)
@@ -155,7 +149,6 @@ async def move_sl_to_be_handler(update: Update, context: ContextTypes.DEFAULT_TY
     trade_service.move_sl_to_be(rec_id)
     await show_rec_panel_handler(update, context)
 
-
 async def partial_close_note_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("Processing: Adding partial close note...")
@@ -169,7 +162,10 @@ async def start_close_flow_handler(update: Update, context: ContextTypes.DEFAULT
     rec_id = int(query.data.split(':')[2])
     context.user_data[AWAITING_INPUT_KEY] = {"action": "close", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    await query.edit_message_text(text=f"{query.message.text}\n\n<b>🔻 Please reply to this message with the exit price for #{rec_id}.</b>", parse_mode=ParseMode.HTML)
+    await query.edit_message_text(
+        text=f"{query.message.text}\n\n<b>🔻 الرجاء <u>الرد على هذه الرسالة ↩️</u> بسعر الخروج للتوصية #{rec_id}.</b>",
+        parse_mode=ParseMode.HTML
+    )
 
 async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -210,37 +206,50 @@ async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TY
     rec_id = int(query.data.split(':')[2])
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_sl", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    await query.edit_message_text(text=f"{query.message.text}\n\n<b>✏️ Please reply to this message with the new Stop Loss value for #{rec_id}.</b>", parse_mode=ParseMode.HTML)
+    await query.edit_message_text(
+        text=f"{query.message.text}\n\n<b>✏️ الرجاء <u>الرد على هذه الرسالة ↩️</u> بقيمة وقف الخسارة الجديدة للتوصية #{rec_id}.</b>",
+        parse_mode=ParseMode.HTML
+    )
 
 async def start_edit_tp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rec_id = int(query.data.split(':')[2])
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_tp", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    await query.edit_message_text(text=f"{query.message.text}\n\n<b>🎯 Please reply to this message with the new targets for #{rec_id} (separated by space).</b>", parse_mode=ParseMode.HTML)
+    await query.edit_message_text(
+        text=f"{query.message.text}\n\n<b>🎯 الرجاء <u>الرد على هذه الرسالة ↩️</u> بالأهداف الجديدة للتوصية #{rec_id} (افصل بينها بمسافة).</b>",
+        parse_mode=ParseMode.HTML
+    )
 
 async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if AWAITING_INPUT_KEY not in context.user_data: 
+    # Strict Reply only: يجب أن تكون هناك حالة انتظار وأن يكون هذا الرد على الرسالة الصحيحة
+    if AWAITING_INPUT_KEY not in context.user_data or not update.message.reply_to_message:
         return
+
     state = context.user_data.get(AWAITING_INPUT_KEY)
-    if update.message.reply_to_message:
-        original_message = state.get("original_message")
-        if not original_message or update.message.reply_to_message.message_id != original_message.message_id:
-            return
-    context.user_data.pop(AWAITING_INPUT_KEY)
-    action, rec_id = state["action"], state["rec_id"]
     original_message = state.get("original_message")
+
+    # تحقّق من أن الرد موجّه لنفس الرسالة
+    if not original_message or update.message.reply_to_message.message_id != original_message.message_id:
+        return
+
+    # ✅ الآن فقط نزيل الحالة لمنع re-entry
+    context.user_data.pop(AWAITING_INPUT_KEY, None)
+
+    action, rec_id = state["action"], state["rec_id"]
     user_input = update.message.text.strip()
+
+    # حاول حذف رد المستخدم للحفاظ على نظافة المحادثة
     try:
         await update.message.delete()
     except Exception:
         pass
-    if not original_message:
-        log.warning("Original message not found in state for awaiting input.")
-        return
+
+    # أعد استخدام شاشة اللوحة عبر dummy callback
     dummy_query = type('obj', (object,), {'message': original_message, 'data': f'rec:show_panel:{rec_id}', 'answer': (lambda: None)})
     dummy_update = Update(update.update_id, callback_query=dummy_query)
     trade_service: TradeService = get_service(context, "trade_service")
+
     try:
         if action == "close":
             exit_price = float(user_input)
@@ -253,7 +262,8 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
             await show_rec_panel_handler(dummy_update, context)
         elif action == "edit_tp":
             new_targets = [float(t) for t in user_input.replace(",", " ").split()]
-            if not new_targets: raise ValueError("No targets provided.")
+            if not new_targets:
+                raise ValueError("No targets provided.")
             trade_service.update_targets(rec_id, new_targets)
             await show_rec_panel_handler(dummy_update, context)
     except (ValueError, IndexError) as e:
@@ -277,5 +287,5 @@ def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(start_edit_tp_handler, pattern=r"^rec:edit_tp:"))
     application.add_handler(CallbackQueryHandler(confirm_close_handler, pattern=r"^rec:confirm_close:"))
     application.add_handler(CallbackQueryHandler(cancel_close_handler, pattern=r"^rec:cancel_close:"))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, received_input_handler), group=1)
-# --- END OF FILE ---
+    # Strict Reply: لا نستقبل إلا الرسائل النصية التي هي ردّ على الرسالة المطلوبة
+    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler), group=1)
