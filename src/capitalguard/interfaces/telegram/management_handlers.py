@@ -1,4 +1,4 @@
---- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+#--- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 
 import logging
 import types
@@ -28,7 +28,7 @@ log = logging.getLogger(name)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 
----------- GOLDEN v7+: Normalization & Parsing Helpers with space-suffix support ----------
+#---------- GOLDEN v7+: Normalization & Parsing Helpers with space-suffix support ----------
 
 _AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
@@ -118,7 +118,7 @@ raise ValueError("لم يتم العثور على أي أرقام.")
 tokens = _coalesce_num_suffix_tokens(tokens)
 return [_parse_one_number(t) for t in tokens]
 
-✅ GOLDEN v7: Re-added missing parsing helpers
+#✅ GOLDEN v7: Re-added missing parsing helpers
 
 def _parse_tail_int(data: str) -> Optional[int]:
 try:
@@ -133,7 +133,7 @@ return parts if len(parts) >= expected else None
 except Exception:
 return None
 
----------- Telegram Handlers ----------
+#---------- Telegram Handlers ----------
 
 #لاستخدامه كـ callback لا يفعل شيئًا عند بناء dummy_query
 
@@ -377,5 +377,5 @@ application.add_handler(CallbackQueryHandler(confirm_close_handler, pattern=r"^r
 application.add_handler(CallbackQueryHandler(cancel_close_handler, pattern=r"^rec:cancel_close:"))
 application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler), group=1)
 
---- END OF FILE ---
+#--- END OF FILE ---
 
