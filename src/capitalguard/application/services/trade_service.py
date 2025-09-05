@@ -1,3 +1,4 @@
+# --- START OF FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional
@@ -86,7 +87,7 @@ class TradeService:
                 chat_id=uid,
                 rec=rec,
                 keyboard=analyst_keyboard,
-                text_header="✅ Recommendation updated successfully:",
+                text_header="✅ تم تحديث التوصية بنجاح:",
             )
 
     # -------- Validation helpers --------
@@ -95,21 +96,21 @@ class TradeService:
         side_upper = side.upper()
         # Allow SL == entry (break-even)
         if side_upper == "LONG" and not (sl <= entry):
-            raise ValueError("For LONG trades, Stop Loss must be less than or equal to the Entry price.")
+            raise ValueError("في صفقات الشراء (LONG)، يجب أن يكون وقف الخسارة ≤ سعر الدخول.")
         if side_upper == "SHORT" and not (sl >= entry):
-            raise ValueError("For SHORT trades, Stop Loss must be greater than or equal to the Entry price.")
+            raise ValueError("في صفقات البيع (SHORT)، يجب أن يكون وقف الخسارة ≥ سعر الدخول.")
 
     def _validate_targets(self, side: str, entry: float, tps: List[float]) -> None:
         """Validates that targets are logical compared to entry price."""
         if not tps:
-            raise ValueError("At least one target price is required.")
+            raise ValueError("مطلوب على الأقل هدف واحد.")
         side_upper = side.upper()
         if side_upper == "LONG":
             if not all(tp > entry for tp in tps):
-                raise ValueError("For LONG trades, all targets must be greater than the Entry price.")
+                raise ValueError("في صفقات الشراء، يجب أن تكون جميع الأهداف > سعر الدخول.")
         elif side_upper == "SHORT":
             if not all(tp < entry for tp in tps):
-                raise ValueError("For SHORT trades, all targets must be less than the Entry price.")
+                raise ValueError("في صفقات البيع، يجب أن تكون جميع الأهداف < سعر الدخول.")
 
     # -------- Core business actions --------
     def create_and_publish_recommendation(
@@ -157,7 +158,6 @@ class TradeService:
 
         saved_rec = self.repo.add(rec_to_save)
 
-        # Publish to public channel
         public_keyboard = public_channel_keyboard(saved_rec.id)
         posted_location = self.notifier.post_recommendation_card(saved_rec, keyboard=public_keyboard)
         if posted_location:
@@ -169,37 +169,36 @@ class TradeService:
         else:
             self.notifier.send_admin_alert(f"Failed to publish rec #{saved_rec.id} to channel.")
 
-        # DM analyst with control panel
         uid = _parse_int_user_id(user_id)
         if uid is not None:
             analyst_keyboard = analyst_control_panel_keyboard(saved_rec.id)
             self.notifier.send_private_message(
                 chat_id=uid, rec=saved_rec, keyboard=analyst_keyboard,
-                text_header="🚀 Published! Here is your private control panel:",
+                text_header="🚀 تم النشر! هذه لوحة التحكم الخاصة بك:",
             )
         return saved_rec
 
     def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
         """
-        Centralized logic to activate a PENDING recommendation.
-        For LIMIT/STOP orders, entry price is already set in the entity.
+        Centralized activation for PENDING recommendations.
+        Entry price is already set for LIMIT/STOP orders (no price argument).
         """
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.PENDING:
             return None
 
-        log.info("Activating recommendation #%s for %s", rec.id, rec.asset.value)
+        log.warning(f"Activating recommendation #{rec.id} for {rec.asset.value}")
         rec.activate()
         updated_rec = self.repo.update(rec)
 
-        # Update cards and notify the analyst
         self._update_cards(updated_rec)
+
         uid = _parse_int_user_id(rec.user_id)
         if uid is not None:
             self.notifier.send_private_message(
                 chat_id=uid,
                 rec=updated_rec,
-                text_header=f"🔥 Your recommendation #{rec.id} ({rec.asset.value}) is now ACTIVE!"
+                text_header=f"🔥 أصبحت توصيتك #{rec.id} ({rec.asset.value}) مفعلة الآن!"
             )
         return updated_rec
 
@@ -236,7 +235,7 @@ class TradeService:
         rec = self.repo.get(rec_id)
         if not rec or rec.status == RecommendationStatus.CLOSED:
             return None
-        note = f"\n- 50% of position closed on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC."
+        note = f"\n- تم إغلاق 50% من الصفقة في {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC."
         rec.notes = (rec.notes or "") + note
         updated_rec = self.repo.update(rec)
         self._update_cards(updated_rec)
@@ -249,7 +248,7 @@ class TradeService:
             raise ValueError("Recommendation not found or is closed.")
         self._validate_sl_vs_entry(rec.side.value, rec.entry.value, new_sl)
         rec.stop_loss = Price(new_sl)
-        note_text = "\n- SL moved to BE." if new_sl == rec.entry.value else f"\n- SL updated to {new_sl}."
+        note_text = "\n- تم نقل وقف الخسارة إلى نقطة الدخول." if new_sl == rec.entry.value else f"\n- تم تحديث وقف الخسارة إلى {new_sl}."
         rec.notes = (rec.notes or "") + note_text
         updated_rec = self.repo.update(rec)
         self._update_cards(updated_rec)
@@ -263,7 +262,7 @@ class TradeService:
         self._validate_targets(rec.side.value, rec.entry.value, new_targets)
         rec.targets = Targets(new_targets)
         targets_str = ", ".join(map(str, new_targets))
-        rec.notes = (rec.notes or "") + f"\n- TPs updated to [{targets_str}]."
+        rec.notes = (rec.notes or "") + f"\n- تم تحديث الأهداف إلى [{targets_str}]."
         updated_rec = self.repo.update(rec)
         self._update_cards(updated_rec)
         log.info("Rec #%s targets updated to [%s]", rec_id, targets_str)
@@ -271,3 +270,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
+# --- END OF FILE ---
