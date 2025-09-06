@@ -1,33 +1,35 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/auth.py ---
-from telegram import Update
-from telegram.ext.filters import BaseFilter
+from telegram.ext import filters
+from capitalguard.config import settings
 
-# ✅ NEW: Import the UserRepository to check the database.
-from capitalguard.infrastructure.db.user_repository import UserRepository
-
-class _DatabaseAuthFilter(BaseFilter):
+def get_allowed_user_ids() -> list[int]:
     """
-    A custom filter that checks if a user is registered and active in the database.
-    This replaces the old, static environment variable check.
+    Parses the TELEGRAM_ALLOWED_USERS environment variable and returns a list of integer user IDs.
+    The variable should be a comma-separated string of numbers (e.g., "12345,67890").
     """
-    def __init__(self):
-        # The name is used for logging and debugging by the PTB library.
-        super().__init__(name='DB_Auth_Filter')
-        self.user_repo = UserRepository()
+    allowed_users_str = settings.TELEGRAM_ALLOWED_USERS
+    if not allowed_users_str:
+        # If the variable is not set, return an empty list, effectively blocking all users
+        # except for maybe system administrators in a more complex setup.
+        # For this project, it means no one can use the commands if not set.
+        return []
+    
+    user_ids = []
+    # Split the string by commas and strip any whitespace
+    parts = [part.strip() for part in allowed_users_str.split(',')]
+    for part in parts:
+        if part.isdigit():
+            user_ids.append(int(part))
+    return user_ids
 
-    def filter(self, update: Update) -> bool:
-        """
-        The core logic of the filter. It's called by PTB for each incoming update.
-        """
-        if not update.effective_user:
-            return False
-        
-        user_id = update.effective_user.id
-        # ✅ CORE CHANGE: Instead of checking a list, we query the database.
-        is_authorized = self.user_repo.is_user_active(user_id)
-        return is_authorized
+# --- The Filter ---
+# This filter will be imported and used by command handlers to restrict access.
+# It checks if the user ID of the person sending the message is in our allowed list.
 
-# Create a single instance of the filter to be used across the application.
-# This is the new, database-backed authentication filter.
-ALLOWED_USER_FILTER = _DatabaseAuthFilter()
+# Get the list of allowed user IDs once when the module is loaded.
+_allowed_ids = get_allowed_user_ids()
+
+# Create a filter. If the list is empty, the filter will reject all users.
+# The `from_user` filter can take a list of IDs directly.
+ALLOWED_FILTER = filters.User(user_id=_allowed_ids)
 # --- END OF FILE ---
