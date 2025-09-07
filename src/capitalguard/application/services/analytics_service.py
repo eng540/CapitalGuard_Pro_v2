@@ -1,18 +1,40 @@
 # --- START OF FILE: src/capitalguard/application/services/analytics_service.py ---
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple, Dict, Any
+from typing import Iterable, List, Optional, Tuple, Dict, Any, Union
 from datetime import datetime
 from math import isfinite
+
 from capitalguard.domain.entities import RecommendationStatus
+
 
 @dataclass
 class AnalyticsService:
-    """تحليلات متقدمة دون تعديل مخطط DB."""
-    repo: any  # RecommendationRepository
+    """Provides advanced, user-scoped analytics."""
+    repo: Any  # RecommendationRepository
+
+    # ---------------------------
+    # Helpers
+    # ---------------------------
+    @staticmethod
+    def _to_int_user_id(user_id: Union[int, str]) -> int:
+        """Coerce Telegram user_id to int safely."""
+        return int(str(user_id).strip())
+
+    @staticmethod
+    def _val(x: Any, attr: str, default: Any = None) -> Any:
+        """Safely get .attr if exists, else x itself (for domain ValueObjects)."""
+        if x is None:
+            return default
+        return getattr(x, attr, x)
 
     @staticmethod
     def _pnl_percent(side: str, entry: float, exit_price: float) -> float:
+        """
+        PnL % based on direction:
+          LONG:  (exit/entry - 1) * 100
+          SHORT: (entry/exit - 1) * 100
+        """
         s = (side or "").upper()
         if not entry or not exit_price or entry == 0:
             return 0.0
@@ -22,10 +44,12 @@ class AnalyticsService:
 
     @staticmethod
     def _rr(entry: float, sl: float, tp1: Optional[float], side: str) -> Optional[float]:
+        """Theoretical R:R using first target."""
         try:
-            if tp1 is None: return None
+            if tp1 is None:
+                return None
             risk = abs(entry - sl)
-            reward = abs((tp1 - entry)) if (side.upper() == "LONG") else abs((entry - tp1))
+            reward = abs(tp1 - entry) if side.upper() == "LONG" else abs(entry - tp1)
             if risk <= 0 or reward <= 0:
                 return None
             r = reward / risk
@@ -33,121 +57,156 @@ class AnalyticsService:
         except Exception:
             return None
 
-    def list_filtered(
+    # ---------------------------
+    # User-scoped queries
+    # ---------------------------
+    def list_filtered_for_user(
         self,
-        user_id: Optional[str] = None,
+        user_id: Union[int, str],
         symbol: Optional[str] = None,
         status: Optional[str] = None,
-        market: Optional[str] = None,
-        date_from: Optional[datetime] = None,
-        date_to: Optional[datetime] = None,
     ) -> List:
-        # ✅ FIX: Delegate the most common filters (symbol, status) to the database.
-        # This prevents loading the entire table into memory.
-        items = self.repo.list_all(symbol=symbol, status=status)
-        
-        # Apply remaining filters in Python
-        res = []
-        for r in items:
-            if user_id is not None and str(getattr(r, "user_id", None)) != str(user_id):
-                continue
-            if market:
-                m = str(getattr(getattr(r, "market", None), "value", getattr(r, "market", ""))).lower()
-                if market.lower() not in m:
-                    continue
-            if date_from and getattr(r, "created_at", None) and r.created_at < date_from:
-                continue
-            if date_to and getattr(r, "created_at", None) and r.created_at > date_to:
-                continue
-            res.append(r)
-        return res
+        """
+        Return recommendations for a specific user with optional DB-side filters.
+        """
+        uid = self._to_int_user_id(user_id)
+        return self.repo.list_all_for_user(user_id=uid, symbol=symbol, status=status)
 
-    def win_rate(self, items: Iterable) -> float:
+    # ---------------------------
+    # User-scoped metrics
+    # ---------------------------
+    def win_rate_for_user(self, user_id: Union[int, str]) -> float:
+        """Win-rate % for a user's closed trades with an exit price."""
+        uid = self._to_int_user_id(user_id)
+        items = self.repo.list_all_for_user(user_id=uid)
         closed = [r for r in items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
         if not closed:
             return 0.0
+
         wins = 0
         for r in closed:
-            pnl = self._pnl_percent(getattr(r.side, "value", r.side), float(getattr(r.entry, "value", r.entry)), float(r.exit_price))
+            side = self._val(r.side, "value", r.side)
+            entry = float(self._val(r.entry, "value", r.entry) or 0)
+            exit_price = float(r.exit_price or 0)
+            pnl = self._pnl_percent(side, entry, exit_price)
             if pnl > 0:
                 wins += 1
         return wins * 100.0 / len(closed)
 
-    def total_pnl_by_user(self, user_id: Optional[str]) -> float:
-        items = self.list_filtered(user_id=user_id)
-        closed = [r for r in items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
-        s = 0.0
-        for r in closed:
-            s += self._pnl_percent(getattr(r.side, "value", r.side), float(getattr(r.entry, "value", r.entry)), float(r.exit_price))
-        return s
-
-    def pnl_curve(self, items: Iterable) -> List[Tuple[str, float]]:
+    def pnl_curve_for_user(self, user_id: Union[int, str]) -> List[Tuple[str, float]]:
+        """
+        Cumulative PnL% over time (by closed_at day) for a specific user.
+        Returns list of (YYYY-MM-DD, cumulative_pnl_percent).
+        """
+        uid = self._to_int_user_id(user_id)
+        items = self.repo.list_all_for_user(user_id=uid)
         closed = [r for r in items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None and r.closed_at]
         closed.sort(key=lambda r: r.closed_at)
-        curve, c = [], 0.0
+
+        curve, cumulative = [], 0.0
         for r in closed:
-            pnl = self._pnl_percent(getattr(r.side, "value", r.side), float(getattr(r.entry, "value", r.entry)), float(r.exit_price))
-            c += pnl
+            side = self._val(r.side, "value", r.side)
+            entry = float(self._val(r.entry, "value", r.entry) or 0)
+            exit_price = float(r.exit_price or 0)
+            pnl = self._pnl_percent(side, entry, exit_price)
+            cumulative += pnl
             day = r.closed_at.strftime("%Y-%m-%d")
-            curve.append((day, c))
+            curve.append((day, cumulative))
         return curve
 
-    def summary_by_market(self, items: Iterable) -> Dict[str, Dict[str, float]]:
+    def summary_by_market_for_user(self, user_id: Union[int, str]) -> Dict[str, Dict[str, float]]:
+        """
+        Grouped stats by market for a specific user:
+          { market: { count, win_rate, sum_pnl } }
+        """
+        uid = self._to_int_user_id(user_id)
+        items = self.repo.list_all_for_user(user_id=uid)
+
         buckets: Dict[str, List] = {}
         for r in items:
-            m = str(getattr(getattr(r, "market", None), "value", getattr(r, "market", "Unknown")))
+            m = str(self._val(self._val(r, "market"), "value", getattr(r, "market", "Unknown")))
             buckets.setdefault(m, []).append(r)
+
         out: Dict[str, Dict[str, float]] = {}
         for m, arr in buckets.items():
-            out[m] = {
-                "count": float(len(arr)),
-                "win_rate": self.win_rate(arr),
-                "sum_pnl": sum(
-                    self._pnl_percent(getattr(x.side, "value", x.side), float(getattr(x.entry, "value", x.entry)), float(getattr(x, "exit_price", 0) or 0))
-                    for x in arr if x.status == RecommendationStatus.CLOSED and x.exit_price is not None
-                ),
-            }
+            # win-rate within bucket
+            closed = [x for x in arr if x.status == RecommendationStatus.CLOSED and x.exit_price is not None]
+            wr = 0.0
+            if closed:
+                wins = 0
+                for x in closed:
+                    side = self._val(x.side, "value", x.side)
+                    entry = float(self._val(x.entry, "value", x.entry) or 0)
+                    exit_price = float(x.exit_price or 0)
+                    if self._pnl_percent(side, entry, exit_price) > 0:
+                        wins += 1
+                wr = wins * 100.0 / len(closed)
+
+            sum_pnl = sum(
+                self._pnl_percent(
+                    self._val(x.side, "value", x.side),
+                    float(self._val(x.entry, "value", x.entry) or 0),
+                    float(getattr(x, "exit_price", 0) or 0),
+                )
+                for x in closed
+            )
+            out[m] = {"count": float(len(arr)), "win_rate": wr, "sum_pnl": sum_pnl}
         return out
 
-    def rr_actual(self, r) -> Optional[float]:
-        try:
-            side = getattr(r.side, "value", r.side)
-            entry = float(getattr(r.entry, "value", r.entry))
-            sl    = float(getattr(r.stop_loss, "value", r.stop_loss))
-            tps   = list(getattr(r.targets, "values", r.targets or []))
-            tp1   = float(tps[0]) if tps else None
-            base_rr = self._rr(entry, sl, tp1, side)
-            if r.exit_price is None or base_rr is None:
-                return None
-            reward = abs((r.exit_price - entry)) if side.upper()=="LONG" else abs((entry - r.exit_price))
-            risk   = abs(entry - sl)
-            if risk <= 0: return None
-            rr = reward / risk
-            return rr if isfinite(rr) else None
-        except Exception:
-            return None
-    
-    def performance_summary(self) -> Dict[str, Any]:
+    def performance_summary_for_user(self, user_id: Union[int, str]) -> Dict[str, Any]:
         """
-        تجمع ملخصًا شاملاً للأداء العام.
+        Comprehensive performance summary for a specific user.
         """
-        all_items = self.repo.list_all()
+        uid = self._to_int_user_id(user_id)
+        all_items = self.repo.list_all_for_user(user_id=uid)
         closed_items = [r for r in all_items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
         open_items = [r for r in all_items if r.status != RecommendationStatus.CLOSED]
-        
+
         total_pnl = sum(
             self._pnl_percent(
-                getattr(r.side, "value", r.side), 
-                float(getattr(r.entry, "value", r.entry)), 
-                float(r.exit_price)
-            ) for r in closed_items
+                self._val(r.side, "value", r.side),
+                float(self._val(r.entry, "value", r.entry) or 0),
+                float(r.exit_price or 0),
+            )
+            for r in closed_items
         )
 
         return {
             "total_recommendations": len(all_items),
             "open_recommendations": len(open_items),
             "closed_recommendations": len(closed_items),
-            "overall_win_rate": f"{self.win_rate(closed_items):.2f}%",
+            "overall_win_rate": f"{self.win_rate_for_user(uid):.2f}%",
+            "total_pnl_percent": f"{total_pnl:.2f}%",
+        }
+
+    # ---------------------------
+    # Legacy/global (deprecated) — أبقيناها لتفادي كسر الاستدعاءات القديمة
+    # ---------------------------
+    def performance_summary(self) -> Dict[str, Any]:
+        """[Deprecated] Global summary (غير مقيّد بمستخدم)."""
+        all_items = self.repo.list_all()
+        closed_items = [r for r in all_items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
+        open_items = [r for r in all_items if r.status != RecommendationStatus.CLOSED]
+
+        def _p(r) -> float:
+            return self._pnl_percent(
+                self._val(r.side, "value", r.side),
+                float(self._val(r.entry, "value", r.entry) or 0),
+                float(r.exit_price or 0),
+            )
+
+        total_pnl = sum(_p(r) for r in closed_items)
+        # إعادة استخدام win_rate_for_user غير ممكن هنا لعدم وجود user_id
+        wr = 0.0
+        if closed_items:
+            wins = sum(1 for r in closed_items if _p(r) > 0)
+            wr = wins * 100.0 / len(closed_items)
+
+        return {
+            "total_recommendations": len(all_items),
+            "open_recommendations": len(open_items),
+            "closed_recommendations": len(closed_items),
+            "overall_win_rate": f"{wr:.2f}%",
             "total_pnl_percent": f"{total_pnl:.2f}%",
         }
 # --- END OF FILE ---
