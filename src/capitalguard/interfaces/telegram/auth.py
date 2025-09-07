@@ -1,4 +1,4 @@
-// --- START: src/capitalguard/interfaces/telegram/auth.py ---
+#// --- START: src/capitalguard/interfaces/telegram/auth.py ---
 from telegram import Update
 from telegram.ext.filters import BaseFilter
 from capitalguard.infrastructure.db.repository import RecommendationRepository
@@ -28,4 +28,4 @@ class _DatabaseAuthFilter(BaseFilter):
 
 # Create a single instance of the filter to be used across the application.
 ALLOWED_USER_FILTER = _DatabaseAuthFilter()
-// --- END: src/capitalguard/interfaces/telegram/auth.py ---
+#// --- END: src/capitalguard/interfaces/telegram/auth.py ---
