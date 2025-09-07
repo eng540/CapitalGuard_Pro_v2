@@ -3,7 +3,7 @@ from typing import List, Optional, Any, Union
 
 import sqlalchemy as sa
 from sqlalchemy import or_
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, Session
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
@@ -13,6 +13,72 @@ from .base import SessionLocal
 log = logging.getLogger(__name__)
 
 
+# =========================
+# User Repository (scoped)
+# =========================
+class UserRepository:
+    """
+    مستودع بسيط للتعامل مع مستخدمين تيليجرام داخل جلسة واحدة.
+    """
+    def __init__(self, session: Session):
+        self.session = session
+
+    def find_by_telegram_id(self, telegram_id: int) -> Optional[User]:
+        return (
+            self.session.query(User)
+            .filter(User.telegram_user_id == telegram_id)
+            .first()
+        )
+
+    def find_or_create(self, telegram_id: int, **kwargs) -> User:
+        """
+        - يبقي hashed_password = NULL (مطابق للمخطط الجديد).
+        - يملأ email بقيمة placeholder كي يحترم UNIQUE/NOT NULL.
+        - يحدث first_name و user_type إن تم تمريرها.
+        """
+        user = self.find_by_telegram_id(telegram_id)
+        placeholder_email = kwargs.get("email") or f"tg{telegram_id}@telegram.local"
+
+        if user:
+            changed = False
+            if not getattr(user, "email", None):
+                user.email = placeholder_email
+                changed = True
+            ut = kwargs.get("user_type")
+            if ut and getattr(user, "user_type", None) != ut:
+                user.user_type = ut
+                changed = True
+            if getattr(user, "is_active", True) is False:
+                user.is_active = True
+                changed = True
+            fn = kwargs.get("first_name")
+            if fn is not None and getattr(user, "first_name", None) != fn:
+                user.first_name = fn
+                changed = True
+
+            if changed:
+                self.session.commit()
+                self.session.refresh(user)
+            return user
+
+        log.info("Creating new user for telegram_id=%s", telegram_id)
+        new_user = User(
+            telegram_user_id=telegram_id,
+            email=placeholder_email,
+            user_type=kwargs.get("user_type") or "trader",
+            is_active=True,
+            first_name=kwargs.get("first_name"),
+            # hashed_password => NULL by default (nullable=True)
+        )
+        self.session.add(new_user)
+        self.session.commit()
+        self.session.refresh(new_user)
+        return new_user
+
+
+# =========================
+# Recommendation Repository
+# =========================
 class RecommendationRepository:
     # -------------------------
     # Helpers
@@ -27,11 +93,6 @@ class RecommendationRepository:
     @staticmethod
     def _as_telegram_str(user_id: Optional[Union[int, str]]) -> Optional[str]:
         return None if user_id is None else str(user_id)
-
-    @staticmethod
-    def _placeholder_email(telegram_id: int) -> str:
-        """Unique placeholder email to satisfy NOT NULL/UNIQUE constraints."""
-        return f"tg{telegram_id}@telegram.local"
 
     def _to_entity(self, row: RecommendationORM) -> Recommendation:
         """
@@ -70,66 +131,6 @@ class RecommendationRepository:
         )
 
     # -------------------------
-    # Users
-    # -------------------------
-    def find_or_create_user(self, telegram_id: int, **kwargs) -> User:
-        """
-        Find a user by telegram_user_id or create if missing.
-        Only touches columns that exist in the DB schema:
-          - email (NOT NULL, UNIQUE)
-          - telegram_user_id (UNIQUE)
-          - user_type
-          - is_active (optional)
-          - first_name (optional)
-        Extra kwargs (username/last_name...) are ignored safely.
-        """
-        with SessionLocal() as s:
-            user: Optional[User] = (
-                s.query(User).filter(User.telegram_user_id == telegram_id).first()
-            )
-            placeholder_email = kwargs.get("email") or self._placeholder_email(telegram_id)
-
-            if user:
-                changed = False
-                # backfill email if missing/empty
-                if not getattr(user, "email", None):
-                    user.email = placeholder_email
-                    changed = True
-                # optional user_type update
-                ut = kwargs.get("user_type")
-                if ut and getattr(user, "user_type", None) != ut:
-                    user.user_type = ut
-                    changed = True
-                # ensure is_active
-                if getattr(user, "is_active", True) is False:
-                    user.is_active = True
-                    changed = True
-                # optional first_name
-                fn = kwargs.get("first_name")
-                if fn is not None and getattr(user, "first_name", None) != fn:
-                    user.first_name = fn
-                    changed = True
-
-                if changed:
-                    s.commit()
-                    s.refresh(user)
-                return user
-
-            log.info("Creating new user for telegram_id=%s", telegram_id)
-            new_user = User(
-                telegram_user_id=telegram_id,
-                email=placeholder_email,
-                user_type=(kwargs.get("user_type") or "trader"),
-                is_active=True,
-                first_name=kwargs.get("first_name"),
-                # hashed_password is nullable by migration; do not pass => stays NULL
-            )
-            s.add(new_user)
-            s.commit()
-            s.refresh(new_user)
-            return new_user
-
-    # -------------------------
     # Create
     # -------------------------
     def add(self, rec: Recommendation) -> Recommendation:
@@ -142,8 +143,9 @@ class RecommendationRepository:
 
         with SessionLocal() as s:
             try:
-                # Ensure the owner exists; map to FK
-                user = self.find_or_create_user(int(rec.user_id))
+                user_repo = UserRepository(s)
+                # نضمن وجود المالك (حتى لو ما استعمل /start)
+                user = user_repo.find_or_create(int(rec.user_id))
 
                 row = RecommendationORM(
                     user_id=user.id,
@@ -164,7 +166,7 @@ class RecommendationRepository:
                 )
                 s.add(row)
                 s.commit()
-                # Preload relation for correct domain.user_id
+                # تأكد من تحميل العلاقة user قبل التحويل إلى الدومين
                 s.refresh(row)
                 s.refresh(row, attribute_names=["user"])
                 return self._to_entity(row)
@@ -179,7 +181,10 @@ class RecommendationRepository:
     def get_by_id_for_user(self, rec_id: int, user_telegram_id: Union[int, str]) -> Optional[Recommendation]:
         """Get a specific recommendation owned by the given Telegram user."""
         with SessionLocal() as s:
-            user = self.find_or_create_user(int(user_telegram_id))
+            user_repo = UserRepository(s)
+            user = user_repo.find_by_telegram_id(int(user_telegram_id))
+            if not user:
+                return None
             row = (
                 s.query(RecommendationORM)
                 .options(joinedload(RecommendationORM.user))
@@ -197,7 +202,11 @@ class RecommendationRepository:
     ) -> List[Recommendation]:
         """List open (PENDING/ACTIVE) recommendations scoped to a Telegram user with optional filters."""
         with SessionLocal() as s:
-            user = self.find_or_create_user(int(user_telegram_id))
+            user_repo = UserRepository(s)
+            user = user_repo.find_by_telegram_id(int(user_telegram_id))
+            if not user:
+                return []
+
             q = (
                 s.query(RecommendationORM)
                 .options(joinedload(RecommendationORM.user))
@@ -234,7 +243,11 @@ class RecommendationRepository:
     ) -> List[Recommendation]:
         """List all recommendations for a Telegram user with optional filters."""
         with SessionLocal() as s:
-            user = self.find_or_create_user(int(user_telegram_id))
+            user_repo = UserRepository(s)
+            user = user_repo.find_by_telegram_id(int(user_telegram_id))
+            if not user:
+                return []
+
             q = (
                 s.query(RecommendationORM)
                 .options(joinedload(RecommendationORM.user))
@@ -258,7 +271,6 @@ class RecommendationRepository:
     def get(self, rec_id: int) -> Optional[Recommendation]:
         """Admin/global fetch by id (not scoped)."""
         with SessionLocal() as s:
-            # استخدم query + joinedload لضمان تحميل العلاقة
             row = (
                 s.query(RecommendationORM)
                 .options(joinedload(RecommendationORM.user))
@@ -332,7 +344,10 @@ class RecommendationRepository:
             try:
                 q = s.query(RecommendationORM).options(joinedload(RecommendationORM.user))
                 if rec.user_id:
-                    user = self.find_or_create_user(int(rec.user_id))
+                    user_repo = UserRepository(s)
+                    user = user_repo.find_by_telegram_id(int(rec.user_id))
+                    if not user:
+                        raise ValueError("Owner user not found.")
                     q = q.filter(RecommendationORM.id == rec.id, RecommendationORM.user_id == user.id)
                 else:
                     q = q.filter(RecommendationORM.id == rec.id)
@@ -373,7 +388,10 @@ class RecommendationRepository:
     def get_recent_assets_for_user(self, user_telegram_id: Union[str, int], limit: int = 5) -> List[str]:
         """Return most recently used unique assets for a Telegram user."""
         with SessionLocal() as s:
-            user = self.find_or_create_user(int(user_telegram_id))
+            user_repo = UserRepository(s)
+            user = user_repo.find_by_telegram_id(int(user_telegram_id))
+            if not user:
+                return []
             subq = (
                 s.query(
                     RecommendationORM.asset,
