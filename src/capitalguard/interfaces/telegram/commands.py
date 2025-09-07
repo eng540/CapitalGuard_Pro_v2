@@ -12,7 +12,6 @@ from .keyboards import build_open_recs_keyboard
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.domain.entities import RecommendationStatus, Side
 
 # Conversation steps (إن كنت تستخدم محادثة إنشاء التوصية)
 (CHOOSE_METHOD, QUICK_COMMAND, TEXT_EDITOR) = range(3)
@@ -139,7 +138,6 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ملخص أداء المستخدم الشخصي."""
     analytics_service: AnalyticsService = get_service(context, "analytics_service")
     user_id_str = str(update.effective_user.id)
-    # تحتاج لتوفير هذه الدالة داخل AnalyticsService
     stats = analytics_service.performance_summary_for_user(user_id_str)
     text = build_analyst_stats_text(stats)
     await update.message.reply_html(text)
