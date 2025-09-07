@@ -80,10 +80,13 @@ class RecommendationRepository:
           - telegram_user_id (UNIQUE)
           - user_type
           - is_active (optional)
-        Any extra kwargs (username/first_name/last_name...) are ignored safely.
+          - first_name (optional)
+        Extra kwargs (username/last_name...) are ignored safely.
         """
         with SessionLocal() as s:
-            user: Optional[User] = s.query(User).filter(User.telegram_user_id == telegram_id).first()
+            user: Optional[User] = (
+                s.query(User).filter(User.telegram_user_id == telegram_id).first()
+            )
             placeholder_email = kwargs.get("email") or self._placeholder_email(telegram_id)
 
             if user:
@@ -92,14 +95,19 @@ class RecommendationRepository:
                 if not getattr(user, "email", None):
                     user.email = placeholder_email
                     changed = True
-                # update user_type if provided (and different)
+                # optional user_type update
                 ut = kwargs.get("user_type")
                 if ut and getattr(user, "user_type", None) != ut:
                     user.user_type = ut
                     changed = True
-                # optionally ensure is_active True
+                # ensure is_active
                 if getattr(user, "is_active", True) is False:
                     user.is_active = True
+                    changed = True
+                # optional first_name
+                fn = kwargs.get("first_name")
+                if fn is not None and getattr(user, "first_name", None) != fn:
+                    user.first_name = fn
                     changed = True
 
                 if changed:
@@ -107,13 +115,14 @@ class RecommendationRepository:
                     s.refresh(user)
                 return user
 
-            # Create new user – ONLY pass known columns
             log.info("Creating new user for telegram_id=%s", telegram_id)
             new_user = User(
                 telegram_user_id=telegram_id,
                 email=placeholder_email,
                 user_type=(kwargs.get("user_type") or "trader"),
-                is_active=True,  # exists in your DB schema; keep it True by default
+                is_active=True,
+                first_name=kwargs.get("first_name"),
+                # hashed_password is nullable by migration; do not pass => stays NULL
             )
             s.add(new_user)
             s.commit()
@@ -247,11 +256,14 @@ class RecommendationRepository:
     # Read (global) — لأغراض إدارية إن لزم
     # -------------------------
     def get(self, rec_id: int) -> Optional[Recommendation]:
+        """Admin/global fetch by id (not scoped)."""
         with SessionLocal() as s:
+            # استخدم query + joinedload لضمان تحميل العلاقة
             row = (
                 s.query(RecommendationORM)
                 .options(joinedload(RecommendationORM.user))
-                .get(rec_id)
+                .filter(RecommendationORM.id == rec_id)
+                .first()
             )
             return self._to_entity(row) if row else None
 
@@ -291,6 +303,7 @@ class RecommendationRepository:
             return [self._to_entity(r) for r in rows]
 
     def list_all(self, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
+        """Global all list with optional filters (admin/ops)."""
         with SessionLocal() as s:
             q = s.query(RecommendationORM).options(joinedload(RecommendationORM.user))
             if symbol:
