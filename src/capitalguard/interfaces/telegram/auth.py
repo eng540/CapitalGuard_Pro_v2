@@ -1,31 +1,50 @@
-#// --- START: src/capitalguard/interfaces/telegram/auth.py ---
+# --- START OF FILE: src/capitalguard/interfaces/telegram/auth.py ---
+import logging
 from telegram import Update
 from telegram.ext.filters import BaseFilter
+
 from capitalguard.infrastructure.db.repository import RecommendationRepository
+
+log = logging.getLogger(__name__)
+
 
 class _DatabaseAuthFilter(BaseFilter):
     """
-    A custom filter that checks if a user is registered in the database.
-    This replaces the old, static environment variable check.
+    DB-only authentication filter.
+
+    السلوك:
+      - عند أول تفاعل لأي مستخدم، يتم إنشاء سجل له في جدول User (إن لم يكن موجودًا).
+      - بعدها يعتبر مسموحًا له استخدام الأوامر/المع_handlers.
+      - لا يوجد اعتماد على قوائم ثابتة من .env.
+
+    ملاحظات:
+      - إن أردت لاحقًا فرض سياسة سماح/منع من قاعدة البيانات نفسها (مثلاً حقل is_active أو role)،
+        أضف التحقق هنا بعد استرجاع المستخدم.
     """
-    def __init__(self):
-        super().__init__(name='DB_Auth_Filter')
-        # We can use any repository to get a user, RecommendationRepository has the needed method.
+
+    def __init__(self) -> None:
+        super().__init__(name="DB_Auth_Filter")
         self.repo = RecommendationRepository()
 
-    def filter(self, update: Update) -> bool:
-        """
-        The core logic of the filter. It's called for each incoming update.
-        """
-        if not update.effective_user:
+    def filter(self, update: Update) -> bool:  # type: ignore[override]
+        # حماية من التحديثات التي لا تحمل مستخدمًا (مثلاً بعض أنواع الـ callbacks النادرة)
+        if not update or not getattr(update, "effective_user", None):
+            log.debug("DB_Auth_Filter: No effective_user on update; rejecting.")
             return False
-        
-        user_id = update.effective_user.id
-        # find_or_create_user will return the user, guaranteeing they exist.
-        # This filter now simply ensures a user record is present for every interaction.
-        user = self.repo.find_or_create_user(user_id)
-        return user is not None
 
-# Create a single instance of the filter to be used across the application.
+        tg_user = update.effective_user
+        tg_id = tg_user.id
+
+        try:
+            # يضمن وجود المستخدم (إنشاء عند أول مرة)
+            self.repo.find_or_create_user(tg_id)
+            return True
+        except Exception as e:
+            # في حال فشل الوصول لقاعدة البيانات، ارفض الطلب وسجل الخطأ
+            log.error("DB_Auth_Filter: DB error while ensuring user %s: %s", tg_id, e, exc_info=True)
+            return False
+
+
+# أنشئ مثيلًا عامًا يُستخدم في تعريف الـ handlers
 ALLOWED_USER_FILTER = _DatabaseAuthFilter()
-#// --- END: src/capitalguard/interfaces/telegram/auth.py ---
+# --- END OF FILE ---
