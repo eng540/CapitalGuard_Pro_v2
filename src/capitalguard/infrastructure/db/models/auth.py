@@ -1,9 +1,9 @@
+# --- START OF FILE: src/capitalguard/infrastructure/db/models/auth.py ---
 from sqlalchemy import (
     Column, Integer, String, BigInteger, DateTime,
-    ForeignKey, UniqueConstraint, Boolean, func
+    ForeignKey, UniqueConstraint, func, Boolean
 )
 from sqlalchemy.orm import relationship
-
 from .base import Base
 
 
@@ -12,56 +12,38 @@ class User(Base):
 
     id = Column(Integer, primary_key=True)
 
-    # ✅ مطابق لِمخطط Railway
-    email = Column(String(255), unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=True)  # تيليجرام فقط = قد يكون None
-    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    # ✅ مطابق لجدول قاعدة البيانات
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=True)  # صار يقبل NULL
+    is_active = Column(Boolean, default=True, nullable=False)
 
-    telegram_user_id = Column(BigInteger, unique=True, index=True, nullable=False)
+    telegram_user_id = Column(BigInteger, unique=True, nullable=False, index=True)
     user_type = Column(String(50), nullable=False, default="trader", server_default="trader")
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    # علاقات
-    recommendations = relationship(
-        "RecommendationORM",
-        back_populates="user",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-    roles = relationship(
-        "UserRole",
-        back_populates="user",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
+    # ✅ جديد: first_name (ممكن يكون NULL)
+    first_name = Column(String, nullable=True)
 
-    def __repr__(self) -> str:
-        return f"<User id={self.id} tg={self.telegram_user_id} email='{self.email}'>"
+    roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
+    recommendations = relationship("RecommendationORM", back_populates="user", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<User(id={self.id}, email='{self.email}', telegram_id={self.telegram_user_id})>"
 
 
 class Role(Base):
     __tablename__ = "roles"
-
     id = Column(Integer, primary_key=True)
     name = Column(String(64), unique=True, nullable=False)
-
-    def __repr__(self) -> str:
-        return f"<Role id={self.id} name='{self.name}'>"
 
 
 class UserRole(Base):
     __tablename__ = "user_roles"
-
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role_id = Column(Integer, ForeignKey("roles.id", ondelete="CASCADE"), nullable=False)
 
     user = relationship("User", back_populates="roles")
     role = relationship("Role")
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "role_id", name="uq_user_role"),
-    )
-
-    def __repr__(self) -> str:
-        return f"<UserRole user_id={self.user_id} role_id={self.role_id}>"
+    __table_args__ = (UniqueConstraint("user_id", "role_id", name="uq_user_role"),)
+# --- END OF FILE ---
