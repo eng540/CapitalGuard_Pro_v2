@@ -1,4 +1,4 @@
-// --- START: src/capitalguard/infrastructure/db/repository.py ---
+#// --- START: src/capitalguard/infrastructure/db/repository.py ---
 import logging
 from typing import List, Optional
 from sqlalchemy import or_
@@ -133,4 +133,4 @@ class RecommendationRepository:
             s.refresh(row)
             return self._to_entity(row)
 }
-// --- END: src/capitalguard/infrastructure/db/repository.py ---
+#/ --- END: src/capitalguard/infrastructure/db/repository.py ---
