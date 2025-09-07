@@ -1,6 +1,6 @@
 # --- START OF FILE: src/capitalguard/infrastructure/db/repository.py ---
 import logging
-from typing import List, Optional, Any, Tuple, Union
+from typing import List, Optional, Any, Union
 
 import sqlalchemy as sa
 from sqlalchemy import or_
@@ -20,29 +20,29 @@ class RecommendationRepository:
     # -------------------------
     @staticmethod
     def _coerce_enum(value: Any, enum_cls):
-        """Return enum value if already enum, else cast from raw value/string."""
+        """Return enum if already one, else cast from raw value/string."""
         if isinstance(value, enum_cls):
             return value
         return enum_cls(value)
 
     @staticmethod
     def _as_telegram_str(user_id: Optional[Union[int, str]]) -> Optional[str]:
-        if user_id is None:
-            return None
-        return str(user_id)
+        return None if user_id is None else str(user_id)
+
+    @staticmethod
+    def _placeholder_email(telegram_id: int) -> str:
+        """Unique placeholder email to satisfy NOT NULL/UNIQUE constraints."""
+        return f"tg{telegram_id}@telegram.local"
 
     def _to_entity(self, row: RecommendationORM) -> Recommendation:
         """
         Map ORM row -> Domain entity.
-        Ensures:
-          - status/order_type/side coerced to Enums
-          - user_id in domain = Telegram ID (string), not FK int
+        Ensures domain.user_id is the Telegram ID (string) when relation is loaded.
         """
         status = self._coerce_enum(row.status, RecommendationStatus)
         order_type = self._coerce_enum(row.order_type, OrderType)
         side = self._coerce_enum(row.side, Side)
 
-        # إذا تم تحميل العلاقة، نعيد telegram_user_id، وإلا None
         telegram_user_id = None
         if getattr(row, "user", None) is not None:
             telegram_user_id = self._as_telegram_str(row.user.telegram_user_id)
@@ -74,14 +74,42 @@ class RecommendationRepository:
     # Users
     # -------------------------
     def find_or_create_user(self, telegram_id: int, **kwargs) -> User:
-        """Find a user by telegram_user_id or create if missing."""
+        """
+        Find a user by telegram_user_id or create if missing.
+        Always provides a placeholder email to satisfy NOT NULL constraints.
+        kwargs may include: username, first_name, last_name, email, user_type
+        """
         with SessionLocal() as s:
-            user = s.query(User).filter(User.telegram_user_id == telegram_id).first()
+            user: Optional[User] = (
+                s.query(User).filter(User.telegram_user_id == telegram_id).first()
+            )
+            placeholder_email = kwargs.get("email") or self._placeholder_email(telegram_id)
+
             if user:
+                # Backfill email and light profile fields if missing
+                changed = False
+                if not getattr(user, "email", None):
+                    user.email = placeholder_email
+                    changed = True
+                for attr in ("username", "first_name", "last_name", "user_type"):
+                    val = kwargs.get(attr)
+                    if val and getattr(user, attr, None) != val:
+                        setattr(user, attr, val)
+                        changed = True
+                if changed:
+                    s.commit()
+                    s.refresh(user)
                 return user
 
-            log.info("Creating new user for telegram_id: %s", telegram_id)
-            new_user = User(telegram_user_id=telegram_id, **kwargs)
+            log.info("Creating new user for telegram_id=%s", telegram_id)
+            new_user = User(
+                telegram_user_id=telegram_id,
+                email=placeholder_email,
+                user_type=kwargs.get("user_type") or "trader",
+                username=kwargs.get("username"),
+                first_name=kwargs.get("first_name"),
+                last_name=kwargs.get("last_name"),
+            )
             s.add(new_user)
             s.commit()
             s.refresh(new_user)
@@ -93,21 +121,20 @@ class RecommendationRepository:
     def add(self, rec: Recommendation) -> Recommendation:
         """
         Adds a new Recommendation.
-        Requirements:
-          - rec.user_id must be a Telegram ID (string/int), we map to FK(User.id)
+        Requires rec.user_id to be a Telegram ID (string/int), which we map to FK(User.id).
         """
         if not rec.user_id or not str(rec.user_id).isdigit():
             raise ValueError("A valid user_id (Telegram ID) is required to create a recommendation.")
 
         with SessionLocal() as s:
             try:
-                # Ensure User exists and get FK
+                # Ensure the owner exists; map to FK
                 user = self.find_or_create_user(int(rec.user_id))
 
                 row = RecommendationORM(
-                    user_id=user.id,  # FK integer
+                    user_id=user.id,
                     asset=rec.asset.value,
-                    side=rec.side.value,
+                    side=self._coerce_enum(rec.side, Side).value,
                     entry=rec.entry.value,
                     stop_loss=rec.stop_loss.value,
                     targets=rec.targets.values,
@@ -123,7 +150,7 @@ class RecommendationRepository:
                 )
                 s.add(row)
                 s.commit()
-                # Load user relation for _to_entity to export telegram_user_id
+                # Preload relation for correct domain.user_id
                 s.refresh(row)
                 s.refresh(row, attribute_names=["user"])
                 return self._to_entity(row)
@@ -136,7 +163,7 @@ class RecommendationRepository:
     # Read (scoped to user)
     # -------------------------
     def get_by_id_for_user(self, rec_id: int, user_telegram_id: Union[int, str]) -> Optional[Recommendation]:
-        """Get one recommendation if it belongs to the specified Telegram user."""
+        """Get a specific recommendation owned by the given Telegram user."""
         with SessionLocal() as s:
             user = self.find_or_create_user(int(user_telegram_id))
             row = (
@@ -212,7 +239,7 @@ class RecommendationRepository:
             return [self._to_entity(r) for r in rows]
 
     # -------------------------
-    # Read (global) — اختياري إن كنت تحتاجها لإدارة عامة
+    # Read (global) — لأغراض إدارية إن لزم
     # -------------------------
     def get(self, rec_id: int) -> Optional[Recommendation]:
         with SessionLocal() as s:
@@ -229,7 +256,7 @@ class RecommendationRepository:
         side: Optional[str] = None,
         status: Optional[str] = None,
     ) -> List[Recommendation]:
-        """Global: open recommendations with optional filters (admin/ops contexts)."""
+        """Global open list with optional filters (admin/ops)."""
         with SessionLocal() as s:
             q = (
                 s.query(RecommendationORM)
@@ -278,33 +305,26 @@ class RecommendationRepository:
     def update(self, rec: Recommendation) -> Recommendation:
         """
         Update an existing recommendation.
-        Requires:
-          - rec.id
-          - rec.user_id (Telegram) if تريد حماية النطاق للمستخدم
+        If rec.user_id is provided, we enforce ownership (Telegram user).
         """
         if rec.id is None:
             raise ValueError("Recommendation ID is required for update")
 
         with SessionLocal() as s:
             try:
-                # حماية النطاق (اختيارية لكن مفيدة في البوت)
-                row_query = s.query(RecommendationORM).options(joinedload(RecommendationORM.user))
+                q = s.query(RecommendationORM).options(joinedload(RecommendationORM.user))
                 if rec.user_id:
                     user = self.find_or_create_user(int(rec.user_id))
-                    row_query = row_query.filter(
-                        RecommendationORM.id == rec.id,
-                        RecommendationORM.user_id == user.id,
-                    )
+                    q = q.filter(RecommendationORM.id == rec.id, RecommendationORM.user_id == user.id)
                 else:
-                    row_query = row_query.filter(RecommendationORM.id == rec.id)
+                    q = q.filter(RecommendationORM.id == rec.id)
 
-                row = row_query.first()
+                row = q.first()
                 if not row:
                     raise ValueError(f"Recommendation #{rec.id} not found or not owned by the user")
 
-                # Update fields (full sync with domain)
                 row.asset = rec.asset.value
-                row.side = rec.side.value
+                row.side = self._coerce_enum(rec.side, Side).value
                 row.entry = rec.entry.value
                 row.stop_loss = rec.stop_loss.value
                 row.targets = rec.targets.values
@@ -315,7 +335,7 @@ class RecommendationRepository:
                 row.published_at = rec.published_at
                 row.market = rec.market
                 row.notes = rec.notes
-                # لا نسمح بتغيير الملكية هنا (user_id) حفاظًا على النزاهة
+                # لا نغيّر المالك هنا
                 row.exit_price = rec.exit_price
                 row.activated_at = rec.activated_at
                 row.closed_at = rec.closed_at
