@@ -73,46 +73,53 @@ class RecommendationRepository:
     # Users
     # -------------------------
     def find_or_create_user(self, telegram_id: int, **kwargs) -> User:
-        """
-        Find a user by telegram_user_id or create if missing.
-        Always provides a placeholder email to satisfy NOT NULL constraints.
-        kwargs may include: username, first_name, last_name, email, user_type
-        """
-        with SessionLocal() as s:
-            user: Optional[User] = (
-                s.query(User).filter(User.telegram_user_id == telegram_id).first()
-            )
-            placeholder_email = kwargs.get("email") or self._placeholder_email(telegram_id)
+    """
+    Find a user by telegram_user_id or create if missing.
+    Only touches columns that exist in the DB schema:
+      - email (NOT NULL, UNIQUE)
+      - telegram_user_id (UNIQUE)
+      - user_type
+      - is_active (optional)
+    Any extra kwargs (username/first_name/last_name...) are ignored safely.
+    """
+    with SessionLocal() as s:
+        user: Optional[User] = s.query(User).filter(User.telegram_user_id == telegram_id).first()
+        placeholder_email = kwargs.get("email") or self._placeholder_email(telegram_id)
 
-            if user:
-                # Backfill email and light profile fields if missing
-                changed = False
-                if not getattr(user, "email", None):
-                    user.email = placeholder_email
-                    changed = True
-                for attr in ("username", "first_name", "last_name", "user_type"):
-                    val = kwargs.get(attr)
-                    if val and getattr(user, attr, None) != val:
-                        setattr(user, attr, val)
-                        changed = True
-                if changed:
-                    s.commit()
-                    s.refresh(user)
-                return user
+        if user:
+            changed = False
+            # backfill email if missing/empty
+            if not getattr(user, "email", None):
+                user.email = placeholder_email
+                changed = True
+            # update user_type if provided (and different)
+            ut = kwargs.get("user_type")
+            if ut and getattr(user, "user_type", None) != ut:
+                user.user_type = ut
+                changed = True
+            # optionally ensure is_active True
+            if getattr(user, "is_active", True) is False:
+                user.is_active = True
+                changed = True
 
-            log.info("Creating new user for telegram_id=%s", telegram_id)
-            new_user = User(
-                telegram_user_id=telegram_id,
-                email=placeholder_email,
-                user_type=kwargs.get("user_type") or "trader",
-                username=kwargs.get("username"),
-                first_name=kwargs.get("first_name"),
-                last_name=kwargs.get("last_name"),
-            )
-            s.add(new_user)
-            s.commit()
-            s.refresh(new_user)
-            return new_user
+            if changed:
+                s.commit()
+                s.refresh(user)
+            return user
+
+        # Create new user – ONLY pass known columns
+        log.info("Creating new user for telegram_id=%s", telegram_id)
+        new_user = User(
+            telegram_user_id=telegram_id,
+            email=placeholder_email,
+            user_type=(kwargs.get("user_type") or "trader"),
+            # is_active exists in your DB schema; keep it True by default
+            is_active=True,
+        )
+        s.add(new_user)
+        s.commit()
+        s.refresh(new_user)
+        return new_user
 
     # -------------------------
     # Create
