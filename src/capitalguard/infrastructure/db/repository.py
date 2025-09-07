@@ -1,4 +1,3 @@
-# --- START OF FILE: src/capitalguard/infrastructure/db/repository.py ---
 import logging
 from typing import List, Optional, Any, Union
 
@@ -236,7 +235,7 @@ class RecommendationRepository:
                     log.warning("Invalid status filter provided to list_all_for_user: %s", status)
 
             rows = q.order_by(RecommendationORM.created_at.desc()).all()
-            return [self._to_entity(r) for r in rows]
+            return [self._to_entity(r) for r] in rows]
 
     # -------------------------
     # Read (global) — لأغراض إدارية إن لزم
@@ -372,4 +371,3 @@ class RecommendationRepository:
                 .all()
             )
             return [r[0] for r in results]
-# --- END OF FILE ---
