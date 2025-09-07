@@ -2,7 +2,7 @@
 """Create users, roles and add multi-tenancy foundation
 
 Revision ID: 20250907_multi_tenancy_foundation
-Revises: 20250906_phase0_final
+Revises: 20250905_add_alert_meta
 Create Date: 2025-09-07 18:00:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 # revision identifiers, used by Alembic.
 revision = '20250907_multi_tenancy_foundation'
 # ⚠️ هام: تأكد من أن هذا يطابق revision ID لآخر ملف ترحيل لديك بالفعل
-down_revision = '20250906_phase0_final' 
+down_revision = '20250905_add_alert_meta'
 branch_labels = None
 depends_on = None
 
