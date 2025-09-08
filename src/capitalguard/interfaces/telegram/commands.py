@@ -121,9 +121,14 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Save the filter for pagination (إن كان لديك تنقّل صفحات)
     context.user_data["last_open_filters"] = filters
 
-    # استعلام مقيّد بالمستخدم
-    items = trade_service.repo.list_open_for_user(
-        user_telegram_id,
+    # ✅ استعلام مقيّد بالمستخدم الداخلي (user.id) لضمان العزل
+    with SessionLocal() as session:
+        user_repo = UserRepository(session)
+        user = user_repo.find_or_create(telegram_id=int(user_telegram_id))
+        db_user_id = user.id
+
+    items = trade_service.list_open_for_user_id(
+        db_user_id,
         symbol=filters.get("symbol"),
         side=filters.get("side"),
         status=filters.get("status"),
@@ -154,12 +159,18 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تصدير توصيات المستخدم فقط إلى CSV."""
+    """تصدير توصيات المستخدم فقط إلى CSV (مقيّدة بالمستخدم الداخلي)."""
     await update.message.reply_text("جاري تجهيز ملف التصدير...")
     trade_service: TradeService = get_service(context, "trade_service")
     user_telegram_id = update.effective_user.id
 
-    all_recs = trade_service.repo.list_all_for_user(user_telegram_id)
+    # ✅ اجلب user.id الداخلي أولاً
+    with SessionLocal() as session:
+        user_repo = UserRepository(session)
+        user = user_repo.find_or_create(telegram_id=int(user_telegram_id))
+        db_user_id = user.id
+
+    all_recs = trade_service.list_all_for_user_id(db_user_id)
     if not all_recs:
         await update.message.reply_text("لا توجد بيانات للتصدير.")
         return
@@ -300,4 +311,4 @@ def register_commands(app: Application):
 
     # ✅ أمر ربط القناة
     app.add_handler(CommandHandler("link_channel", link_channel_cmd, filters=ALLOWED_USER_FILTER))
-# --- END OF FILE ---
+# --- END OF FILE: src/capitalguard/interfaces/telegram/commands.py ---
