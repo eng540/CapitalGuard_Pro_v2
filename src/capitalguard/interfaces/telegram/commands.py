@@ -1,8 +1,10 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/commands.py ---
 import io
 import csv
+import logging
 from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, ContextTypes, CommandHandler
+from telegram.error import BadRequest
 
 from .helpers import get_service
 from .auth import ALLOWED_USER_FILTER
@@ -12,6 +14,12 @@ from .keyboards import build_open_recs_keyboard
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
+
+# ✅ مستودعات وإدارة جلسة DB لربط القنوات
+from capitalguard.infrastructure.db.base import SessionLocal
+from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+
+log = logging.getLogger(__name__)
 
 # Conversation steps (إن كنت تستخدم محادثة إنشاء التوصية)
 (CHOOSE_METHOD, QUICK_COMMAND, TEXT_EDITOR) = range(3)
@@ -75,7 +83,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/open [filter]</code> — عرض توصياتك المفتوحة (يمكن الفلترة بـ btc, long, short, pending, active).\n"
         "• <code>/stats</code> — ملخّص أدائك الشخصي.\n"
         "• <code>/export</code> — تصدير توصياتك.\n"
-        "• <code>/settings</code> — إدارة التفضيلات."
+        "• <code>/settings</code> — إدارة التفضيلات.\n"
+        "• <code>/link_channel @YourChannel</code> — ربط قناة تيليجرام بالنظام (يتطلب أن تكون أنت والبوت مسؤولين)."
     )
 
 
@@ -120,18 +129,17 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not items:
         await update.message.reply_text("✅ لا توجد توصيات مفتوحة تطابق الفلتر الحالي.")
-        return
+    else:
+        keyboard = build_open_recs_keyboard(items, current_page=1, price_service=price_service)
 
-    keyboard = build_open_recs_keyboard(items, current_page=1, price_service=price_service)
+        header_text = "<b>📊 لوحة قيادة توصياتك المفتوحة</b>"
+        if filter_text_parts:
+            header_text += f"\n<i>فلترة حسب: {', '.join(filter_text_parts)}</i>"
 
-    header_text = "<b>📊 لوحة قيادة توصياتك المفتوحة</b>"
-    if filter_text_parts:
-        header_text += f"\n<i>فلترة حسب: {', '.join(filter_text_parts)}</i>"
-
-    await update.message.reply_html(
-        f"{header_text}\nاختر توصية لعرض لوحة التحكم الخاصة بها:",
-        reply_markup=keyboard
-    )
+        await update.message.reply_html(
+            f"{header_text}\nاختر توصية لعرض لوحة التحكم الخاصة بها:",
+            reply_markup=keyboard
+        )
 
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -193,6 +201,73 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return CHOOSE_METHOD
 
 
+# ✅ جديد: أمر ربط القناة
+async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    يربط قناة عامة بالحساب الحالي:
+    الشروط:
+      - أن يكون البوت Admin في القناة
+      - أن يكون المستخدم مُرسل الأمر Admin/Creator في القناة
+    الاستخدام:
+      /link_channel @YourChannelUsername
+    """
+    user_id = update.effective_user.id
+    if not context.args:
+        await update.message.reply_html(
+            "<b>طريقة الاستخدام:</b>\n"
+            "1) أضف هذا البوت كمسؤول في قناتك العامة مع صلاحية النشر.\n"
+            "2) أرسل: <code>/link_channel @اسم_القناة</code>\n"
+            "مثال: <code>/link_channel @MySignalChannel</code>"
+        )
+        return
+
+    channel_username = context.args[0]
+    if not channel_username.startswith('@'):
+        await update.message.reply_text("❌ الخطأ: اسم القناة يجب أن يبدأ بـ '@'.")
+        return
+
+    await update.message.reply_text(f"⏳ جارِ محاولة ربط {channel_username} ...")
+
+    try:
+        # التحقق: البوت Admin في القناة
+        admins = await context.bot.get_chat_administrators(chat_id=channel_username)
+        bot_is_admin = any(admin.user.id == context.bot.id for admin in admins)
+        if not bot_is_admin:
+            await update.message.reply_text(f"❌ فشل: البوت ليس مسؤولاً في {channel_username}.")
+            return
+
+        # التحقق: المستخدم مُرسل الأمر Admin/Creator
+        user_is_admin = any(admin.user.id == user_id for admin in admins)
+        if not user_is_admin:
+            await update.message.reply_text(f"❌ فشل: لا تبدو مديرًا في {channel_username}.")
+            return
+
+        # الحصول على معرّف القناة
+        channel_chat = await context.bot.get_chat(chat_id=channel_username)
+        channel_id = channel_chat.id
+
+        # حفظ القناة في قاعدة البيانات
+        with SessionLocal() as session:
+            user_repo = UserRepository(session)
+            channel_repo = ChannelRepository(session)
+
+            user = user_repo.find_or_create(user_id)  # يضمن وجود المستخدم
+            channel_repo.add(user_id=user.id, telegram_channel_id=channel_id, username=channel_username)
+
+        await update.message.reply_text(f"✅ تم ربط القناة {channel_username} بحسابك.")
+
+    except BadRequest as e:
+        await update.message.reply_text(
+            f"❌ خطأ من تيليجرام: {e.message}.\n"
+            f"تحقق أن القناة عامة وأن اسم المستخدم صحيح، وأن البوت مسؤول فيها."
+        )
+    except ValueError as e:
+        await update.message.reply_text(f"❌ خطأ: {e}")
+    except Exception as e:
+        log.exception("Error during channel linking")
+        await update.message.reply_text(f"حدث خطأ غير متوقع: {e}")
+
+
 def register_commands(app: Application):
     # نمرر فلتر قاعدة البيانات لضمان إنشاء/التحقق من المستخدم قبل كل أمر
     app.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_USER_FILTER))
@@ -200,4 +275,7 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("open", open_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("stats", stats_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("export", export_cmd, filters=ALLOWED_USER_FILTER))
+
+    # ✅ أمر ربط القناة
+    app.add_handler(CommandHandler("link_channel", link_channel_cmd, filters=ALLOWED_USER_FILTER))
 # --- END OF FILE ---
