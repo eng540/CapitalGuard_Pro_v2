@@ -1,4 +1,4 @@
-#--- START OF FILE: src/capitalguard/application/services/trade_service.py ---
+# --- START OF FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional, Tuple
@@ -13,7 +13,7 @@ from capitalguard.interfaces.telegram.keyboards import (
     analyst_control_panel_keyboard,
 )
 
-# ✅ مستودعات وإدارة جلسة DB لقنوات المستخدم
+# ✅ DB session + repositories (قنوات المستخدم)
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 
@@ -21,7 +21,6 @@ log = logging.getLogger(__name__)
 
 
 def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
-    """Safely parse a user_id string to int, or return None if invalid."""
     try:
         return int(user_id) if user_id is not None else None
     except (TypeError, ValueError):
@@ -42,7 +41,6 @@ class TradeService:
 
     # -------- Symbol validation helpers --------
     def _ensure_symbols_cache(self) -> None:
-        """Fetch & cache Binance symbols (spot) if cache is empty/expired."""
         now = time.time()
         if self._SYMBOLS_CACHE and (now - self._SYMBOLS_CACHE_TS) < self._SYMBOLS_CACHE_TTL_SEC:
             return
@@ -67,10 +65,6 @@ class TradeService:
             log.exception("Failed to refresh Binance symbols: %s", e)
 
     def _validate_symbol_exists(self, asset: str) -> str:
-        """
-        Normalize + validate that asset exists on Binance (spot);
-        raises ValueError otherwise. Returns normalized symbol (uppercased).
-        """
         norm = asset.strip().upper()
         self._ensure_symbols_cache()
         if self._SYMBOLS_CACHE and norm not in self._SYMBOLS_CACHE:
@@ -82,24 +76,23 @@ class TradeService:
 
     # -------- UI card updates --------
     def _update_cards(self, rec: Recommendation) -> None:
-        """Private helper to update public and private cards after a change."""
+        # تحديث البطاقة العامة (إن كانت منشورة)
         public_keyboard = public_channel_keyboard(rec.id)
-        # ملاحظة: edit_recommendation_card تعدّل البطاقة العامة إذا كان لدينا channel_id/message_id
         self.notifier.edit_recommendation_card(rec, keyboard=public_keyboard)
 
+        # تنبيه خاص للمحلل
         uid = _parse_int_user_id(rec.user_id)
         if uid is not None:
             analyst_keyboard = analyst_control_panel_keyboard(rec.id)
             self.notifier.send_private_message(
                 chat_id=uid,
                 rec=rec,
-                keyboard=analyst_control_panel_keyboard(rec.id),
+                keyboard=analyst_keyboard,
                 text_header="✅ تم تحديث التوصية بنجاح:",
             )
 
     # -------- Validation helpers --------
     def _validate_sl_vs_entry(self, side: str, entry: float, sl: float) -> None:
-        """Validates that stop loss is logical compared to entry price."""
         side_upper = side.upper()
         if side_upper == "LONG" and not (sl <= entry):
             raise ValueError("في صفقات الشراء (LONG)، يجب أن يكون وقف الخسارة ≤ سعر الدخول.")
@@ -107,7 +100,6 @@ class TradeService:
             raise ValueError("في صفقات البيع (SHORT)، يجب أن يكون وقف الخسارة ≥ سعر الدخول.")
 
     def _validate_targets(self, side: str, entry: float, tps: List[float]) -> None:
-        """Validates that targets are logical compared to entry price."""
         if not tps:
             raise ValueError("مطلوب على الأقل هدف واحد.")
         side_upper = side.upper()
@@ -134,9 +126,7 @@ class TradeService:
         order_type: str,
         live_price: Optional[float] = None,
     ) -> Recommendation:
-        """
-        يحفظ التوصية فقط (بدون نشر).
-        """
+        """يحفظ التوصية فقط (بدون نشر)."""
         log.info(
             "Saving recommendation ONLY: asset=%s side=%s order_type=%s user=%s",
             asset, side, order_type, user_id
@@ -169,7 +159,6 @@ class TradeService:
 
         saved = self.repo.add(rec_to_save)
 
-        # رسالة خاصة للمستخدم للتأكيد + لوحة التحكم
         uid = _parse_int_user_id(user_id)
         if uid is not None:
             self.notifier.send_private_message(
@@ -214,12 +203,10 @@ class TradeService:
         uid_int = _parse_int_user_id(user_id or rec.user_id)
         linked_channels: List[int] = self._load_user_linked_channels(uid_int) if uid_int is not None else []
 
-        # فلترة اختيارية بالقنوات المستهدفة
         if target_channel_ids:
             linked_channels = [cid for cid in linked_channels if cid in target_channel_ids]
 
         if not linked_channels:
-            # لا قنوات → إشعار خاص فقط
             if uid_int is not None:
                 self.notifier.send_private_message(
                     chat_id=uid_int,
@@ -227,7 +214,7 @@ class TradeService:
                     keyboard=analyst_control_panel_keyboard(rec.id),
                     text_header=(
                         "ℹ️ لا توجد قنوات مرتبطة بحسابك بعد، لذا لن يتم النشر.\n"
-                        "استخدم الأمر: /link_channel @اسم_القناة ثم أعد المحاولة."
+                        "استخدم /link_channel أو أعد توجيه رسالة من القناة لربطها، ثم أعد المحاولة."
                     ),
                 )
             return rec, False
@@ -243,7 +230,7 @@ class TradeService:
                     keyboard=public_keyboard
                 )
                 if result and first_success is None:
-                    first_success = result  # (chat_id, message_id)
+                    first_success = result
             except Exception as ch_err:
                 log.error(
                     "Failed to publish rec #%s to channel %s: %s",
@@ -267,7 +254,6 @@ class TradeService:
                 )
             return rec, True
 
-        # لم ينجح أي نشر
         if uid_int is not None:
             self.notifier.send_private_message(
                 chat_id=uid_int,
@@ -290,13 +276,9 @@ class TradeService:
         order_type: str,
         live_price: Optional[float] = None,
         target_channel_ids: Optional[List[int]] = None,
-        publish: bool = True,  # ← جديد: السماح بالحفظ فقط عند False
+        publish: bool = True,
     ) -> Recommendation:
-        """
-        سلوك مرن:
-        - publish=False ⇒ حفظ فقط وإرجاع التوصية.
-        - publish=True  ⇒ حفظ ثم محاولة النشر لقنوات المستخدم المرتبطة (أو subset محدد).
-        """
+        """سلوك مرن: حفظ فقط أو حفظ ثم نشر لقنوات المستخدم المرتبطة."""
         saved = self.create_recommendation(
             asset=asset,
             side=side,
@@ -309,24 +291,18 @@ class TradeService:
             order_type=order_type,
             live_price=live_price,
         )
-        if not publish:
-            return saved
-
-        self.publish_existing(
-            rec_id=saved.id,
-            user_id=user_id,
-            target_channel_ids=target_channel_ids,
-        )
+        if publish:
+            self.publish_existing(
+                rec_id=saved.id,
+                user_id=user_id,
+                target_channel_ids=target_channel_ids,
+            )
         return saved
 
     # =========================
     # Other actions
     # =========================
     def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
-        """
-        Centralized activation for PENDING recommendations.
-        Entry price is already set for LIMIT/STOP orders (no price argument).
-        """
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.PENDING:
             return None
@@ -358,12 +334,7 @@ class TradeService:
         return updated_rec
 
     # -------- Queries & small helpers --------
-    def list_open(
-        self,
-        symbol: Optional[str] = None,
-        side: Optional[str] = None,
-        status: Optional[str] = None,
-    ) -> List[Recommendation]:
+    def list_open(self, symbol: Optional[str] = None, side: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
         return self.repo.list_open(symbol=symbol, side=side, status=status)
 
     def list_all(self, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
@@ -414,4 +385,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-#--- END OF FILE ---
+# --- END OF FILE: src/capitalguard/application/services/trade_service.py ---
