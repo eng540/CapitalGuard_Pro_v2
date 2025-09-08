@@ -248,7 +248,7 @@ class RecommendationRepository:
                 raise
 
     # -------------------------
-    # Read (scoped to user)
+    # Read (scoped to user via Telegram ID)
     # -------------------------
     def get_by_id_for_user(self, rec_id: int, user_telegram_id: Union[int, str]) -> Optional[Recommendation]:
         """Get a specific recommendation owned by the given Telegram user."""
@@ -335,6 +335,58 @@ class RecommendationRepository:
                     log.warning("Invalid status filter provided to list_all_for_user: %s", status)
 
             rows = q.order_by(RecommendationORM.created_at.desc()).all()
+            return [self._to_entity(r) for r in rows]
+
+    # -------------------------
+    # Read (scoped to user via *internal* user_id)  <-- جديدة
+    # -------------------------
+    def list_open_for_user_id(
+        self,
+        user_id: int,
+        *,
+        symbol: Optional[str] = None,
+        side: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Recommendation]:
+        """قائمة التوصيات المفتوحة لمستخدم معيّن (حسب user_id الداخلي)."""
+        with SessionLocal() as s:
+            q = (
+                s.query(RecommendationORM)
+                .options(joinedload(RecommendationORM.user))
+                .filter(
+                    RecommendationORM.user_id == user_id,
+                    or_(
+                        RecommendationORM.status == RecommendationStatus.PENDING,
+                        RecommendationORM.status == RecommendationStatus.ACTIVE,
+                    ),
+                )
+            )
+            if symbol:
+                q = q.filter(RecommendationORM.asset.ilike(f"%{symbol.upper()}%"))
+            if side:
+                try:
+                    q = q.filter(RecommendationORM.side == Side(side.upper()))
+                except ValueError:
+                    log.warning("Invalid side filter provided to list_open_for_user_id: %s", side)
+            if status:
+                try:
+                    q = q.filter(RecommendationORM.status == RecommendationStatus(status.upper()))
+                except ValueError:
+                    log.warning("Invalid status filter provided to list_open_for_user_id: %s", status)
+
+            rows = q.order_by(RecommendationORM.created_at.desc()).all()
+            return [self._to_entity(r) for r in rows]
+
+    def list_all_for_user_id(self, user_id: int) -> List[Recommendation]:
+        """كل توصيات المستخدم (حسب user_id الداخلي)."""
+        with SessionLocal() as s:
+            rows = (
+                s.query(RecommendationORM)
+                .options(joinedload(RecommendationORM.user))
+                .filter(RecommendationORM.user_id == user_id)
+                .order_by(RecommendationORM.created_at.desc())
+                .all()
+            )
             return [self._to_entity(r) for r in rows]
 
     # -------------------------
