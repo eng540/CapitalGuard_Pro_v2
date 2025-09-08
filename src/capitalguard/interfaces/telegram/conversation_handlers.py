@@ -79,8 +79,14 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
 
 # --- Publish / Cancel ---
 async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    زر «💾 حفظ + نشر»:
+    - يحفظ التوصية للمستخدم الحالي.
+    - يحاول النشر فقط إلى قنوات المستخدم المرتبطة والفعّالة (بدون أي قناة افتراضية).
+    - في حال عدم وجود قنوات، تُرسل رسالة خاصة للمستخدم من طبقة الخدمة.
+    """
     query = update.callback_query
-    await query.answer("Publishing...")
+    await query.answer("جارٍ الحفظ ثم النشر...")
     review_key = query.data.split(":")[2]
     draft = context.bot_data.get(review_key)
     if not draft:
@@ -89,9 +95,12 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     trade_service = get_service(context, "trade_service")
     try:
+        # احصل على السعر الحي في حال ORDER_TYPE=MARKET (الخدمة ستتحقق وتفشل إن غاب)
         live_price = get_service(context, "price_service").get_cached_price(
             draft["asset"], draft.get("market", "Futures")
         )
+
+        # دعم مناطق الدخول: نخزنها كملاحظة فقط، ونعتمد أول قيمة كـ Entry
         entry_val = draft["entry"]
         entry_price = entry_val[0] if isinstance(entry_val, list) else entry_val
         if isinstance(entry_val, list):
@@ -108,12 +117,13 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             notes=draft.get("notes"),
             user_id=str(query.from_user.id),   # ✅ مقيّد بالمستخدم
             order_type=draft['order_type'],
-            live_price=live_price
+            live_price=live_price,
+            publish=True,
         )
-        await query.edit_message_text(f"✅ Recommendation #{rec.id} published successfully!")
+        await query.edit_message_text(f"✅ تم الحفظ، ومحاولة النشر انطلقت للتوصية #{rec.id}.")
     except Exception as e:
-        log.exception("Failed to publish recommendation.")
-        await query.edit_message_text(f"❌ Publication failed: {e}")
+        log.exception("Failed to save/publish recommendation.")
+        await query.edit_message_text(f"❌ فشل الحفظ/النشر: {e}")
     finally:
         context.bot_data.pop(review_key, None)
         context.user_data.pop('current_review_key', None)
@@ -126,7 +136,7 @@ async def cancel_publish_handler(update: Update, context: ContextTypes.DEFAULT_T
     review_key = query.data.split(":")[2]
     context.bot_data.pop(review_key, None)
     context.user_data.pop('current_review_key', None)
-    await query.edit_message_text("تم إلغاء النشر.")
+    await query.edit_message_text("تم إلغاء العملية.")
     return ConversationHandler.END
 
 
