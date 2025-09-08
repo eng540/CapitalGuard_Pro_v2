@@ -1,4 +1,4 @@
---- START OF FILE: src/capitalguard/application/services/trade_service.py ---
+#--- START OF FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
@@ -469,4 +469,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
---- END OF FILE ---
+#-- END OF FILE ---
