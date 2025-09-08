@@ -1,314 +1,237 @@
 # --- START OF FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
-import time
-from typing import List, Optional
-from datetime import datetime, timezone
-import httpx
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
-from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
-from capitalguard.domain.ports import RecommendationRepoPort, NotifierPort
-from capitalguard.interfaces.telegram.keyboards import (
-    public_channel_keyboard,
-    analyst_control_panel_keyboard,
-)
-
-# ✅ استيرادات لإدارة قنوات المستخدم
 from capitalguard.infrastructure.db.base import SessionLocal
-from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+from capitalguard.infrastructure.db.repository import (
+    UserRepository,
+    ChannelRepository,
+    RecommendationRepository,
+)
+from capitalguard.infrastructure.notify.telegram import TelegramNotifier
+from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
+from capitalguard.domain.entities import Recommendation, RecommendationStatus
 
 log = logging.getLogger(__name__)
 
 
-def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
-    """Safely parse a user_id string to int, or return None if invalid."""
-    try:
-        return int(user_id) if user_id is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
 class TradeService:
-    # ------------------------------
-    # Symbol validation cache (Binance spot)
-    # ------------------------------
-    _SYMBOLS_CACHE: set[str] = set()
-    _SYMBOLS_CACHE_TS: float = 0.0
-    _SYMBOLS_CACHE_TTL_SEC: int = 6 * 60 * 60  # 6 hours
+    """
+    TradeService (Phase 9.x)
+    - يعالج الربط الصحيح بين توصيات المستخدم وقنواته المرتبطة.
+    - يمنع أي fallback إلى TELEGRAM_CHAT_ID عند عدم وجود قنوات.
+    - يعزل أخطاء النشر قناةً قناة.
+    """
 
-    def __init__(self, repo: RecommendationRepoPort, notifier: NotifierPort):
-        self.repo = repo
-        self.notifier = notifier
+    def __init__(
+        self,
+        notifier: Optional[TelegramNotifier] = None,
+        session_factory=SessionLocal,
+    ) -> None:
+        self._session_factory = session_factory
+        self._notifier = notifier or TelegramNotifier()
 
-    # -------- Symbol validation helpers --------
-    def _ensure_symbols_cache(self) -> None:
-        """Fetch & cache Binance symbols (spot) if cache is empty/expired."""
-        now = time.time()
-        if self._SYMBOLS_CACHE and (now - self._SYMBOLS_CACHE_TS) < self._SYMBOLS_CACHE_TTL_SEC:
-            return
-        try:
-            url = "https://api.binance.com/api/v3/exchangeInfo"
-            with httpx.Client(timeout=10) as client:
-                r = client.get(url)
-                r.raise_for_status()
-                data = r.json()
-            symbols = {
-                s["symbol"].upper()
-                for s in data.get("symbols", [])
-                if s.get("status") == "TRADING"
-            }
-            if symbols:
-                self._SYMBOLS_CACHE = symbols
-                self._SYMBOLS_CACHE_TS = now
-                log.info("Loaded %s Binance symbols into cache.", len(symbols))
-            else:
-                log.warning("exchangeInfo returned empty symbol list; keeping previous cache.")
-        except Exception as e:
-            log.exception("Failed to refresh Binance symbols: %s", e)
+    # ------------- إنشاء ثم نشر (اختياري) -------------
 
-    def _validate_symbol_exists(self, asset: str) -> str:
-        """
-        Normalize + validate that asset exists on Binance (spot);
-        raises ValueError otherwise. Returns normalized symbol (uppercased).
-        """
-        norm = asset.strip().upper()
-        self._ensure_symbols_cache()
-        if self._SYMBOLS_CACHE and norm not in self._SYMBOLS_CACHE:
-            raise ValueError(
-                f'Invalid symbol "{asset}". Not found on Binance (spot). '
-                "Use a valid trading pair like BTCUSDT, ETHUSDT, etc."
-            )
-        return norm
-
-    # -------- UI card updates --------
-    def _update_cards(self, rec: Recommendation) -> None:
-        """Private helper to update public and private cards after a change."""
-        public_keyboard = public_channel_keyboard(rec.id)
-        self.notifier.edit_recommendation_card(rec, keyboard=public_keyboard)
-
-        uid = _parse_int_user_id(rec.user_id)
-        if uid is not None:
-            analyst_keyboard = analyst_control_panel_keyboard(rec.id)
-            self.notifier.send_private_message(
-                chat_id=uid,
-                rec=rec,
-                keyboard=analyst_keyboard,
-                text_header="✅ تم تحديث التوصية بنجاح:",
-            )
-
-    # -------- Validation helpers --------
-    def _validate_sl_vs_entry(self, side: str, entry: float, sl: float) -> None:
-        """Validates that stop loss is logical compared to entry price."""
-        side_upper = side.upper()
-        if side_upper == "LONG" and not (sl <= entry):
-            raise ValueError("في صفقات الشراء (LONG)، يجب أن يكون وقف الخسارة ≤ سعر الدخول.")
-        if side_upper == "SHORT" and not (sl >= entry):
-            raise ValueError("في صفقات البيع (SHORT)، يجب أن يكون وقف الخسارة ≥ سعر الدخول.")
-
-    def _validate_targets(self, side: str, entry: float, tps: List[float]) -> None:
-        """Validates that targets are logical compared to entry price."""
-        if not tps:
-            raise ValueError("مطلوب على الأقل هدف واحد.")
-        side_upper = side.upper()
-        if side_upper == "LONG":
-            if not all(tp > entry for tp in tps):
-                raise ValueError("في صفقات الشراء، يجب أن تكون جميع الأهداف > سعر الدخول.")
-        elif side_upper == "SHORT":
-            if not all(tp < entry for tp in tps):
-                raise ValueError("في صفقات البيع، يجب أن تكون جميع الأهداف < سعر الدخول.")
-
-    # -------- Core business actions --------
     def create_and_publish_recommendation(
         self,
-        asset: str,
-        side: str,
-        market: str,
-        entry: float,
-        stop_loss: float,
-        targets: List[float],
-        notes: Optional[str],
-        user_id: Optional[str],
-        order_type: str,
-        live_price: Optional[float] = None,
-        # ✅ مستقبلاً: يمكننا قبول قائمة قنوات محددة للنشر الانتقائي
-        target_channel_ids: Optional[List[int]] = None,
+        telegram_user_id: int,
+        rec_data: Dict[str, Any],
+        *,
+        target_channel_ids: Optional[Sequence[int]] = None,
+        send_private_preview: bool = True,
     ) -> Recommendation:
-        log.info(
-            "Creating recommendation: asset=%s side=%s order_type=%s user=%s",
-            asset, side, order_type, user_id
-        )
-        asset = self._validate_symbol_exists(asset)
-        try:
-            order_type_enum = OrderType(order_type.upper())
-        except ValueError:
-            valid = ", ".join(ot.value for ot in OrderType)
-            raise ValueError(f"Invalid order_type: {order_type}. Must be one of {valid}")
-
-        if order_type_enum == OrderType.MARKET:
-            if live_price is None:
-                raise ValueError("Live price is required for Market orders.")
-            status, final_entry = RecommendationStatus.ACTIVE, live_price
-        else:
-            status, final_entry = RecommendationStatus.PENDING, entry
-
-        self._validate_sl_vs_entry(side, final_entry, stop_loss)
-        self._validate_targets(side, final_entry, targets)
-
-        rec_to_save = Recommendation(
-            asset=Symbol(asset), side=Side(side), entry=Price(final_entry),
-            stop_loss=Price(stop_loss), targets=Targets(targets),
-            order_type=order_type_enum, status=status, market=market,
-            notes=notes, user_id=user_id,
-        )
-        if rec_to_save.status == RecommendationStatus.ACTIVE:
-            rec_to_save.activated_at = datetime.now(timezone.utc)
-
-        # 1) حفظ في قاعدة البيانات
-        saved_rec = self.repo.add(rec_to_save)
-
-        # 2) النشر الافتراضي (السلوك السابق) — للحفاظ على التوافق
-        public_keyboard = public_channel_keyboard(saved_rec.id)
-        posted_location = self.notifier.post_recommendation_card(saved_rec, keyboard=public_keyboard)
-        if posted_location:
-            channel_id, message_id = posted_location
-            saved_rec.channel_id = channel_id
-            saved_rec.message_id = message_id
-            saved_rec.published_at = datetime.now(timezone.utc)
-            self.repo.update(saved_rec)
-        else:
-            self.notifier.send_admin_alert(f"Failed to publish rec #{saved_rec.id} to channel.")
-
-        # 3) النشر إلى قنوات المستخدم المرتبطة — ميزة المرحلة 9.0
-        try:
-            uid_int = _parse_int_user_id(user_id)
-            if uid_int is not None:
-                with SessionLocal() as session:
-                    user_repo = UserRepository(session)
-                    channel_repo = ChannelRepository(session)
-                    user = user_repo.find_by_telegram_id(uid_int)
-                    if user:
-                        channels = channel_repo.list_by_user(user.id)
-                        if channels:
-                            log.info("Publishing rec #%s to %s linked channel(s).", saved_rec.id, len(channels))
-                        for ch in channels:
-                            try:
-                                # إذا تم تمرير target_channel_ids مستقبلاً، ننشر فقط للمحدّد
-                                if target_channel_ids and ch.telegram_channel_id not in target_channel_ids:
-                                    continue
-                                self.notifier.post_to_channel(
-                                    channel_id=ch.telegram_channel_id,
-                                    rec=saved_rec,
-                                    keyboard=public_keyboard
-                                )
-                            except Exception as ch_err:
-                                log.error(
-                                    "Failed to publish rec #%s to @%s (%s): %s",
-                                    saved_rec.id, ch.username, ch.telegram_channel_id, ch_err, exc_info=True
-                                )
-                                # نكمل بقية القنوات ولا نوقف العملية
-        except Exception as e:
-            log.error("Linked-channels broadcast failed for rec #%s: %s", saved_rec.id, e, exc_info=True)
-
-        # 4) تنبيه خاص للمحلل بلوحة التحكم
-        uid = _parse_int_user_id(user_id)
-        if uid is not None:
-            analyst_keyboard = analyst_control_panel_keyboard(saved_rec.id)
-            self.notifier.send_private_message(
-                chat_id=uid, rec=saved_rec, keyboard=analyst_keyboard,
-                text_header="🚀 تم النشر! هذه لوحة التحكم الخاصة بك:",
-            )
-        return saved_rec
-
-    def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
         """
-        Centralized activation for PENDING recommendations.
-        Entry price is already set for LIMIT/STOP orders (no price argument).
+        ينشئ توصية جديدة لمستخدم (معرّف بتلغرام) ثم ينشرها وفق قنواته المرتبطة.
+        - لا ينشر في قناة افتراضية إن لم توجد قنوات مرتبطة: يرسل تنبيه خاص بدلًا من ذلك.
         """
-        rec = self.repo.get(rec_id)
-        if not rec or rec.status != RecommendationStatus.PENDING:
-            return None
+        with self._session_factory() as session:
+            users = UserRepository(session)
+            chans = ChannelRepository(session)
+            recs = RecommendationRepository(session)
 
-        log.info(f"Activating recommendation #{rec.id} for {rec.asset.value}")
-        rec.activate()
-        updated_rec = self.repo.update(rec)
+            user = users.find_or_create(telegram_id=int(telegram_user_id))
+            # نفترض أن المستودع يوفّر دالة create_for_user_id أو create(...)
+            rec = recs.create_for_user_id(user_id=user.id, **rec_data)
 
-        self._update_cards(updated_rec)
-
-        uid = _parse_int_user_id(rec.user_id)
-        if uid is not None:
-            self.notifier.send_private_message(
-                chat_id=uid,
-                rec=updated_rec,
-                text_header=f"🔥 أصبحت توصيتك #{rec.id} ({rec.asset.value}) مفعلة الآن!"
+            # نشر للقنوات
+            self._broadcast_to_user_channels(
+                user_id=user.id,
+                telegram_user_id=telegram_user_id,
+                rec=rec,
+                chans_repo=chans,
+                target_channel_ids=target_channel_ids,
+                send_private_preview=send_private_preview,
             )
-        return updated_rec
+
+            session.commit()
+            return rec
+
+    # ------------- نشر توصية موجودة -------------
+
+    def publish_existing_recommendation(
+        self,
+        rec_id: int,
+        telegram_user_id: int,
+        *,
+        target_channel_ids: Optional[Sequence[int]] = None,
+        send_private_preview: bool = True,
+    ) -> Optional[Recommendation]:
+        """
+        ينشر توصية موجودة بالفعل للمستخدم الحالي عبر قنواته المرتبطة.
+        يُستخدم عندما تكون التوصية منشأة مسبقًا وتريد بثّها الآن.
+        """
+        with self._session_factory() as session:
+            users = UserRepository(session)
+            chans = ChannelRepository(session)
+            recs = RecommendationRepository(session)
+
+            user = users.find_or_create(telegram_id=int(telegram_user_id))
+            rec = recs.get(rec_id)
+            if not rec:
+                log.warning("publish_existing_recommendation: rec %s not found", rec_id)
+                return None
+
+            # تأكد أن التوصية تخص هذا المستخدم
+            if getattr(rec, "user_id", None) != user.id:
+                log.warning(
+                    "publish_existing_recommendation: user %s tried to publish rec %s not owned by them",
+                    user.id,
+                    rec_id,
+                )
+                return None
+
+            self._broadcast_to_user_channels(
+                user_id=user.id,
+                telegram_user_id=telegram_user_id,
+                rec=rec,
+                chans_repo=chans,
+                target_channel_ids=target_channel_ids,
+                send_private_preview=send_private_preview,
+            )
+            session.commit()
+            return rec
+
+    # ------------- عمليات إدارة التوصية (تفويض للمستودع) -------------
+
+    def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
+        with self._session_factory() as session:
+            recs = RecommendationRepository(session)
+            rec = recs.update_sl(rec_id, new_sl)
+            session.commit()
+            return rec
+
+    def update_targets(self, rec_id: int, targets: Sequence[float]) -> Recommendation:
+        with self._session_factory() as session:
+            recs = RecommendationRepository(session)
+            rec = recs.update_targets(rec_id, list(targets))
+            session.commit()
+            return rec
+
+    def move_sl_to_be(self, rec_id: int) -> Recommendation:
+        with self._session_factory() as session:
+            recs = RecommendationRepository(session)
+            rec = recs.move_sl_to_be(rec_id)
+            session.commit()
+            return rec
 
     def close(self, rec_id: int, exit_price: float) -> Recommendation:
-        rec = self.repo.get(rec_id)
-        if not rec:
-            raise ValueError(f"Recommendation {rec_id} not found.")
+        with self._session_factory() as session:
+            recs = RecommendationRepository(session)
+            rec = recs.close(rec_id, exit_price)
+            session.commit()
+            return rec
 
-        rec.close(exit_price)
-        updated_rec = self.repo.update(rec)
-        self._update_cards(updated_rec)
-        log.info(f"Rec #{rec.id} closed at price={exit_price} (status={updated_rec.status.value})")
-        return updated_rec
+    # ------------- استرجاع للمستخدم (للاستخدام في /open و/export) -------------
 
-    # -------- Queries & small helpers --------
-    def list_open(
+    def list_open_for_user_id(
         self,
+        user_id: int,
+        *,
         symbol: Optional[str] = None,
         side: Optional[str] = None,
         status: Optional[str] = None,
     ) -> List[Recommendation]:
-        return self.repo.list_open(symbol=symbol, side=side, status=status)
+        with self._session_factory() as session:
+            recs = RecommendationRepository(session)
+            return recs.list_open_for_user_id(
+                user_id, symbol=symbol, side=side, status=status
+            )
 
-    def list_all(self, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
-        return self.repo.list_all(symbol=symbol, status=status)
+    def list_all_for_user_id(self, user_id: int) -> List[Recommendation]:
+        with self._session_factory() as session:
+            recs = RecommendationRepository(session)
+            return recs.list_all_for_user_id(user_id)
 
-    def move_sl_to_be(self, rec_id: int) -> Optional[Recommendation]:
-        rec = self.repo.get(rec_id)
-        if not rec or rec.status == RecommendationStatus.CLOSED:
-            return None
-        return self.update_sl(rec_id, rec.entry.value)
+    # ------------- منطق داخلي للنشر -------------
 
-    def add_partial_close_note(self, rec_id: int) -> Optional[Recommendation]:
-        rec = self.repo.get(rec_id)
-        if not rec or rec.status == RecommendationStatus.CLOSED:
-            return None
-        note = f"\n- تم إغلاق 50% من الصفقة في {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC."
-        rec.notes = (rec.notes or "") + note
-        updated_rec = self.repo.update(rec)
-        self._update_cards(updated_rec)
-        log.info(f"Rec #{rec.id} partial close note added")
-        return updated_rec
+    def _broadcast_to_user_channels(
+        self,
+        *,
+        user_id: int,
+        telegram_user_id: int,
+        rec: Recommendation,
+        chans_repo: ChannelRepository,
+        target_channel_ids: Optional[Sequence[int]],
+        send_private_preview: bool,
+    ) -> None:
+        """
+        ينشر التوصية إلى قنوات المستخدم المرتبطة.
+        - إذا لم توجد قنوات: لا fallback — يُرسل تنبيه خاص فقط.
+        - إذا قدمت target_channel_ids: ننشر في تقاطعها مع قنوات المستخدم.
+        """
+        # اجلب قنوات المستخدم الفعالة
+        channels = chans_repo.list_by_user(user_id)
 
-    def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
-        rec = self.repo.get(rec_id)
-        if not rec or rec.status == RecommendationStatus.CLOSED:
-            raise ValueError("Recommendation not found or is closed.")
-        self._validate_sl_vs_entry(rec.side.value, rec.entry.value, new_sl)
-        rec.stop_loss = Price(new_sl)
-        note_text = "\n- تم نقل وقف الخسارة إلى نقطة الدخول." if new_sl == rec.entry.value else f"\n- تم تحديث وقف الخسارة إلى {new_sl}."
-        rec.notes = (rec.notes or "") + note_text
-        updated_rec = self.repo.update(rec)
-        self._update_cards(updated_rec)
-        log.info(f"Rec #{rec.id} SL updated to {new_sl}")
-        return updated_rec
+        if target_channel_ids:
+            target_set = {int(c) for c in target_channel_ids}
+            channels = [c for c in channels if int(c.telegram_channel_id) in target_set]
 
-    def update_targets(self, rec_id: int, new_targets: List[float]) -> Recommendation:
-        rec = self.repo.get(rec_id)
-        if not rec or rec.status == RecommendationStatus.CLOSED:
-            raise ValueError("Recommendation not found or is closed.")
-        self._validate_targets(rec.side.value, rec.entry.value, new_targets)
-        rec.targets = Targets(new_targets)
-        targets_str = ", ".join(map(str, new_targets))
-        rec.notes = (rec.notes or "") + f"\n- تم تحديث الأهداف إلى [{targets_str}]."
-        updated_rec = self.repo.update(rec)
-        self._update_cards(updated_rec)
-        log.info(f"Rec #{rec.id} targets updated to [{targets_str}]")
-        return updated_rec
+        if not channels:
+            # لا ننشر في قناة افتراضية إطلاقًا ضمن 9.x
+            try:
+                self._notifier.send_private_message(
+                    chat_id=int(telegram_user_id),
+                    rec=rec,
+                    text_header=(
+                        "ℹ️ لم يتم النشر للقنوات: لا توجد قنوات مرتبطة بحسابك.\n"
+                        "استخدم /link_channel لربط قناة عامة ثم أعد النشر."
+                    ),
+                )
+            except Exception:
+                log.exception("Failed to send no-channel private notice to %s", telegram_user_id)
+            return
 
-    def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
-        return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FILE ---
+        # نشر بطاقة عامة في كل قناة مع عزل الأخطاء
+        kb = public_channel_keyboard(getattr(rec, "id", 0))
+        for ch in channels:
+            try:
+                res = self._notifier.post_to_channel(
+                    channel_id=int(ch.telegram_channel_id),
+                    rec=rec,
+                    keyboard=kb,
+                )
+                if not res:
+                    log.error(
+                        "Broadcast failed: rec=%s channel=%s (no result)",
+                        getattr(rec, "id", None),
+                        getattr(ch, "username", ch.telegram_channel_id),
+                    )
+            except Exception:
+                log.exception(
+                    "Broadcast exception: rec=%s channel=%s",
+                    getattr(rec, "id", None),
+                    getattr(ch, "username", ch.telegram_channel_id),
+                )
+
+        # إرسال معاينة خاصة للمحلل (اختياري)
+        if send_private_preview:
+            try:
+                self._notifier.send_private_message(
+                    chat_id=int(telegram_user_id),
+                    rec=rec,
+                    text_header="✅ تم نشر بطاقتك على قنواتك المرتبطة.",
+                )
+            except Exception:
+                log.exception("Failed to send private preview to %s", telegram_user_id)
+# --- END OF FILE: src/capitalguard/application/services/trade_service.py ---
