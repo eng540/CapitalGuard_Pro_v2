@@ -187,7 +187,7 @@ def review_final_keyboard(review_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("✅ نشر في القناة", callback_data=f"rec:publish:{review_key}"),
+                InlineKeyboardButton("💾 حفظ + نشر", callback_data=f"rec:publish:{review_key}"),
                 InlineKeyboardButton("📝 إضافة/تعديل ملاحظات", callback_data=f"rec:add_notes:{review_key}"),
             ],
             [InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{review_key}")],
