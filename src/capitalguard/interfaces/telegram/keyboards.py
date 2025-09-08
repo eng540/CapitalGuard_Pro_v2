@@ -1,11 +1,13 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
+from typing import List
+import math
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 from capitalguard.config import settings
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.interfaces.telegram.ui_texts import _pct
-from typing import List
-import math
 
 # Constant for pagination
 ITEMS_PER_PAGE = 8
@@ -15,12 +17,12 @@ def build_open_recs_keyboard(items: List[Recommendation], current_page: int, pri
     Builds an interactive keyboard with live PnL% and dynamic status icons.
     """
     keyboard = []
-    
+
     total_items = len(items)
-    total_pages = math.ceil(total_items / ITEMS_PER_PAGE)
+    total_pages = math.ceil(total_items / ITEMS_PER_PAGE) if total_items else 1
     start_index = (current_page - 1) * ITEMS_PER_PAGE
     end_index = start_index + ITEMS_PER_PAGE
-    
+
     paginated_items = items[start_index:end_index]
 
     for rec in paginated_items:
@@ -28,7 +30,7 @@ def build_open_recs_keyboard(items: List[Recommendation], current_page: int, pri
         if rec.status == RecommendationStatus.PENDING:
             status_icon = "⏳"
             button_text = f"{status_icon} #{rec.id} - {rec.asset.value} ({rec.side.value}) | معلقة"
-        
+
         elif rec.status == RecommendationStatus.ACTIVE:
             if rec.stop_loss.value == rec.entry.value:
                 status_icon = "🛡️"
@@ -42,29 +44,30 @@ def build_open_recs_keyboard(items: List[Recommendation], current_page: int, pri
                 else:
                     status_icon = "▶️"
                     button_text = f"{status_icon} #{rec.id} - {rec.asset.value} ({rec.side.value}) | نشطة"
-        
+
         callback_data = f"rec:show_panel:{rec.id}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-        
+
     nav_buttons = []
     if current_page > 1:
         nav_buttons.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"open_nav:page:{current_page - 1}"))
-    
+
     if total_pages > 1:
         nav_buttons.append(InlineKeyboardButton(f"صفحة {current_page}/{total_pages}", callback_data="noop"))
-    
+
     if current_page < total_pages:
         nav_buttons.append(InlineKeyboardButton("التالي ➡️", callback_data=f"open_nav:page:{current_page + 1}"))
-    
+
     if nav_buttons:
         keyboard.append(nav_buttons)
-        
+
     return InlineKeyboardMarkup(keyboard)
 
 def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     """Generates the keyboard for the public message in the channel."""
     return InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("📊 تتبّع الإشارة", callback_data=f"rec:track:{rec_id}"),
             InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}"),
         ]
     ])
@@ -86,7 +89,7 @@ def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_start:{rec_id}")
         ],
         [
-             InlineKeyboardButton("⬅️ العودة لقائمة التوصيات", callback_data=f"open_nav:page:1")
+            InlineKeyboardButton("⬅️ العودة لقائمة التوصيات", callback_data=f"open_nav:page:1")
         ]
     ])
 
@@ -158,4 +161,4 @@ def review_final_keyboard(review_key: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{review_key}")
         ]
     ])
-# --- END OF FILE ---
+# --- END OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
