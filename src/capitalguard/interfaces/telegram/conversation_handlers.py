@@ -1,5 +1,4 @@
 #--- START OF FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
-
 import logging
 import uuid
 from telegram import Update, ReplyKeyboardRemove
