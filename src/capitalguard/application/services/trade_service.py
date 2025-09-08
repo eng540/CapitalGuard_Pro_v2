@@ -13,7 +13,12 @@ from capitalguard.interfaces.telegram.keyboards import (
     analyst_control_panel_keyboard,
 )
 
+# ✅ استيرادات لإدارة قنوات المستخدم
+from capitalguard.infrastructure.db.base import SessionLocal
+from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+
 log = logging.getLogger(__name__)
+
 
 def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
     """Safely parse a user_id string to int, or return None if invalid."""
@@ -21,6 +26,7 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
         return int(user_id) if user_id is not None else None
     except (TypeError, ValueError):
         return None
+
 
 class TradeService:
     # ------------------------------
@@ -124,8 +130,13 @@ class TradeService:
         user_id: Optional[str],
         order_type: str,
         live_price: Optional[float] = None,
+        # ✅ مستقبلاً: يمكننا قبول قائمة قنوات محددة للنشر الانتقائي
+        target_channel_ids: Optional[List[int]] = None,
     ) -> Recommendation:
-        log.info(f"Creating recommendation: asset={asset} side={side} order_type={order_type} user={user_id}")
+        log.info(
+            "Creating recommendation: asset=%s side=%s order_type=%s user=%s",
+            asset, side, order_type, user_id
+        )
         asset = self._validate_symbol_exists(asset)
         try:
             order_type_enum = OrderType(order_type.upper())
@@ -152,8 +163,10 @@ class TradeService:
         if rec_to_save.status == RecommendationStatus.ACTIVE:
             rec_to_save.activated_at = datetime.now(timezone.utc)
 
+        # 1) حفظ في قاعدة البيانات
         saved_rec = self.repo.add(rec_to_save)
 
+        # 2) النشر الافتراضي (السلوك السابق) — للحفاظ على التوافق
         public_keyboard = public_channel_keyboard(saved_rec.id)
         posted_location = self.notifier.post_recommendation_card(saved_rec, keyboard=public_keyboard)
         if posted_location:
@@ -165,6 +178,38 @@ class TradeService:
         else:
             self.notifier.send_admin_alert(f"Failed to publish rec #{saved_rec.id} to channel.")
 
+        # 3) النشر إلى قنوات المستخدم المرتبطة — ميزة المرحلة 9.0
+        try:
+            uid_int = _parse_int_user_id(user_id)
+            if uid_int is not None:
+                with SessionLocal() as session:
+                    user_repo = UserRepository(session)
+                    channel_repo = ChannelRepository(session)
+                    user = user_repo.find_by_telegram_id(uid_int)
+                    if user:
+                        channels = channel_repo.list_by_user(user.id)
+                        if channels:
+                            log.info("Publishing rec #%s to %s linked channel(s).", saved_rec.id, len(channels))
+                        for ch in channels:
+                            try:
+                                # إذا تم تمرير target_channel_ids مستقبلاً، ننشر فقط للمحدّد
+                                if target_channel_ids and ch.telegram_channel_id not in target_channel_ids:
+                                    continue
+                                self.notifier.post_to_channel(
+                                    channel_id=ch.telegram_channel_id,
+                                    rec=saved_rec,
+                                    keyboard=public_keyboard
+                                )
+                            except Exception as ch_err:
+                                log.error(
+                                    "Failed to publish rec #%s to @%s (%s): %s",
+                                    saved_rec.id, ch.username, ch.telegram_channel_id, ch_err, exc_info=True
+                                )
+                                # نكمل بقية القنوات ولا نوقف العملية
+        except Exception as e:
+            log.error("Linked-channels broadcast failed for rec #%s: %s", saved_rec.id, e, exc_info=True)
+
+        # 4) تنبيه خاص للمحلل بلوحة التحكم
         uid = _parse_int_user_id(user_id)
         if uid is not None:
             analyst_keyboard = analyst_control_panel_keyboard(saved_rec.id)
