@@ -24,8 +24,13 @@ class User(Base):
     # ✅ جديد: first_name (ممكن يكون NULL)
     first_name = Column(String, nullable=True)
 
+    # علاقات المستخدم
     roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
     recommendations = relationship("RecommendationORM", back_populates="user", cascade="all, delete-orphan")
+
+    # ✅ جديد: علاقة القنوات — مستخدم واحد يمتلك عدة قنوات
+    # ملاحظة: يتطلب وجود نموذج Channel في models.channel، وأن يُستورد ضمن models/__init__.py
+    channels = relationship("Channel", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', telegram_id={self.telegram_user_id})>"
