@@ -90,7 +90,7 @@ class ChannelRepository:
         self.session = session
 
     def find_by_username(self, username: str) -> Optional[Channel]:
-        """بحث غير حساس لحالة الأحرف وبلا @ في بداية الاسم (نطاق عام لجميع المستخدمين)."""
+        """بحث عام غير حساس لحالة الأحرف وبلا @ في بداية الاسم (غير مقيّد بالمستخدم)."""
         clean = (username or "").lstrip("@").lower()
         return (
             self.session.query(Channel)
@@ -99,15 +99,16 @@ class ChannelRepository:
         )
 
     def list_by_user(self, user_id: int, only_active: bool = False) -> List[Channel]:
-        q = (
-            self.session.query(Channel)
-            .filter(Channel.user_id == user_id)
-        )
+        """
+        إرجاع قنوات المستخدم. استخدم only_active=True لفلترة القنوات المفعّلة فقط.
+        """
+        q = self.session.query(Channel).filter(Channel.user_id == user_id)
         if only_active:
             q = q.filter(Channel.is_active.is_(True))
         return q.order_by(Channel.created_at.desc()).all()
 
     def find_by_chat_id_for_user(self, user_id: int, chat_id: int) -> Optional[Channel]:
+        """قناة مملوكة للمستخدم حسب telegram_channel_id."""
         return (
             self.session.query(Channel)
             .filter(Channel.user_id == user_id, Channel.telegram_channel_id == chat_id)
@@ -115,6 +116,7 @@ class ChannelRepository:
         )
 
     def find_by_username_for_user(self, user_id: int, username: str) -> Optional[Channel]:
+        """قناة مملوكة للمستخدم حسب username (بدون @ وغير حساس لحالة الأحرف)."""
         clean = (username or "").lstrip("@").lower()
         return (
             self.session.query(Channel)
@@ -130,9 +132,10 @@ class ChannelRepository:
         title: Optional[str] = None,
     ) -> Channel:
         """
-        يربط قناة بالمستخدم. يمنع تكرار الربط إن كانت القناة مرتبطة مسبقًا:
-          - إن كانت القناة مرتبطة بنفس المستخدم: تُعاد كما هي (idempotent).
-          - إن كانت مرتبطة بمستخدم آخر: يُرفع خطأ واضح.
+        ربط قناة بالمستخدم.
+        - إن كانت القناة مرتبطة بنفس المستخدم: تُعاد كما هي (idempotent) مع تحديث العنوان إن تغيّر.
+        - إن كانت مرتبطة بمستخدم آخر: يُرفع خطأ.
+        - username اختياري (قنوات خاصة لا تملك username).
         """
         clean_username = (username or "").lstrip("@")
         clean_username_lc = clean_username.lower() if clean_username else None
@@ -149,9 +152,15 @@ class ChannelRepository:
         )
         if existing:
             if existing.user_id == user_id:
-                # Idempotent: اعتبرها مرتبطة مسبقًا لنفس المستخدم
+                # Idempotent: تحديث title إن تغيّر
+                updated = False
                 if title and existing.title != title:
                     existing.title = title
+                    updated = True
+                if clean_username and not existing.username:
+                    existing.username = clean_username  # ترقية: في حال أصبحت القناة عامة لاحقًا
+                    updated = True
+                if updated:
                     self.session.commit()
                     self.session.refresh(existing)
                 return existing
@@ -174,6 +183,7 @@ class ChannelRepository:
         return new_ch
 
     def set_active(self, channel_id: int, user_id: int, is_active: bool) -> None:
+        """تفعيل/تعطيل قناة مع التحقق من الملكية."""
         ch = (
             self.session.query(Channel)
             .filter(Channel.id == channel_id, Channel.user_id == user_id)
@@ -185,6 +195,7 @@ class ChannelRepository:
         self.session.commit()
 
     def remove(self, channel_id: int, user_id: int) -> None:
+        """حذف ربط قناة مع التحقق من الملكية."""
         ch = (
             self.session.query(Channel)
             .filter(Channel.id == channel_id, Channel.user_id == user_id)
@@ -588,7 +599,6 @@ class RecommendationRepository:
                 row.closed_at = rec.closed_at
                 row.alert_meta = rec.alert_meta
 
-                self.session = s
                 s.commit()
                 s.refresh(row)
                 return self._to_entity(row)
