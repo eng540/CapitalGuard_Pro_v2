@@ -1,7 +1,7 @@
 # --- START OF FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime, timezone
 import httpx
 
@@ -118,8 +118,10 @@ class TradeService:
             if not all(tp < entry for tp in tps):
                 raise ValueError("في صفقات البيع، يجب أن تكون جميع الأهداف < سعر الدخول.")
 
-    # -------- Core business actions --------
-    def create_and_publish_recommendation(
+    # =========================
+    # Core save/publish actions
+    # =========================
+    def create_recommendation(
         self,
         asset: str,
         side: str,
@@ -131,17 +133,12 @@ class TradeService:
         user_id: Optional[str],
         order_type: str,
         live_price: Optional[float] = None,
-        # ✅ مستقبلاً: يمكننا قبول قائمة قنوات محددة للنشر الانتقائي
-        target_channel_ids: Optional[List[int]] = None,
     ) -> Recommendation:
         """
-        سلوك النشر (بعد هذا التعديل):
-        - ننشر فقط إلى قنوات المستخدم المرتبطة.
-        - إذا لم يملك أي قناة مرتبطة: لا ننشر علنًا، ونرسل للمستخدم رسالة خاصة تشرح ذلك.
-        - في حالة وجود عدة قنوات: نخزّن أول رسالة ناجحة في حقول recommendation.channel_id/message_id (قيود التصميم الحالية).
+        يحفظ التوصية فقط (بدون نشر).
         """
         log.info(
-            "Creating recommendation: asset=%s side=%s order_type=%s user=%s",
+            "Saving recommendation ONLY: asset=%s side=%s order_type=%s user=%s",
             asset, side, order_type, user_id
         )
         asset = self._validate_symbol_exists(asset)
@@ -170,55 +167,79 @@ class TradeService:
         if rec_to_save.status == RecommendationStatus.ACTIVE:
             rec_to_save.activated_at = datetime.now(timezone.utc)
 
-        # 1) حفظ في قاعدة البيانات
-        saved_rec = self.repo.add(rec_to_save)
+        saved = self.repo.add(rec_to_save)
 
-        # 2) تحديد قنوات المستخدم المرتبطة
-        uid_int = _parse_int_user_id(user_id)
-        linked_channels: List[int] = []
-        if uid_int is not None:
-            try:
-                with SessionLocal() as session:
-                    user_repo = UserRepository(session)
-                    channel_repo = ChannelRepository(session)
-                    user = user_repo.find_by_telegram_id(uid_int)
-                    if user:
-                        channels = channel_repo.list_by_user(user.id)
-                        if channels:
-                            linked_channels = [ch.telegram_channel_id for ch in channels]
-            except Exception as e:
-                log.error("Failed to load linked channels for user %s: %s", uid_int, e, exc_info=True)
+        # رسالة خاصة للمستخدم للتأكيد + لوحة التحكم
+        uid = _parse_int_user_id(user_id)
+        if uid is not None:
+            self.notifier.send_private_message(
+                chat_id=uid,
+                rec=saved,
+                keyboard=analyst_control_panel_keyboard(saved.id),
+                text_header="💾 تم حفظ التوصية بنجاح (بدون نشر)."
+            )
+        return saved
 
-        # إذا تم تمرير target_channel_ids نفلتر بها
+    def _load_user_linked_channels(self, uid_int: int) -> List[int]:
+        """يرجع قائمة معرّفات قنوات المستخدم المرتبطة."""
+        try:
+            with SessionLocal() as session:
+                user_repo = UserRepository(session)
+                channel_repo = ChannelRepository(session)
+                user = user_repo.find_by_telegram_id(uid_int)
+                if not user:
+                    return []
+                channels = channel_repo.list_by_user(user.id)
+                return [ch.telegram_channel_id for ch in channels] if channels else []
+        except Exception as e:
+            log.error("Failed to load linked channels for user %s: %s", uid_int, e, exc_info=True)
+            return []
+
+    def publish_existing(
+        self,
+        rec_id: int,
+        user_id: Optional[str],
+        target_channel_ids: Optional[List[int]] = None,
+    ) -> Tuple[Recommendation, bool]:
+        """
+        ينشر توصية موجودة إلى قنوات المستخدم المرتبطة (أو subset محدد).
+        يرجع (التوصية بعد أي تحديث، نجاح_على_الأقل).
+        """
+        rec = self.repo.get(rec_id)
+        if not rec:
+            raise ValueError(f"Recommendation {rec_id} not found.")
+        if rec.status == RecommendationStatus.CLOSED:
+            raise ValueError("Cannot publish a closed recommendation.")
+
+        uid_int = _parse_int_user_id(user_id or rec.user_id)
+        linked_channels: List[int] = self._load_user_linked_channels(uid_int) if uid_int is not None else []
+
+        # فلترة اختيارية بالقنوات المستهدفة
         if target_channel_ids:
             linked_channels = [cid for cid in linked_channels if cid in target_channel_ids]
 
-        # 3) لا ننشر إن لم توجد قنوات — نُبلغ المستخدم فقط
         if not linked_channels:
-            uid = _parse_int_user_id(user_id)
-            if uid is not None:
-                analyst_keyboard = analyst_control_panel_keyboard(saved_rec.id)
+            # لا قنوات → إشعار خاص فقط
+            if uid_int is not None:
                 self.notifier.send_private_message(
-                    chat_id=uid,
-                    rec=saved_rec,
-                    keyboard=analyst_keyboard,
+                    chat_id=uid_int,
+                    rec=rec,
+                    keyboard=analyst_control_panel_keyboard(rec.id),
                     text_header=(
-                        "ℹ️ لم يتم النشر في أي قناة لأنه لا توجد قنوات مرتبطة بحسابك بعد.\n"
+                        "ℹ️ لا توجد قنوات مرتبطة بحسابك بعد، لذا لن يتم النشر.\n"
                         "استخدم الأمر: /link_channel @اسم_القناة ثم أعد المحاولة."
                     ),
                 )
-            log.info("Rec #%s not published (no linked channels).", saved_rec.id)
-            return saved_rec
+            return rec, False
 
-        # 4) النشر في قنوات المستخدم المرتبطة فقط
-        public_keyboard = public_channel_keyboard(saved_rec.id)
+        public_keyboard = public_channel_keyboard(rec.id)
 
         first_success: Optional[tuple[int, int]] = None
         for channel_id in linked_channels:
             try:
                 result = self.notifier.post_to_channel(
                     channel_id=channel_id,
-                    rec=saved_rec,
+                    rec=rec,
                     keyboard=public_keyboard
                 )
                 if result and first_success is None:
@@ -226,39 +247,81 @@ class TradeService:
             except Exception as ch_err:
                 log.error(
                     "Failed to publish rec #%s to channel %s: %s",
-                    saved_rec.id, channel_id, ch_err, exc_info=True
+                    rec.id, channel_id, ch_err, exc_info=True
                 )
                 continue
 
-        # 5) إن نجح نشر واحد على الأقل نخزّن أول رسالة ناجحة
         if first_success:
             channel_id, message_id = first_success
-            saved_rec.channel_id = channel_id
-            saved_rec.message_id = message_id
-            saved_rec.published_at = datetime.now(timezone.utc)
-            saved_rec = self.repo.update(saved_rec)
-        else:
-            # لم ينجح أي نشر — نرسل تنبيهًا خاصًا
-            uid = _parse_int_user_id(user_id)
-            if uid is not None:
+            rec.channel_id = channel_id
+            rec.message_id = message_id
+            rec.published_at = datetime.now(timezone.utc)
+            rec = self.repo.update(rec)
+
+            if uid_int is not None:
                 self.notifier.send_private_message(
-                    chat_id=uid,
-                    rec=saved_rec,
-                    keyboard=analyst_control_panel_keyboard(saved_rec.id),
-                    text_header="❌ تعذر النشر في قنواتك المرتبطة. تحقق من صلاحيات البوت في القنوات.",
+                    chat_id=uid_int,
+                    rec=rec,
+                    keyboard=analyst_control_panel_keyboard(rec.id),
+                    text_header="🚀 تم النشر! هذه لوحة التحكم الخاصة بك:",
                 )
-            return saved_rec
+            return rec, True
 
-        # 6) تنبيه خاص للمحلل بلوحة التحكم (نجاح النشر)
-        uid = _parse_int_user_id(user_id)
-        if uid is not None:
-            analyst_keyboard = analyst_control_panel_keyboard(saved_rec.id)
+        # لم ينجح أي نشر
+        if uid_int is not None:
             self.notifier.send_private_message(
-                chat_id=uid, rec=saved_rec, keyboard=analyst_keyboard,
-                text_header="🚀 تم النشر! هذه لوحة التحكم الخاصة بك:",
+                chat_id=uid_int,
+                rec=rec,
+                keyboard=analyst_control_panel_keyboard(rec.id),
+                text_header="❌ تعذر النشر في قنواتك المرتبطة. تحقق من صلاحيات البوت في القنوات.",
             )
-        return saved_rec
+        return rec, False
 
+    def create_and_publish_recommendation(
+        self,
+        asset: str,
+        side: str,
+        market: str,
+        entry: float,
+        stop_loss: float,
+        targets: List[float],
+        notes: Optional[str],
+        user_id: Optional[str],
+        order_type: str,
+        live_price: Optional[float] = None,
+        target_channel_ids: Optional[List[int]] = None,
+        publish: bool = True,  # ← جديد: السماح بالحفظ فقط عند False
+    ) -> Recommendation:
+        """
+        سلوك مرن:
+        - publish=False ⇒ حفظ فقط وإرجاع التوصية.
+        - publish=True  ⇒ حفظ ثم محاولة النشر لقنوات المستخدم المرتبطة (أو subset محدد).
+        """
+        saved = self.create_recommendation(
+            asset=asset,
+            side=side,
+            market=market,
+            entry=entry,
+            stop_loss=stop_loss,
+            targets=targets,
+            notes=notes,
+            user_id=user_id,
+            order_type=order_type,
+            live_price=live_price,
+        )
+        if not publish:
+            return saved
+
+        self.publish_existing(
+            rec_id=saved.id,
+            user_id=user_id,
+            target_channel_ids=target_channel_ids,
+        )
+        return saved
+
+    # =========================
+    # Other actions
+    # =========================
     def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
         """
         Centralized activation for PENDING recommendations.
