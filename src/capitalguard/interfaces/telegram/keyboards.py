@@ -1,10 +1,8 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Iterable
 import math
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from capitalguard.config import settings
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.interfaces.telegram.ui_texts import _pct
@@ -17,13 +15,8 @@ def build_open_recs_keyboard(
     items: List[Recommendation],
     current_page: int,
     price_service: PriceService,
-    seq_map: Optional[Dict[int, int]] = None,   # ← ترقيم محلي اختياري
+    seq_map: Optional[Dict[int, int]] = None,
 ) -> InlineKeyboardMarkup:
-    """
-    يبني لوحة تفاعلية لعرض التوصيات المفتوحة.
-    - يعرض PnL% حي للتوصيات النشطة عندما يتوفر السعر.
-    - يدعم ترقيمًا محليًا للمستخدم عبر seq_map إن تم تمريره.
-    """
     keyboard: List[List[InlineKeyboardButton]] = []
 
     total_items = len(items)
@@ -34,13 +27,11 @@ def build_open_recs_keyboard(
     paginated_items = items[start_index:end_index]
 
     for rec in paginated_items:
-        # اختر المعرّف المعروض: محلي إن وُجد، وإلا المعرف العالمي
         display_id = seq_map.get(rec.id, rec.id) if seq_map else rec.id
 
         if rec.status == RecommendationStatus.PENDING:
             status_icon = "⏳"
             button_text = f"{status_icon} #{display_id} - {rec.asset.value} ({rec.side.value}) | معلقة"
-
         elif rec.status == RecommendationStatus.ACTIVE:
             if rec.stop_loss.value == rec.entry.value:
                 status_icon = "🛡️"
@@ -58,20 +49,19 @@ def build_open_recs_keyboard(
                     status_icon = "▶️"
                     button_text = f"{status_icon} #{display_id} - {rec.asset.value} ({rec.side.value}) | نشطة"
         else:
-            # احتياط لأي حالة غير متوقعة
             status_icon = "ℹ️"
             button_text = f"{status_icon} #{display_id} - {rec.asset.value} ({rec.side.value})"
 
         callback_data = f"rec:show_panel:{rec.id}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
-    # أزرار التنقل
     nav_buttons: List[InlineKeyboardButton] = []
     if current_page > 1:
         nav_buttons.append(
             InlineKeyboardButton("⬅️ السابق", callback_data=f"open_nav:page:{current_page - 1}")
         )
 
+    total_pages = max(total_pages, 1)
     if total_pages > 1:
         nav_buttons.append(
             InlineKeyboardButton(f"صفحة {current_page}/{total_pages}", callback_data="noop")
@@ -89,7 +79,6 @@ def build_open_recs_keyboard(
 
 
 def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """لوحة الأزرار للرسالة العامة داخل القناة."""
     return InlineKeyboardMarkup(
         [
             [
@@ -101,7 +90,6 @@ def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
 
 
 def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """لوحة تحكّم المحلل الخاصة بتوصية واحدة."""
     return InlineKeyboardMarkup(
         [
             [
@@ -119,7 +107,6 @@ def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
 
 
 def analyst_edit_menu_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """قائمة التعديلات."""
     return InlineKeyboardMarkup(
         [
             [
@@ -132,7 +119,6 @@ def analyst_edit_menu_keyboard(rec_id: int) -> InlineKeyboardMarkup:
 
 
 def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMarkup:
-    """تأكيد الإغلاق."""
     return InlineKeyboardMarkup(
         [
             [
@@ -184,13 +170,69 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
 
 
 def review_final_keyboard(review_key: str) -> InlineKeyboardMarkup:
+    """
+    لوحة مراجعة الصفقة قبل الحفظ/النشر.
+    - زر "نشر في القناة" = ينشر لكل القنوات الفعّالة (السلوك القديم).
+    - زر "اختيار القنوات" = يفتح مُنتقي القنوات المتعددة.
+    """
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("💾 حفظ + نشر", callback_data=f"rec:publish:{review_key}"),
+                InlineKeyboardButton("✅ نشر في القنوات الفعّالة", callback_data=f"rec:publish:{review_key}"),
+            ],
+            [
+                InlineKeyboardButton("📢 اختيار القنوات", callback_data=f"rec:choose_channels:{review_key}"),
                 InlineKeyboardButton("📝 إضافة/تعديل ملاحظات", callback_data=f"rec:add_notes:{review_key}"),
             ],
             [InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{review_key}")],
         ]
     )
-# --- END OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
+
+
+# -------- ق.Keyboard مُنتقي القنوات المتعددة --------
+def build_channel_picker_keyboard(
+    review_key: str,
+    channels: Iterable[dict],
+    selected_ids: set[int],
+    page: int = 1,
+    per_page: int = 10,
+) -> InlineKeyboardMarkup:
+    """
+    channels: iterable of dicts like {id, title, username, telegram_channel_id}
+    selected_ids: set of telegram_channel_id currently selected
+    """
+    ch_list = list(channels)
+    total = len(ch_list)
+    page = max(page, 1)
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_items = ch_list[start:end]
+
+    rows: List[List[InlineKeyboardButton]] = []
+
+    for ch in page_items:
+        tg_id = int(ch["telegram_channel_id"])
+        label = ch.get("title") or (f"@{ch['username']}" if ch.get("username") else str(tg_id))
+        mark = "✔️" if tg_id in selected_ids else "✖️"
+        rows.append([
+            InlineKeyboardButton(f"{mark} {label}", callback_data=f"pubsel:toggle:{review_key}:{tg_id}:{page}")
+        ])
+
+    # nav
+    nav: List[InlineKeyboardButton] = []
+    max_page = max(1, math.ceil(total / per_page))
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"pubsel:nav:{review_key}:{page-1}"))
+    nav.append(InlineKeyboardButton(f"صفحة {page}/{max_page}", callback_data="noop"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"pubsel:nav:{review_key}:{page+1}"))
+    if nav:
+        rows.append(nav)
+
+    # actions
+    rows.append([
+        InlineKeyboardButton("🚀 نشر المحدد", callback_data=f"pubsel:confirm:{review_key}"),
+        InlineKeyboardButton("⬅️ رجوع", callback_data=f"pubsel:back:{review_key}"),
+    ])
+
+    return InlineKeyboardMarkup(rows)
