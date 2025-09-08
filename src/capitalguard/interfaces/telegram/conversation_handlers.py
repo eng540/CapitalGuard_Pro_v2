@@ -1,7 +1,5 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
 import logging
 import uuid
-import re
 from typing import List, Dict, Any
 
 from telegram import Update, ReplyKeyboardRemove
@@ -14,8 +12,7 @@ from .helpers import get_service
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
     review_final_keyboard, asset_choice_keyboard, side_market_keyboard,
-    market_choice_keyboard, order_type_keyboard,
-    build_channel_select_keyboard,   # ← جديد
+    market_choice_keyboard, order_type_keyboard, build_channel_picker_keyboard
 )
 from .commands import (
     main_creation_keyboard, change_method_keyboard,
@@ -24,7 +21,7 @@ from .commands import (
 from .parsers import parse_quick_command, parse_text_editor
 from .auth import ALLOWED_USER_FILTER
 
-# للوصول السريع للمستودعات عند الحاجة
+# DB access for channels listing
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 
@@ -36,37 +33,8 @@ log = logging.getLogger(__name__)
 USER_PREFERENCE_KEY = "preferred_creation_method"
 CONVERSATION_DATA_KEY = "new_rec_draft"
 
-# مفاتيح مساعدة للتخزين المؤقت
-_SELECTED_PAGE_KEY = "channel_picker_page"
 
-
-# ============ أدوات مساعدة داخلية ============
-def _get_user_channels_as_dicts(user_tg_id: int, only_active: bool = True) -> List[Dict[str, Any]]:
-    """
-    يرجع قائمة قنوات المستخدم على شكل dicts بسيطة:
-    {'id', 'telegram_channel_id', 'username', 'title'}
-    """
-    with SessionLocal() as s:
-        user_repo = UserRepository(s)
-        ch_repo = ChannelRepository(s)
-        user = user_repo.find_by_telegram_id(int(user_tg_id))
-        if not user:
-            return []
-        channels = ch_repo.list_by_user(user.id, only_active=only_active)
-        out: List[Dict[str, Any]] = []
-        for ch in channels:
-            out.append(
-                {
-                    "id": ch.id,
-                    "telegram_channel_id": int(ch.telegram_channel_id),
-                    "username": getattr(ch, "username", None),
-                    "title": getattr(ch, "title", None),
-                }
-            )
-        return out
-
-
-# ============ بطاقة المراجعة ============
+# --- Review Card ---
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, is_edit: bool = False) -> int:
     message = update.message or (update.callback_query.message if update.callback_query else None)
     if not message:
@@ -113,13 +81,8 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
     return I_REVIEW
 
 
-# ============ حفظ/نشر وإلغاء ============
+# --- Publish / Cancel ---
 async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    زر «💾 حفظ + نشر»:
-    - يحفظ التوصية للمستخدم الحالي.
-    - يحاول النشر فقط إلى قنوات المستخدم المرتبطة والفعّالة أو المختارة.
-    """
     query = update.callback_query
     await query.answer("جارٍ الحفظ ثم النشر...")
     review_key = query.data.split(":")[2]
@@ -133,18 +96,11 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         live_price = get_service(context, "price_service").get_cached_price(
             draft["asset"], draft.get("market", "Futures")
         )
-
         entry_val = draft["entry"]
         entry_price = entry_val[0] if isinstance(entry_val, list) else entry_val
         if isinstance(entry_val, list):
             draft.setdefault("notes", "")
             draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
-
-        # اجلب اختيارات القنوات إن وُجدت
-        selected_ids = draft.get("target_channel_ids")  # قائمة telegram_channel_id
-        extra_kwargs = {}
-        if selected_ids:
-            extra_kwargs["target_channel_ids"] = list({int(x) for x in selected_ids})
 
         rec = trade_service.create_and_publish_recommendation(
             asset=draft["asset"],
@@ -158,7 +114,6 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             order_type=draft['order_type'],
             live_price=live_price,
             publish=True,
-            **extra_kwargs,
         )
         await query.edit_message_text(f"✅ تم الحفظ، ومحاولة النشر انطلقت للتوصية #{rec.id}.")
     except Exception as e:
@@ -187,7 +142,158 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
-# ============ اختيار طريقة الإدخال ============
+# =========================
+# قناة: اختيار قنوات محددة للنشر
+# =========================
+def _load_user_active_channels(user_tg_id: int) -> List[Dict[str, Any]]:
+    with SessionLocal() as s:
+        urepo = UserRepository(s)
+        crepo = ChannelRepository(s)
+        user = urepo.find_or_create(user_tg_id)
+        chans = crepo.list_by_user(user.id, only_active=True)
+        return [
+            {
+                "id": ch.id,
+                "telegram_channel_id": int(ch.telegram_channel_id),
+                "username": ch.username,
+                "title": ch.title,
+            }
+            for ch in chans
+        ]
+
+
+async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يفتح مُنتقي القنوات المتعددة."""
+    query = update.callback_query
+    await query.answer()
+
+    review_key = query.data.split(":")[2]
+    context.user_data['current_review_key'] = review_key
+
+    channels = _load_user_active_channels(query.from_user.id)
+    if not channels:
+        await query.edit_message_text(
+            "ℹ️ لا توجد قنوات مرتبطة بحسابك.\n"
+            "استخدم: /link_channel ثم أعد المحاولة."
+        )
+        return ConversationHandler.END
+
+    # حالة الاختيار تحفظ في user_data باستخدام مفتاح خاص بالمراجعة
+    sel_key = f"pubsel:{review_key}"
+    selected = context.user_data.get(sel_key, set())
+    if not isinstance(selected, set):
+        selected = set()
+        context.user_data[sel_key] = selected
+
+    kb = build_channel_picker_keyboard(review_key, channels, selected, page=1)
+    await query.edit_message_text(
+        "📢 اختر القنوات التي تريد النشر إليها ثم اضغط «🚀 نشر المحدد».",
+        reply_markup=kb
+    )
+
+
+async def channel_picker_nav_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, _, review_key, page_s = query.data.split(":")
+    page = int(page_s)
+
+    channels = _load_user_active_channels(query.from_user.id)
+    sel_key = f"pubsel:{review_key}"
+    selected = context.user_data.get(sel_key, set())
+    kb = build_channel_picker_keyboard(review_key, channels, selected, page=page)
+    await query.edit_message_reply_markup(reply_markup=kb)
+
+
+async def channel_picker_toggle_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, _, review_key, tg_id_s, page_s = query.data.split(":")
+    tg_id = int(tg_id_s)
+    page = int(page_s)
+
+    sel_key = f"pubsel:{review_key}"
+    selected: set = context.user_data.get(sel_key, set())
+    if tg_id in selected:
+        selected.remove(tg_id)
+    else:
+        selected.add(tg_id)
+    context.user_data[sel_key] = selected
+
+    channels = _load_user_active_channels(query.from_user.id)
+    kb = build_channel_picker_keyboard(review_key, channels, selected, page=page)
+    await query.edit_message_reply_markup(reply_markup=kb)
+
+
+async def channel_picker_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    # رجوع لبطاقة المراجعة
+    await show_review_card(update, context, is_edit=True)
+
+
+async def channel_picker_confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """حفظ + نشر إلى القنوات المختارة فقط."""
+    query = update.callback_query
+    await query.answer("جارٍ النشر للقنوات المحددة...")
+    review_key = query.data.split(":")[2]
+
+    draft = context.bot_data.get(review_key)
+    sel_key = f"pubsel:{review_key}"
+    selected: set = context.user_data.get(sel_key, set())
+
+    if not draft:
+        await query.edit_message_text("❌ انتهت صلاحية البطاقة. أعد البدء بـ /newrec.")
+        return ConversationHandler.END
+    if not selected:
+        await query.edit_message_text("⚠️ لم تختر أي قناة. اختر قناة واحدة على الأقل.")
+        return
+
+    trade_service = get_service(context, "trade_service")
+    try:
+        live_price = get_service(context, "price_service").get_cached_price(
+            draft["asset"], draft.get("market", "Futures")
+        )
+        entry_val = draft["entry"]
+        entry_price = entry_val[0] if isinstance(entry_val, list) else entry_val
+        if isinstance(entry_val, list):
+            draft.setdefault("notes", "")
+            draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
+
+        # حفظ فقط أولًا
+        rec = trade_service.create_recommendation(
+            asset=draft["asset"],
+            side=draft["side"],
+            market=draft.get("market", "Futures"),
+            entry=entry_price,
+            stop_loss=draft["stop_loss"],
+            targets=draft["targets"],
+            notes=draft.get("notes"),
+            user_id=str(query.from_user.id),
+            order_type=draft["order_type"],
+            live_price=live_price,
+        )
+
+        # نشر للقنوات المختارة فقط
+        trade_service.publish_existing(
+            rec_id=rec.id,
+            user_id=str(query.from_user.id),
+            target_channel_ids=list(selected),
+        )
+
+        await query.edit_message_text(f"✅ تم الحفظ، وتمت محاولة النشر للقنوات المختارة للتوصية #{rec.id}.")
+    except Exception as e:
+        log.exception("Failed to save/publish to selected channels.")
+        await query.edit_message_text(f"❌ فشل النشر للقنوات المحددة: {e}")
+    finally:
+        # نظّف الحالة
+        context.bot_data.pop(review_key, None)
+        context.user_data.pop('current_review_key', None)
+        context.user_data.pop(sel_key, None)
+    return ConversationHandler.END
+
+
+# --- Method Selection / Quick / Editor ---
 async def change_method_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -218,7 +324,6 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return ConversationHandler.END
 
 
-# ============ معالجات أوامر الإدخال السريع والنصي ============
 async def quick_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = parse_quick_command(update.message.text)
     if not data:
@@ -239,22 +344,7 @@ async def text_editor_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     return await show_review_card(update, context)
 
 
-# ============ Interactive Builder ============
-_AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-_SUFFIXES = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
-
-def _parse_price_string(price_str: str) -> float:
-    s = (price_str or "").strip()
-    s = s.translate(_AR_TO_EN_DIGITS)
-    s = s.replace(",", "").replace("،", "")
-    m = re.match(r"^([+\-]?\d+(?:\.\d+)?)([kKmMbB])?$", s)
-    if not m:
-        return float(s)
-    num, suf = m.groups()
-    scale = _SUFFIXES.get((suf or "").lower(), 1)
-    return float(num) * scale
-
-
+# --- Interactive Builder (كما هو) ---
 async def start_interactive_builder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.message or update.callback_query.message
     context.user_data[CONVERSATION_DATA_KEY] = {}
@@ -273,8 +363,7 @@ async def start_interactive_builder(update: Update, context: ContextTypes.DEFAUL
 async def asset_chosen_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    asset = query.data.split('_', 1)[1]  # مثال: BTCUSDT أو new
-
+    asset = query.data.split('_', 1)[1]
     if asset.lower() == "new":
         await query.message.edit_text("✍️ أرسل رمز الأصل الآن (مثال: BTCUSDT).")
         return I_ASSET_CHOICE
@@ -299,7 +388,6 @@ async def asset_chosen_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             pass
 
     raw = (update.message.text or "").strip()
-
     if raw.lower() in {"new", "جديد"}:
         sent = await update.message.reply_text("⚠️ هذا زر إضافة. من فضلك اكتب رمزًا حقيقيًا مثل: BTCUSDT")
         context.user_data['last_interactive_message_id'] = sent.message_id
@@ -339,10 +427,17 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     draft = context.user_data[CONVERSATION_DATA_KEY]
     draft['order_type'] = order_type
     if order_type == 'MARKET':
-        await query.message.edit_text("✅ Order Type: Market\n\n4️⃣ أرسل: STOP TARGETS...")
+        await query.message.edit_text("✅ Order Type: Market\n\n4️⃣ أرسل: `STOP TARGETS...`")
     else:
-        await query.message.edit_text(f"✅ Order Type: {order_type}\n\n4️⃣ أرسل: ENTRY STOP TARGETS...")
+        await query.message.edit_text(f"✅ Order Type: {order_type}\n\n4️⃣ أرسل: `ENTRY STOP TARGETS...`")
     return I_PRICES
+
+
+def _parse_price_string(price_str: str) -> float:
+    s = price_str.strip().lower()
+    if 'k' in s:
+        return float(s.replace('k', '')) * 1000
+    return float(s)
 
 
 async def prices_received_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -390,7 +485,6 @@ async def market_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return I_SIDE_MARKET
 
 
-# ============ الملاحظات ============
 async def add_notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -421,127 +515,7 @@ async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 
-# ============ منتقي القنوات (Multi-select) ============
-async def open_channel_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """فتح منتقي القنوات."""
-    query = update.callback_query
-    await query.answer()
-
-    review_key = query.data.split(":")[2]
-    context.user_data['current_review_key'] = review_key
-    draft = context.bot_data.setdefault(review_key, {})
-
-    # اجلب قنوات المستخدم الفعّالة
-    channels = _get_user_channels_as_dicts(user_tg_id=update.effective_user.id, only_active=True)
-    draft.setdefault("all_channels_cache", channels)
-
-    # حافظ على اختيارات سابقة إن وُجدت
-    selected = set(int(x) for x in draft.get("target_channel_ids", []))
-
-    page = 1
-    context.user_data[_SELECTED_PAGE_KEY] = page
-    kb = build_channel_select_keyboard(review_key, channels, selected_ids=selected, page=page)
-
-    await query.message.edit_text(
-        "📡 اختر القنوات التي تريد النشر إليها (يمكنك تحديد عدة قنوات):",
-        reply_markup=kb
-    )
-    return I_REVIEW
-
-
-async def toggle_channel_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """تبديل اختيار قناة معيّنة."""
-    query = update.callback_query
-    await query.answer()
-    _, _, review_key, tg_id_str = query.data.split(":")
-    tg_id = int(tg_id_str)
-
-    draft = context.bot_data.setdefault(review_key, {})
-    selected = set(int(x) for x in draft.get("target_channel_ids", []))
-    if tg_id in selected:
-        selected.remove(tg_id)
-    else:
-        selected.add(tg_id)
-    draft["target_channel_ids"] = list(selected)
-
-    channels = draft.get("all_channels_cache") or _get_user_channels_as_dicts(update.effective_user.id, True)
-    page = context.user_data.get(_SELECTED_PAGE_KEY, 1)
-    kb = build_channel_select_keyboard(review_key, channels, selected_ids=selected, page=page)
-    await query.message.edit_reply_markup(reply_markup=kb)
-    return I_REVIEW
-
-
-async def select_all_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    review_key = query.data.split(":")[2]
-    draft = context.bot_data.setdefault(review_key, {})
-    channels = draft.get("all_channels_cache") or _get_user_channels_as_dicts(update.effective_user.id, True)
-    selected = {int(ch["telegram_channel_id"]) for ch in channels}
-    draft["target_channel_ids"] = list(selected)
-
-    page = context.user_data.get(_SELECTED_PAGE_KEY, 1)
-    kb = build_channel_select_keyboard(review_key, channels, selected_ids=selected, page=page)
-    await query.message.edit_reply_markup(reply_markup=kb)
-    return I_REVIEW
-
-
-async def clear_all_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    review_key = query.data.split(":")[2]
-    draft = context.bot_data.setdefault(review_key, {})
-    draft["target_channel_ids"] = []
-
-    channels = draft.get("all_channels_cache") or _get_user_channels_as_dicts(update.effective_user.id, True)
-    page = context.user_data.get(_SELECTED_PAGE_KEY, 1)
-    kb = build_channel_select_keyboard(review_key, channels, selected_ids=[], page=page)
-    await query.message.edit_reply_markup(reply_markup=kb)
-    return I_REVIEW
-
-
-async def page_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    _, _, review_key, page_str = query.data.split(":")
-    page = max(1, int(page_str))
-    context.user_data[_SELECTED_PAGE_KEY] = page
-
-    draft = context.bot_data.setdefault(review_key, {})
-    channels = draft.get("all_channels_cache") or _get_user_channels_as_dicts(update.effective_user.id, True)
-    selected = set(int(x) for x in draft.get("target_channel_ids", []))
-    kb = build_channel_select_keyboard(review_key, channels, selected_ids=selected, page=page)
-    await query.message.edit_reply_markup(reply_markup=kb)
-    return I_REVIEW
-
-
-async def confirm_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """تأكيد الاختيارات والعودة لبطاقة المراجعة."""
-    query = update.callback_query
-    await query.answer("تم حفظ اختيارات القنوات ✅")
-    review_key = query.data.split(":")[2]
-
-    # فقط ارجع لبطاقة المراجعة (سيتم استخدام الاختيارات في publish_handler)
-    # نعيد عرض البطاقة على نفس الرسالة
-    dummy_update = Update(
-        update.update_id,
-        callback_query=type('obj', (object,), {'message': query.message, 'data': ''})
-    )
-    return await show_review_card(dummy_update, context, is_edit=True)
-
-
-async def back_from_channel_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """رجوع لبطاقة المراجعة دون تغيير."""
-    query = update.callback_query
-    await query.answer()
-    dummy_update = Update(
-        update.update_id,
-        callback_query=type('obj', (object,), {'message': query.message, 'data': ''})
-    )
-    return await show_review_card(dummy_update, context, is_edit=True)
-
-
-# ============ التسجيل ============
+# --- Registration Function ---
 def register_conversation_handlers(app: Application):
     creation_conv_handler = ConversationHandler(
         entry_points=[
@@ -555,8 +529,7 @@ def register_conversation_handlers(app: Application):
                 MessageHandler(filters.TEXT & ~filters.COMMAND, asset_chosen_text),
             ],
             QUICK_COMMAND: [
-                # يلتقط /rec فقط
-                MessageHandler(filters.COMMAND & filters.Regex(r"^/rec(\b|\s)"), quick_command_handler)
+                MessageHandler(filters.COMMAND & filters.Regex(r'^\/rec'), quick_command_handler)
             ],
             TEXT_EDITOR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, text_editor_handler)
@@ -577,18 +550,15 @@ def register_conversation_handlers(app: Application):
                 MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received_interactive)
             ],
             I_REVIEW: [
-                # ملاحظات
                 CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
                 CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
-                CallbackQueryHandler(cancel_publish_handler, pattern=r"^rec:cancel:"),
-                # منتقي القنوات
-                CallbackQueryHandler(open_channel_picker, pattern=r"^pub:open:"),
-                CallbackQueryHandler(toggle_channel_pick, pattern=r"^pub:ch:"),
-                CallbackQueryHandler(select_all_channels, pattern=r"^pub:all:"),
-                CallbackQueryHandler(clear_all_channels, pattern=r"^pub:none:"),
-                CallbackQueryHandler(page_channels, pattern=r"^pub:page:"),
-                CallbackQueryHandler(confirm_channels, pattern=r"^pub:confirm:"),
-                CallbackQueryHandler(back_from_channel_picker, pattern=r"^pub:back:"),
+                CallbackQueryHandler(choose_channels_handler, pattern=r"^rec:choose_channels:"),
+                # قناة المنتقي:
+                CallbackQueryHandler(channel_picker_nav_handler, pattern=r"^pubsel:nav:"),
+                CallbackQueryHandler(channel_picker_toggle_handler, pattern=r"^pubsel:toggle:"),
+                CallbackQueryHandler(channel_picker_confirm_handler, pattern=r"^pubsel:confirm:"),
+                CallbackQueryHandler(channel_picker_back_handler, pattern=r"^pubsel:back:"),
+                CallbackQueryHandler(cancel_publish_handler, pattern=r"^rec:cancel:")
             ],
             I_NOTES: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)
@@ -599,4 +569,3 @@ def register_conversation_handlers(app: Application):
         allow_reentry=True,
     )
     app.add_handler(creation_conv_handler)
-# --- END OF FILE ---
