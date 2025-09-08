@@ -1,3 +1,4 @@
+# --- START OF FILE: src/capitalguard/infrastructure/db/repository.py ---
 import logging
 from typing import List, Optional, Any, Union
 
@@ -7,7 +8,7 @@ from sqlalchemy.orm import joinedload, Session
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
-from .models import RecommendationORM, User
+from .models import RecommendationORM, User, Channel
 from .base import SessionLocal
 
 log = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ log = logging.getLogger(__name__)
 class UserRepository:
     """
     مستودع بسيط للتعامل مع مستخدمين تيليجرام داخل جلسة واحدة.
+    يراعي المخطط الحالي: email NOT NULL/UNIQUE, hashed_password nullable, first_name optional.
     """
     def __init__(self, session: Session):
         self.session = session
@@ -32,9 +34,9 @@ class UserRepository:
 
     def find_or_create(self, telegram_id: int, **kwargs) -> User:
         """
-        - يبقي hashed_password = NULL (مطابق للمخطط الجديد).
-        - يملأ email بقيمة placeholder كي يحترم UNIQUE/NOT NULL.
-        - يحدث first_name و user_type إن تم تمريرها.
+        - يُبقي hashed_password = NULL (متوافق مع المخطط).
+        - يملأ email بقيمة placeholder لاحترام UNIQUE/NOT NULL.
+        - يُحدّث first_name و user_type إذا تم تمريرهما.
         """
         user = self.find_by_telegram_id(telegram_id)
         placeholder_email = kwargs.get("email") or f"tg{telegram_id}@telegram.local"
@@ -65,7 +67,7 @@ class UserRepository:
         new_user = User(
             telegram_user_id=telegram_id,
             email=placeholder_email,
-            user_type=kwargs.get("user_type") or "trader",
+            user_type=(kwargs.get("user_type") or "trader"),
             is_active=True,
             first_name=kwargs.get("first_name"),
             # hashed_password => NULL by default (nullable=True)
@@ -74,6 +76,76 @@ class UserRepository:
         self.session.commit()
         self.session.refresh(new_user)
         return new_user
+
+
+# =========================
+# Channel Repository (scoped)
+# =========================
+class ChannelRepository:
+    """
+    مستودع لقنوات تيليجرام المرتبطة بالمستخدمين (المحللين).
+    يوفّر عمليات CRUD الأساسية مع حماية من الازدواجية بالـ ID أو الـ username.
+    """
+    def __init__(self, session: Session):
+        self.session = session
+
+    def find_by_username(self, username: str) -> Optional[Channel]:
+        """بحث غير حساس لحالة الأحرف وبلا @ في بداية الاسم."""
+        clean = (username or "").lstrip("@").lower()
+        return (
+            self.session.query(Channel)
+            .filter(sa.func.lower(Channel.username) == clean)
+            .first()
+        )
+
+    def list_by_user(self, user_id: int) -> List[Channel]:
+        return (
+            self.session.query(Channel)
+            .filter(Channel.user_id == user_id)
+            .order_by(Channel.created_at.desc())
+            .all()
+        )
+
+    def add(self, user_id: int, telegram_channel_id: int, username: str) -> Channel:
+        """
+        يربط قناة بالمستخدم. يمنع تكرار الربط إن كانت القناة مرتبطة مسبقًا:
+          - إن كانت القناة مرتبطة بنفس المستخدم: تُعاد كما هي (idempotent).
+          - إن كانت مرتبطة بمستخدم آخر: يُرفع خطأ واضح.
+        """
+        clean_username = (username or "").lstrip("@")
+        clean_username_lc = clean_username.lower()
+
+        existing = (
+            self.session.query(Channel)
+            .filter(
+                or_(
+                    Channel.telegram_channel_id == telegram_channel_id,
+                    sa.func.lower(Channel.username) == clean_username_lc,
+                )
+            )
+            .first()
+        )
+        if existing:
+            if existing.user_id == user_id:
+                # Idempotent: اعتبرها مرتبطة مسبقًا لنفس المستخدم
+                return existing
+            raise ValueError(f"Channel '{username}' is already linked by another user.")
+
+        new_ch = Channel(
+            user_id=user_id,
+            telegram_channel_id=telegram_channel_id,
+            username=clean_username,
+            is_active=True,
+        )
+        self.session.add(new_ch)
+        self.session.commit()
+        self.session.refresh(new_ch)
+        log.info("Linked channel '%s' (id=%s) to user_id=%s", clean_username, telegram_channel_id, user_id)
+        return new_ch
+
+    # اختياريًا مستقبلًا:
+    # def set_active(self, channel_id: int, active: bool) -> None: ...
+    # def remove(self, channel_id: int, user_id: int) -> None: ...
 
 
 # =========================
@@ -144,7 +216,7 @@ class RecommendationRepository:
         with SessionLocal() as s:
             try:
                 user_repo = UserRepository(s)
-                # نضمن وجود المالك (حتى لو ما استعمل /start)
+                # نضمن وجود المالك حتى لو لم يرسل /start من قبل
                 user = user_repo.find_or_create(int(rec.user_id))
 
                 row = RecommendationORM(
@@ -408,3 +480,4 @@ class RecommendationRepository:
                 .all()
             )
             return [r[0] for r in results]
+# --- END OF FILE ---
