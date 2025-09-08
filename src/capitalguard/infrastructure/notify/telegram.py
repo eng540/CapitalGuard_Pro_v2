@@ -14,22 +14,17 @@ log = logging.getLogger(__name__)
 
 class TelegramNotifier:
     """
-    Telegram Notifier (enhanced for phase 9.x)
+    Telegram Notifier (phase 9.x, no default channel)
 
-    - Preserves legacy behavior via TELEGRAM_CHAT_ID (default channel).
-    - Adds post_to_channel(channel_id, ...) to broadcast to any linked channel.
-    - Robust error handling and consistent return types.
+    - ❌ لا قناة افتراضية: يمنع أي نشر عبر TELEGRAM_CHAT_ID أو ما شابه.
+    - ✅ post_to_channel(channel_id, ...) للنشر الصريح إلى قنوات محددة فقط.
+    - إرسال خاص للمستخدم، وتحرير بطاقة منشورة سابقًا عند توفر channel_id/message_id.
+    - تعامل متين مع أخطاء Telegram API وإرجاع أنواع ثابتة.
     """
 
     def __init__(self) -> None:
         self.bot_token: Optional[str] = settings.TELEGRAM_BOT_TOKEN
-        # Default channel for legacy single-channel deployments (optional)
-        try:
-            self.channel_id: Optional[int] = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else None
-        except Exception:
-            # Keep None if unparsable, but don't crash
-            self.channel_id = None
-
+        # لا نستخدم أي قناة افتراضية مطلقًا
         self.api_base: Optional[str] = (
             f"https://api.telegram.org/bot{self.bot_token}" if self.bot_token else None
         )
@@ -124,7 +119,7 @@ class TelegramNotifier:
         keyboard: Optional[InlineKeyboardMarkup] = None,
     ) -> Optional[Tuple[int, int]]:
         """
-        New (9.x): Post a trade card to any Telegram channel by id.
+        Post a trade card to a specific Telegram channel by id.
         Returns (channel_id, message_id) on success, None otherwise.
         MUST NOT raise exceptions (service layer loops over multiple channels).
         """
@@ -137,14 +132,11 @@ class TelegramNotifier:
         keyboard: Optional[InlineKeyboardMarkup] = None,
     ) -> Optional[Tuple[int, int]]:
         """
-        Legacy/Default: Post to the default TELEGRAM_CHAT_ID if configured.
-        Keeps backward compatibility for single-channel setups.
+        Deprecated (9.x): كان يستخدم قناة افتراضية عبر TELEGRAM_CHAT_ID.
+        لم يعد مسموحًا بالنشر الافتراضي. تعيد None دائمًا مع تحذير في السجل.
         """
-        if not self.channel_id:
-            log.warning("Cannot post card: TELEGRAM_CHAT_ID is not set.")
-            return None
-        text = build_trade_card_text(rec)
-        return self._send_text(chat_id=self.channel_id, text=text, keyboard=keyboard)
+        log.warning("post_recommendation_card is deprecated and disabled (no default channel allowed).")
+        return None
 
     def send_private_message(
         self,
@@ -181,11 +173,7 @@ class TelegramNotifier:
 
     def send_admin_alert(self, text: str) -> None:
         """
-        Sends an admin alert to the default channel if available.
-        Non-fatal if default channel is not configured.
+        9.x: لا إرسال لقناة افتراضية. نسجل فقط لإشراف النظام.
         """
-        if not self.channel_id:
-            log.info("Admin alert skipped (no TELEGRAM_CHAT_ID). Message was: %s", text)
-            return
-        self._send_text(chat_id=self.channel_id, text=f"🔔 ADMIN ALERT 🔔\n{text}", keyboard=None, parse_mode="HTML")
+        log.info("ADMIN ALERT (logged only, no default channel): %s", text)
 # --- END OF FILE: src/capitalguard/infrastructure/notify/telegram.py ---
