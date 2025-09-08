@@ -2,6 +2,8 @@
 import io
 import csv
 import logging
+from typing import Optional
+
 from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, ContextTypes, CommandHandler
 from telegram.error import BadRequest
@@ -211,7 +213,9 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     الاستخدام:
       /link_channel @YourChannelUsername
     """
-    user_id = update.effective_user.id
+    user_tg_id = int(update.effective_user.id)
+
+    # تعليمات الاستخدام إن لم تُمرَّر وسيطة
     if not context.args:
         await update.message.reply_html(
             "<b>طريقة الاستخدام:</b>\n"
@@ -221,51 +225,69 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    channel_username = context.args[0]
-    if not channel_username.startswith('@'):
-        await update.message.reply_text("❌ الخطأ: اسم القناة يجب أن يبدأ بـ '@'.")
-        return
+    raw = context.args[0].strip()
+    # نقبل @name أو name
+    channel_username_display = raw if raw.startswith("@") else f"@{raw}"
+    channel_username_store = channel_username_display.lstrip("@")
 
-    await update.message.reply_text(f"⏳ جارِ محاولة ربط {channel_username} ...")
+    await update.message.reply_text(f"⏳ جارِ محاولة ربط {channel_username_display} ...")
 
     try:
-        # التحقق: البوت Admin في القناة
-        admins = await context.bot.get_chat_administrators(chat_id=channel_username)
-        bot_is_admin = any(admin.user.id == context.bot.id for admin in admins)
+        # جلب هوية البوت مرة واحدة
+        me = await context.bot.get_me()
+
+        # التحقق: البوت والمستخدم Admin في القناة
+        admins = await context.bot.get_chat_administrators(chat_id=channel_username_display)
+        bot_is_admin = any(a.user.id == me.id for a in admins)
+        user_is_admin = any(a.user.id == user_tg_id for a in admins)
+
         if not bot_is_admin:
-            await update.message.reply_text(f"❌ فشل: البوت ليس مسؤولاً في {channel_username}.")
+            await update.message.reply_text(f"❌ فشل: البوت ليس مسؤولاً في {channel_username_display}.")
             return
-
-        # التحقق: المستخدم مُرسل الأمر Admin/Creator
-        user_is_admin = any(admin.user.id == user_id for admin in admins)
         if not user_is_admin:
-            await update.message.reply_text(f"❌ فشل: لا تبدو مديرًا في {channel_username}.")
+            await update.message.reply_text(f"❌ فشل: لا تبدو مديرًا في {channel_username_display}.")
             return
 
-        # الحصول على معرّف القناة
-        channel_chat = await context.bot.get_chat(chat_id=channel_username)
-        channel_id = channel_chat.id
+        # الحصول على معرّف القناة الحقيقي
+        channel_chat = await context.bot.get_chat(chat_id=channel_username_display)
+        channel_id = int(channel_chat.id)
 
-        # حفظ القناة في قاعدة البيانات
+        # حفظ القناة في قاعدة البيانات (Idempotent + حماية من ربط قناة لمستخدمين مختلفين)
         with SessionLocal() as session:
             user_repo = UserRepository(session)
             channel_repo = ChannelRepository(session)
 
-            user = user_repo.find_or_create(user_id)  # يضمن وجود المستخدم
-            channel_repo.add(user_id=user.id, telegram_channel_id=channel_id, username=channel_username)
+            user = user_repo.find_or_create(telegram_id=user_tg_id)  # يضمن وجود المستخدم
 
-        await update.message.reply_text(f"✅ تم ربط القناة {channel_username} بحسابك.")
+            try:
+                channel = channel_repo.add(
+                    user_id=user.id,
+                    telegram_channel_id=channel_id,
+                    username=channel_username_store,  # نخزن بدون @
+                )
+            except Exception as e:
+                # رسائل مخصصة لأكثر الحالات شيوعًا (تكرار/ملكية سابقة)
+                msg = str(e)
+                if "unique" in msg.lower() or "already" in msg.lower() or "exists" in msg.lower():
+                    await update.message.reply_text(
+                        f"ℹ️ القناة {channel_username_display} مرتبطة مسبقًا. "
+                        f"إن كانت مملوكة بحساب آخر، يرجى فك ارتباطها هناك أولاً."
+                    )
+                    return
+                raise
+
+        await update.message.reply_text(f"✅ تم ربط القناة {channel_username_display} بحسابك.")
 
     except BadRequest as e:
         await update.message.reply_text(
             f"❌ خطأ من تيليجرام: {e.message}.\n"
-            f"تحقق أن القناة عامة وأن اسم المستخدم صحيح، وأن البوت مسؤول فيها."
+            f"تأكد أن القناة عامة وأن اسم المستخدم صحيح، وأن البوت مُضاف كمسؤول."
         )
     except ValueError as e:
         await update.message.reply_text(f"❌ خطأ: {e}")
     except Exception as e:
         log.exception("Error during channel linking")
-        await update.message.reply_text(f"حدث خطأ غير متوقع: {e}")
+        await update.message.reply_text(f"❌ حدث خطأ غير متوقع: {e}")
 
 
 def register_commands(app: Application):
