@@ -1,21 +1,14 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+--- START OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 import types
 import re
 import unicodedata
-from time import time
-from typing import Optional
+from typing import Optional, List, Dict
 
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import Application, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
 from .helpers import get_service
 from .keyboards import (
@@ -34,14 +27,12 @@ log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 
-# ---------- GOLDEN v7+: Normalization & Parsing Helpers with space-suffix support ----------
-
+# ---------- Normalization & Parsing Helpers ----------
 _AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
 _SEPARATORS_REGEX = re.compile(r"[,\u060C;:|\t\r\n]+")
 
 def _normalize_text(s: str) -> str:
-    """تطبيع يونيكود + تحويل الأرقام العربية -> الإنجليزية + تنظيف المسافات."""
     if not s:
         return ""
     s = unicodedata.normalize("NFKC", s)
@@ -51,41 +42,25 @@ def _normalize_text(s: str) -> str:
     return s
 
 def _parse_one_number(token: str) -> float:
-    """
-    يحوّل توكن واحد مثل: '1.2k' أو '3,500' أو '4.5m' (بعد الدمج إن كانت اللاحقة منفصلة) إلى float.
-    يدعم K/M/B (صغيرة أو كبيرة).
-    """
     if not token:
         raise ValueError("قيمة رقمية فارغة")
     t = token.strip().upper()
-    # إزالة محارف غير رقمية/لاحقة من الأطراف
     t = re.sub(r"^[^\d+-.]+|[^\dA-Z.+-]+$", "", t)
-    # إزالة فواصل الآلاف الإنجليزية إن وجدت
     t = t.replace(",", "")
-
     m = re.match(r"^([+\-]?\d+(?:\.\d+)?)([KMB])?$", t)
     if not m:
         raise ValueError(f"قيمة رقمية غير صالحة: '{token}'")
-
     num_str, suf = m.groups()
     scale = _SUFFIXES.get(suf or "", 1)
     return float(num_str) * scale
 
-def _tokenize_numbers(s: str) -> list[str]:
-    """
-    يفصل السلسلة إلى توكنات أرقام/لاحقات مع تطبيع شامل.
-    يقبل الفواصل العربية/الإنجليزية، مسافات، أسطر جديدة، Tab، عمود |، نقطتين، إلخ.
-    """
+def _tokenize_numbers(s: str) -> List[str]:
     s = _normalize_text(s)
     s = _SEPARATORS_REGEX.sub(" ", s)
     return [p for p in s.split(" ") if p]
 
-def _coalesce_num_suffix_tokens(tokens: list[str]) -> list[str]:
-    """
-    يدمج (رقم + لاحقة) عندما تأتي اللاحقة كتوكِن منفصل،
-    مثل: ['1', 'k', '2.5', 'M'] → ['1k', '2.5M'].
-    """
-    out: list[str] = []
+def _coalesce_num_suffix_tokens(tokens: List[str]) -> List[str]:
+    out: List[str] = []
     i = 0
     while i < len(tokens):
         cur = tokens[i].strip()
@@ -99,22 +74,18 @@ def _coalesce_num_suffix_tokens(tokens: list[str]) -> list[str]:
     return out
 
 def parse_number(s: str) -> float:
-    """يقرأ قيمة رقمية وحيدة مع دعم K/M/B ملتصقة أو بمسافة، والأرقام العربية/الإنجليزية."""
     tokens = _tokenize_numbers(s)
     if not tokens:
         raise ValueError("لم يتم العثور على قيمة رقمية.")
     tokens = _coalesce_num_suffix_tokens(tokens)
     return _parse_one_number(tokens[0])
 
-def parse_number_list(s: str) -> list[float]:
-    """يقرأ قائمة قيم رقمية بنفس المرونة (فواصل ومسافات وأسطر وK/M/B)."""
+def parse_number_list(s: str) -> List[float]:
     tokens = _tokenize_numbers(s)
     if not tokens:
         raise ValueError("لم يتم العثور على أي أرقام.")
     tokens = _coalesce_num_suffix_tokens(tokens)
     return [_parse_one_number(t) for t in tokens]
-
-# ---------- Parsing helpers لقراءة معرّفات من بيانات الكولباك ----------
 
 def _parse_tail_int(data: str) -> Optional[int]:
     try:
@@ -129,13 +100,16 @@ def _parse_cq_parts(data: str, expected: int) -> Optional[list]:
     except Exception:
         return None
 
-# ---------- Telegram Handlers ----------
-
 async def _noop_answer(*args, **kwargs):
-    """لا يفعل شيئًا (لاستخدامه كـ callback عند بناء dummy_query)."""
     return None
 
+# ---------- Telegram Handlers ----------
+
 async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    ⬅️/➡️ تنقل الصفحات لقائمة التوصيات — الآن مقيّد بالمستخدم الحالي.
+    كما نولّد seq_map لترقيم محلي لكل مستخدم.
+    """
     query = update.callback_query
     await query.answer()
 
@@ -144,14 +118,28 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
 
-    filters_map = context.user_data.get("last_open_filters", {})
-    items = trade_service.list_open(**filters_map)
+    filters_map = context.user_data.get("last_open_filters", {}) or {}
+    user_tg_id = update.effective_user.id
 
+    # ✅ اجلب فقط توصيات هذا المستخدم
+    items = trade_service.repo.list_open_for_user(
+        user_tg_id,
+        symbol=filters_map.get("symbol"),
+        side=filters_map.get("side"),
+        status=filters_map.get("status"),
+    )
     if not items:
         await query.edit_message_text("✅ لا توجد توصيات مفتوحة تطابق الفلتر الحالي.")
         return
 
-    keyboard = build_open_recs_keyboard(items, current_page=page, price_service=price_service)
+    # ترقيم محلي: 1..N فوق القائمة كاملة (ليس فقط الصفحة)
+    seq_map: Dict[int, int] = {rec.id: i for i, rec in enumerate(items, start=1)}
+    keyboard = build_open_recs_keyboard(
+        items,
+        current_page=page,
+        price_service=price_service,
+        seq_map=seq_map,  # 👈 جديد
+    )
 
     header_text = "<b>📊 لوحة قيادة التوصيات المفتوحة</b>"
     if filters_map:
@@ -171,6 +159,9 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
             raise
 
 async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    عرض لوحة التحكم لتوصية معيّنة — الآن نتحقق من ملكية التوصية للمستخدم الحالي.
+    """
     query = update.callback_query
     await query.answer()
 
@@ -182,9 +173,10 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
 
-    rec = trade_service.repo.get(rec_id)
+    # ✅ اجلب التوصية فقط لو كانت مملوكة لهذا المستخدم
+    rec = trade_service.repo.get_by_id_for_user(rec_id, update.effective_user.id)
     if not rec:
-        await query.edit_message_text(f"❌ التوصية #{rec_id} لم تعد موجودة.")
+        await query.edit_message_text(f"❌ لا يمكنك الوصول للتوصية #{rec_id}.")
         return
 
     live_price = price_service.get_cached_price(rec.asset.value, rec.market)
@@ -192,7 +184,7 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
         setattr(rec, "live_price", live_price)
 
     text = build_trade_card_text(rec)
-    keyboard = analyst_control_panel_keyboard(rec_id)
+    keyboard = analyst_control_panel_keyboard(rec.id)
 
     await query.edit_message_text(
         text=text,
@@ -201,33 +193,13 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
         disable_web_page_preview=True,
     )
 
-# ---- Rate limit support for public updates (20s window per message) ----
-_RATE_KEY = "pub_rate_limit"
-_RATE_WINDOW_SEC = 20
-
-def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int) -> bool:
-    key = (_RATE_KEY, chat_id, message_id)
-    last = context.bot_data.get(key)
-    now = time()
-    if last and (now - last) < _RATE_WINDOW_SEC:
-        return True
-    context.bot_data[key] = now
-    return False
-
 async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تحديث البطاقة العامة (سعر حي فقط) مع مضاد إزعاج بسيط."""
+    """تحديث البطاقة العامة (سعر حي فقط)."""
     query = update.callback_query
     try:
         rec_id = _parse_tail_int(query.data)
         if rec_id is None:
             await query.answer("Bad request.", show_alert=True)
-            return
-
-        # Rate-limit per (chat, message)
-        chat_id = query.message.chat_id
-        message_id = query.message.message_id
-        if _recently_updated(context, chat_id, message_id):
-            await query.answer("البيانات محدثة للتو — حاول بعد قليل.", show_alert=False)
             return
 
         trade_service: TradeService = get_service(context, "trade_service")
@@ -248,7 +220,7 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         setattr(rec, "live_price", live_price)
         new_text = build_trade_card_text(rec)
-        new_keyboard = public_channel_keyboard(rec_id)
+        new_keyboard = public_channel_keyboard(rec.id)
 
         try:
             await query.edit_message_text(
@@ -257,7 +229,7 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
-            await query.answer("تم التحديث ✅")
+            await query.answer("تم التحديث!")
         except BadRequest as e:
             if "Message is not modified" in str(e):
                 await query.answer("البيانات محدثة بالفعل.")
@@ -459,4 +431,4 @@ def register_management_handlers(application: Application):
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler),
         group=1,
     )
-# --- END OF FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+--- END OF FILE ---
