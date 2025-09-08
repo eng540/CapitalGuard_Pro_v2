@@ -17,9 +17,9 @@ from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
 
-# ✅ مستودعات وإدارة جلسة DB لربط القنوات
-from capitalguard.infrastructure.db.base import SessionLocal
-from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+# (لم نعد بحاجة إلى SessionLocal هنا)
+# from capitalguard.infrastructure.db.base import SessionLocal
+# from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 
 log = logging.getLogger(__name__)
 
@@ -121,14 +121,9 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Save the filter for pagination (إن كان لديك تنقّل صفحات)
     context.user_data["last_open_filters"] = filters
 
-    # ✅ استعلام مقيّد بالمستخدم الداخلي (user.id) لضمان العزل
-    with SessionLocal() as session:
-        user_repo = UserRepository(session)
-        user = user_repo.find_or_create(telegram_id=int(user_telegram_id))
-        db_user_id = user.id
-
-    items = trade_service.list_open_for_user_id(
-        db_user_id,
+    # ✅ استعلام مقيّد بالمستخدم (بالـ Telegram ID) — لا نحتاج db_user_id
+    items = trade_service.repo.list_open_for_user(
+        user_telegram_id,
         symbol=filters.get("symbol"),
         side=filters.get("side"),
         status=filters.get("status"),
@@ -159,18 +154,12 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تصدير توصيات المستخدم فقط إلى CSV (مقيّدة بالمستخدم الداخلي)."""
+    """تصدير توصيات المستخدم فقط إلى CSV (مقيّدة بالمستخدم)."""
     await update.message.reply_text("جاري تجهيز ملف التصدير...")
     trade_service: TradeService = get_service(context, "trade_service")
     user_telegram_id = update.effective_user.id
 
-    # ✅ اجلب user.id الداخلي أولاً
-    with SessionLocal() as session:
-        user_repo = UserRepository(session)
-        user = user_repo.find_or_create(telegram_id=int(user_telegram_id))
-        db_user_id = user.id
-
-    all_recs = trade_service.list_all_for_user_id(db_user_id)
+    all_recs = trade_service.repo.list_all_for_user(user_telegram_id)
     if not all_recs:
         await update.message.reply_text("لا توجد بيانات للتصدير.")
         return
@@ -263,7 +252,10 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channel_chat = await context.bot.get_chat(chat_id=channel_username_display)
         channel_id = int(channel_chat.id)
 
-        # حفظ القناة في قاعدة البيانات (Idempotent + حماية من ربط قناة لمستخدمين مختلفين)
+        # حفظ القناة في قاعدة البيانات
+        from capitalguard.infrastructure.db.base import SessionLocal
+        from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+
         with SessionLocal() as session:
             user_repo = UserRepository(session)
             channel_repo = ChannelRepository(session)
