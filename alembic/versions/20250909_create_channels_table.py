@@ -1,4 +1,4 @@
-// --- START: alembic/versions/20250909_create_channels_table.py ---
+#// --- START: alembic/versions/20250909_create_channels_table.py ---
 """Create channels table for analyst broadcasting
 
 Revision ID: 20250909_create_channels_table
@@ -42,4 +42,4 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_channels_telegram_channel_id"), table_name="channels")
     op.drop_index(op.f("ix_channels_user_id"), table_name="channels")
     op.drop_table("channels")
-// --- END: alembic/versions/20250909_create_channels_table.py ---
+#// --- END: alembic/versions/20250909_create_channels_table.py ---
