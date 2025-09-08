@@ -90,7 +90,7 @@ class ChannelRepository:
         self.session = session
 
     def find_by_username(self, username: str) -> Optional[Channel]:
-        """بحث غير حساس لحالة الأحرف وبلا @ في بداية الاسم."""
+        """بحث غير حساس لحالة الأحرف وبلا @ في بداية الاسم (نطاق عام لجميع المستخدمين)."""
         clean = (username or "").lstrip("@").lower()
         return (
             self.session.query(Channel)
@@ -98,29 +98,51 @@ class ChannelRepository:
             .first()
         )
 
-    def list_by_user(self, user_id: int) -> List[Channel]:
-        return (
+    def list_by_user(self, user_id: int, only_active: bool = False) -> List[Channel]:
+        q = (
             self.session.query(Channel)
             .filter(Channel.user_id == user_id)
-            .order_by(Channel.created_at.desc())
-            .all()
+        )
+        if only_active:
+            q = q.filter(Channel.is_active.is_(True))
+        return q.order_by(Channel.created_at.desc()).all()
+
+    def find_by_chat_id_for_user(self, user_id: int, chat_id: int) -> Optional[Channel]:
+        return (
+            self.session.query(Channel)
+            .filter(Channel.user_id == user_id, Channel.telegram_channel_id == chat_id)
+            .first()
         )
 
-    def add(self, user_id: int, telegram_channel_id: int, username: str) -> Channel:
+    def find_by_username_for_user(self, user_id: int, username: str) -> Optional[Channel]:
+        clean = (username or "").lstrip("@").lower()
+        return (
+            self.session.query(Channel)
+            .filter(Channel.user_id == user_id, sa.func.lower(Channel.username) == clean)
+            .first()
+        )
+
+    def add(
+        self,
+        user_id: int,
+        telegram_channel_id: int,
+        username: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> Channel:
         """
         يربط قناة بالمستخدم. يمنع تكرار الربط إن كانت القناة مرتبطة مسبقًا:
           - إن كانت القناة مرتبطة بنفس المستخدم: تُعاد كما هي (idempotent).
           - إن كانت مرتبطة بمستخدم آخر: يُرفع خطأ واضح.
         """
         clean_username = (username or "").lstrip("@")
-        clean_username_lc = clean_username.lower()
+        clean_username_lc = clean_username.lower() if clean_username else None
 
         existing = (
             self.session.query(Channel)
             .filter(
                 or_(
                     Channel.telegram_channel_id == telegram_channel_id,
-                    sa.func.lower(Channel.username) == clean_username_lc,
+                    sa.func.lower(Channel.username) == clean_username_lc if clean_username_lc else sa.false(),
                 )
             )
             .first()
@@ -128,24 +150,92 @@ class ChannelRepository:
         if existing:
             if existing.user_id == user_id:
                 # Idempotent: اعتبرها مرتبطة مسبقًا لنفس المستخدم
+                if title and existing.title != title:
+                    existing.title = title
+                    self.session.commit()
+                    self.session.refresh(existing)
                 return existing
-            raise ValueError(f"Channel '{username}' is already linked by another user.")
+            raise ValueError(f"Channel '{username or telegram_channel_id}' is already linked by another user.")
 
         new_ch = Channel(
             user_id=user_id,
             telegram_channel_id=telegram_channel_id,
-            username=clean_username,
+            username=clean_username or None,
+            title=title,
             is_active=True,
         )
         self.session.add(new_ch)
         self.session.commit()
         self.session.refresh(new_ch)
-        log.info("Linked channel '%s' (id=%s) to user_id=%s", clean_username, telegram_channel_id, user_id)
+        log.info(
+            "Linked channel '%s' (id=%s) to user_id=%s",
+            clean_username or "-", telegram_channel_id, user_id
+        )
         return new_ch
 
-    # اختياريًا مستقبلًا:
-    # def set_active(self, channel_id: int, active: bool) -> None: ...
-    # def remove(self, channel_id: int, user_id: int) -> None: ...
+    def set_active(self, channel_id: int, user_id: int, is_active: bool) -> None:
+        ch = (
+            self.session.query(Channel)
+            .filter(Channel.id == channel_id, Channel.user_id == user_id)
+            .first()
+        )
+        if not ch:
+            raise ValueError("Channel not found for this user.")
+        ch.is_active = bool(is_active)
+        self.session.commit()
+
+    def remove(self, channel_id: int, user_id: int) -> None:
+        ch = (
+            self.session.query(Channel)
+            .filter(Channel.id == channel_id, Channel.user_id == user_id)
+            .first()
+        )
+        if not ch:
+            raise ValueError("Channel not found for this user.")
+        self.session.delete(ch)
+        self.session.commit()
+
+    def update_metadata(
+        self,
+        channel_id: int,
+        user_id: int,
+        *,
+        title: Optional[str] = None,
+        username: Optional[str] = None,
+    ) -> Channel:
+        """
+        تحديث اختياري للعنوان/اسم المستخدم.
+        - يطبع username بدون @ ويمنع التعارض مع قنوات أخرى.
+        """
+        ch = (
+            self.session.query(Channel)
+            .filter(Channel.id == channel_id, Channel.user_id == user_id)
+            .first()
+        )
+        if not ch:
+            raise ValueError("Channel not found for this user.")
+
+        if username is not None:
+            new_un = username.lstrip("@")
+            new_un_lc = new_un.lower()
+            if new_un:
+                conflict = (
+                    self.session.query(Channel)
+                    .filter(sa.func.lower(Channel.username) == new_un_lc, Channel.id != ch.id)
+                    .first()
+                )
+                if conflict:
+                    raise ValueError("Username is already used by another linked channel.")
+                ch.username = new_un
+            else:
+                ch.username = None
+
+        if title is not None:
+            ch.title = title
+
+        self.session.commit()
+        self.session.refresh(ch)
+        return ch
 
 
 # =========================
@@ -338,7 +428,7 @@ class RecommendationRepository:
             return [self._to_entity(r) for r in rows]
 
     # -------------------------
-    # Read (scoped to user via *internal* user_id)  <-- جديدة
+    # Read (scoped to user via *internal* user_id)
     # -------------------------
     def list_open_for_user_id(
         self,
@@ -498,6 +588,7 @@ class RecommendationRepository:
                 row.closed_at = rec.closed_at
                 row.alert_meta = rec.alert_meta
 
+                self.session = s
                 s.commit()
                 s.refresh(row)
                 return self._to_entity(row)

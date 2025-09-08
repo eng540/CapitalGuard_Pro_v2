@@ -2,7 +2,7 @@
 import io
 import csv
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, ContextTypes, CommandHandler
@@ -17,9 +17,9 @@ from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
 
-# (لم نعد بحاجة إلى SessionLocal هنا)
-# from capitalguard.infrastructure.db.base import SessionLocal
-# from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+# ✅ نحتاج DB هنا لأوامر إدارة القنوات
+from capitalguard.infrastructure.db.base import SessionLocal
+from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 
 log = logging.getLogger(__name__)
 
@@ -81,12 +81,15 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         "<b>Available Commands:</b>\n\n"
-        "• <code>/newrec</code> — إنشاء توصية جديدة.\n"
-        "• <code>/open [filter]</code> — عرض توصياتك المفتوحة (يمكن الفلترة بـ btc, long, short, pending, active).\n"
+        "• <code>/newrec</code> — إنشاء توصية جديدة (حفظ فقط افتراضيًا، مع خيار النشر لاحقًا).\n"
+        "• <code>/open [filter]</code> — عرض توصياتك المفتوحة (btc/long/short/pending/active).\n"
         "• <code>/stats</code> — ملخّص أدائك الشخصي.\n"
         "• <code>/export</code> — تصدير توصياتك.\n"
         "• <code>/settings</code> — إدارة التفضيلات.\n"
-        "• <code>/link_channel @YourChannel</code> — ربط قناة تيليجرام بالنظام (يتطلب أن تكون أنت والبوت مسؤولين)."
+        "• <code>/link_channel @YourChannel</code> — ربط قناة عامة (أنت والبوت مسؤولان).\n"
+        "• <code>/channels</code> — عرض قنواتك المرتبطة وحالتها.\n"
+        "• <code>/toggle_channel &lt;@username|chat_id&gt;</code> — تفعيل/تعطيل قناة.\n"
+        "• <code>/unlink_channel &lt;@username|chat_id&gt;</code> — فك ربط قناة."
     )
 
 
@@ -203,7 +206,34 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return CHOOSE_METHOD
 
 
-# ✅ جديد: أمر ربط القناة
+# -----------------------------
+# أدوات مساعدة لأوامر القنوات
+# -----------------------------
+def _parse_channel_ref(raw: str) -> Tuple[Optional[int], Optional[str]]:
+    """
+    يقبل:
+      - @username أو username  → يرجع (None, username_without_at)
+      - chat_id (int)          → يرجع (chat_id, None)
+    """
+    s = (raw or "").strip()
+    if not s:
+        return None, None
+    if s.startswith("@"):
+        return None, s[1:]
+    # محاولة تفسيره كـ chat_id
+    try:
+        return int(s), None
+    except ValueError:
+        # ربما بدون @
+        return None, s
+
+
+async def _get_current_user(session, user_tg_id: int):
+    user_repo = UserRepository(session)
+    return user_repo.find_or_create(telegram_id=user_tg_id)
+
+
+# ✅ جديد: أمر ربط القناة العامة عبر @username
 async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     يربط قناة عامة بالحساب الحالي:
@@ -221,7 +251,8 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>طريقة الاستخدام:</b>\n"
             "1) أضف هذا البوت كمسؤول في قناتك العامة مع صلاحية النشر.\n"
             "2) أرسل: <code>/link_channel @اسم_القناة</code>\n"
-            "مثال: <code>/link_channel @MySignalChannel</code>"
+            "مثال: <code>/link_channel @MySignalChannel</code>\n\n"
+            "💡 للربط عبر إعادة التوجيه (يدعم القنوات الخاصة والعامة)، استخدم التدفق الموحّد في محادثة الإدارة."
         )
         return
 
@@ -253,23 +284,18 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channel_id = int(channel_chat.id)
 
         # حفظ القناة في قاعدة البيانات
-        from capitalguard.infrastructure.db.base import SessionLocal
-        from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
-
         with SessionLocal() as session:
-            user_repo = UserRepository(session)
+            user = await _get_current_user(session, user_tg_id)
             channel_repo = ChannelRepository(session)
 
-            user = user_repo.find_or_create(telegram_id=user_tg_id)  # يضمن وجود المستخدم
-
             try:
-                channel = channel_repo.add(
+                channel_repo.add(
                     user_id=user.id,
                     telegram_channel_id=channel_id,
                     username=channel_username_store,  # نخزن بدون @
+                    title=getattr(channel_chat, "title", None),
                 )
             except Exception as e:
-                # رسائل مخصصة لأكثر الحالات شيوعًا (تكرار/ملكية سابقة)
                 msg = str(e)
                 if "unique" in msg.lower() or "already" in msg.lower() or "exists" in msg.lower():
                     await update.message.reply_text(
@@ -293,6 +319,99 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ حدث خطأ غير متوقع: {e}")
 
 
+# ✅ جديد: عرض قنوات المستخدم
+async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_tg_id = int(update.effective_user.id)
+    with SessionLocal() as session:
+        user = await _get_current_user(session, user_tg_id)
+        channel_repo = ChannelRepository(session)
+        channels = channel_repo.list_by_user(user.id, only_active=False) or []
+
+    if not channels:
+        await update.message.reply_text(
+            "📭 لا توجد قنوات مرتبطة بحسابك.\n"
+            "اربط قناة عامة عبر: /link_channel @YourChannel\n"
+            "أو استخدم تدفق إعادة التوجيه لربط قناة خاصة."
+        )
+        return
+
+    lines = ["<b>📡 قنواتك المرتبطة</b>"]
+    for ch in channels:
+        uname = f"@{ch.username}" if getattr(ch, "username", None) else "—"
+        title = getattr(ch, "title", None) or "—"
+        status = "✅ فعّالة" if ch.is_active else "⏸️ معطّلة"
+        lines.append(f"• <b>{title}</b> ({uname} / <code>{ch.telegram_channel_id}</code>) — {status}")
+
+    lines.append("\nℹ️ للتحكم السريع:")
+    lines.append("— تفعيل/تعطيل: <code>/toggle_channel &lt;@username|chat_id&gt;</code>")
+    lines.append("— فك الربط: <code>/unlink_channel &lt;@username|chat_id&gt;</code>")
+
+    await update.message.reply_html("\n".join(lines))
+
+
+# ✅ جديد: تفعيل/تعطيل قناة
+async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❗️الاستخدام: /toggle_channel <@username|chat_id>")
+        return
+
+    user_tg_id = int(update.effective_user.id)
+    chat_id, uname = _parse_channel_ref(context.args[0])
+
+    with SessionLocal() as session:
+        user = await _get_current_user(session, user_tg_id)
+        channel_repo = ChannelRepository(session)
+
+        # إيجاد القناة المملوكة للمستخدم فقط
+        ch = None
+        if chat_id is not None:
+            ch = channel_repo.find_by_chat_id_for_user(user.id, chat_id)
+        elif uname:
+            ch = channel_repo.find_by_username_for_user(user.id, uname)
+
+        if not ch:
+            await update.message.reply_text("❌ لم يتم العثور على القناة ضمن حسابك.")
+            return
+
+        new_state = not ch.is_active
+        channel_repo.set_active(ch.id, user.id, new_state)
+
+    await update.message.reply_text(
+        f"✅ تم {'تفعيل' if new_state else 'تعطيل'} القناة بنجاح."
+    )
+
+
+# ✅ جديد: فك الربط
+async def unlink_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❗️الاستخدام: /unlink_channel <@username|chat_id>")
+        return
+
+    user_tg_id = int(update.effective_user.id)
+    chat_id, uname = _parse_channel_ref(context.args[0])
+
+    with SessionLocal() as session:
+        user = await _get_current_user(session, user_tg_id)
+        channel_repo = ChannelRepository(session)
+
+        # إيجاد القناة المملوكة للمستخدم فقط
+        ch = None
+        if chat_id is not None:
+            ch = channel_repo.find_by_chat_id_for_user(user.id, chat_id)
+        elif uname:
+            ch = channel_repo.find_by_username_for_user(user.id, uname)
+
+        if not ch:
+            await update.message.reply_text("❌ لم يتم العثور على القناة ضمن حسابك.")
+            return
+
+        channel_repo.remove(ch.id, user.id)
+
+    await update.message.reply_text("🗑️ تم فك ربط القناة من حسابك.")
+
+    # تلميح: إن أردت الاحتفاظ بالربط مع إيقاف النشر، استخدم /toggle_channel بدلًا من الحذف.
+
+
 def register_commands(app: Application):
     # نمرر فلتر قاعدة البيانات لضمان إنشاء/التحقق من المستخدم قبل كل أمر
     app.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_USER_FILTER))
@@ -300,7 +419,11 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("open", open_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("stats", stats_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("export", export_cmd, filters=ALLOWED_USER_FILTER))
+    app.add_handler(CommandHandler("settings", settings_cmd, filters=ALLOWED_USER_FILTER))
 
-    # ✅ أمر ربط القناة
+    # ✅ إدارة القنوات
     app.add_handler(CommandHandler("link_channel", link_channel_cmd, filters=ALLOWED_USER_FILTER))
+    app.add_handler(CommandHandler("channels", channels_cmd, filters=ALLOWED_USER_FILTER))
+    app.add_handler(CommandHandler("toggle_channel", toggle_channel_cmd, filters=ALLOWED_USER_FILTER))
+    app.add_handler(CommandHandler("unlink_channel", unlink_channel_cmd, filters=ALLOWED_USER_FILTER))
 # --- END OF FILE: src/capitalguard/interfaces/telegram/commands.py ---
