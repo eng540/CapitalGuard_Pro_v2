@@ -1,23 +1,21 @@
-# --- START OF MODIFIED FILE: src/capitalguard/infrastructure/db/models/recommendation.py ---
+# --- START OF COMPLETE MODIFIED FILE: src/capitalguard/infrastructure/db/models/recommendation.py ---
 import sqlalchemy as sa
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float,
     DateTime, JSON, Text, Index, Enum, func, ForeignKey
 )
-# ✅ Updated: Import relationship
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
 from capitalguard.domain.entities import RecommendationStatus, OrderType
-
-# Note: We don't need a direct import of PublishedMessage here because SQLAlchemy
-# handles relationships via string names of the classes.
 
 class RecommendationORM(Base):
     __tablename__ = "recommendations"
 
     id = Column(Integer, primary_key=True, index=True)
     
+    # --- ✅ ARCHITECTURAL LEAP: user_id is now a mandatory foreign key ---
+    # Every recommendation MUST belong to a user.
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     asset = Column(String, index=True, nullable=False)
@@ -34,7 +32,7 @@ class RecommendationORM(Base):
         Enum(RecommendationStatus, name="recommendationstatus", create_type=False),
         default=RecommendationStatus.PENDING, index=True, nullable=False
     )
-    
+
     # --- LEGACY FIELDS (to be deprecated) ---
     # These fields are kept for now for backward compatibility during the transition,
     # but new logic should use the `published_messages` relationship.
@@ -55,7 +53,7 @@ class RecommendationORM(Base):
     
     # Defines the relationship back to the User model
     user = relationship("User", back_populates="recommendations")
-    
+
     # ✅ --- NEW RELATIONSHIP to PublishedMessage ---
     # Defines the one-to-many relationship. When a RecommendationORM is loaded,
     # its associated PublishedMessage objects will also be loaded efficiently.
@@ -73,4 +71,4 @@ class RecommendationORM(Base):
 # Existing indexes are good, no changes needed here.
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
 Index("idx_recs_asset_status",  RecommendationORM.asset, RecommendationORM.status)
-# --- END OF MODIFIED FILE ---
+# --- END OF COMPLETE MODIFIED FILE ---
