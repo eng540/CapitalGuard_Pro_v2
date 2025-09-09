@@ -408,11 +408,17 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         pass
 
+    # ✅ FIX: Create the dummy query correctly using the user from the original message interaction.
+    # The user who replied is the same one who clicked the button, whose info is in original_message.chat.
     dummy_query = types.SimpleNamespace(
         message=original_message,
         data=f"rec:show_panel:{rec_id}",
         answer=_noop_answer,
+        # This is the key fix: populate the from_user attribute, using the chat object
+        # which represents the user in a private chat.
+        from_user=original_message.chat
     )
+    # The dummy_update now has the necessary context to pass to other handlers.
     dummy_update = Update(update.update_id, callback_query=dummy_query)
 
     trade_service: TradeService = get_service(context, "trade_service")
@@ -427,6 +433,7 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
         elif action == "edit_sl":
             new_sl = parse_number(user_input)
             trade_service.update_sl(rec_id, new_sl)
+            # Use the corrected dummy_update
             await show_rec_panel_handler(dummy_update, context)
 
         elif action == "edit_tp":
@@ -434,8 +441,28 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
             if not new_targets:
                 raise ValueError("لم يتم توفير أهداف.")
             trade_service.update_targets(rec_id, new_targets)
+            # Use the corrected dummy_update
             await show_rec_panel_handler(dummy_update, context)
 
+    except (ValueError, IndexError) as e:
+        error_text = (
+            f"⚠️ <b>إدخال غير صالح:</b> {e}<br><br>"
+            "<u>مثال للتنسيق الصحيح:</u> <code>1.23 1.34 1.45k</code><br>"
+            "<i>تلميح: يمكنك استخدام K/M/B للاختصار.</i>"
+        )
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=error_text,
+            parse_mode=ParseMode.HTML,
+        )
+        # Restore the panel even on error
+        await show_rec_panel_handler(dummy_update, context)
+
+    except Exception as e:
+        log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ حدث خطأ: {e}")
+        # Restore the panel even on error
+        await show_rec_panel_handler(dummy_update, context)
     except (ValueError, IndexError) as e:
         error_text = (
             f"⚠️ <b>إدخال غير صالح:</b> {e}<br><br>"
