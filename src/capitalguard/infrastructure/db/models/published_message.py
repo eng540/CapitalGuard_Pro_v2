@@ -34,9 +34,3 @@ class PublishedMessage(Base):
             f"channel_id={self.telegram_channel_id}, msg_id={self.telegram_message_id})>"
         )
 # --- END OF NEW FILE ---```
-
----
-
-بعد إنشاء هذا الملف، أصبح لدينا تعريف للجدول الجديد.
-
-**اطلب "التالي" للانتقال إلى الملف الثاني، حيث سنجعل هذا النموذج الجديد قابلاً للاكتشاف ونقوم بتحديث العلاقات.**
