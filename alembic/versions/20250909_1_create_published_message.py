@@ -2,7 +2,7 @@
 """Create published_messages table for multi-channel support
 
 Revision ID: 20250909_1_create_piblished_message
-Revises: 20250909_create_channels_table
+Revises: 20250910_update_channels_add_title_nullable_username
 Create Date: 2025-09-09 22:00:00.000000
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '20250909_1_create_piblished_message' # 👈 استبدل هذا بالمعرف الذي ولّده Alembic
-down_revision = '20250909_create_channels_table' # 👈 تأكد أن هذا هو آخر ملف هجرة لديك
+down_revision = '20250910_update_channels_add_title_nullable_username' # 👈 تأكد أن هذا هو آخر ملف هجرة لديك
 branch_labels = None
 depends_on = None
 
