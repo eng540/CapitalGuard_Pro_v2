@@ -1,4 +1,4 @@
-# --- START OF FINAL FILE: src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL AND COMPLETE FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
@@ -15,7 +15,6 @@ from capitalguard.interfaces.telegram.keyboards import (
 from capitalguard.interfaces.telegram.ui_texts import _pct
 
 from capitalguard.infrastructure.db.base import SessionLocal
-# ✅ Import the new PublishedMessage model
 from capitalguard.infrastructure.db.models import PublishedMessage
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 
@@ -23,6 +22,7 @@ log = logging.getLogger(__name__)
 
 
 def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
+    """Safely parse a user_id string to int, or return None if invalid."""
     try:
         return int(user_id) if user_id is not None else None
     except (TypeError, ValueError):
@@ -30,16 +30,20 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
 
 
 class TradeService:
+    # ------------------------------
+    # Symbol validation cache (Binance spot)
+    # ------------------------------
     _SYMBOLS_CACHE: set[str] = set()
     _SYMBOLS_CACHE_TS: float = 0.0
-    _SYMBOLS_CACHE_TTL_SEC: int = 6 * 60 * 60
+    _SYMBOLS_CACHE_TTL_SEC: int = 6 * 60 * 60  # 6 hours
 
     def __init__(self, repo: RecommendationRepoPort, notifier: NotifierPort):
         self.repo = repo
         self.notifier = notifier
 
+    # -------- Symbol validation helpers --------
     def _ensure_symbols_cache(self) -> None:
-        # ... (This function remains unchanged)
+        """Fetch & cache Binance symbols (spot) if cache is empty/expired."""
         now = time.time()
         if self._SYMBOLS_CACHE and (now - self._SYMBOLS_CACHE_TS) < self._SYMBOLS_CACHE_TTL_SEC:
             return
@@ -64,7 +68,10 @@ class TradeService:
             log.exception("Failed to refresh Binance symbols: %s", e)
 
     def _validate_symbol_exists(self, asset: str) -> str:
-        # ... (This function remains unchanged)
+        """
+        Normalize + validate that asset exists on Binance (spot);
+        raises ValueError otherwise. Returns normalized symbol (uppercased).
+        """
         norm = asset.strip().upper()
         self._ensure_symbols_cache()
         if self._SYMBOLS_CACHE and norm not in self._SYMBOLS_CACHE:
@@ -74,7 +81,7 @@ class TradeService:
             )
         return norm
 
-    # ✅ --- REWRITTEN & FINAL: _update_cards for multi-channel support ---
+    # -------- UI card updates --------
     def _update_cards(self, rec: Recommendation) -> None:
         """
         Updates ALL published cards for a recommendation and the private analyst panel.
@@ -83,6 +90,7 @@ class TradeService:
         
         if published_messages:
             log.info(f"Updating {len(published_messages)} cards for rec #{rec.id}...")
+            # If the recommendation is closed, remove the keyboard
             public_keyboard = public_channel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
             for msg_meta in published_messages:
                 # To use the existing notifier method, we create a temporary copy with the correct IDs
@@ -100,6 +108,7 @@ class TradeService:
         uid = _parse_int_user_id(rec.user_id)
         if uid is not None:
             try:
+                # If the recommendation is closed, remove the keyboard from the private panel too
                 analyst_keyboard = analyst_control_panel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
                 self.notifier.send_private_message(
                     chat_id=uid,
@@ -109,10 +118,10 @@ class TradeService:
                 )
             except Exception as e:
                 log.debug("Failed to send private update message to user %s: %s", uid, e)
-    # --- END OF REWRITE ---
 
+    # -------- Validation helpers --------
     def _validate_sl_vs_entry(self, side: str, entry: float, sl: float) -> None:
-        # ... (This function remains unchanged)
+        """Validates that stop loss is logical compared to entry price."""
         side_upper = side.upper()
         if side_upper == "LONG" and not (sl <= entry):
             raise ValueError("في صفقات الشراء (LONG)، يجب أن يكون وقف الخسارة ≤ سعر الدخول.")
@@ -120,7 +129,7 @@ class TradeService:
             raise ValueError("في صفقات البيع (SHORT)، يجب أن يكون وقف الخسارة ≥ سعر الدخول.")
 
     def _validate_targets(self, side: str, entry: float, tps: List[float]) -> None:
-        # ... (This function remains unchanged)
+        """Validates that targets are logical compared to entry price."""
         if not tps:
             raise ValueError("مطلوب على الأقل هدف واحد.")
         side_upper = side.upper()
@@ -131,19 +140,102 @@ class TradeService:
             if not all(tp < entry for tp in tps):
                 raise ValueError("في صفقات البيع، يجب أن تكون جميع الأهداف < سعر الدخول.")
 
-    def create_recommendation(self, **kwargs) -> Recommendation:
-        # ... (This function remains unchanged)
-        saved = self.repo.add(Recommendation(**kwargs))
-        uid = _parse_int_user_id(kwargs.get("user_id"))
-        if uid:
-            self.notifier.send_private_message(
-                chat_id=uid, rec=saved, keyboard=analyst_control_panel_keyboard(saved.id),
-                text_header="💾 تم حفظ التوصية بنجاح (بدون نشر)."
-            )
+    # =========================
+    # Core save/publish actions
+    # =========================
+    def create_recommendation(
+        self,
+        asset: str,
+        side: str,
+        market: str,
+        entry: float,
+        stop_loss: float,
+        targets: List[float],
+        notes: Optional[str],
+        user_id: Optional[str],
+        order_type: str,
+        live_price: Optional[float] = None,
+    ) -> Recommendation:
+        """
+        Saves a recommendation without publishing.
+        """
+        log.info(
+            "Saving recommendation ONLY: asset=%s side=%s order_type=%s user=%s",
+            asset, side, order_type, user_id
+        )
+        asset = self._validate_symbol_exists(asset)
+        try:
+            order_type_enum = OrderType(order_type.upper())
+        except ValueError:
+            valid = ", ".join(ot.value for ot in OrderType)
+            raise ValueError(f"Invalid order_type: {order_type}. Must be one of {valid}")
+
+        if order_type_enum == OrderType.MARKET:
+            if live_price is None:
+                raise ValueError("Live price is required for Market orders.")
+            status, final_entry = RecommendationStatus.ACTIVE, live_price
+        else:
+            status, final_entry = RecommendationStatus.PENDING, entry
+
+        self._validate_sl_vs_entry(side, final_entry, stop_loss)
+        self._validate_targets(side, final_entry, targets)
+
+        rec_to_save = Recommendation(
+            asset=Symbol(asset),
+            side=Side(side),
+            entry=Price(final_entry),
+            stop_loss=Price(stop_loss),
+            targets=Targets(targets),
+            order_type=order_type_enum,
+            status=status,
+            market=market,
+            notes=notes,
+            user_id=user_id,
+        )
+        if rec_to_save.status == RecommendationStatus.ACTIVE:
+            rec_to_save.activated_at = datetime.now(timezone.utc)
+
+        saved = self.repo.add(rec_to_save)
+
+        uid = _parse_int_user_id(user_id)
+        if uid is not None:
+            try:
+                self.notifier.send_private_message(
+                    chat_id=uid,
+                    rec=saved,
+                    keyboard=analyst_control_panel_keyboard(saved.id),
+                    text_header="💾 تم حفظ التوصية بنجاح (بدون نشر)."
+                )
+            except Exception as e:
+                log.debug("Failed to send private save-confirmation to user %s: %s", uid, e)
         return saved
-    
-    # ✅ --- REWRITTEN & FINAL: publish_recommendation for multi-channel support ---
-    def publish_recommendation(self, rec_id: int, user_id: Optional[str], channel_ids: Optional[List[int]] = None) -> Tuple[Recommendation, Dict]:
+
+    def _load_user_linked_channels(self, uid_int: int, only_active: bool = True) -> List[Any]:
+        """
+        Returns a list of linked channel ORM rows for a user.
+        """
+        try:
+            with SessionLocal() as session:
+                user_repo = UserRepository(session)
+                channel_repo = ChannelRepository(session)
+                user = user_repo.find_by_telegram_id(uid_int)
+                if not user:
+                    return []
+                channels = channel_repo.list_by_user(user.id, only_active=only_active)
+                return channels or []
+        except Exception as e:
+            log.error("Failed to load linked channels for user %s: %s", uid_int, e, exc_info=True)
+            return []
+
+    def publish_recommendation(
+        self,
+        rec_id: int,
+        user_id: Optional[str],
+        channel_ids: Optional[List[int]] = None,
+    ) -> Tuple[Recommendation, Dict[str, List[Dict[str, Any]]]]:
+        """
+        Publishes a recommendation and records EVERY successful publication.
+        """
         rec = self.repo.get(rec_id)
         if not rec: raise ValueError(f"Recommendation {rec_id} not found.")
         if rec.status == RecommendationStatus.CLOSED: raise ValueError("Cannot publish a closed recommendation.")
@@ -159,7 +251,10 @@ class TradeService:
             channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in set(channel_ids)]
 
         if not channels_to_publish:
-            # ... (no-channels logic remains the same)
+            self.notifier.send_private_message(
+                chat_id=uid_int, rec=rec, keyboard=analyst_control_panel_keyboard(rec.id),
+                text_header="ℹ️ لا توجد قنوات مرتبطة لنشر التوصية."
+            )
             return rec, report
 
         public_keyboard = public_channel_keyboard(rec.id)
@@ -174,6 +269,7 @@ class TradeService:
                 else:
                     report["failed"].append({"channel_id": cid, "reason": "POST_FAILED"})
             except Exception as e:
+                log.error("Failed to publish rec #%s to channel %s: %s", rec.id, cid, e, exc_info=True)
                 report["failed"].append({"channel_id": cid, "reason": str(e)})
 
         if successful_publications:
@@ -183,20 +279,49 @@ class TradeService:
             self.notifier.send_private_message(chat_id=uid_int, rec=updated_rec, keyboard=analyst_control_panel_keyboard(rec.id), text_header="🚀 تم النشر بنجاح!")
             return updated_rec, report
         
-        # ... (publish failure logic remains the same)
+        self.notifier.send_private_message(chat_id=uid_int, rec=rec, keyboard=analyst_control_panel_keyboard(rec.id), text_header="❌ تعذر النشر.")
         return rec, report
-    # --- END OF REWRITE ---
 
-    def create_and_publish_recommendation(self, **kwargs) -> Recommendation:
-        publish = kwargs.pop("publish", True)
-        saved = self.create_recommendation(**kwargs)
+    def create_and_publish_recommendation(
+        self,
+        asset: str,
+        side: str,
+        market: str,
+        entry: float,
+        stop_loss: float,
+        targets: List[float],
+        notes: Optional[str],
+        user_id: Optional[str],
+        order_type: str,
+        live_price: Optional[float] = None,
+        channel_ids: Optional[List[int]] = None,
+        publish: bool = True,
+    ) -> Recommendation:
+        """
+        Flexible workflow: saves and optionally publishes.
+        """
+        saved = self.create_recommendation(
+            asset=asset, side=side, market=market, entry=entry, stop_loss=stop_loss,
+            targets=targets, notes=notes, user_id=user_id, order_type=order_type,
+            live_price=live_price,
+        )
         if not publish:
             return saved
-        updated_rec, _ = self.publish_recommendation(rec_id=saved.id, user_id=saved.user_id, channel_ids=kwargs.get("channel_ids"))
+        updated_rec, _ = self.publish_recommendation(
+            rec_id=saved.id, user_id=user_id, channel_ids=channel_ids,
+        )
         return updated_rec
-    
-    # ✅ --- FINAL: activate_recommendation with multi-channel notifications ---
+
+    def publish_existing(self, rec_id: int, user_id: Optional[str], target_channel_ids: Optional[List[int]] = None) -> Tuple[Recommendation, Dict]:
+        return self.publish_recommendation(rec_id=rec_id, user_id=user_id, channel_ids=target_channel_ids)
+
+    # =========================
+    # Other actions
+    # =========================
     def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
+        """
+        Activates a PENDING recommendation and notifies all channels.
+        """
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.PENDING:
             return None
@@ -208,20 +333,24 @@ class TradeService:
         notification_text = f"<b>✅ تفعيل #{rec.asset.value}</b>\nتم الدخول في صفقة {rec.side.value.upper()} عند سعر ~{rec.entry.value:g}."
         published_messages = self.repo.get_published_messages(rec_id)
         for msg_meta in published_messages:
-            self.notifier.post_notification_reply(
-                chat_id=msg_meta.telegram_channel_id,
-                message_id=msg_meta.telegram_message_id,
-                text=notification_text
-            )
+            try:
+                self.notifier.post_notification_reply(
+                    chat_id=msg_meta.telegram_channel_id,
+                    message_id=msg_meta.telegram_message_id,
+                    text=notification_text
+                )
+            except Exception as e:
+                log.warning("Failed to send activation reply for rec #%s to channel %s: %s", rec_id, msg_meta.telegram_channel_id, e)
         
         uid = _parse_int_user_id(rec.user_id)
         if uid:
             self.notifier.send_private_message(chat_id=uid, rec=updated_rec, text_header=f"🔥 أصبحت توصيتك #{rec.id} مفعلة الآن!")
         return updated_rec
-    # --- END OF REWRITE ---
     
-    # ✅ --- FINAL: close with multi-channel notifications ---
     def close(self, rec_id: int, exit_price: float) -> Recommendation:
+        """
+        Closes a recommendation and notifies all channels.
+        """
         rec = self.repo.get(rec_id)
         if not rec: raise ValueError(f"Recommendation {rec_id} not found.")
 
@@ -238,18 +367,43 @@ class TradeService:
         )
         published_messages = self.repo.get_published_messages(rec_id)
         for msg_meta in published_messages:
-            self.notifier.post_notification_reply(
-                chat_id=msg_meta.telegram_channel_id,
-                message_id=msg_meta.telegram_message_id,
-                text=notification_text
-            )
+            try:
+                self.notifier.post_notification_reply(
+                    chat_id=msg_meta.telegram_channel_id,
+                    message_id=msg_meta.telegram_message_id,
+                    text=notification_text
+                )
+            except Exception as e:
+                log.warning("Failed to send close reply for rec #%s to channel %s: %s", rec_id, msg_meta.telegram_channel_id, e)
         
         log.info("Rec #%s closed at price=%s", rec_id, exit_price)
         return updated_rec
-    # --- END OF REWRITE ---
 
-    # ✅ --- FINAL: update_sl with multi-channel notifications for BE ---
+    def list_open(self, symbol: Optional[str] = None, side: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
+        return self.repo.list_open(symbol=symbol, side=side, status=status)
+
+    def list_all(self, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
+        return self.repo.list_all(symbol=symbol, status=status)
+
+    def move_sl_to_be(self, rec_id: int) -> Optional[Recommendation]:
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status == RecommendationStatus.CLOSED: return None
+        return self.update_sl(rec_id, rec.entry.value)
+
+    def add_partial_close_note(self, rec_id: int) -> Optional[Recommendation]:
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status == RecommendationStatus.CLOSED: return None
+        note = f"\n- تم إغلاق 50% من الصفقة في {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC."
+        rec.notes = (rec.notes or "") + note
+        updated_rec = self.repo.update(rec)
+        self._update_cards(updated_rec)
+        log.info("Rec #%s partial close note added", rec.id)
+        return updated_rec
+
     def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
+        """
+        Updates the stop loss and notifies all channels if moved to Break-Even.
+        """
         rec = self.repo.get(rec_id)
         if not rec or rec.status == RecommendationStatus.CLOSED: raise ValueError("Recommendation not found or is closed.")
         self._validate_sl_vs_entry(rec.side.value, rec.entry.value, new_sl)
@@ -266,30 +420,16 @@ class TradeService:
             notification_text = f"<b>🛡️ تأمين صفقة #{rec.asset.value}</b>\nتم نقل وقف الخسارة إلى نقطة الدخول. لا مخاطرة بعد الآن."
             published_messages = self.repo.get_published_messages(rec_id)
             for msg_meta in published_messages:
-                self.notifier.post_notification_reply(
-                    chat_id=msg_meta.telegram_channel_id,
-                    message_id=msg_meta.telegram_message_id,
-                    text=notification_text
-                )
+                try:
+                    self.notifier.post_notification_reply(
+                        chat_id=msg_meta.telegram_channel_id,
+                        message_id=msg_meta.telegram_message_id,
+                        text=notification_text
+                    )
+                except Exception as e:
+                    log.warning("Failed to send SL-to-BE reply for rec #%s to channel %s: %s", rec_id, msg_meta.telegram_channel_id, e)
 
         log.info("Rec #%s SL updated to %s", rec.id, new_sl)
-        return updated_rec
-    # --- END OF REWRITE ---
-
-    # --- Unchanged Helper Functions Below ---
-    def move_sl_to_be(self, rec_id: int) -> Optional[Recommendation]:
-        rec = self.repo.get(rec_id)
-        if not rec or rec.status == RecommendationStatus.CLOSED: return None
-        return self.update_sl(rec_id, rec.entry.value)
-
-    def add_partial_close_note(self, rec_id: int) -> Optional[Recommendation]:
-        rec = self.repo.get(rec_id)
-        if not rec or rec.status == RecommendationStatus.CLOSED: return None
-        note = f"\n- تم إغلاق 50% من الصفقة في {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC."
-        rec.notes = (rec.notes or "") + note
-        updated_rec = self.repo.update(rec)
-        self._update_cards(updated_rec)
-        log.info("Rec #%s partial close note added", rec.id)
         return updated_rec
 
     def update_targets(self, rec_id: int, new_targets: List[float]) -> Recommendation:
@@ -302,5 +442,7 @@ class TradeService:
         self._update_cards(updated_rec)
         log.info("Rec #%s targets updated to [%s]", rec.id, ', '.join(map(str, new_targets)))
         return updated_rec
-        
-# --- END OF FINAL FILE: src/capitalguard/application/services/trade_service.py ---
+
+    def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
+        return self.repo.get_recent_assets_for_user(user_id, limit)
+# --- END OF FINAL AND COMPLETE FILE ---
