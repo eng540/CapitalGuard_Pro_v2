@@ -579,8 +579,6 @@ async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await show_review_card(dummy_update, context, is_edit=True)
     await update.message.reply_text("حدث خلل. ابدأ من جديد بـ /newrec.")
     return ConversationHandler.END
-
-
 # --- Registration Function ---
 def register_conversation_handlers(app: Application):
     change_method_cb = CallbackQueryHandler(change_method_handler, pattern="^change_method$")
