@@ -1,4 +1,4 @@
-# --- START OF FILE: src/capitalguard/infrastructure/sched/watcher_ws.py ---
+# --- START OF COMPLETE MODIFIED FILE: src/capitalguard/infrastructure/sched/watcher_ws.py ---
 import asyncio
 import logging
 import os
@@ -23,6 +23,8 @@ async def main():
     The main WebSocket client loop. Subscribes to price streams for all
     open recommendations and triggers actions based on price movements.
     """
+    # Note: In a larger application, these would be injected, but for a standalone
+    # script, direct instantiation is acceptable.
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
     trade_service = TradeService(repo=repo, notifier=notifier)
@@ -38,8 +40,9 @@ async def main():
 
         # --- 1. Activate PENDING recommendations ---
         try:
+            # ✅ FIX: Call the repository method directly for a cleaner separation of concerns.
             pending_recs = await asyncio.to_thread(
-                trade_service.list_open, symbol=symbol, status="PENDING"
+                trade_service.repo.list_open, symbol=symbol, status="PENDING"
             )
             for rec in pending_recs:
                 entry, side = rec.entry.value, rec.side.value
@@ -63,8 +66,9 @@ async def main():
 
         # --- 2. Fast-path SL auto-close for ACTIVE recommendations ---
         try:
+            # ✅ FIX: Call the repository method directly here as well.
             active_recs = await asyncio.to_thread(
-                trade_service.list_open, symbol=symbol, status="ACTIVE"
+                trade_service.repo.list_open, symbol=symbol, status="ACTIVE"
             )
             for rec in active_recs:
                 sl, side = rec.stop_loss.value, rec.side.value
@@ -77,9 +81,12 @@ async def main():
 
     while True:
         try:
-            open_recs_for_symbols = await asyncio.to_thread(trade_service.list_open)
+            # ✅ FIX: Correctly call the repository's list_open method.
+            open_recs_for_symbols = await asyncio.to_thread(trade_service.repo.list_open)
             symbols_to_watch = {rec.asset.value for rec in open_recs_for_symbols}
+            
             if not symbols_to_watch:
+                # To keep the connection alive, watch a default symbol if no trades are open.
                 symbols_to_watch = {"BTCUSDT"}
 
             log.info(f"Watching symbols: {symbols_to_watch}")
@@ -87,7 +94,8 @@ async def main():
             tasks = [ws_client.mini_ticker(sym, on_price_update) for sym in symbols_to_watch]
             await asyncio.gather(*tasks)
 
-        except websockets.exceptions.ConnectionClosedError:
+        # ✅ FIX: Use the correct exception path for modern websockets library versions.
+        except websockets.ConnectionClosedError:
             log.warning("WebSocket connection closed. Reconnecting in 10s...")
             await asyncio.sleep(10)
         except asyncio.CancelledError:
@@ -105,4 +113,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log.info("Watcher stopped manually.")
-# --- END OF FILE ---
+# --- END OF COMPLETE MODIFIED FILE ---
