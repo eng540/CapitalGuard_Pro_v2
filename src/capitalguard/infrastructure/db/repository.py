@@ -8,7 +8,8 @@ from sqlalchemy.orm import joinedload, Session
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
-from .models import RecommendationORM, User, Channel
+# ✅ Updated: Import the new PublishedMessage model
+from .models import RecommendationORM, User, Channel, PublishedMessage
 from .base import SessionLocal
 
 log = logging.getLogger(__name__)
@@ -498,7 +499,8 @@ class RecommendationRepository:
         with SessionLocal() as s:
             row = (
                 s.query(RecommendationORM)
-                .options(joinedload(RecommendationORM.user))
+                .options(joinedload(RecommendationORM.user)) # Eager load user
+                # .options(joinedload(RecommendationORM.published_messages)) # This is now handled by lazy='joined'
                 .filter(RecommendationORM.id == rec_id)
                 .first()
             )
@@ -606,6 +608,13 @@ class RecommendationRepository:
                 log.error("❌ Failed to update recommendation #%s. Rolling back. Error: %s", rec.id, e, exc_info=True)
                 s.rollback()
                 raise
+
+    # ✅ --- NEW FUNCTION ---
+    def get_published_messages(self, rec_id: int) -> List[PublishedMessage]:
+        """Fetches all published message metadata for a given recommendation."""
+        with SessionLocal() as s:
+            return s.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
+    # --- END OF NEW FUNCTION ---
 
     # -------------------------
     # Insights
