@@ -1,4 +1,4 @@
-# --- START OF FILE: src/capitalguard/domain/entities.py ---
+# --- START OF COMPLETE MODIFIED FILE: src/capitalguard/domain/entities.py ---
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List
@@ -31,7 +31,9 @@ class Recommendation:
     order_type: OrderType
     id: Optional[int] = None
 
-    # --- Publication Fields ---
+    # --- Publication Fields (Legacy) ---
+    # These are kept for temporary backward compatibility but the source of truth
+    # is the `published_messages` table, accessed via the repository.
     channel_id: Optional[int] = None
     message_id: Optional[int] = None
     published_at: Optional[datetime] = None
@@ -50,7 +52,7 @@ class Recommendation:
     activated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
 
-    # ✅ MODIFIED: Add a detailed docstring for the alert_meta field.
+    # ✅ MODIFIED: Added a detailed docstring for the alert_meta field.
     alert_meta: dict = field(
         default_factory=dict,
         metadata={
@@ -67,17 +69,16 @@ class Recommendation:
     )
     # --- END OF MODIFICATION ---
 
-    def activate(self, activation_price: Optional[float] = None) -> None:
+    def activate(self) -> None:
         """
-        Marks the recommendation as active. For MARKET orders, it sets the official entry price.
+        Marks the recommendation as active. This is called when the entry price is triggered.
         """
         if self.status == RecommendationStatus.PENDING:
             self.status = RecommendationStatus.ACTIVE
             self.updated_at = datetime.utcnow()
             self.activated_at = self.updated_at
-            # For market orders, the provided activation price becomes the official entry price.
-            if self.order_type == OrderType.MARKET and activation_price is not None:
-                self.entry = Price(activation_price)
+            # For market orders, the activation happens at creation, so this method is
+            # primarily for LIMIT/STOP_MARKET orders. The entry price is already set.
 
     def close(self, exit_price: float) -> None:
         """Closes the recommendation with a given exit price."""
@@ -87,4 +88,4 @@ class Recommendation:
         self.exit_price = exit_price
         self.updated_at = datetime.utcnow()
         self.closed_at = self.updated_at
-# --- END OF FILE: src/capitalguard/domain/entities.py ---
+# --- END OF COMPLETE MODIFIED FILE ---

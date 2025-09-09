@@ -1,4 +1,4 @@
-# --- START OF CORRECTED FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF COMPLETE MODIFIED FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 import types
 import re
@@ -34,29 +34,57 @@ log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 
-# --- Parsing Helpers (Unchanged) ---
+# ---------- GOLDEN v7+: Normalization & Parsing Helpers with space-suffix support ----------
+
 _AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
 _SEPARATORS_REGEX = re.compile(r"[,\u060C;:|\t\r\n]+")
 
 def _normalize_text(s: str) -> str:
-    if not s: return ""
-    s = unicodedata.normalize("NFKC", s).translate(_AR_TO_EN_DIGITS).replace("،", ",")
-    return re.sub(r"\s+", " ", s).strip()
+    """تطبيع يونيكود + تحويل الأرقام العربية -> الإنجليزية + تنظيف المسافات."""
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKC", s)
+    s = s.translate(_AR_TO_EN_DIGITS)
+    s = s.replace("،", ",")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 def _parse_one_number(token: str) -> float:
-    if not token: raise ValueError("قيمة رقمية فارغة")
-    t = re.sub(r"^[^\d+-.]+|[^\dA-Z.+-]+$", "", token.strip().upper()).replace(",", "")
+    """
+    يحوّل توكن واحد مثل: '1.2k' أو '3,500' أو '4.5m' (بعد الدمج إن كانت اللاحقة منفصلة) إلى float.
+    يدعم K/M/B (صغيرة أو كبيرة).
+    """
+    if not token:
+        raise ValueError("قيمة رقمية فارغة")
+    t = token.strip().upper()
+    # إزالة محارف غير رقمية/لاحقة من الأطراف
+    t = re.sub(r"^[^\d+-.]+|[^\dA-Z.+-]+$", "", t)
+    # إزالة فواصل الآلاف الإنجليزية إن وجدت
+    t = t.replace(",", "")
+
     m = re.match(r"^([+\-]?\d+(?:\.\d+)?)([KMB])?$", t)
-    if not m: raise ValueError(f"قيمة رقمية غير صالحة: '{token}'")
+    if not m:
+        raise ValueError(f"قيمة رقمية غير صالحة: '{token}'")
+
     num_str, suf = m.groups()
-    return float(num_str) * _SUFFIXES.get(suf or "", 1)
+    scale = _SUFFIXES.get(suf or "", 1)
+    return float(num_str) * scale
 
 def _tokenize_numbers(s: str) -> List[str]:
-    s = _SEPARATORS_REGEX.sub(" ", _normalize_text(s))
+    """
+    يفصل السلسلة إلى توكنات أرقام/لاحقات مع تطبيع شامل.
+    يقبل الفواصل العربية/الإنجليزية، مسافات، أسطر جديدة، Tab، عمود |، نقطتين، إلخ.
+    """
+    s = _normalize_text(s)
+    s = _SEPARATORS_REGEX.sub(" ", s)
     return [p for p in s.split(" ") if p]
 
 def _coalesce_num_suffix_tokens(tokens: List[str]) -> List[str]:
+    """
+    يدمج (رقم + لاحقة) عندما تأتي اللاحقة كتوكِن منفصل،
+    مثل: ['1', 'k', '2.5', 'M'] → ['1k', '2.5M'].
+    """
     out: List[str] = []
     i = 0
     while i < len(tokens):
@@ -71,14 +99,22 @@ def _coalesce_num_suffix_tokens(tokens: List[str]) -> List[str]:
     return out
 
 def parse_number(s: str) -> float:
-    tokens = _coalesce_num_suffix_tokens(_tokenize_numbers(s))
-    if not tokens: raise ValueError("لم يتم العثور على قيمة رقمية.")
+    """يقرأ قيمة رقمية وحيدة مع دعم K/M/B ملتصقة أو بمسافة، والأرقام العربية/الإنجليزية."""
+    tokens = _tokenize_numbers(s)
+    if not tokens:
+        raise ValueError("لم يتم العثور على قيمة رقمية.")
+    tokens = _coalesce_num_suffix_tokens(tokens)
     return _parse_one_number(tokens[0])
 
 def parse_number_list(s: str) -> List[float]:
-    tokens = _coalesce_num_suffix_tokens(_tokenize_numbers(s))
-    if not tokens: raise ValueError("لم يتم العثور على أي أرقام.")
+    """يقرأ قائمة قيم رقمية بنفس المرونة (فواصل ومسافات وأسطر وK/M/B)."""
+    tokens = _tokenize_numbers(s)
+    if not tokens:
+        raise ValueError("لم يتم العثور على أي أرقام.")
+    tokens = _coalesce_num_suffix_tokens(tokens)
     return [_parse_one_number(t) for t in tokens]
+
+# ---------- Parsing helpers لقراءة معرّفات من بيانات الكولباك ----------
 
 def _parse_tail_int(data: str) -> Optional[int]:
     try:
@@ -93,52 +129,62 @@ def _parse_cq_parts(data: str, expected: int) -> Optional[list]:
     except Exception:
         return None
 
+# ---------- Telegram Handlers ----------
+
 async def _noop_answer(*args, **kwargs):
+    """لا يفعل شيئًا (لاستخدامه كـ callback عند بناء dummy_query)."""
     return None
 
-# --- Telegram Handlers ---
-
 async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles pagination for the list of open recommendations for the current user.
+    """
     query = update.callback_query
     await query.answer()
+
     page = _parse_tail_int(query.data) or 1
+
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
+
     filters_map = context.user_data.get("last_open_filters", {}) or {}
     user_tg_id = update.effective_user.id
-    
-    # In the new repository, list_open_for_user does not exist,
-    # so we filter manually after fetching. This is less efficient but works for now.
-    # A better solution would be to add the user filter back to the repository method.
-    all_open_items = trade_service.repo.list_open(
-        symbol=filters_map.get("symbol"),
-        side=filters_map.get("side"),
-        status=filters_map.get("status"),
-    )
-    items = [rec for rec in all_open_items if rec.user_id == str(user_tg_id)]
+
+    items = trade_service.repo.list_open_for_user(user_telegram_id=user_tg_id, **filters_map)
 
     if not items:
         await query.edit_message_text("✅ لا توجد توصيات مفتوحة تطابق الفلتر الحالي.")
         return
-    
+
     seq_map: Dict[int, int] = {rec.id: i for i, rec in enumerate(items, start=1)}
-    keyboard = build_open_recs_keyboard(items, current_page=page, price_service=price_service, seq_map=seq_map)
+
+    keyboard = build_open_recs_keyboard(
+        items,
+        current_page=page,
+        price_service=price_service,
+        seq_map=seq_map,
+    )
+
     header_text = "<b>📊 لوحة قيادة التوصيات المفتوحة</b>"
     if filters_map:
         filter_text_parts = [f"{k.capitalize()}: {str(v).upper()}" for k, v in filters_map.items()]
         header_text += f"\n<i>فلترة حسب: {', '.join(filter_text_parts)}</i>"
+
     try:
         await query.edit_message_text(
             f"{header_text}\nاختر توصية لعرض لوحة التحكم الخاصة بها:",
-            reply_markup=keyboard, parse_mode=ParseMode.HTML
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
         )
     except BadRequest as e:
-        if "Message is not modified" not in str(e): raise e
+        if "Message is not modified" in str(e):
+            pass
+        else:
+            raise
 
-# ✅ --- FIXED: show_rec_panel_handler with Ownership Check ---
 async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Shows the control panel for a specific recommendation, now with an ownership check.
+    Shows the control panel for a specific recommendation, with an ownership check.
     """
     query = update.callback_query
     await query.answer()
@@ -151,23 +197,16 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
 
-    # Step 1: Fetch the recommendation using the generic `get` method
-    rec = trade_service.repo.get(rec_id)
-
-    # Step 2: Perform an explicit ownership check
-    if not rec:
-        await query.edit_message_text(f"❌ لم يتم العثور على التوصية #{rec_id}.")
-        return
+    rec = trade_service.repo.get_by_id_for_user(rec_id, update.effective_user.id)
     
-    if rec.user_id != str(update.effective_user.id):
+    if not rec:
         log.warning(
-            "Security: User %s tried to access rec #%s owned by user %s.",
-            update.effective_user.id, rec_id, rec.user_id
+            "Security: User %s tried to access rec #%s which they do not own or does not exist.",
+            update.effective_user.id, rec_id
         )
         await query.edit_message_text(f"❌ لا يمكنك الوصول إلى هذه التوصية.")
         return
 
-    # Step 3: Proceed if ownership is verified
     live_price = price_service.get_cached_price(rec.asset.value, rec.market)
     if live_price:
         setattr(rec, "live_price", live_price)
@@ -181,8 +220,8 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
-# --- END OF FIX ---
 
+# ---- Rate limit support for public updates (20s window per message) ----
 _RATE_KEY = "pub_rate_limit"
 _RATE_WINDOW_SEC = 20
 
@@ -196,12 +235,14 @@ def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_
     return False
 
 async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Updates the public card (live price) with a simple anti-spam check."""
     query = update.callback_query
     try:
         rec_id = _parse_tail_int(query.data)
         if rec_id is None:
             await query.answer("Bad request.", show_alert=True)
             return
+
         if _recently_updated(context, query.message.chat_id, query.message.message_id):
             await query.answer("البيانات محدثة للتو — حاول بعد قليل.", show_alert=False)
             return
@@ -210,8 +251,11 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
         price_service: PriceService = get_service(context, "price_service")
 
         rec = trade_service.repo.get(rec_id)
-        if not rec or rec.status == RecommendationStatus.CLOSED:
-            await query.answer("هذه الصفقة مغلقة أو غير موجودة.", show_alert=False)
+        if not rec:
+            await query.answer("هذه التوصية غير موجودة.", show_alert=True)
+            return
+        if rec.status == RecommendationStatus.CLOSED:
+            await query.answer("هذه الصفقة مغلقة بالفعل.", show_alert=False)
             return
 
         live_price = price_service.get_cached_price(rec.asset.value, rec.market)
@@ -225,19 +269,23 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         try:
             await query.edit_message_text(
-                text=new_text, reply_markup=new_keyboard,
-                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                text=new_text,
+                reply_markup=new_keyboard,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
             )
             await query.answer("تم التحديث ✅")
         except BadRequest as e:
             if "Message is not modified" in str(e):
                 await query.answer("البيانات محدثة بالفعل.")
-            else: raise e
+            else:
+                raise e
     except Exception as e:
         log.error(f"Error in update_public_card for rec {getattr(query, 'data', '')}: {e}", exc_info=True)
         try:
             await query.answer("حدث خطأ غير متوقع.", show_alert=True)
-        except Exception: pass
+        except Exception:
+            pass
 
 async def update_private_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -248,18 +296,18 @@ async def move_sl_to_be_handler(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer("جاري النقل: SL إلى نقطة الدخول...")
     rec_id = _parse_tail_int(query.data)
-    if rec_id is None: return
-    trade_service: TradeService = get_service(context, "trade_service")
-    trade_service.move_sl_to_be(rec_id)
+    if rec_id is not None:
+        trade_service: TradeService = get_service(context, "trade_service")
+        trade_service.move_sl_to_be(rec_id)
     await show_rec_panel_handler(update, context)
 
 async def partial_close_note_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("جاري الإضافة: ملاحظة إغلاق جزئي...")
     rec_id = _parse_tail_int(query.data)
-    if rec_id is None: return
-    trade_service: TradeService = get_service(context, "trade_service")
-    trade_service.add_partial_close_note(rec_id)
+    if rec_id is not None:
+        trade_service: TradeService = get_service(context, "trade_service")
+        trade_service.add_partial_close_note(rec_id)
     await show_rec_panel_handler(update, context)
 
 async def start_close_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -282,7 +330,8 @@ async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("Bad request.", show_alert=True)
         return
     try:
-        rec_id, exit_price_str = int(parts[2]), parts[3]
+        rec_id = int(parts[2])
+        exit_price_str = parts[3]
         exit_price = parse_number(exit_price_str)
     except (ValueError, IndexError) as e:
         await query.answer(f"قيمة غير صالحة: {e}", show_alert=True)
@@ -354,11 +403,18 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
     action, rec_id = state["action"], state["rec_id"]
     user_input = update.message.text.strip()
 
-    try: await update.message.delete()
-    except Exception: pass
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
 
-    dummy_query = types.SimpleNamespace(message=original_message, data=f"rec:show_panel:{rec_id}", answer=_noop_answer)
+    dummy_query = types.SimpleNamespace(
+        message=original_message,
+        data=f"rec:show_panel:{rec_id}",
+        answer=_noop_answer,
+    )
     dummy_update = Update(update.update_id, callback_query=dummy_query)
+
     trade_service: TradeService = get_service(context, "trade_service")
 
     try:
@@ -367,27 +423,38 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
             text = f"هل تؤكد إغلاق <b>#{rec_id}</b> عند <b>{exit_price:g}</b>؟"
             keyboard = confirm_close_keyboard(rec_id, exit_price)
             await original_message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
         elif action == "edit_sl":
             new_sl = parse_number(user_input)
             trade_service.update_sl(rec_id, new_sl)
             await show_rec_panel_handler(dummy_update, context)
+
         elif action == "edit_tp":
             new_targets = parse_number_list(user_input)
-            if not new_targets: raise ValueError("لم يتم توفير أهداف.")
+            if not new_targets:
+                raise ValueError("لم يتم توفير أهداف.")
             trade_service.update_targets(rec_id, new_targets)
             await show_rec_panel_handler(dummy_update, context)
+
     except (ValueError, IndexError) as e:
-        error_text = (f"⚠️ <b>إدخال غير صالح:</b> {e}<br><br>"
-                      "<u>مثال للتنسيق الصحيح:</u> <code>1.23 1.34 1.45k</code><br>"
-                      "<i>تلميح: يمكنك استخدام K/M/B للاختصار.</i>")
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=error_text, parse_mode=ParseMode.HTML)
+        error_text = (
+            f"⚠️ <b>إدخال غير صالح:</b> {e}<br><br>"
+            "<u>مثال للتنسيق الصحيح:</u> <code>1.23 1.34 1.45k</code><br>"
+            "<i>تلميح: يمكنك استخدام K/M/B للاختصار.</i>"
+        )
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=error_text,
+            parse_mode=ParseMode.HTML,
+        )
         await show_rec_panel_handler(dummy_update, context)
+
     except Exception as e:
         log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ حدث خطأ: {e}")
 
 def register_management_handlers(application: Application):
-    # ... (Registration part is unchanged)
+    """Registers all callback query and message handlers for managing recommendations."""
     application.add_handler(CallbackQueryHandler(navigate_open_recs_handler, pattern=r"^open_nav:page:"))
     application.add_handler(CallbackQueryHandler(show_rec_panel_handler, pattern=r"^rec:show_panel:"))
     application.add_handler(CallbackQueryHandler(update_public_card, pattern=r"^rec:update_public:"))
@@ -405,4 +472,4 @@ def register_management_handlers(application: Application):
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler),
         group=1,
     )
-# --- END OF CORRECTED FILE ---```
+# --- END OF COMPLETE MODIFIED FILE ---

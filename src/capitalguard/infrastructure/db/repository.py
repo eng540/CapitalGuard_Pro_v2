@@ -1,8 +1,7 @@
-# --- START OF CORRECTED AND FINAL FILE: src/capitalguard/infrastructure/db/repository.py ---
+# --- START OF COMPLETE MODIFIED FILE: src/capitalguard/infrastructure/db/repository.py ---
 import logging
-# ✅ --- FIX: Import List and Dict from typing ---
+from datetime import datetime
 from typing import List, Optional, Any, Union, Dict
-# --- END OF FIX ---
 
 import sqlalchemy as sa
 from sqlalchemy import or_
@@ -20,10 +19,12 @@ log = logging.getLogger(__name__)
 # User Repository (scoped)
 # =========================
 class UserRepository:
-    # ... (No changes in this class)
+    """
+    Handles DB operations for User objects within a single session.
+    """
     def __init__(self, session: Session):
         self.session = session
-    # ... (Rest of the class is unchanged)
+
     def find_by_telegram_id(self, telegram_id: int) -> Optional[User]:
         return (
             self.session.query(User)
@@ -32,6 +33,9 @@ class UserRepository:
         )
 
     def find_or_create(self, telegram_id: int, **kwargs) -> User:
+        """
+        Finds a user by telegram_id or creates one if they don't exist.
+        """
         user = self.find_by_telegram_id(telegram_id)
         placeholder_email = kwargs.get("email") or f"tg{telegram_id}@telegram.local"
 
@@ -70,15 +74,19 @@ class UserRepository:
         self.session.refresh(new_user)
         return new_user
 
+
 # =========================
 # Channel Repository (scoped)
 # =========================
 class ChannelRepository:
-    # ... (No changes in this class)
+    """
+    Handles DB operations for Channel objects within a single session.
+    """
     def __init__(self, session: Session):
         self.session = session
-    # ... (Rest of the class is unchanged)
+
     def find_by_username(self, username: str) -> Optional[Channel]:
+        """Finds a channel by its username (case-insensitive)."""
         clean = (username or "").lstrip("@").lower()
         return (
             self.session.query(Channel)
@@ -87,12 +95,14 @@ class ChannelRepository:
         )
 
     def list_by_user(self, user_id: int, only_active: bool = False) -> List[Channel]:
+        """Lists all channels linked to a user."""
         q = self.session.query(Channel).filter(Channel.user_id == user_id)
         if only_active:
             q = q.filter(Channel.is_active.is_(True))
         return q.order_by(Channel.created_at.desc()).all()
 
     def find_by_chat_id_for_user(self, user_id: int, chat_id: int) -> Optional[Channel]:
+        """Finds a channel owned by a user via its telegram_channel_id."""
         return (
             self.session.query(Channel)
             .filter(Channel.user_id == user_id, Channel.telegram_channel_id == chat_id)
@@ -100,6 +110,7 @@ class ChannelRepository:
         )
 
     def find_by_username_for_user(self, user_id: int, username: str) -> Optional[Channel]:
+        """Finds a channel owned by a user via its username."""
         clean = (username or "").lstrip("@").lower()
         return (
             self.session.query(Channel)
@@ -107,7 +118,14 @@ class ChannelRepository:
             .first()
         )
 
-    def add(self, user_id: int, telegram_channel_id: int, username: Optional[str] = None, title: Optional[str] = None) -> Channel:
+    def add(
+        self,
+        user_id: int,
+        telegram_channel_id: int,
+        username: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> Channel:
+        """Links a channel to a user, preventing duplicates."""
         clean_username = (username or "").lstrip("@")
         clean_username_lc = clean_username.lower() if clean_username else None
 
@@ -123,6 +141,7 @@ class ChannelRepository:
         )
         if existing:
             if existing.user_id == user_id:
+                # Idempotent: Update metadata if changed
                 updated = False
                 if title and existing.title != title:
                     existing.title = title
@@ -153,43 +172,41 @@ class ChannelRepository:
         return new_ch
 
     def set_active(self, channel_id: int, user_id: int, is_active: bool) -> None:
-        ch = (
-            self.session.query(Channel)
-            .filter(Channel.id == channel_id, Channel.user_id == user_id)
-            .first()
-        )
-        if not ch: raise ValueError("Channel not found for this user.")
+        """Activates or deactivates a channel, checking for ownership."""
+        ch = self.find_by_chat_id_for_user(user_id, channel_id)
+        if not ch:
+            raise ValueError("Channel not found for this user.")
         ch.is_active = bool(is_active)
         self.session.commit()
 
     def remove(self, channel_id: int, user_id: int) -> None:
-        ch = (
-            self.session.query(Channel)
-            .filter(Channel.id == channel_id, Channel.user_id == user_id)
-            .first()
-        )
-        if not ch: raise ValueError("Channel not found for this user.")
+        """Unlinks a channel, checking for ownership."""
+        ch = self.find_by_chat_id_for_user(user_id, channel_id)
+        if not ch:
+            raise ValueError("Channel not found for this user.")
         self.session.delete(ch)
         self.session.commit()
 
-    def update_metadata(self, channel_id: int, user_id: int, *, title: Optional[str] = None, username: Optional[str] = None) -> Channel:
-        ch = (
-            self.session.query(Channel)
-            .filter(Channel.id == channel_id, Channel.user_id == user_id)
-            .first()
-        )
-        if not ch: raise ValueError("Channel not found for this user.")
+    def update_metadata(
+        self,
+        channel_id: int,
+        user_id: int,
+        *,
+        title: Optional[str] = None,
+        username: Optional[str] = None,
+    ) -> Channel:
+        """Updates channel metadata, checking for ownership."""
+        ch = self.find_by_chat_id_for_user(user_id, channel_id)
+        if not ch:
+            raise ValueError("Channel not found for this user.")
 
         if username is not None:
             new_un = username.lstrip("@")
             new_un_lc = new_un.lower()
             if new_un:
-                conflict = (
-                    self.session.query(Channel)
-                    .filter(sa.func.lower(Channel.username) == new_un_lc, Channel.id != ch.id)
-                    .first()
-                )
-                if conflict: raise ValueError("Username is already used by another linked channel.")
+                conflict = self.session.query(Channel).filter(sa.func.lower(Channel.username) == new_un_lc, Channel.id != ch.id).first()
+                if conflict:
+                    raise ValueError("Username is already used by another linked channel.")
                 ch.username = new_un
             else:
                 ch.username = None
@@ -201,6 +218,7 @@ class ChannelRepository:
         self.session.refresh(ch)
         return ch
 
+
 # =========================
 # Recommendation Repository
 # =========================
@@ -210,31 +228,44 @@ class RecommendationRepository:
     # -------------------------
     @staticmethod
     def _coerce_enum(value: Any, enum_cls):
-        if isinstance(value, enum_cls):
-            return value
-        return enum_cls(value)
+        return value if isinstance(value, enum_cls) else enum_cls(value)
 
     @staticmethod
     def _as_telegram_str(user_id: Optional[Union[int, str]]) -> Optional[str]:
-        return None if user_id is None else str(user_id)
+        return str(user_id) if user_id is not None else None
 
-    def _to_entity(self, row: RecommendationORM) -> Recommendation:
+    def _to_entity(self, row: RecommendationORM) -> Optional[Recommendation]:
+        if not row:
+            return None
+        
         status = self._coerce_enum(row.status, RecommendationStatus)
         order_type = self._coerce_enum(row.order_type, OrderType)
         side = self._coerce_enum(row.side, Side)
 
         telegram_user_id = None
-        if getattr(row, "user", None) is not None:
+        if getattr(row, "user", None):
             telegram_user_id = self._as_telegram_str(row.user.telegram_user_id)
 
         return Recommendation(
-            id=row.id, asset=Symbol(row.asset), side=side, entry=Price(row.entry),
-            stop_loss=Price(row.stop_loss), targets=Targets(list(row.targets or [])),
-            order_type=order_type, status=status, channel_id=row.channel_id,
-            message_id=row.message_id, published_at=row.published_at, market=row.market,
-            notes=row.notes, user_id=telegram_user_id, created_at=row.created_at,
-            updated_at=row.updated_at, exit_price=row.exit_price,
-            activated_at=row.activated_at, closed_at=row.closed_at,
+            id=row.id,
+            asset=Symbol(row.asset),
+            side=side,
+            entry=Price(row.entry),
+            stop_loss=Price(row.stop_loss),
+            targets=Targets(list(row.targets or [])),
+            order_type=order_type,
+            status=status,
+            channel_id=row.channel_id,
+            message_id=row.message_id,
+            published_at=row.published_at,
+            market=row.market,
+            notes=row.notes,
+            user_id=telegram_user_id,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            exit_price=row.exit_price,
+            activated_at=row.activated_at,
+            closed_at=row.closed_at,
             alert_meta=dict(row.alert_meta or {}),
         )
 
@@ -244,55 +275,66 @@ class RecommendationRepository:
     def add(self, rec: Recommendation) -> Recommendation:
         if not rec.user_id or not str(rec.user_id).isdigit():
             raise ValueError("A valid user_id (Telegram ID) is required to create a recommendation.")
-
         with SessionLocal() as s:
-            try:
-                user_repo = UserRepository(s)
-                user = user_repo.find_or_create(int(rec.user_id))
-                row = RecommendationORM(
-                    user_id=user.id, asset=rec.asset.value, side=self._coerce_enum(rec.side, Side).value,
-                    entry=rec.entry.value, stop_loss=rec.stop_loss.value, targets=rec.targets.values,
-                    order_type=self._coerce_enum(rec.order_type, OrderType),
-                    status=self._coerce_enum(rec.status, RecommendationStatus),
-                    channel_id=rec.channel_id, message_id=rec.message_id,
-                    published_at=rec.published_at, market=rec.market,
-                    notes=rec.notes, activated_at=rec.activated_at,
-                    alert_meta=rec.alert_meta,
-                )
-                s.add(row)
-                s.commit()
-                s.refresh(row, attribute_names=["user"])
-                return self._to_entity(row)
-            except Exception as e:
-                log.error("❌ Failed to add recommendation. Rolling back. Error: %s", e, exc_info=True)
-                s.rollback()
-                raise
+            user = UserRepository(s).find_or_create(int(rec.user_id))
+            row = RecommendationORM(
+                user_id=user.id, asset=rec.asset.value, side=rec.side.value,
+                entry=rec.entry.value, stop_loss=rec.stop_loss.value, targets=rec.targets.values,
+                order_type=rec.order_type, status=rec.status,
+                market=rec.market, notes=rec.notes, activated_at=rec.activated_at,
+                alert_meta=rec.alert_meta,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row, attribute_names=["user"])
+            return self._to_entity(row)
 
     # -------------------------
-    # Read
+    # Read Methods
     # -------------------------
     def get(self, rec_id: int) -> Optional[Recommendation]:
+        """Global fetch by id (not user-scoped)."""
         with SessionLocal() as s:
-            row = s.query(RecommendationORM).filter(RecommendationORM.id == rec_id).first()
-            return self._to_entity(row) if row else None
+            row = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.id == rec_id).first()
+            return self._to_entity(row)
 
-    def list_open(self, symbol: Optional[str] = None, side: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
+    def get_by_id_for_user(self, rec_id: int, user_telegram_id: Union[int, str]) -> Optional[Recommendation]:
+        """User-scoped fetch by id, ensuring ownership."""
         with SessionLocal() as s:
-            q = s.query(RecommendationORM).filter(or_(
-                RecommendationORM.status == RecommendationStatus.PENDING,
-                RecommendationORM.status == RecommendationStatus.ACTIVE,
-            ))
-            if symbol: q = q.filter(RecommendationORM.asset.ilike(f"%{symbol.upper()}%"))
-            if side: q = q.filter(RecommendationORM.side == Side(side.upper()).value)
-            if status: q = q.filter(RecommendationORM.status == RecommendationStatus(status.upper()))
+            user = UserRepository(s).find_by_telegram_id(int(user_telegram_id))
+            if not user: return None
+            row = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.id == rec_id, RecommendationORM.user_id == user.id).first()
+            return self._to_entity(row)
+
+    def list_open_for_user(self, user_telegram_id: Union[int, str], **filters) -> List[Recommendation]:
+        """User-scoped list of open recommendations with optional filters."""
+        with SessionLocal() as s:
+            user = UserRepository(s).find_by_telegram_id(int(user_telegram_id))
+            if not user: return []
+            q = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(
+                RecommendationORM.user_id == user.id,
+                or_(RecommendationORM.status == RecommendationStatus.PENDING, RecommendationORM.status == RecommendationStatus.ACTIVE)
+            )
+            if filters.get("symbol"): q = q.filter(RecommendationORM.asset.ilike(f'%{filters["symbol"].upper()}%'))
+            if filters.get("side"): q = q.filter(RecommendationORM.side == Side(filters["side"].upper()).value)
+            if filters.get("status"): q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
             return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
-    def list_all(self, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
+    def list_all(self, **filters) -> List[Recommendation]:
+        """Global list of all recommendations with optional filters."""
         with SessionLocal() as s:
-            q = s.query(RecommendationORM)
-            if symbol: q = q.filter(RecommendationORM.asset.ilike(f"%{symbol.upper()}%"))
-            if status: q = q.filter(RecommendationORM.status == RecommendationStatus(status.upper()))
+            q = s.query(RecommendationORM).options(joinedload(RecommendationORM.user))
+            if filters.get("symbol"): q = q.filter(RecommendationORM.asset.ilike(f'%{filters["symbol"].upper()}%'))
+            if filters.get("status"): q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
             return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
+
+    def get_recent_assets_for_user(self, user_telegram_id: Union[str, int], limit: int = 5) -> List[str]:
+        with SessionLocal() as s:
+            user = UserRepository(s).find_by_telegram_id(int(user_telegram_id))
+            if not user: return []
+            subq = s.query(RecommendationORM.asset, sa.func.max(RecommendationORM.created_at).label("max_created_at")).filter(RecommendationORM.user_id == user.id).group_by(RecommendationORM.asset).subquery()
+            results = s.query(subq.c.asset).order_by(subq.c.max_created_at.desc()).limit(limit).all()
+            return [r[0] for r in results]
 
     # -------------------------
     # Update
@@ -300,34 +342,21 @@ class RecommendationRepository:
     def update(self, rec: Recommendation) -> Recommendation:
         if rec.id is None: raise ValueError("Recommendation ID is required for update")
         with SessionLocal() as s:
-            try:
-                row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).first()
-                if not row: raise ValueError(f"Recommendation #{rec.id} not found")
-                
-                row.asset = rec.asset.value
-                row.side = self._coerce_enum(rec.side, Side).value
-                row.entry = rec.entry.value
-                row.stop_loss = rec.stop_loss.value
-                row.targets = rec.targets.values
-                row.order_type = self._coerce_enum(rec.order_type, OrderType)
-                row.status = self._coerce_enum(rec.status, RecommendationStatus)
-                row.channel_id = rec.channel_id
-                row.message_id = rec.message_id
-                row.published_at = rec.published_at
-                row.market = rec.market
-                row.notes = rec.notes
-                row.exit_price = rec.exit_price
-                row.activated_at = rec.activated_at
-                row.closed_at = rec.closed_at
-                row.alert_meta = rec.alert_meta
-                
-                s.commit()
-                s.refresh(row)
-                return self._to_entity(row)
-            except Exception as e:
-                log.error("❌ Failed to update recommendation #%s. Rolling back. Error: %s", rec.id, e, exc_info=True)
-                s.rollback()
-                raise
+            row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).first()
+            if not row: raise ValueError(f"Recommendation #{rec.id} not found")
+            
+            row.asset = rec.asset.value; row.side = rec.side.value
+            row.entry = rec.entry.value; row.stop_loss = rec.stop_loss.value
+            row.targets = rec.targets.values; row.order_type = rec.order_type
+            row.status = rec.status; row.channel_id = rec.channel_id
+            row.message_id = rec.message_id; row.published_at = rec.published_at
+            row.market = rec.market; row.notes = rec.notes
+            row.exit_price = rec.exit_price; row.activated_at = rec.activated_at
+            row.closed_at = rec.closed_at; row.alert_meta = rec.alert_meta
+            
+            s.commit()
+            s.refresh(row, attribute_names=["user"])
+            return self._to_entity(row)
 
     # -------------------------
     # New Functions for Multi-Channel Support
@@ -339,43 +368,18 @@ class RecommendationRepository:
 
     def save_published_messages(self, messages_data: List[Dict[str, Any]]) -> None:
         """Bulk saves new published message records."""
+        if not messages_data: return
         with SessionLocal() as s:
             s.bulk_insert_mappings(PublishedMessage, messages_data)
             s.commit()
 
     def update_legacy_publication_fields(self, rec_id: int, first_pub_data: Dict[str, Any]) -> None:
-        """Updates the legacy channel_id/message_id fields on the recommendation for compatibility."""
+        """Updates the legacy channel_id/message_id fields for backward compatibility."""
         with SessionLocal() as s:
             s.query(RecommendationORM).filter(RecommendationORM.id == rec_id).update({
                 'channel_id': first_pub_data['telegram_channel_id'],
                 'message_id': first_pub_data['telegram_message_id'],
-                'published_at': sa.func.now()
+                'published_at': datetime.now(timezone.utc)
             })
             s.commit()
-
-    # -------------------------
-    # Insights
-    # -------------------------
-    def get_recent_assets_for_user(self, user_telegram_id: Union[str, int], limit: int = 5) -> List[str]:
-        """Return most recently used unique assets for a Telegram user."""
-        with SessionLocal() as s:
-            user_repo = UserRepository(s)
-            user = user_repo.find_by_telegram_id(int(user_telegram_id))
-            if not user: return []
-            subq = (
-                s.query(
-                    RecommendationORM.asset,
-                    sa.func.max(RecommendationORM.created_at).label("max_created_at"),
-                )
-                .filter(RecommendationORM.user_id == user.id)
-                .group_by(RecommendationORM.asset)
-                .subquery()
-            )
-            results = (
-                s.query(subq.c.asset)
-                .order_by(subq.c.max_created_at.desc())
-                .limit(limit)
-                .all()
-            )
-            return [r[0] for r in results]
-# --- END OF CORRECTED AND FINAL FILE ---
+# --- END OF COMPLETE MODIFIED FILE ---
