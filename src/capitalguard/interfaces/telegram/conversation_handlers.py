@@ -581,6 +581,7 @@ async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 # --- Registration Function ---
 def register_conversation_handlers(app: Application):
+    # معالج واحد يُعاد استخدامه في كل الحالات
     change_method_cb = CallbackQueryHandler(change_method_handler, pattern="^change_method$")
 
     creation_conv_handler = ConversationHandler(
@@ -591,42 +592,43 @@ def register_conversation_handlers(app: Application):
         states={
             CHOOSE_METHOD: [
                 CallbackQueryHandler(method_chosen, pattern="^method_"),
-                change_method_cb,  # يبقى مسموحاً هنا أيضاً
-                # السماح ببدء المنشئ فوراً إذا كتب المستخدم الأصل مباشرة بعد /newrec
+                change_method_cb,  # متاح هنا أيضًا
+                # السماح ببدء المنشئ فورًا إذا كتب المستخدم الأصل مباشرة بعد /newrec
                 MessageHandler(filters.TEXT & ~filters.COMMAND, asset_chosen_text),
             ],
             QUICK_COMMAND: [
-                change_method_cb,  # <<=== إضافة مهمة
+                change_method_cb,  # 👈 مهم: الزر يعمل داخل وضع الأمر السريع
                 MessageHandler(filters.COMMAND & filters.Regex(r'^\/rec'), quick_command_handler),
             ],
             TEXT_EDITOR: [
-                change_method_cb,  # <<=== إضافة مهمة
+                change_method_cb,  # 👈 مهم: الزر يعمل داخل وضع المحرّر
                 MessageHandler(filters.TEXT & ~filters.COMMAND, text_editor_handler),
             ],
             I_ASSET_CHOICE: [
-                change_method_cb,  # <<=== إضافة مهمة
+                change_method_cb,
                 CallbackQueryHandler(asset_chosen_button, pattern="^asset_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, asset_chosen_text),
             ],
             I_SIDE_MARKET: [
-                change_method_cb,  # <<=== إضافة مهمة
+                change_method_cb,
                 CallbackQueryHandler(side_chosen, pattern="^side_"),
                 CallbackQueryHandler(change_market_menu, pattern="^change_market_menu$"),
                 CallbackQueryHandler(market_chosen, pattern="^market_"),
             ],
             I_ORDER_TYPE: [
-                change_method_cb,  # <<=== إضافة مهمة
+                change_method_cb,
                 CallbackQueryHandler(order_type_chosen, pattern="^type_"),
             ],
             I_PRICES: [
-                change_method_cb,  # <<=== إضافة مهمة
+                change_method_cb,
                 MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received_interactive),
             ],
             I_REVIEW: [
-                change_method_cb,  # <<=== إضافة مهمة
+                change_method_cb,
                 CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
                 CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
                 CallbackQueryHandler(choose_channels_handler, pattern=r"^rec:choose_channels:"),
+                # مُنتقي القنوات:
                 CallbackQueryHandler(channel_picker_nav_handler, pattern=r"^pubsel:nav:"),
                 CallbackQueryHandler(channel_picker_toggle_handler, pattern=r"^pubsel:toggle:"),
                 CallbackQueryHandler(channel_picker_confirm_handler, pattern=r"^pubsel:confirm:"),
@@ -634,10 +636,10 @@ def register_conversation_handlers(app: Application):
                 CallbackQueryHandler(cancel_publish_handler, pattern=r"^rec:cancel:")
             ],
             I_NOTES: [
-                change_method_cb,  # <<=== إضافة مهمة
+                change_method_cb,
                 MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received),
             ],
-        ],
+        },
         fallbacks=[CommandHandler("cancel", cancel_conv_handler)],
         per_message=False,
         allow_reentry=True,
