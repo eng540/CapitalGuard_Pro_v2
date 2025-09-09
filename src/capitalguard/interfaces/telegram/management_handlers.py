@@ -399,83 +399,68 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not original_message or update.message.reply_to_message.message_id != original_message.message_id:
         return
 
+    # Pop the state immediately, we are processing it now.
     context.user_data.pop(AWAITING_INPUT_KEY, None)
-    action, rec_id = state["action"], state["rec_id"]
+    
+    action = state["action"]
+    rec_id = state["rec_id"]
     user_input = update.message.text.strip()
+    user_id = update.effective_user.id # The user who replied
 
     try:
         await update.message.delete()
     except Exception:
         pass
 
-    # ✅ FIX: Create the dummy query correctly using the user from the original message interaction.
-    # The user who replied is the same one who clicked the button, whose info is in original_message.chat.
-    dummy_query = types.SimpleNamespace(
-        message=original_message,
-        data=f"rec:show_panel:{rec_id}",
-        answer=_noop_answer,
-        # This is the key fix: populate the from_user attribute, using the chat object
-        # which represents the user in a private chat.
-        from_user=original_message.chat
-    )
-    # The dummy_update now has the necessary context to pass to other handlers.
-    dummy_update = Update(update.update_id, callback_query=dummy_query)
-
     trade_service: TradeService = get_service(context, "trade_service")
 
     try:
+        # Perform the action
         if action == "close":
             exit_price = parse_number(user_input)
             text = f"هل تؤكد إغلاق <b>#{rec_id}</b> عند <b>{exit_price:g}</b>؟"
             keyboard = confirm_close_keyboard(rec_id, exit_price)
             await original_message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-
+            # This flow continues in `confirm_close_handler`, no need to update panel here.
+            return
+            
         elif action == "edit_sl":
             new_sl = parse_number(user_input)
             trade_service.update_sl(rec_id, new_sl)
-            # Use the corrected dummy_update
-            await show_rec_panel_handler(dummy_update, context)
-
+            
         elif action == "edit_tp":
             new_targets = parse_number_list(user_input)
             if not new_targets:
                 raise ValueError("لم يتم توفير أهداف.")
             trade_service.update_targets(rec_id, new_targets)
-            # Use the corrected dummy_update
-            await show_rec_panel_handler(dummy_update, context)
-
-    except (ValueError, IndexError) as e:
-        error_text = (
-            f"⚠️ <b>إدخال غير صالح:</b> {e}<br><br>"
-            "<u>مثال للتنسيق الصحيح:</u> <code>1.23 1.34 1.45k</code><br>"
-            "<i>تلميح: يمكنك استخدام K/M/B للاختصار.</i>"
-        )
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=error_text,
-            parse_mode=ParseMode.HTML,
-        )
-        # Restore the panel even on error
-        await show_rec_panel_handler(dummy_update, context)
 
     except Exception as e:
         log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ حدث خطأ: {e}")
-        # Restore the panel even on error
-        await show_rec_panel_handler(dummy_update, context)
-    except (ValueError, IndexError) as e:
-        error_text = (
-            f"⚠️ <b>إدخال غير صالح:</b> {e}<br><br>"
-            "<u>مثال للتنسيق الصحيح:</u> <code>1.23 1.34 1.45k</code><br>"
-            "<i>تلميح: يمكنك استخدام K/M/B للاختصار.</i>"
-        )
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=error_text,
-            parse_mode=ParseMode.HTML,
-        )
-        await show_rec_panel_handler(dummy_update, context)
+        await context.bot.send_message(chat_id=user_id, text=f"❌ حدث خطأ أثناء معالجة مدخلك: {e}")
+    
+    # ✅ FINAL FIX: After a successful action or an error, restore the user's control panel.
+    # We will reconstruct the panel display manually. This is the most robust way.
+    
+    # We need to fetch the recommendation to ensure we have the latest state before showing the panel.
+    rec = trade_service.repo.get(rec_id)
+    if not rec:
+        await original_message.edit_text("لم يعد من الممكن العثور على هذه التوصية.")
+        return
 
+    price_service: PriceService = get_service(context, "price_service")
+    live_price = price_service.get_cached_price(rec.asset.value, rec.market)
+    if live_price:
+        setattr(rec, "live_price", live_price)
+
+    text = build_trade_card_text(rec)
+    keyboard = analyst_control_panel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
+
+    await original_message.edit_text(
+        text=text,
+        reply_markup=keyboard,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True
+    )
     except Exception as e:
         log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ حدث خطأ: {e}")
