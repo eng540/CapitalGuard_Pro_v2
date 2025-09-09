@@ -165,7 +165,12 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             draft.setdefault("notes", "")
             draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
 
-        rec = trade_service.create_and_publish_recommendation(
+        # The create_and_publish_recommendation function was removed in a previous step.
+        # We now use the two-step process: create then publish.
+        # This gives us more control and better error handling.
+
+        # Step 1: Create (Save) the recommendation first.
+        saved_rec = trade_service.create_recommendation(
             asset=draft["asset"],
             side=draft["side"],
             market=draft.get("market", "Futures"),
@@ -173,23 +178,31 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             stop_loss=draft["stop_loss"],
             targets=draft["targets"],
             notes=draft.get("notes"),
-            user_id=str(query.from_user.id),
+            # ✅ FIX: Use update.effective_user.id which is always available and correct.
+            user_id=str(update.effective_user.id),
             order_type=draft['order_type'],
             live_price=live_price,
-            publish=True,
         )
-        await query.edit_message_text(f"✅ تم الحفظ، ومحاولة النشر انطلقت للتوصية #{rec.id}.")
+
+        # Step 2: Publish the saved recommendation.
+        trade_service.publish_recommendation(
+            rec_id=saved_rec.id,
+            user_id=str(update.effective_user.id)
+        )
+        
+        await query.edit_message_text(f"✅ تم الحفظ، وانطلقت محاولة النشر للتوصية #{saved_rec.id}.")
+
     except Exception as e:
-        log.exception("Failed to save/publish recommendation.")
+        log.exception("Failed to save/publish recommendation from conversation handler.")
         await query.edit_message_text(f"❌ فشل الحفظ/النشر: {e}")
     finally:
-        # نظافة الحالة
+        # Clean up conversation state
         if review_key:
             context.bot_data.pop(review_key, None)
         context.user_data.pop('current_review_key', None)
         context.user_data.pop('current_review_token', None)
+        
     return ConversationHandler.END
-
 
 async def cancel_publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
