@@ -4,18 +4,21 @@ from sqlalchemy import (
     Column, Integer, BigInteger, String, Float,
     DateTime, JSON, Text, Index, Enum, func, ForeignKey
 )
+# ✅ Updated: Import relationship
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
 from capitalguard.domain.entities import RecommendationStatus, OrderType
+
+# ✅ New: Import the related model to avoid circular import issues with type hinting
+# This is a common practice in SQLAlchemy models
+# from .published_message import PublishedMessage 
 
 class RecommendationORM(Base):
     __tablename__ = "recommendations"
 
     id = Column(Integer, primary_key=True, index=True)
     
-    # --- ✅ ARCHITECTURAL LEAP: user_id is now a mandatory foreign key ---
-    # Every recommendation MUST belong to a user.
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     asset = Column(String, index=True, nullable=False)
@@ -32,9 +35,14 @@ class RecommendationORM(Base):
         Enum(RecommendationStatus, name="recommendationstatus", create_type=False),
         default=RecommendationStatus.PENDING, index=True, nullable=False
     )
-
+    
+    # --- LEGACY FIELDS (to be deprecated) ---
+    # These fields are kept for now to avoid breaking existing logic immediately,
+    # but new logic should use the `published_messages` relationship.
     channel_id = Column(BigInteger, index=True, nullable=True)
     message_id = Column(BigInteger, nullable=True)
+    # --- END LEGACY FIELDS ---
+
     published_at = Column(DateTime(timezone=True), nullable=True)
     market = Column(String, nullable=True)
     notes = Column(Text, nullable=True)
@@ -46,8 +54,18 @@ class RecommendationORM(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     alert_meta = Column(JSONB, nullable=False, server_default=sa.text("'{}'::jsonb"))
     
-    # Defines the relationship back to the User model
+    # Defines the relationship to the User model
     user = relationship("User", back_populates="recommendations")
+    
+    # ✅ --- NEW RELATIONSHIP ---
+    # Defines the one-to-many relationship to the PublishedMessage model
+    published_messages = relationship(
+        "PublishedMessage", 
+        back_populates="recommendation", 
+        cascade="all, delete-orphan",
+        lazy="joined" # Use joined loading to fetch messages with the recommendation
+    )
+    # --- END NEW RELATIONSHIP ---
 
     def __repr__(self):
         return f"<RecommendationORM(id={self.id}, user_id={self.user_id}, asset='{self.asset}')>"
