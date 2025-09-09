@@ -1,5 +1,5 @@
 # --- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
-from typing import List, Dict, Optional, Iterable
+from typing import List, Dict, Optional, Iterable, Set
 import math
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -170,31 +170,32 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def review_final_keyboard(review_key: str) -> InlineKeyboardMarkup:
+def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
     """
     لوحة مراجعة الصفقة قبل الحفظ/النشر.
-    - زر "نشر في القناة" = ينشر لكل القنوات الفعّالة (السلوك القديم).
+    - زر "نشر في القنوات الفعّالة" = ينشر لكل القنوات الفعّالة (السلوك القديم).
     - زر "اختيار القنوات" = يفتح مُنتقي القنوات المتعددة.
+    NOTE: نستخدم review_token القصير (<64 بايت لكل callback_data).
     """
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("✅ نشر في القنوات الفعّالة", callback_data=f"rec:publish:{review_key}"),
+                InlineKeyboardButton("✅ نشر في القنوات الفعّالة", callback_data=f"rec:publish:{review_token}"),
             ],
             [
-                InlineKeyboardButton("📢 اختيار القنوات", callback_data=f"rec:choose_channels:{review_key}"),
-                InlineKeyboardButton("📝 إضافة/تعديل ملاحظات", callback_data=f"rec:add_notes:{review_key}"),
+                InlineKeyboardButton("📢 اختيار القنوات", callback_data=f"rec:choose_channels:{review_token}"),
+                InlineKeyboardButton("📝 إضافة/تعديل ملاحظات", callback_data=f"rec:add_notes:{review_token}"),
             ],
-            [InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{review_key}")],
+            [InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{review_token}")],
         ]
     )
 
 
 # -------- مُنتقي القنوات المتعددة --------
 def build_channel_picker_keyboard(
-    review_key: str,
+    review_token: str,
     channels: Iterable[dict],
-    selected_ids: set[int],
+    selected_ids: Set[int],
     page: int = 1,
     per_page: int = 10,
 ) -> InlineKeyboardMarkup:
@@ -216,24 +217,27 @@ def build_channel_picker_keyboard(
         label = ch.get("title") or (f"@{ch['username']}" if ch.get("username") else str(tg_id))
         mark = "✔️" if tg_id in selected_ids else "✖️"
         rows.append([
-            InlineKeyboardButton(f"{mark} {label}", callback_data=f"pubsel:toggle:{review_key}:{tg_id}:{page}")
+            InlineKeyboardButton(
+                f"{mark} {label}",
+                callback_data=f"pubsel:toggle:{review_token}:{tg_id}:{page}"
+            )
         ])
 
     # nav
     nav: List[InlineKeyboardButton] = []
     max_page = max(1, math.ceil(total / per_page))
     if page > 1:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"pubsel:nav:{review_key}:{page-1}"))
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"pubsel:nav:{review_token}:{page-1}"))
     nav.append(InlineKeyboardButton(f"صفحة {page}/{max_page}", callback_data="noop"))
     if page < max_page:
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"pubsel:nav:{review_key}:{page+1}"))
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"pubsel:nav:{review_token}:{page+1}"))
     if nav:
         rows.append(nav)
 
     # actions
     rows.append([
-        InlineKeyboardButton("🚀 نشر المحدد", callback_data=f"pubsel:confirm:{review_key}"),
-        InlineKeyboardButton("⬅️ رجوع", callback_data=f"pubsel:back:{review_key}"),
+        InlineKeyboardButton("🚀 نشر المحدد", callback_data=f"pubsel:confirm:{review_token}"),
+        InlineKeyboardButton("⬅️ رجوع", callback_data=f"pubsel:back:{review_token}"),
     ])
 
     return InlineKeyboardMarkup(rows)
