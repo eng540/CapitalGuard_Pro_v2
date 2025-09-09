@@ -12,6 +12,8 @@ from capitalguard.interfaces.telegram.keyboards import (
     public_channel_keyboard,
     analyst_control_panel_keyboard,
 )
+# ✅ استيراد دالة حساب النسبة المئوية لاستخدامها في رسائل الإشعارات
+from capitalguard.interfaces.telegram.ui_texts import _pct
 
 # ✅ مستودعات وإدارة جلسة DB لقنوات المستخدم
 from capitalguard.infrastructure.db.base import SessionLocal
@@ -400,6 +402,25 @@ class TradeService:
         updated_rec = self.repo.update(rec)
 
         self._update_cards(updated_rec)
+        
+        # ✅ --- NEW: Send a threaded notification to the public channel ---
+        if updated_rec.channel_id and updated_rec.message_id:
+            asset = updated_rec.asset.value
+            entry = updated_rec.entry.value
+            side = updated_rec.side.value
+            notification_text = (
+                f"<b>✅ تفعيل #{asset}</b>\n"
+                f"تم الدخول في صفقة {side.upper()} عند سعر ~{entry:g}."
+            )
+            try:
+                self.notifier.post_notification_reply(
+                    chat_id=updated_rec.channel_id,
+                    message_id=updated_rec.message_id,
+                    text=notification_text
+                )
+            except Exception as e:
+                log.warning("Failed to send activation notification for rec #%s: %s", rec_id, e)
+        # --- END OF NEW LOGIC ---
 
         uid = _parse_int_user_id(rec.user_id)
         if uid is not None:
@@ -421,6 +442,29 @@ class TradeService:
         rec.close(exit_price)
         updated_rec = self.repo.update(rec)
         self._update_cards(updated_rec)
+        
+        # ✅ --- NEW: Send a threaded notification for the closure ---
+        if updated_rec.channel_id and updated_rec.message_id:
+            asset = updated_rec.asset.value
+            entry = updated_rec.entry.value
+            side = updated_rec.side.value
+            pnl = _pct(entry, exit_price, side)
+            result_emoji = "🏆" if pnl >= 0 else "💔"
+            result_text = "ربح" if pnl >= 0 else "خسارة"
+            notification_text = (
+                f"<b>{result_emoji} إغلاق صفقة #{asset}</b>\n"
+                f"تم إغلاق الصفقة عند سعر {exit_price:g} بنتيجة {result_text} <b>{pnl:+.2f}%</b>."
+            )
+            try:
+                self.notifier.post_notification_reply(
+                    chat_id=updated_rec.channel_id,
+                    message_id=updated_rec.message_id,
+                    text=notification_text
+                )
+            except Exception as e:
+                log.warning("Failed to send closure notification for rec #%s: %s", rec_id, e)
+        # --- END OF NEW LOGIC ---
+        
         log.info("Rec #%s closed at price=%s (status=%s)", rec.id, exit_price, updated_rec.status.value)
         return updated_rec
 
@@ -459,14 +503,34 @@ class TradeService:
             raise ValueError("Recommendation not found or is closed.")
         self._validate_sl_vs_entry(rec.side.value, rec.entry.value, new_sl)
         rec.stop_loss = Price(new_sl)
+        
+        is_move_to_be = (new_sl == rec.entry.value)
         note_text = (
             "\n- تم نقل وقف الخسارة إلى نقطة الدخول."
-            if new_sl == rec.entry.value
+            if is_move_to_be
             else f"\n- تم تحديث وقف الخسارة إلى {new_sl}."
         )
         rec.notes = (rec.notes or "") + note_text
         updated_rec = self.repo.update(rec)
         self._update_cards(updated_rec)
+        
+        # ✅ --- NEW: Send a notification if SL was moved to BE ---
+        if is_move_to_be and updated_rec.channel_id and updated_rec.message_id:
+            asset = updated_rec.asset.value
+            notification_text = (
+                f"<b>🛡️ تأمين صفقة #{asset}</b>\n"
+                f"تم نقل وقف الخسارة إلى نقطة الدخول. لا مخاطرة في هذه الصفقة بعد الآن."
+            )
+            try:
+                self.notifier.post_notification_reply(
+                    chat_id=updated_rec.channel_id,
+                    message_id=updated_rec.message_id,
+                    text=notification_text
+                )
+            except Exception as e:
+                log.warning("Failed to send SL-to-BE notification for rec #%s: %s", rec_id, e)
+        # --- END OF NEW LOGIC ---
+
         log.info("Rec #%s SL updated to %s", rec.id, new_sl)
         return updated_rec
 
@@ -485,4 +549,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FILE ---
+# --- END OF FILE: src/capitalguard/application/services/trade_service.py ---

@@ -112,6 +112,48 @@ class TelegramNotifier:
     # -------------------------------
     # Public API
     # -------------------------------
+
+    # ✅ --- NEW FUNCTION: post_notification_reply ---
+    def post_notification_reply(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        allow_sending_without_reply: bool = True,
+        disable_notification: bool = False,
+    ) -> Optional[Tuple[int, int]]:
+        """
+        Sends a new message as a reply to an existing one.
+        This creates a threaded notification for a specific event.
+
+        Args:
+            chat_id: The channel/chat to send the message to.
+            message_id: The ID of the original recommendation card to reply to.
+            text: The content of the notification message.
+            allow_sending_without_reply: If true, sends the message even if the reply fails.
+            disable_notification: If true, sends the message silently.
+
+        Returns:
+            A tuple of (chat_id, new_message_id) on success, otherwise None.
+        """
+        payload: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text,
+            "reply_to_message_id": message_id,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+            "disable_notification": disable_notification,
+            "allow_sending_without_reply": allow_sending_without_reply,
+        }
+        result = self._post("sendMessage", payload)
+        if result and "message_id" in result and "chat" in result:
+            try:
+                return (int(result["chat"]["id"]), int(result["message_id"]))
+            except Exception:
+                pass
+        return None
+    # --- END OF NEW FUNCTION ---
+
     def post_to_channel(
         self,
         channel_id: int,
