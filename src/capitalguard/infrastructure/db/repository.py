@@ -1,4 +1,4 @@
-# --- START OF COMPLETE MODIFIED FILE: src/capitalguard/infrastructure/db/repository.py ---
+# --- START OF COMPLETE, LITERAL, AND FINAL FILE: src/capitalguard/infrastructure/db/repository.py ---
 import logging
 from datetime import datetime
 from typing import List, Optional, Any, Union, Dict
@@ -218,7 +218,6 @@ class ChannelRepository:
         self.session.refresh(ch)
         return ch
 
-
 # =========================
 # Recommendation Repository
 # =========================
@@ -320,6 +319,26 @@ class RecommendationRepository:
             if filters.get("status"): q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
             return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
+    def list_open(self, **filters) -> List[Recommendation]:
+        """
+        Global list of all open recommendations, not scoped to a user.
+        Used by backend services like Watcher and AlertService.
+        """
+        with SessionLocal() as s:
+            q = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(
+                or_(
+                    RecommendationORM.status == RecommendationStatus.PENDING,
+                    RecommendationORM.status == RecommendationStatus.ACTIVE
+                )
+            )
+            if filters.get("symbol"):
+                q = q.filter(RecommendationORM.asset.ilike(f'%{filters["symbol"].upper()}%'))
+            if filters.get("side"):
+                q = q.filter(RecommendationORM.side == Side(filters["side"].upper()).value)
+            if filters.get("status"):
+                q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
+            return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
+
     def list_all(self, **filters) -> List[Recommendation]:
         """Global list of all recommendations with optional filters."""
         with SessionLocal() as s:
@@ -382,4 +401,4 @@ class RecommendationRepository:
                 'published_at': datetime.now(timezone.utc)
             })
             s.commit()
-# --- END OF COMPLETE MODIFIED FILE ---
+# --- END OF COMPLETE, LITERAL, AND FINAL FILE ---
