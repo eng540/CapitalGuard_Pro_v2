@@ -1,4 +1,4 @@
-#--- START OF FILE: src/capitalguard/application/services/trade_service.py ---
+# --- START OF FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
@@ -367,6 +367,22 @@ class TradeService:
         )
         return saved
 
+    # ✅ واجهة توافقية مع conversation_handlers: publish_existing(...)
+    def publish_existing(
+        self,
+        rec_id: int,
+        user_id: Optional[str],
+        target_channel_ids: Optional[List[int]] = None,
+    ) -> Tuple[Recommendation, Dict[str, List[Dict[str, Any]]]]:
+        """
+        غلاف/اختصار لاستدعاء publish_recommendation مع اسم وسيط متوافق.
+        """
+        return self.publish_recommendation(
+            rec_id=rec_id,
+            user_id=user_id,
+            channel_ids=target_channel_ids,
+        )
+
     # =========================
     # Other actions
     # =========================
@@ -469,4 +485,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-#-- END OF FILE ---
+# --- END OF FILE ---
