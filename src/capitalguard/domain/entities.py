@@ -50,8 +50,22 @@ class Recommendation:
     activated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
 
-    # ✅ NEW (Alert System): Add a stateful field to store alert metadata.
-    alert_meta: dict = field(default_factory=dict)
+    # ✅ MODIFIED: Add a detailed docstring for the alert_meta field.
+    alert_meta: dict = field(
+        default_factory=dict,
+        metadata={
+            "description": (
+                "A stateful JSON field to store metadata about alerts that have been triggered. "
+                "This prevents duplicate notifications. Example keys:\n"
+                " - 'trailing_applied': bool (True if SL has been moved to BE)\n"
+                " - 'near_sl_alerted': bool (True if a near-SL private alert was sent)\n"
+                " - 'near_tp1_alerted': bool (True if a near-TP1 private alert was sent)\n"
+                " - 'tp1_hit_notified': bool (True if a public notification for TP1 hit was sent)\n"
+                " - 'tp2_hit_notified': bool (etc. for all TPs)"
+            )
+        }
+    )
+    # --- END OF MODIFICATION ---
 
     def activate(self, activation_price: Optional[float] = None) -> None:
         """
@@ -73,4 +87,4 @@ class Recommendation:
         self.exit_price = exit_price
         self.updated_at = datetime.utcnow()
         self.closed_at = self.updated_at
-# --- END OF FILE ---
+# --- END OF FILE: src/capitalguard/domain/entities.py ---
