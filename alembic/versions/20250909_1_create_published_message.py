@@ -3,7 +3,7 @@
 
 Revision ID: 20250909_1_create_piblished_message
 Revises: 20250909_create_channels_table
-Create Date: 2025
+Create Date: 2025-09-09 22:00:00.000000
 
 """
 from alembic import op
