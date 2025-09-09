@@ -3,8 +3,9 @@
 from .base import Base
 from .auth import User, Role, UserRole
 from .recommendation import RecommendationORM
-# ✅ New: expose Channel model so Alembic and the app can discover it
 from .channel import Channel
+# ✅ New: expose PublishedMessage model so Alembic and the app can discover it
+from .published_message import PublishedMessage
 
-__all__ = ["Base", "User", "Role", "UserRole", "RecommendationORM", "Channel"]
+__all__ = ["Base", "User", "Role", "UserRole", "RecommendationORM", "Channel", "PublishedMessage"]
 # --- END OF FILE ---
