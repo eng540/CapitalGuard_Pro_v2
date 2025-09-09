@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import os
-import asyncio # ✅ NEW: Import asyncio
+import asyncio
 from typing import Optional
 
 from capitalguard.application.services.price_service import PriceService
@@ -31,6 +31,7 @@ class AlertService:
     - Near-touch alerts (one-time).
     - Trailing Stop to BE on TP1 hit (one-time).
     - Auto-Close on SL or final TP.
+    - ✅ NEW: TP hit notifications (one-time per TP).
     """
     price_service: PriceService
     notifier: any
@@ -92,22 +93,46 @@ class AlertService:
                               (side == "SHORT" and price <= tp1)
                     if tp1_hit:
                         self.trade_service.move_sl_to_be(rec.id)
+                        # The `move_sl_to_be` call already sends a notification.
+                        # We just need to mark it as applied here.
                         updated_rec = self.repo.get(rec.id)
                         updated_rec.alert_meta["trailing_applied"] = True
                         self.repo.update(updated_rec)
                         count += 1
-                        self._notify(f"🔄 Trailing SL → BE for {asset} (rec #{rec.id})")
+                        # Note: No direct notification from here to avoid duplication.
+                        # `trade_service.move_sl_to_be` handles it.
+
+                # --- ✅ NEW: TP Hit Notification Logic (Stateful) ---
+                rec_updated_for_tp = False
+                if tps and rec.channel_id and rec.message_id:
+                    for i, tp in enumerate(tps, start=1):
+                        alert_key = f"tp{i}_hit_notified"
+                        if not rec.alert_meta.get(alert_key):
+                            is_tp_hit = (side == "LONG" and price >= tp) or \
+                                        (side == "SHORT" and price <= tp)
+                            if is_tp_hit:
+                                notification_text = (
+                                    f"<b>🔥 الهدف #{i} تحقق لـ #{asset}!</b>\n"
+                                    f"السعر وصل إلى {tp:g}."
+                                )
+                                self._notify_reply(rec, notification_text)
+                                rec.alert_meta[alert_key] = True
+                                rec_updated_for_tp = True
+                                count += 1
+                if rec_updated_for_tp:
+                    self.repo.update(rec)
+                # --- END OF NEW TP LOGIC ---
 
                 # --- Near-Touch Logic (Stateful & Corrected) ---
                 if near_pct > 0:
-                    rec_updated = False
+                    rec_updated_for_near = False
                     if not rec.alert_meta.get("near_sl_alerted"):
                         is_near = (side == "LONG" and sl < price <= sl * (1 + near_pct)) or \
                                   (side == "SHORT" and sl > price >= sl * (1 - near_pct))
                         if is_near:
                             rec.alert_meta["near_sl_alerted"] = True
-                            rec_updated = True
-                            self._notify(f"⏳ Near SL {asset}: price={price:g} ~ SL={sl:g} (rec #{rec.id})")
+                            rec_updated_for_near = True
+                            self._notify_private(f"⏳ Near SL {asset}: price={price:g} ~ SL={sl:g} (rec #{rec.id})")
                             count += 1
                     
                     if tps and not rec.alert_meta.get("near_tp1_alerted"):
@@ -116,11 +141,11 @@ class AlertService:
                                   (side == "SHORT" and tp1 < price <= tp1 * (1 + near_pct))
                         if is_near:
                             rec.alert_meta["near_tp1_alerted"] = True
-                            rec_updated = True
-                            self._notify(f"⏳ Near TP1 {asset}: price={price:g} ~ TP1={tp1:g} (rec #{rec.id})")
+                            rec_updated_for_near = True
+                            self._notify_private(f"⏳ Near TP1 {asset}: price={price:g} ~ TP1={tp1:g} (rec #{rec.id})")
                             count += 1
                     
-                    if rec_updated:
+                    if rec_updated_for_near:
                         self.repo.update(rec)
                 
                 # --- Auto-Close Logic ---
@@ -146,17 +171,36 @@ class AlertService:
         
         return count
 
-    def _notify(self, text: str):
+    def _notify_private(self, text: str):
+        """Sends a private notification to the analyst/admin."""
         try:
-            chat_id = int(self.notifier.channel_id)
-            self.notifier._post("sendMessage", {"chat_id": chat_id, "text": text})
+            # Assuming notifier has channel_id for private alerts; this may need adjustment
+            # based on how the main admin chat is configured.
+            chat_id = int(os.getenv("TELEGRAM_CHAT_ID")) # Or a dedicated admin chat
+            self.notifier._send_text(chat_id=chat_id, text=text)
         except Exception:
-            log.warning("Failed to send alert notification: '%s'", text, exc_info=True)
+            log.warning("Failed to send private alert notification: '%s'", text, exc_info=True)
+            
+    # ✅ --- NEW HELPER: _notify_reply ---
+    def _notify_reply(self, rec: Recommendation, text: str):
+        """Sends a threaded reply notification to the public channel."""
+        if not rec.channel_id or not rec.message_id:
+            return
+        try:
+            self.notifier.post_notification_reply(
+                chat_id=rec.channel_id,
+                message_id=rec.message_id,
+                text=text
+            )
+        except Exception:
+            log.warning("Failed to send threaded notification for rec #%s: '%s'", rec.id, text, exc_info=True)
+    # --- END OF NEW HELPER ---
 
     def _close(self, rec: Recommendation, price: float, reason: str):
         try:
+            # The close method in trade_service now handles the public notification
             self.trade_service.close(rec.id, price)
-            self._notify(f"✅ Auto-Closed #{rec.id} ({reason}) @ {price:g}")
+            self._notify_private(f"✅ Auto-Closed #{rec.id} ({reason}) @ {price:g}")
         except Exception as e:
             log.warning("Auto-close failed for rec=%s: %s", rec.id, e, exc_info=True)
-# --- END OF FILE ---
+# --- END OF FILE: src/capitalguard/application/services/alert_service.py ---
