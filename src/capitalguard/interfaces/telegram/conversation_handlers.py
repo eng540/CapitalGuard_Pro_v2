@@ -165,11 +165,8 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             draft.setdefault("notes", "")
             draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
 
-        # The create_and_publish_recommendation function was removed in a previous step.
-        # We now use the two-step process: create then publish.
-        # This gives us more control and better error handling.
-
-        # Step 1: Create (Save) the recommendation first.
+        # ✅ FIX: This function was removed. Use the correct two-step process.
+        # Step 1: Create the recommendation
         saved_rec = trade_service.create_recommendation(
             asset=draft["asset"],
             side=draft["side"],
@@ -178,22 +175,25 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             stop_loss=draft["stop_loss"],
             targets=draft["targets"],
             notes=draft.get("notes"),
-            # ✅ FIX: Use update.effective_user.id which is always available and correct.
+            # ✅ FIX: Use update.effective_user.id which is guaranteed to be correct
             user_id=str(update.effective_user.id),
             order_type=draft['order_type'],
             live_price=live_price,
         )
-
-        # Step 2: Publish the saved recommendation.
-        trade_service.publish_recommendation(
+        
+        # Step 2: Publish the now-saved recommendation
+        _, report = trade_service.publish_recommendation(
             rec_id=saved_rec.id,
             user_id=str(update.effective_user.id)
         )
         
-        await query.edit_message_text(f"✅ تم الحفظ، وانطلقت محاولة النشر للتوصية #{saved_rec.id}.")
+        if report["success"]:
+            await query.edit_message_text(f"✅ تم الحفظ والنشر بنجاح للتوصية #{saved_rec.id}.")
+        else:
+            await query.edit_message_text(f"⚠️ تم حفظ التوصية #{saved_rec.id}، ولكن فشل النشر. يمكنك النشر لاحقًا من لوحة التحكم.")
 
     except Exception as e:
-        log.exception("Failed to save/publish recommendation from conversation handler.")
+        log.exception("Failed to save/publish recommendation.")
         await query.edit_message_text(f"❌ فشل الحفظ/النشر: {e}")
     finally:
         # Clean up conversation state
@@ -204,6 +204,7 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
     return ConversationHandler.END
 
+# ... (Rest of the file is unchanged) ...
 async def cancel_publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
