@@ -303,6 +303,23 @@ class RecommendationRepository:
             closed_at=row.closed_at,
             alert_meta=dict(row.alert_meta or {}),
         )
+# في كلاس RecommendationRepository
+
+    def save_published_messages(self, messages_data: List[Dict[str, Any]]) -> None:
+        """Bulk saves new published message records."""
+        with SessionLocal() as s:
+            s.bulk_insert_mappings(PublishedMessage, messages_data)
+            s.commit()
+
+    def update_legacy_publication_fields(self, rec_id: int, first_pub_data: Dict[str, Any]) -> None:
+        """Updates the legacy channel_id/message_id fields on the recommendation for compatibility."""
+        with SessionLocal() as s:
+            s.query(RecommendationORM).filter(RecommendationORM.id == rec_id).update({
+                'channel_id': first_pub_data['telegram_channel_id'],
+                'message_id': first_pub_data['telegram_message_id'],
+                'published_at': datetime.now(timezone.utc)
+            })
+            s.commit()
 
     # -------------------------
     # Create
