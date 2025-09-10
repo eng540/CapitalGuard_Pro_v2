@@ -409,9 +409,15 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
     try:
         if action == "close":
             exit_price = parse_number(user_input)
-            text = f"هل تؤكد إغلاق <b>#{rec_id}</b> عند <b>{exit_price:g}</b>؟"
+            text = f"هل تؤكد إغلاق <b>#{rec_i            text = f"هل تؤكد إغلاق <b>#{rec_id}</b> عند <b>{exit_price:g}</b>؟"
             keyboard = confirm_close_keyboard(rec_id, exit_price)
-            await original_message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            await context.bot.edit_message_text(
+                chat_id=original_message.chat_id,
+                message_id=original_message.message_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
             return
 
         elif action == "edit_sl":
