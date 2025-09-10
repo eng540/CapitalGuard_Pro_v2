@@ -33,10 +33,24 @@ CONVERSATION_DATA_KEY = "new_rec_draft"
 REV_TOKENS_MAP = "review_tokens_map"
 REV_TOKENS_REVERSE = "review_tokens_rev"
 
+def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
+    """A centralized function to clean up all conversation-related data."""
+    review_key = context.user_data.pop('current_review_key', None)
+    if review_key:
+        context.bot_data.pop(review_key, None)
+    
+    review_token = context.user_data.pop('current_review_token', None)
+    if review_token:
+        sel_key = f"pubsel:{review_token}"
+        context.user_data.pop(sel_key, None)
+
+    for key in (CONVERSATION_DATA_KEY, 'last_interactive_message_id', 'original_query_message'):
+        context.user_data.pop(key, None)
+
+# ... (بقية الدوال المساعدة من _ensure_token_maps إلى _load_user_active_channels تبقى كما هي) ...
 def _ensure_token_maps(context: ContextTypes.DEFAULT_TYPE) -> None:
     if REV_TOKENS_MAP not in context.bot_data: context.bot_data[REV_TOKENS_MAP] = {}
     if REV_TOKENS_REVERSE not in context.bot_data: context.bot_data[REV_TOKENS_REVERSE] = {}
-
 def _get_or_make_token_for_review(context: ContextTypes.DEFAULT_TYPE, review_key: str) -> str:
     _ensure_token_maps(context)
     rev_map: Dict[str, str] = context.bot_data[REV_TOKENS_REVERSE]
@@ -47,11 +61,9 @@ def _get_or_make_token_for_review(context: ContextTypes.DEFAULT_TYPE, review_key
     tok_map[candidate] = review_key
     rev_map[review_key] = candidate
     return candidate
-
 def _resolve_review_key_from_token(context: ContextTypes.DEFAULT_TYPE, token: str) -> str | None:
     _ensure_token_maps(context)
     return context.bot_data[REV_TOKENS_MAP].get(token)
-
 def _load_user_active_channels(user_tg_id: int) -> List[Dict[str, Any]]:
     with SessionLocal() as s:
         user = UserRepository(s).find_or_create(user_tg_id)
@@ -88,7 +100,7 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
 
 async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer("جارٍ الحفظ ثم النشر...")
+    await query.answer("جارٍ الحفظ والنشر...")
     token = query.data.split(":")[2]
     review_key = _resolve_review_key_from_token(context, token)
     draft = context.bot_data.get(review_key) if review_key else None
@@ -103,44 +115,47 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if isinstance(entry_val, list):
             draft.setdefault("notes", "")
             draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
+        
         saved_rec = trade_service.create_recommendation(
             asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
             entry=entry_price, stop_loss=draft["stop_loss"], targets=draft["targets"],
             notes=draft.get("notes"), user_id=str(update.effective_user.id),
             order_type=draft['order_type'], live_price=live_price,
         )
+        
         _, report = trade_service.publish_recommendation(rec_id=saved_rec.id, user_id=str(update.effective_user.id))
+        
         if report["success"]:
             await query.edit_message_text(f"✅ تم الحفظ والنشر بنجاح للتوصية #{saved_rec.id}.")
         else:
-            await query.edit_message_text(f"⚠️ تم حفظ التوصية #{saved_rec.id}، ولكن فشل النشر.")
+            await query.edit_message_text(f"⚠️ تم حفظ التوصية #{saved_rec.id}، ولكن فشل النشر (قد لا تكون هناك قنوات مرتبطة).")
     except Exception as e:
         log.exception("Failed to save/publish recommendation.")
         await query.edit_message_text(f"❌ فشل الحفظ/النشر: {e}")
     finally:
-        if review_key: context.bot_data.pop(review_key, None)
-        context.user_data.pop('current_review_key', None)
-        context.user_data.pop('current_review_token', None)
+        _clean_conversation_state(context)
     return ConversationHandler.END
 
 async def cancel_publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    token = query.data.split(":")[2]
-    review_key = _resolve_review_key_from_token(context, token)
-    if review_key: context.bot_data.pop(review_key, None)
-    context.user_data.pop('current_review_key', None)
-    context.user_data.pop('current_review_token', None)
+    _clean_conversation_state(context)
     await query.edit_message_text("تم إلغاء العملية.")
     return ConversationHandler.END
 
 async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    for key in (CONVERSATION_DATA_KEY, 'current_review_key', 'current_review_token', 'last_interactive_message_id'):
-        context.user_data.pop(key, None)
+    _clean_conversation_state(context)
     await update.message.reply_text("تم إلغاء المحادثة الحالية.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# ... (بقية الدوال من choose_channels_handler إلى notes_received تبقى كما هي بدون تغيير) ...
+async def unexpected_input_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_message = "أمر أو زر غير متوقع."
+    if update.message:
+        await update.message.reply_text(f"⚠️ {user_message} تم إنهاء عملية إنشاء التوصية الحالية.")
+    _clean_conversation_state(context)
+    return ConversationHandler.END
+
+# ... (بقية الدوال من choose_channels_handler إلى notes_received تبقى كما هي) ...
 async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -213,8 +228,7 @@ async def channel_picker_confirm_handler(update: Update, context: ContextTypes.D
         log.exception("Failed to save/publish to selected channels.")
         await query.edit_message_text(f"❌ فشل النشر: {e}")
     finally:
-        if review_key: context.bot_data.pop(review_key, None)
-        for k in ('current_review_key', 'current_review_token', sel_key): context.user_data.pop(k, None)
+        _clean_conversation_state(context)
     return ConversationHandler.END
 async def change_method_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -246,6 +260,7 @@ async def text_editor_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data[CONVERSATION_DATA_KEY] = data
     return await show_review_card(update, context)
 async def start_interactive_builder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _clean_conversation_state(context)
     message = update.message or update.callback_query.message
     context.user_data[CONVERSATION_DATA_KEY] = {}
     trade_service = get_service(context, "trade_service")
@@ -365,23 +380,8 @@ async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("حدث خلل. ابدأ من جديد بـ /newrec.")
     return ConversationHandler.END
 
-# ✅ --- START: FIX ---
-# This is the new, robust fallback handler.
-async def unexpected_input_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles any input that is not expected in the current conversation state."""
-    await update.message.reply_text(
-        "⚠️ تم استلام مدخل غير متوقع. تم إنهاء عملية إنشاء التوصية الحالية.\n"
-        "يمكنك الآن استخدام الأوامر الأخرى بشكل طبيعي."
-    )
-    # Clean up any lingering conversation data
-    for key in (CONVERSATION_DATA_KEY, 'current_review_key', 'current_review_token', 'last_interactive_message_id'):
-        context.user_data.pop(key, None)
-    return ConversationHandler.END
-# ✅ --- END: FIX ---
-
 def register_conversation_handlers(app: Application):
     change_method_cb = CallbackQueryHandler(change_method_handler, pattern="^change_method$")
-    
     creation_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("newrec", newrec_entry_point, filters=ALLOWED_USER_FILTER),
@@ -407,25 +407,16 @@ def register_conversation_handlers(app: Application):
             ],
             I_NOTES: [change_method_cb, MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)],
         },
-        # ✅ --- START: FIX ---
-        # Added robust fallbacks to automatically end the conversation on unexpected input.
         fallbacks=[
             CommandHandler("cancel", cancel_conv_handler),
-            # This will catch any command that is not part of the conversation
             MessageHandler(filters.COMMAND, unexpected_input_fallback),
-            # This will catch any button press that is not part of the conversation
             CallbackQueryHandler(unexpected_input_fallback),
         ],
-        # ✅ --- END: FIX ---
-        
-        # ✅ --- START: FIX ---
-        # Correct persistence settings to be user-specific.
         name="new_recommendation_conversation",
         persistent=True,
         per_user=True,
-        per_chat=False, # Conversation state should not be shared across different chats with the bot
+        per_chat=False,
         per_message=False,
-        # ✅ --- END: FIX ---
     )
     app.add_handler(creation_conv_handler)
 # --- END OF CORRECTED AND FINAL FILE ---
