@@ -149,7 +149,7 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
     items = trade_service.repo.list_open_for_user(user_telegram_id=user_tg_id, **filters_map)
 
     if not items:
-        await query.edit_message_text("✅ لا توجد توصيات مفتوحة تطابق الفلتر الحالي.")
+        await query.message.edit_message_text("✅ لا توجد توصيات مفتوحة تطابق الفلتر الحالي.")
         return
 
     seq_map: Dict[int, int] = {rec.id: i for i, rec in enumerate(items, start=1)}
@@ -167,7 +167,7 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
         header_text += f"\n<i>فلترة حسب: {', '.join(filter_text_parts)}</i>"
 
     try:
-        await query.edit_message_text(
+        await query.message.edit_message_text(
             f"{header_text}\nاختر توصية لعرض لوحة التحكم الخاصة بها:",
             reply_markup=keyboard,
             parse_mode=ParseMode.HTML,
@@ -187,7 +187,7 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     rec_id = _parse_tail_int(query.data)
     if rec_id is None:
-        await query.edit_message_text("❌ خطأ: لم يتم العثور على رقم التوصية.")
+        await query.message.edit_message_text("❌ خطأ: لم يتم العثور على رقم التوصية.")
         return
 
     trade_service: TradeService = get_service(context, "trade_service")
@@ -200,7 +200,7 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
             "Security: User %s tried to access rec #%s which they do not own or does not exist.",
             update.effective_user.id, rec_id
         )
-        await query.edit_message_text(f"❌ لا يمكنك الوصول إلى هذه التوصية.")
+        await query.message.edit_message_text(f"❌ لا يمكنك الوصول إلى هذه التوصية.")
         return
 
     live_price = price_service.get_cached_price(rec.asset.value, rec.market)
@@ -263,7 +263,7 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
         new_keyboard = public_channel_keyboard(rec.id)
 
         try:
-            await query.edit_message_text(
+            await query.message.edit_message_text(
                 text=new_text,
                 reply_markup=new_keyboard,
                 parse_mode=ParseMode.HTML,
@@ -313,7 +313,7 @@ async def start_close_flow_handler(update: Update, context: ContextTypes.DEFAULT
         return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "close", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    await query.edit_message_text(
+    await query.message.edit_message_text(
         text=f"{query.message.text}\n\n<b>🔻 الرجاء <u>الرد على هذه الرسالة ↩️</u> بسعر الخروج للتوصية #{rec_id}.</b>",
         parse_mode=ParseMode.HTML,
     )
@@ -337,9 +337,9 @@ async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         rec = trade_service.close(rec_id, exit_price)
         final_text = "✅ تم إغلاق التوصية بنجاح.\n\n" + build_trade_card_text(rec)
-        await query.edit_message_text(text=final_text, parse_mode=ParseMode.HTML, reply_markup=None)
+        await query.message.edit_message_text(text=final_text, parse_mode=ParseMode.HTML, reply_markup=None)
     except Exception as e:
-        await query.edit_message_text(f"❌ فشل إغلاق التوصية: {e}")
+        await query.message.edit_message_text(f"❌ فشل إغلاق التوصية: {e}")
     finally:
         context.user_data.pop(AWAITING_INPUT_KEY, None)
 
@@ -368,7 +368,7 @@ async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if rec_id is None: return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_sl", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    await query.edit_message_text(
+    await query.message.edit_message_text(
         text=f"{query.message.text}\n\n<b>✏️ الرجاء <u>الرد على هذه الرسالة ↩️</u> بقيمة وقف الخسارة الجديدة للتوصية #{rec_id}.</b>",
         parse_mode=ParseMode.HTML,
     )
@@ -379,7 +379,7 @@ async def start_edit_tp_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if rec_id is None: return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_tp", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    await query.edit_message_text(
+    await query.message.edit_message_text(
         text=f"{query.message.text}\n\n<b>🎯 الرجاء <u>الرد على هذه الرسالة ↩️</u> بالأهداف الجديدة للتوصية #{rec_id} (افصل بينها بمسافة).</b>",
         parse_mode=ParseMode.HTML,
     )
