@@ -24,6 +24,13 @@ def _env_float(name: str, default: float) -> float:
     except (ValueError, TypeError):
         return default
 
+def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
+    """Safely parse a user_id string to int, or return None if invalid."""
+    try:
+        return int(user_id) if user_id is not None else None
+    except (TypeError, ValueError):
+        return None
+
 @dataclass
 class AlertService:
     """
