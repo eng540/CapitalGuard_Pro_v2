@@ -1,6 +1,6 @@
 # --- START OF COMPLETE, LITERAL, AND FINAL FILE: src/capitalguard/infrastructure/db/repository.py ---
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict
 
 import sqlalchemy as sa
