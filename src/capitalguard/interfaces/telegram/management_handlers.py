@@ -210,7 +210,7 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
     text = build_trade_card_text(rec)
     keyboard = analyst_control_panel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
 
-    await query.edit_message_text(
+    await query.message.edit_message_text(
         text=text,
         reply_markup=keyboard,
         parse_mode=ParseMode.HTML,
