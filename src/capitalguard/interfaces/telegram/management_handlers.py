@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED AND ROBUST FILE (v3): src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FINAL, CORRECTED AND ROBUST FILE (V4): src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 import types
 import re
@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 
-# --- Parsing Helpers (Unchanged) ---
+# --- Parsing Helpers (These are correct and remain unchanged) ---
 _AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
 _SEPARATORS_REGEX = re.compile(r"[,\u060C;:|\t\r\n]+")
@@ -167,8 +167,6 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
         if "Message is not modified" not in str(e): log.warning(f"Error in show_rec_panel_handler: {e}")
     except Exception as e:
         log.error(f"Unexpected error in show_rec_panel_handler: {e}", exc_info=True)
-
-# ... (The rest of the handlers will be updated similarly) ...
 
 async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -355,4 +353,4 @@ def register_management_handlers(application: Application):
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler),
         group=1
     )
-# --- END OF FINAL, CORRECTED AND ROBUST FILE (v3) ---
+# --- END OF FINAL, CORRECTED AND ROBUST FILE (V4) ---
