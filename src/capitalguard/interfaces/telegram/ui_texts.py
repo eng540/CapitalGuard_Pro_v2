@@ -1,119 +1,32 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
+# --- START OF COMPLETE MODIFIED FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 from __future__ import annotations
 from typing import Iterable, List, Optional, Dict, Any, Tuple
 from math import isfinite
 from datetime import datetime, timezone
-from capitalguard.domain.entities import RecommendationStatus
 
-# ============================================================
-# Helpers
-# ============================================================
+from capitalguard.domain.entities import Recommendation, RecommendationStatus
 
-def _pct(entry: float, target: float, side: str) -> float:
-    """
-    نسبة PnL % مبسّطة:
-    - للـ LONG: (target-entry)/entry*100
-    - للـ SHORT: (entry-target)/entry*100
-    ملاحظة: تُستخدم أيضًا في لوحات أخرى (مستدعاة من keyboards.py).
-    """
-    if not entry or entry == 0:
+def _pct(entry: float, exit_val: float, side: str) -> float:
+    """Calculates percentage change."""
+    if not all(map(isfinite, [entry, exit_val])) or entry == 0:
         return 0.0
-    return ((target - entry) / entry * 100.0) if (side or "").upper() == "LONG" else ((entry - target) / entry * 100.0)
+    val = (exit_val / entry - 1) * 100
+    return val if side.upper() == "LONG" else -val
 
+def _rr(entry: float, sl: float, tp: float, side: str) -> float:
+    """Calculates Risk/Reward ratio."""
+    if not all(map(isfinite, [entry, sl, tp])) or entry == sl:
+        return 0.0
+    risk = abs(entry - sl)
+    reward = abs(tp - entry)
+    if risk == 0:
+        return float("inf")
+    return reward / risk
 
-def _rr(entry: float, sl: float, tp1: Optional[float], side: str) -> str:
-    try:
-        risk = abs(entry - sl)
-        if risk <= 0 or tp1 is None:
-            return "—"
-        reward = abs(tp1 - entry) if side.upper() == "LONG" else abs(entry - tp1)
-        ratio = reward / risk
-        return f"{ratio:.2f}" if isfinite(ratio) else "—"
-    except Exception:
-        return "—"
-
-
-def _rr_actual(entry: float, sl: float, exit_price: Optional[float], side: str) -> str:
-    try:
-        if exit_price is None:
-            return "—"
-        risk = abs(entry - sl)
-        if risk <= 0:
-            return "—"
-        reward = abs(exit_price - entry) if side.upper() == "LONG" else abs(entry - exit_price)
-        ratio = reward / risk
-        return f"{ratio:.2f}" if isfinite(ratio) else "—"
-    except Exception:
-        return "—"
-
-
-def _format_targets(entry: float, side: str, tps: Iterable[float]) -> str:
-    """عرض الأهداف بصيغة بسيطة (للبطاقات المعلقة أو عند عدم وجود سعر حي)."""
-    lines: List[str] = []
-    for i, tp in enumerate(tps, start=1):
-        try:
-            tp_f = float(tp)
-            pct = _pct(entry, tp_f, side)
-            lines.append(f"• TP{i}: {tp_f:g} ({pct:+.2f}%)")
-        except (ValueError, TypeError):
-            continue
-    return "\n".join(lines) if lines else "—"
-
-
-def _format_targets_for_active_trade(entry: float, side: str, tps: List[float], live_price: float) -> str:
-    """عرض الأهداف مع شريط تقدّم تقريبي (للتوصيات النشطة مع سعر حي)."""
-    lines: List[str] = []
-    for i, tp in enumerate(tps, start=1):
-        try:
-            tp_f = float(tp)
-            pct = _pct(entry, tp_f, side)
-            total_dist = abs(tp_f - entry)
-            current_dist = abs(live_price - entry)
-            progress = min(100, (current_dist / total_dist) * 100) if total_dist > 0 else 0
-            blocks = int(progress / 10)
-            progress_bar = '█' * blocks + '─' * (10 - blocks)
-            lines.append(f"• TP{i}: {tp_f:g} ({pct:+.2f}%) - <i>[{progress_bar}] {progress:.0f}%</i>")
-        except (ValueError, TypeError):
-            continue
-    return "\n".join(lines) if lines else "—"
-
-
-def _entry_scalar_and_zone(entry_val: Any) -> Tuple[float, Optional[Tuple[float, float]]]:
+def build_trade_card_text(rec: Recommendation) -> str:
     """
-    يدعم أن يكون entry:
-      - رقمًا مفردًا (float/int)
-      - قائمة/تابل تمثل منطقة دخول [low, ..., high]
-    يُرجع (entry_scalar, zone):
-      - entry_scalar: قيمة رقمية آمنة للحساب والعرض (الأول عند وجود قائمة)
-      - zone: (min,max) إن وُجدت منطقة، وإلا None
-    """
-    # قائمة/منطقة
-    if isinstance(entry_val, (list, tuple)) and entry_val:
-        try:
-            first = float(entry_val[0])
-            last = float(entry_val[-1])
-            lo, hi = (first, last) if first <= last else (last, first)
-            return first, (lo, hi)
-        except Exception:
-            # فشل التحويل الكامل، حاول أقل شيء ممكن
-            try:
-                return float(entry_val[0]), None
-            except Exception:
-                return 0.0, None
-    # رقم مفرد أو None
-    try:
-        return float(entry_val or 0), None
-    except Exception:
-        return 0.0, None
-
-
-# ============================================================
-# Cards/Text builders
-# ============================================================
-
-def build_trade_card_text(rec) -> str:
-    """
-    بطاقة الإشارة (عام/خاص) — تحافظ على التنسيق السابق مع تحسينات طفيفة.
+    Builds the complete, professionally formatted text for a recommendation card.
+    It now intelligently parses notes and displays a clean, structured summary.
     """
     rec_id = getattr(rec, "id", None)
     asset = getattr(getattr(rec, "asset", None), "value", "N/A")
@@ -125,136 +38,106 @@ def build_trade_card_text(rec) -> str:
     live_price = getattr(rec, "live_price", None)
     now_utc = datetime.now(timezone.utc).strftime('%H:%M %Z')
 
-    title_line = f"<b>{asset}</b> — {side}"
-    if rec_id:
-        title_line = f"Signal #{rec_id} | <b>{asset}</b> — {side}"
+    # --- Header ---
+    title_line = f"<b>Signal #{rec_id} | {asset} — {side}</b>"
 
-    body_lines: List[str] = []
-    targets_lines: List[str] = []
-
+    # --- Status & PnL Block ---
+    status_lines: List[str] = []
     if status == RecommendationStatus.PENDING:
-        body_lines.append("Status: ⏳ <b>PENDING ENTRY</b>")
-        if live_price:
-            # المسافة التقريبية بين السعر الحي والدخول (طبيعتها Long لمؤشر القرب فقط)
-            try:
-                dist_pct = _pct(entry, float(live_price), "LONG")
-                body_lines.append(f"<i>Live Price ({now_utc}): {float(live_price):g}</i>")
-                body_lines.append(f"<i>Distance to Entry: {dist_pct:+.2f}%</i>")
-            except Exception:
-                body_lines.append(f"<i>Live Price ({now_utc}): {live_price}</i>")
-        body_lines.append(f"\nEntry 💰: {entry:g}")
-        body_lines.append(f"SL 🛑: {sl:g}")
-        targets_lines.append("<u>Targets (Plan)</u>:")
-        targets_lines.append(_format_targets(entry, side, tps))
-
+        status_lines.append("Status: ⏳ <b>معلقة</b>")
     elif status == RecommendationStatus.ACTIVE:
-        body_lines.append("Status: 🟢 <b>ACTIVE</b>")
-        if live_price:
+        status_lines.append("Status: 🟢 <b>نشطة</b>")
+        if live_price and isfinite(live_price):
             try:
                 pnl = _pct(entry, float(live_price), side)
-                body_lines.append(f"<i>Live Price ({now_utc}): {float(live_price):g} (PnL: {pnl:+.2f}%)</i>")
-            except Exception:
-                body_lines.append(f"<i>Live Price ({now_utc}): {live_price}</i>")
-        body_lines.append(f"\nEntry 💰: {entry:g}")
-        body_lines.append(f"SL 🛑: {sl:g}")
-        targets_lines.append("<u>Targets (Live Progress)</u>:")
-        if live_price is not None:
-            try:
-                targets_lines.append(_format_targets_for_active_trade(entry, side, tps, float(live_price)))
-            except Exception:
-                targets_lines.append(_format_targets(entry, side, tps))
-        else:
-            targets_lines.append(_format_targets(entry, side, tps))
-
+                status_lines.append(f"<i>Live Price ({now_utc}): {float(live_price):g} (PnL: {pnl:+.2f}%)</i>")
+            except (ValueError, TypeError):
+                pass
     elif status == RecommendationStatus.CLOSED:
         exit_p = getattr(rec, 'exit_price', None)
-        pnl = _pct(entry, float(exit_p), side) if exit_p is not None else 0.0
-        rr_act = _rr_actual(entry, sl, float(exit_p or 0), side)
-        body_lines.append(f"Status: ✅ <b>CLOSED</b> at {float(exit_p):g}" if exit_p is not None else "Status: ✅ <b>CLOSED</b>")
-        result_line = f"Result: <b>Profit of {pnl:+.2f}%</b>" if pnl > 0 else f"Result: <b>Loss of {pnl:+.2f}%</b>"
-        body_lines.append(f"{result_line} (R/R act: {rr_act})")
+        status_lines.append(f"Status: ✅ <b>مغلقة عند {exit_p:g}</b>")
+        if exit_p is not None and isfinite(exit_p):
+            pnl = _pct(entry, float(exit_p), side)
+            result_text = f"بربح <b>{pnl:+.2f}%</b>" if pnl >= 0 else f"بخسارة <b>{pnl:+.2f}%</b>"
+            status_lines.append(f"Result: {result_text}")
+        else:
+            status_lines.append("Result: —")
 
-    notes = getattr(rec, "notes", None) or "—"
-    footer_lines = [f"\nNotes: <i>{notes}</i>", f"#{asset} #Signal #{side}"]
-
-    return "\n".join([title_line] + body_lines + targets_lines + footer_lines)
-
-
-def build_review_text(draft: dict) -> str:
-    """
-    مراجعة التوصية قبل النشر:
-    - تدعم entry كرقم أو كمنطقة [lo, hi, ...] بدون رميات أخطاء.
-    - تُحافظ على نفس الشكل السابق مع سطر إضافي إذا كانت منطقة دخول.
-    """
-    asset = (draft.get("asset", "") or "").upper()
-    side = (draft.get("side", "") or "").upper()
-    market = (draft.get("market", "") or "-")
-
-    entry_scalar, zone = _entry_scalar_and_zone(draft.get("entry"))
-    sl = float(draft.get("stop_loss", 0) or 0)
-
-    # تجميع الأهداف (قد تأتي كسلسلة نصية)
-    raw = draft.get("targets")
-    if isinstance(raw, str):
-        raw = [x for x in raw.replace(",", " ").split() if x]
-    tps: List[float] = []
-    for x in (raw or []):
-        try:
-            tps.append(float(x))
-        except Exception:
-            pass
-
-    tp1 = float(tps[0]) if tps else None
-    planned_rr = _rr(entry_scalar, sl, tp1, side)
-    notes = draft.get("notes") or "-"
-
-    lines_tps = "\n".join([f"• TP{i}: {tp:g}" for i, tp in enumerate(tps, start=1)]) or "—"
-    zone_line = f"\nEntry Zone: {zone[0]:g} — {zone[1]:g}" if zone else ""
-
-    return (
-        "📝 <b>مراجعة التوصية</b>\n\n"
-        f"<b>{asset}</b> | {market} / {side}\n"
-        f"Entry 💰: {entry_scalar:g}{zone_line}\n"
-        f"SL 🛑: {sl:g}\n"
-        f"<u>Targets</u>:\n{lines_tps}\n\n"
-        f"R/R (plan): <b>{planned_rr}</b>\n"
-        f"ملاحظات: <i>{notes}</i>\n\n"
-        "هل تريد نشر هذه التوصية في القناة؟"
-    )
-
-
-def build_review_text_with_price(draft: dict, preview_price: float | None) -> str:
-    """
-    نفس مراجعة التوصية مع سطر “السعر الحالي” إن توفّر.
-    يدعم أيضًا حالة entry كمنطقة؛ في هذه الحالة يُستخدم entry_scalar (أول عنصر) للعرض والحسابات الأخرى خارج هذا الملف.
-    """
-    base = build_review_text(draft)
-    if preview_price is None:
-        return base + "\n\n🔎 Current Price: —"
-    try:
-        return base + f"\n\n🔎 Current Price: <b>{float(preview_price):g}</b>"
-    except Exception:
-        return base + f"\n\n🔎 Current Price: <b>{preview_price}</b>"
-
-
-def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
-    total = stats.get('total_recommendations', 0)
-    open_recs = stats.get('open_recommendations', 0)
-    closed_recs = stats.get('closed_recommendations', 0)
-    win_rate = stats.get('overall_win_rate', '0.00%')
-    total_pnl = stats.get('total_pnl_percent', '0.00%')
-
-    lines = [
-        "📊 <b>Your Performance Summary</b> 📊",
-        "─" * 15,
-        f"Total Recommendations: <b>{total}</b>",
-        f"Open Trades: <b>{open_recs}</b>",
-        f"Closed Trades: <b>{closed_recs}</b>",
-        "─" * 15,
-        f"Overall Win Rate: <b>{win_rate}</b>",
-        f"Total PnL (Cumulative %): <b>{total_pnl}</b>",
-        "─" * 15,
-        f"<i>Report generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>",
+    # --- Core Trade Info ---
+    trade_info_lines = [
+        "",
+        f"<b>Entry 💰:</b> <code>{entry:g}</code>",
+        f"<b>SL 🛑:</b> <code>{sl:g}</code>",
+        "<b>Targets 🎯:</b>"
     ]
-    return "\n".join(lines)
-# --- END OF FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
+    for i, tp in enumerate(tps, start=1):
+        progress_bar = ""
+        if status == RecommendationStatus.ACTIVE and live_price and isfinite(live_price):
+            try:
+                # Calculate progress
+                start = entry
+                end = tp
+                current = float(live_price)
+                if end == start:
+                    progress = 1.0 if current >= end else 0.0
+                else:
+                    progress = (current - start) / (end - start)
+                
+                if side.upper() == "SHORT":
+                    progress = (start - current) / (start - end)
+                
+                progress = max(0.0, min(1.0, progress)) # Clamp between 0 and 1
+                
+                filled_blocks = int(progress * 10)
+                empty_blocks = 10 - filled_blocks
+                progress_bar = f" [{'█' * filled_blocks}{'─' * empty_blocks}] {progress:.0%}"
+            except Exception:
+                progress_bar = "" # Ignore errors in progress bar calculation
+        trade_info_lines.append(f"• TP{i}: <code>{tp:g}</code> ({_pct(entry, tp, side):+.2f}%)" + progress_bar)
+
+
+    # --- Notes Parsing and Formatting ---
+    notes_section_lines: List[str] = []
+    manual_notes = []
+    auto_notes = []
+    if rec.notes:
+        for line in rec.notes.strip().split('\n'):
+            line = line.strip()
+            if not line: continue
+            
+            if line.startswith("[SL_UPDATE]:"):
+                val = line.split(":", 1)[1]
+                if val == str(entry):
+                    auto_notes.append(f"<i>- تم نقل الوقف إلى نقطة الدخول.</i>")
+                else:
+                    auto_notes.append(f"<i>- تم تحديث الوقف إلى {val}.</i>")
+            elif line.startswith("[TP_UPDATE]:"):
+                auto_notes.append(f"<i>- تم تحديث الأهداف.</i>")
+            elif line.startswith("[PARTIAL_CLOSE]:"):
+                val = line.split(":", 1)[1]
+                auto_notes.append(f"<i>- تم إغلاق 50% من الصفقة في {val}.</i>")
+            else:
+                manual_notes.append(line)
+
+    if manual_notes:
+        notes_section_lines.append("\n<b>Notes:</b>")
+        notes_section_lines.extend(manual_notes)
+    
+    if auto_notes:
+        if not manual_notes:
+            notes_section_lines.append("\n<b>Notes:</b>")
+        notes_section_lines.extend(auto_notes)
+
+    # --- Footer ---
+    footer_lines = [f"\n#{asset} #Signal #{side}"]
+
+    # --- Assembly ---
+    all_parts = [
+        title_line,
+        *status_lines,
+        *trade_info_lines,
+        *notes_section_lines,
+        *footer_lines
+    ]
+    return "\n".join(all_parts)
+# --- END OF COMPLETE MODIFIED FILE ---
