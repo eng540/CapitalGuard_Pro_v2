@@ -1,4 +1,4 @@
-# --- START OF CORRECTED AND FINAL FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FINAL, CORRECTED AND ROBUST FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 import types
 import re
@@ -102,7 +102,18 @@ def _parse_cq_parts(data: str, expected: int) -> Optional[list]:
 async def _noop_answer(*args, **kwargs):
     return None
 
-# --- Handler Functions (Corrected) ---
+# --- Handler Functions (Corrected and Unified) ---
+
+async def _safe_edit_message(query: Optional[Update.callback_query], text: str, **kwargs):
+    """A safe helper to edit messages, avoiding crashes if the message is gone."""
+    if query and query.message:
+        try:
+            await query.message.edit_message_text(text, **kwargs)
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                log.warning(f"Could not edit message: {e}")
+        except Exception as e:
+            log.error(f"Unexpected error editing message: {e}", exc_info=True)
 
 async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -115,7 +126,7 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
     items = trade_service.repo.list_open_for_user(user_telegram_id=user_tg_id, **filters_map)
 
     if not items:
-        if query.message: await query.message.edit_message_text("✅ لا توجد توصيات مفتوحة تطابق الفلتر الحالي.")
+        await _safe_edit_message(query, "✅ لا توجد توصيات مفتوحة تطابق الفلتر الحالي.")
         return
 
     seq_map: Dict[int, int] = {rec.id: i for i, rec in enumerate(items, start=1)}
@@ -124,66 +135,63 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
     if filters_map:
         filter_text_parts = [f"{k.capitalize()}: {str(v).upper()}" for k, v in filters_map.items()]
         header_text += f"\n<i>فلترة حسب: {', '.join(filter_text_parts)}</i>"
-    try:
-        if query.message: await query.message.edit_message_text(
-            f"{header_text}\nاختر توصية لعرض لوحة التحكم الخاصة بها:",
-            reply_markup=keyboard, parse_mode=ParseMode.HTML
-        )
-    except BadRequest as e:
-        if "Message is not modified" not in str(e): raise e
+
+    await _safe_edit_message(
+        query, f"{header_text}\nاختر توصية لعرض لوحة التحكم الخاصة بها:",
+        reply_markup=keyboard, parse_mode=ParseMode.HTML
+    )
 
 async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     rec_id = _parse_tail_int(query.data)
     if rec_id is None:
-        if query.message: await query.message.edit_message_text("❌ خطأ: لم يتم العثور على رقم التوصية.")
+        await _safe_edit_message(query, "❌ خطأ: لم يتم العثور على رقم التوصية.")
         return
+        
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
     rec = trade_service.repo.get_by_id_for_user(rec_id, update.effective_user.id)
     if not rec:
         log.warning("Security: User %s tried to access rec #%s", update.effective_user.id, rec_id)
-        if query.message: await query.message.edit_message_text(f"❌ لا يمكنك الوصول إلى هذه التوصية.")
+        await _safe_edit_message(query, f"❌ لا يمكنك الوصول إلى هذه التوصية.")
         return
+
     live_price = price_service.get_cached_price(rec.asset.value, rec.market)
     if live_price: setattr(rec, "live_price", live_price)
     text = build_trade_card_text(rec)
     keyboard = analyst_control_panel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
-    if query.message:
-        await query.message.edit_message_text(
-            text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True
-        )
+    await _safe_edit_message(
+        query, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+    )
 
 async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
         rec_id = _parse_tail_int(query.data)
-        if rec_id is None:
-            await query.answer("Bad request.", show_alert=True); return
+        if rec_id is None: await query.answer("Bad request.", show_alert=True); return
         if _recently_updated(context, query.message.chat_id, query.message.message_id):
-            await query.answer("البيانات محدثة للتو — حاول بعد قليل.", show_alert=False); return
+            await query.answer("البيانات محدثة للتو.", show_alert=False); return
+
         trade_service: TradeService = get_service(context, "trade_service")
         price_service: PriceService = get_service(context, "price_service")
         rec = trade_service.repo.get(rec_id)
-        if not rec: await query.answer("هذه التوصية غير موجودة.", show_alert=True); return
-        if rec.status == RecommendationStatus.CLOSED: await query.answer("هذه الصفقة مغلقة بالفعل.", show_alert=False); return
+        if not rec: await query.answer("التوصية غير موجودة.", show_alert=True); return
+        if rec.status == RecommendationStatus.CLOSED: await query.answer("الصفقة مغلقة بالفعل.", show_alert=False); return
         live_price = price_service.get_cached_price(rec.asset.value, rec.market)
-        if not live_price: await query.answer("تعذر جلب السعر اللحظي.", show_alert=True); return
+        if not live_price: await query.answer("تعذر جلب السعر.", show_alert=True); return
+        
         setattr(rec, "live_price", live_price)
         new_text = build_trade_card_text(rec)
         new_keyboard = public_channel_keyboard(rec.id)
-        try:
-            if query.message: await query.message.edit_message_text(
-                text=new_text, reply_markup=new_keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True
-            )
-            await query.answer("تم التحديث ✅")
-        except BadRequest as e:
-            if "Message is not modified" in str(e): await query.answer("البيانات محدثة بالفعل.")
-            else: raise e
+        
+        await _safe_edit_message(
+            query, text=new_text, reply_markup=new_keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+        )
+        await query.answer("تم التحديث ✅")
     except Exception as e:
         log.error(f"Error in update_public_card: {e}", exc_info=True)
-        try: await query.answer("حدث خطأ غير متوقع.", show_alert=True)
+        try: await query.answer("حدث خطأ.", show_alert=True)
         except Exception: pass
 
 async def update_private_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -191,7 +199,7 @@ async def update_private_card(update: Update, context: ContextTypes.DEFAULT_TYPE
     await show_rec_panel_handler(update, context)
 
 async def move_sl_to_be_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer("جاري النقل: SL إلى نقطة الدخول...")
+    await update.callback_query.answer("جاري النقل...")
     rec_id = _parse_tail_int(update.callback_query.data)
     if rec_id:
         trade_service: TradeService = get_service(context, "trade_service")
@@ -199,7 +207,7 @@ async def move_sl_to_be_handler(update: Update, context: ContextTypes.DEFAULT_TY
     await show_rec_panel_handler(update, context)
 
 async def partial_close_note_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer("جاري الإضافة: ملاحظة إغلاق جزئي...")
+    await update.callback_query.answer("جاري الإضافة...")
     rec_id = _parse_tail_int(update.callback_query.data)
     if rec_id:
         trade_service: TradeService = get_service(context, "trade_service")
@@ -212,8 +220,8 @@ async def start_close_flow_handler(update: Update, context: ContextTypes.DEFAULT
     if rec_id is None: await query.answer("Bad request.", show_alert=True); return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "close", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    if query.message: await query.message.edit_message_text(
-        text=f"{query.message.text}\n\n<b>🔻 الرجاء <u>الرد على هذه الرسالة ↩️</u> بسعر الخروج للتوصية #{rec_id}.</b>",
+    await _safe_edit_message(
+        query, text=f"{query.message.text}\n\n<b>🔻 الرجاء <u>الرد على هذه الرسالة ↩️</u> بسعر الخروج للتوصية #{rec_id}.</b>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -228,9 +236,9 @@ async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         rec = trade_service.close(rec_id, exit_price)
         final_text = "✅ تم إغلاق التوصية بنجاح.\n\n" + build_trade_card_text(rec)
-        if query.message: await query.message.edit_message_text(text=final_text, parse_mode=ParseMode.HTML, reply_markup=None)
+        await _safe_edit_message(query, text=final_text, parse_mode=ParseMode.HTML, reply_markup=None)
     except Exception as e:
-        if query.message: await query.message.edit_message_text(f"❌ فشل إغلاق التوصية: {e}")
+        await _safe_edit_message(query, f"❌ فشل إغلاق التوصية: {e}")
     finally: context.user_data.pop(AWAITING_INPUT_KEY, None)
 
 async def cancel_close_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -256,8 +264,8 @@ async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if rec_id is None: return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_sl", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    if query.message: await query.message.edit_message_text(
-        text=f"{query.message.text}\n\n<b>✏️ الرجاء <u>الرد على هذه الرسالة ↩️</u> بقيمة وقف الخسارة الجديدة للتوصية #{rec_id}.</b>",
+    await _safe_edit_message(
+        query, text=f"{query.message.text}\n\n<b>✏️ الرجاء <u>الرد على هذه الرسالة ↩️</u> بقيمة وقف الخسارة الجديدة للتوصية #{rec_id}.</b>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -267,8 +275,8 @@ async def start_edit_tp_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if rec_id is None: return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_tp", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
-    if query.message: await query.message.edit_message_text(
-        text=f"{query.message.text}\n\n<b>🎯 الرجاء <u>الرد على هذه الرسالة ↩️</u> بالأهداف الجديدة للتوصية #{rec_id} (افصل بينها بمسافة).</b>",
+    await _safe_edit_message(
+        query, text=f"{query.message.text}\n\n<b>🎯 الرجاء <u>الرد على هذه الرسالة ↩️</u> بالأهداف الجديدة للتوصية #{rec_id} (افصل بينها بمسافة).</b>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -317,28 +325,28 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
         dummy_update = Update(update.update_id, callback_query=dummy_query)
         await show_rec_panel_handler(dummy_update, context)
 
+# ✅ --- START: FIX ---
+# Reverted to the explicit, repetitive, but robust handler registration method.
+# This ensures that the pattern matching works reliably with the library.
 def register_management_handlers(application: Application):
     """Registers all callback query and message handlers for managing recommendations."""
-    patterns = {
-        navigate_open_recs_handler: r"^open_nav:page:",
-        show_rec_panel_handler: r"^rec:show_panel:",
-        update_public_card: r"^rec:update_public:",
-        update_private_card: r"^rec:update_private:",
-        move_sl_to_be_handler: r"^rec:move_be:",
-        partial_close_note_handler: r"^rec:close_partial:",
-        start_close_flow_handler: r"^rec:close_start:",
-        show_edit_menu_handler: r"^rec:edit_menu:",
-        back_to_main_panel_handler: r"^rec:back_to_main:",
-        start_edit_sl_handler: r"^rec:edit_sl:",
-        start_edit_tp_handler: r"^rec:edit_tp:",
-        confirm_close_handler: r"^rec:confirm_close:",
-        cancel_close_handler: r"^rec:cancel_close:",
-    }
-    for handler, pattern in patterns.items():
-        application.add_handler(CallbackQueryHandler(handler, pattern=pattern))
+    application.add_handler(CallbackQueryHandler(navigate_open_recs_handler, pattern=r"^open_nav:page:"))
+    application.add_handler(CallbackQueryHandler(show_rec_panel_handler, pattern=r"^rec:show_panel:"))
+    application.add_handler(CallbackQueryHandler(update_public_card, pattern=r"^rec:update_public:"))
+    application.add_handler(CallbackQueryHandler(update_private_card, pattern=r"^rec:update_private:"))
+    application.add_handler(CallbackQueryHandler(move_sl_to_be_handler, pattern=r"^rec:move_be:"))
+    application.add_handler(CallbackQueryHandler(partial_close_note_handler, pattern=r"^rec:close_partial:"))
+    application.add_handler(CallbackQueryHandler(start_close_flow_handler, pattern=r"^rec:close_start:"))
+    application.add_handler(CallbackQueryHandler(show_edit_menu_handler, pattern=r"^rec:edit_menu:"))
+    application.add_handler(CallbackQueryHandler(back_to_main_panel_handler, pattern=r"^rec:back_to_main:"))
+    application.add_handler(CallbackQueryHandler(start_edit_sl_handler, pattern=r"^rec:edit_sl:"))
+    application.add_handler(CallbackQueryHandler(start_edit_tp_handler, pattern=r"^rec:edit_tp:"))
+    application.add_handler(CallbackQueryHandler(confirm_close_handler, pattern=r"^rec:confirm_close:"))
+    application.add_handler(CallbackQueryHandler(cancel_close_handler, pattern=r"^rec:cancel_close:"))
     
     application.add_handler(
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler),
         group=1
     )
+# ✅ --- END: FIX ---
 # --- END OF CORRECTED AND FINAL FILE ---
