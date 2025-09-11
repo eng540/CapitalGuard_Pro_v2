@@ -1,8 +1,6 @@
-# --- START OF FINAL, CORRECTED AND ROBUST FILE (V6): src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FINAL, CORRECTED FILE (V8): src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 import types
-import re
-import unicodedata
 from time import time
 from typing import Optional, List, Dict
 
@@ -27,6 +25,7 @@ from .keyboards import (
     build_open_recs_keyboard,
 )
 from .ui_texts import build_trade_card_text
+# ✅ FIX: This import will now work because the functions exist in parsers.py
 from .parsers import parse_number, parse_number_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
@@ -35,54 +34,22 @@ from capitalguard.domain.entities import RecommendationStatus
 log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
-# States for partial profit conversation
 (PARTIAL_PROFIT_PERCENT, PARTIAL_PROFIT_PRICE) = range(2)
 
-# --- Parsing Helpers (Unchanged) ---
-_AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-_SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
-_SEPARATORS_REGEX = re.compile(r"[,\u060C;:|\t\r\n]+")
+# ✅ FIX: All redundant parsing functions have been removed from this file.
 
-def _normalize_text(s: str) -> str:
-    if not s: return ""
-    s = unicodedata.normalize("NFKC", s); s = s.translate(_AR_TO_EN_DIGITS)
-    s = s.replace("،", ","); s = re.sub(r"\s+", " ", s).strip()
-    return s
-def _parse_one_number(token: str) -> float:
-    if not token: raise ValueError("قيمة رقمية فارغة")
-    t = token.strip().upper(); t = re.sub(r"^[^\d+-.]+|[^\dA-Z.+-]+$", "", t); t = t.replace(",", "")
-    m = re.match(r"^([+\-]?\d+(?:\.\d+)?)([KMB])?$", t)
-    if not m: raise ValueError(f"قيمة رقمية غير صالحة: '{token}'")
-    num_str, suf = m.groups(); scale = _SUFFIXES.get(suf or "", 1)
-    return float(num_str) * scale
-def _tokenize_numbers(s: str) -> List[str]:
-    s = _normalize_text(s); s = _SEPARATORS_REGEX.sub(" ", s)
-    return [p for p in s.split(" ") if p]
-def _coalesce_num_suffix_tokens(tokens: List[str]) -> List[str]:
-    out: List[str] = []; i = 0
-    while i < len(tokens):
-        cur = tokens[i].strip(); nxt = tokens[i + 1].strip() if i + 1 < len(tokens) else None
-        if nxt and re.fullmatch(r"[KMBkmb]", nxt): out.append(cur + nxt.upper()); i += 2
-        else: out.append(cur); i += 1
-    return out
-def parse_number(s: str) -> float:
-    tokens = _tokenize_numbers(s)
-    if not tokens: raise ValueError("لم يتم العثور على قيمة رقمية.")
-    tokens = _coalesce_num_suffix_tokens(tokens); return _parse_one_number(tokens[0])
-def parse_number_list(s: str) -> List[float]:
-    tokens = _tokenize_numbers(s)
-    if not tokens: raise ValueError("لم يتم العثور على أي أرقام.")
-    tokens = _coalesce_num_suffix_tokens(tokens); return [_parse_one_number(t) for t in tokens]
 def _parse_tail_int(data: str) -> Optional[int]:
     try: return int(data.split(":")[-1])
     except (ValueError, IndexError): return None
+
 def _parse_cq_parts(data: str, expected: int) -> Optional[list]:
     try:
-        parts = data.split(":"); return parts if len(parts) >= expected else None
+        parts = data.split(":")
+        return parts if len(parts) >= expected else None
     except Exception: return None
+
 async def _noop_answer(*args, **kwargs): return None
 
-# --- Notification Helper ---
 def _notify_all_channels(context: ContextTypes.DEFAULT_TYPE, rec_id: int, text: str):
     repo = get_service(context, "trade_service").repo
     notifier = get_service(context, "notifier")
@@ -95,7 +62,7 @@ def _notify_all_channels(context: ContextTypes.DEFAULT_TYPE, rec_id: int, text: 
         except Exception as e:
             log.warning("Failed to send reply notification for rec #%s to channel %s: %s", rec_id, msg_meta.telegram_channel_id, e)
 
-# --- Handler Functions (Corrected with context.bot) ---
+# --- Handler Functions ---
 
 async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -193,10 +160,12 @@ async def move_sl_to_be_handler(update: Update, context: ContextTypes.DEFAULT_TY
     rec_id = _parse_tail_int(query.data)
     if rec_id:
         trade_service: TradeService = get_service(context, "trade_service")
-        rec = trade_service.update_sl(rec_id, trade_service.repo.get(rec_id).entry.value)
+        rec = trade_service.repo.get(rec_id)
         if rec:
-            notification_text = f"<b>🛡️ تأمين صفقة #{rec.asset.value}</b>\nتم نقل وقف الخسارة إلى نقطة الدخول."
-            _notify_all_channels(context, rec_id, notification_text)
+            updated_rec = trade_service.update_sl(rec_id, rec.entry.value)
+            if updated_rec:
+                notification_text = f"<b>🛡️ تأمين صفقة #{updated_rec.asset.value}</b>\nتم نقل وقف الخسارة إلى نقطة الدخول."
+                _notify_all_channels(context, rec_id, notification_text)
     await show_rec_panel_handler(update, context)
 
 async def start_close_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,6 +289,7 @@ async def partial_profit_start(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
     if rec_id is None: return ConversationHandler.END
+    
     context.user_data['partial_profit_rec_id'] = rec_id
     context.user_data['original_message'] = query.message
     await query.answer()
@@ -375,8 +345,13 @@ async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_T
             
     return ConversationHandler.END
 
+async def cancel_partial_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ('partial_profit_rec_id', 'partial_profit_percent', 'original_message'):
+        context.user_data.pop(key, None)
+    await update.message.reply_text("تم إلغاء عملية جني الأرباح.")
+    return ConversationHandler.END
+
 def register_management_handlers(application: Application):
-    # Regular callback handlers
     application.add_handler(CallbackQueryHandler(navigate_open_recs_handler, pattern=r"^open_nav:page:"))
     application.add_handler(CallbackQueryHandler(show_rec_panel_handler, pattern=r"^rec:show_panel:"))
     application.add_handler(CallbackQueryHandler(update_public_card, pattern=r"^rec:update_public:"))
@@ -390,24 +365,20 @@ def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(confirm_close_handler, pattern=r"^rec:confirm_close:"))
     application.add_handler(CallbackQueryHandler(cancel_close_handler, pattern=r"^rec:cancel_close:"))
     
-    # Conversation for partial profit
     partial_profit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(partial_profit_start, pattern=r"^rec:close_partial:")],
         states={
             PARTIAL_PROFIT_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_partial_percent)],
             PARTIAL_PROFIT_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_partial_price)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_conv_handler)],
+        fallbacks=[CommandHandler("cancel", cancel_partial_profit)],
         name="partial_profit_conversation",
-        per_user=True,
-        per_chat=False,
-        per_message=False,
+        per_user=True, per_chat=False, per_message=False,
     )
     application.add_handler(partial_profit_conv)
     
-    # Handler for replied messages (for SL, TP, and Close price)
     application.add_handler(
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler),
         group=1
     )
-# --- END OF FINAL MODIFIED FILE (V6) ---
+# --- END OF FINAL, CORRECTED FILE (V7) ---
