@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V18): src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FINAL, CORRECTED FILE (V19): src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 import types
 from time import time
@@ -36,10 +36,19 @@ log = logging.getLogger(__name__)
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 (PARTIAL_PROFIT_PERCENT, PARTIAL_PROFIT_PRICE) = range(2)
 
-# --- Helper Functions ---
+# ✅ --- START: FIX for NameError ---
+# Re-add the helper functions that are specific to this file's logic.
 def _parse_tail_int(data: str) -> Optional[int]:
     try: return int(data.split(":")[-1])
     except (ValueError, IndexError): return None
+
+def _parse_cq_parts(data: str, expected: int) -> Optional[list]:
+    try:
+        parts = data.split(":")
+        return parts if len(parts) >= expected else None
+    except Exception: return None
+
+async def _noop_answer(*args, **kwargs): return None
 
 def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int) -> bool:
     key = (f"rate_limit_{chat_id}_{message_id}",)
@@ -49,8 +58,11 @@ def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_
         return True
     context.bot_data[key] = now
     return False
+# ✅ --- END: FIX for NameError ---
 
-async def _noop_answer(*args, **kwargs): return None
+def _notify_all_channels(context: ContextTypes.DEFAULT_TYPE, rec_id: int, text: str):
+    trade_service: TradeService = get_service(context, "trade_service")
+    trade_service._notify_all_channels(rec_id, text)
 
 # --- Handler Functions ---
 
@@ -309,7 +321,7 @@ async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_T
         rec = trade_service.take_partial_profit(rec_id, percentage, price)
         
         notification_text = f"💰 جني أرباح جزئي لـ #{rec.asset.value} | تم إغلاق {percentage}% من الصفقة عند سعر {price:g}."
-        trade_service._notify_all_channels(rec_id, notification_text)
+        _notify_all_channels(context, rec_id, notification_text)
         
         await update.message.reply_text("✅ تم تسجيل جني الأرباح الجزئي بنجاح.")
         
