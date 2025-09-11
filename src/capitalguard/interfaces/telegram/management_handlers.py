@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED AND ROBUST FILE (V4): src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FINAL, CORRECTED AND ROBUST FILE (V5): src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 import types
 import re
@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 
-# --- Parsing Helpers (These are correct and remain unchanged) ---
+# --- Parsing Helpers (Unchanged) ---
 _AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
 _SEPARATORS_REGEX = re.compile(r"[,\u060C;:|\t\r\n]+")
@@ -178,7 +178,10 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         trade_service: TradeService = get_service(context, "trade_service")
         price_service: PriceService = get_service(context, "price_service")
+        
+        # ✅ FIX: Use the global `get` method for public channels
         rec = trade_service.repo.get(rec_id)
+        
         if not rec: await query.answer("التوصية غير موجودة.", show_alert=True); return
         if rec.status == RecommendationStatus.CLOSED: await query.answer("الصفقة مغلقة بالفعل.", show_alert=False); return
         live_price = price_service.get_cached_price(rec.asset.value, rec.market)
@@ -353,4 +356,4 @@ def register_management_handlers(application: Application):
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler),
         group=1
     )
-# --- END OF FINAL, CORRECTED AND ROBUST FILE (V4) ---
+# --- END OF FINAL, CORRECTED AND ROBUST FILE (V5) ---
