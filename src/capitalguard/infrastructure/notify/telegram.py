@@ -1,4 +1,4 @@
-# --- START OF COMPLETE MODIFIED FILE: src/capitalguard/infrastructure/notify/telegram.py ---
+# --- START OF FINAL, CORRECTED AND ROBUST FILE (V5): src/capitalguard/infrastructure/notify/telegram.py ---
 import logging
 from typing import Optional, Tuple, Dict, Any
 
@@ -157,21 +157,40 @@ class TelegramNotifier:
         keyboard: Optional[InlineKeyboardMarkup] = None,
     ) -> bool:
         """
-        Edits a previously posted recommendation card in a channel.
+        [DEPRECATED] Edits a card using channel_id/message_id from the rec object.
         """
         if not rec.channel_id or not rec.message_id:
             return False
+        return self.edit_recommendation_card_by_ids(
+            channel_id=int(rec.channel_id),
+            message_id=int(rec.message_id),
+            rec=rec,
+            keyboard=keyboard
+        )
+
+    # ✅ --- START: NEW, MORE EXPLICIT FUNCTION ---
+    def edit_recommendation_card_by_ids(
+        self,
+        channel_id: int,
+        message_id: int,
+        rec: Recommendation,
+        keyboard: Optional[InlineKeyboardMarkup] = None,
+    ) -> bool:
+        """
+        Edits a previously posted recommendation card in a channel using explicit IDs.
+        """
         new_text = build_trade_card_text(rec)
         return self._edit_text(
-            chat_id=int(rec.channel_id),
-            message_id=int(rec.message_id),
+            chat_id=channel_id,
+            message_id=message_id,
             text=new_text,
             keyboard=keyboard,
         )
+    # ✅ --- END: NEW FUNCTION ---
 
     def send_admin_alert(self, text: str) -> None:
         """
         Logs an admin alert. No default channel sending.
         """
         log.info("ADMIN ALERT (logged only): %s", text)
-# --- END OF COMPLETE MODIFIED FILE ---
+# --- END OF FINAL, CORRECTED AND ROBUST FILE (V5) ---
