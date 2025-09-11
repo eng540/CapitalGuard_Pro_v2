@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V12.1): src/capitalguard/infrastructure/db/repository.py ---
+# --- START OF FINAL, CORRECTED FILE (V13): src/capitalguard/infrastructure/db/repository.py ---
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict
@@ -129,7 +129,6 @@ class RecommendationRepository:
     # --- Read Operations ---
     def get(self, rec_id: int) -> Optional[Recommendation]:
         with SessionLocal() as s:
-            # ✅ FIX: Use the correct variable name 'rec_id' instead of 'rec.id'
             row = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.id == rec_id).first()
             return self._to_entity(row)
 
@@ -164,6 +163,29 @@ class RecommendationRepository:
             if filters.get("status"): q = q.filter(RecommendationORM.status == self._coerce_enum(filters["status"], RecommendationStatus))
             return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
+    # ✅ FIX: Re-add the missing function
+    def get_recent_assets_for_user(self, user_telegram_id: Union[str, int], limit: int = 5) -> List[str]:
+        """Return most recently used unique assets for a Telegram user."""
+        with SessionLocal() as s:
+            user = UserRepository(s).find_by_telegram_id(int(user_telegram_id))
+            if not user: return []
+            subq = (
+                s.query(
+                    RecommendationORM.asset,
+                    sa.func.max(RecommendationORM.created_at).label("max_created_at"),
+                )
+                .filter(RecommendationORM.user_id == user.id)
+                .group_by(RecommendationORM.asset)
+                .subquery()
+            )
+            results = (
+                s.query(subq.c.asset)
+                .order_by(subq.c.max_created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            return [r[0] for r in results]
+
     def check_if_event_exists(self, rec_id: int, event_type: str) -> bool:
         with SessionLocal() as s:
             return s.query(RecommendationEvent.id).filter_by(recommendation_id=rec_id, event_type=event_type).first() is not None
@@ -184,4 +206,4 @@ class RecommendationRepository:
                 'message_id': first_pub_data['telegram_message_id'],
                 'published_at': datetime.now(timezone.utc)
             }); s.commit()
-# --- END OF FINAL, CORRECTED FILE (V12.1) ---
+# --- END OF FINAL, CORRECTED FILE (V13) ---
