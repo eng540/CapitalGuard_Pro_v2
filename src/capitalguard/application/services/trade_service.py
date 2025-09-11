@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED AND ROBUST FILE (V15): src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, CORRECTED FILE (V16): src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
@@ -8,7 +8,8 @@ import httpx
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from capitalguard.domain.ports import RecommendationRepoPort, NotifierPort
-from capitalguard.infrastructure.db.repository import RecommendationRepository
+from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository, ChannelRepository
+from capitalguard.infrastructure.db.base import SessionLocal
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +25,16 @@ class TradeService:
     def __init__(self, repo: RecommendationRepository, notifier: NotifierPort):
         self.repo = repo
         self.notifier = notifier
+
+    # ✅ --- START: FIX ---
+    # Move the helper function back to where it belongs: inside the service that uses it.
+    def _load_user_linked_channels(self, uid_int: int, only_active: bool = True) -> List[Any]:
+        """Returns a list of linked channel ORM rows for a user."""
+        with SessionLocal() as s:
+            user = UserRepository(s).find_by_telegram_id(uid_int)
+            if not user: return []
+            return ChannelRepository(s).list_by_user(user.id, only_active=only_active)
+    # ✅ --- END: FIX ---
 
     # --- Validation Helpers ---
     def _ensure_symbols_cache(self) -> None:
@@ -91,7 +102,8 @@ class TradeService:
             report["failed"].append({"channel_id": None, "reason": "USER_NOT_RESOLVED"})
             return rec, report
             
-        channels = self.repo._load_user_linked_channels(uid_int, only_active=True)
+        # ✅ FIX: Call the function on `self` (the service) instead of `self.repo`
+        channels = self._load_user_linked_channels(uid_int, only_active=True)
         if channel_ids: channels = [ch for ch in channels if ch.telegram_channel_id in set(channel_ids)]
         
         if not channels:
@@ -120,49 +132,35 @@ class TradeService:
     def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.PENDING: return None
-        
         rec.activate()
         rec.highest_price_reached = rec.entry.value
         rec.lowest_price_reached = rec.entry.value
-        
         event_data = {"activated_at": rec.activated_at.isoformat()}
         return self.repo.update_with_event(rec, "ACTIVATED", event_data)
 
     def close(self, rec_id: int, exit_price: float) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec: raise ValueError(f"Recommendation {rec_id} not found.")
-        
         old_status = rec.status
         rec.close(exit_price)
-        
-        event_data = {
-            "old_status": old_status.value,
-            "exit_price": exit_price,
-            "closed_at": rec.closed_at.isoformat()
-        }
+        event_data = {"old_status": old_status.value, "exit_price": exit_price, "closed_at": rec.closed_at.isoformat()}
         return self.repo.update_with_event(rec, "CLOSED", event_data)
 
     def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec or rec.status == RecommendationStatus.CLOSED: raise ValueError("Recommendation not found or is closed.")
-        
         old_sl = rec.stop_loss.value
         self._validate_sl_vs_entry(rec.side.value, rec.entry.value, new_sl)
-        
         rec.stop_loss = Price(new_sl)
-        
         event_data = {"old_sl": old_sl, "new_sl": new_sl}
         return self.repo.update_with_event(rec, "SL_UPDATE", event_data)
 
     def update_targets(self, rec_id: int, new_targets: List[float]) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec or rec.status == RecommendationStatus.CLOSED: raise ValueError("Recommendation not found or is closed.")
-        
         old_targets = rec.targets.values
         self._validate_targets(rec.side.value, rec.entry.value, new_targets)
-        
         rec.targets = Targets(new_targets)
-        
         event_data = {"old_targets": old_targets, "new_targets": new_targets}
         return self.repo.update_with_event(rec, "TP_UPDATE", event_data)
 
@@ -170,14 +168,12 @@ class TradeService:
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.ACTIVE:
             raise ValueError("Partial profit can only be taken on active recommendations.")
-        
         event_data = {"percentage": percentage, "price": price}
         return self.repo.update_with_event(rec, "PARTIAL_PROFIT_TAKEN", event_data)
 
     def update_price_tracking(self, rec_id: int, current_price: float) -> Optional[Recommendation]:
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.ACTIVE: return None
-
         updated = False
         if rec.highest_price_reached is None or current_price > rec.highest_price_reached:
             rec.highest_price_reached = current_price
@@ -185,11 +181,10 @@ class TradeService:
         if rec.lowest_price_reached is None or current_price < rec.lowest_price_reached:
             rec.lowest_price_reached = current_price
             updated = True
-            
         if updated:
             return self.repo.update(rec)
         return None
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FINAL, CORRECTED AND ROBUST FILE (V15) ---
+# --- END OF FINAL, CORRECTED FILE (V16) ---
