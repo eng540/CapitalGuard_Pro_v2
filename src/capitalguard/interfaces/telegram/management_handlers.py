@@ -1,4 +1,4 @@
-# --- START OF FINAL, REVIEWED, AND ROBUST FILE (V14): src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FINAL, CORRECTED FILE (V18): src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 import types
 from time import time
@@ -41,14 +41,6 @@ def _parse_tail_int(data: str) -> Optional[int]:
     try: return int(data.split(":")[-1])
     except (ValueError, IndexError): return None
 
-def _parse_cq_parts(data: str, expected: int) -> Optional[list]:
-    try:
-        parts = data.split(":")
-        return parts if len(parts) >= expected else None
-    except Exception: return None
-
-async def _noop_answer(*args, **kwargs): return None
-
 def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int) -> bool:
     key = (f"rate_limit_{chat_id}_{message_id}",)
     last_update = context.bot_data.get(key, 0)
@@ -58,17 +50,7 @@ def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_
     context.bot_data[key] = now
     return False
 
-def _notify_all_channels(context: ContextTypes.DEFAULT_TYPE, rec_id: int, text: str):
-    repo = get_service(context, "trade_service").repo
-    notifier = get_service(context, "notifier")
-    published_messages = repo.get_published_messages(rec_id)
-    for msg_meta in published_messages:
-        try:
-            notifier.post_notification_reply(
-                chat_id=msg_meta.telegram_channel_id, message_id=msg_meta.telegram_message_id, text=text
-            )
-        except Exception as e:
-            log.warning("Failed to send reply notification for rec #%s to channel %s: %s", rec_id, msg_meta.telegram_channel_id, e)
+async def _noop_answer(*args, **kwargs): return None
 
 # --- Handler Functions ---
 
@@ -170,10 +152,7 @@ async def move_sl_to_be_handler(update: Update, context: ContextTypes.DEFAULT_TY
         trade_service: TradeService = get_service(context, "trade_service")
         rec = trade_service.repo.get(rec_id)
         if rec:
-            updated_rec = trade_service.update_sl(rec_id, rec.entry.value)
-            if updated_rec:
-                notification_text = f"<b>🛡️ تأمين صفقة #{updated_rec.asset.value}</b>\nتم نقل وقف الخسارة إلى نقطة الدخول."
-                _notify_all_channels(context, rec_id, notification_text)
+            trade_service.update_sl(rec_id, rec.entry.value)
     await show_rec_panel_handler(update, context)
 
 async def start_close_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,7 +309,7 @@ async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_T
         rec = trade_service.take_partial_profit(rec_id, percentage, price)
         
         notification_text = f"💰 جني أرباح جزئي لـ #{rec.asset.value} | تم إغلاق {percentage}% من الصفقة عند سعر {price:g}."
-        _notify_all_channels(context, rec_id, notification_text)
+        trade_service._notify_all_channels(rec_id, notification_text)
         
         await update.message.reply_text("✅ تم تسجيل جني الأرباح الجزئي بنجاح.")
         
@@ -402,4 +381,4 @@ def register_management_handlers(application: Application):
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler),
         group=1
     )
-# --- END OF FINAL, CORRECTED FILE (V14) ---
+# --- END OF FINAL, REVIEWED, AND ROBUST FILE (V14) ---
