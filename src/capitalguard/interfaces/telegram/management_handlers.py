@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V12): src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FINAL, REVIEWED, AND ROBUST FILE (V14): src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 import types
 from time import time
@@ -14,7 +14,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
     ConversationHandler,
-    CommandHandler  # ✅ FIX: Import CommandHandler
+    CommandHandler,
 )
 
 from .helpers import get_service
@@ -53,7 +53,7 @@ def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_
     key = (f"rate_limit_{chat_id}_{message_id}",)
     last_update = context.bot_data.get(key, 0)
     now = time()
-    if (now - last_update) < 20: # 20 second cooldown
+    if (now - last_update) < 20:
         return True
     context.bot_data[key] = now
     return False
@@ -354,19 +354,22 @@ async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def cancel_partial_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    original_message = context.user_data.get('original_message')
+    rec_id = context.user_data.get('partial_profit_rec_id')
+    
     for key in ('partial_profit_rec_id', 'partial_profit_percent', 'original_message'):
         context.user_data.pop(key, None)
-    # Try to edit the original message to show the panel again
-    original_message = context.user_data.get('original_message')
-    if original_message:
+
+    await update.message.reply_text("تم إلغاء عملية جني الأرباح.")
+    
+    if original_message and rec_id:
         dummy_query = types.SimpleNamespace(
-            message=original_message, data=f"rec:show_panel:{context.user_data.get('partial_profit_rec_id')}",
+            message=original_message, data=f"rec:show_panel:{rec_id}",
             answer=_noop_answer, from_user=update.effective_user
         )
         dummy_update = Update(update.update_id, callback_query=dummy_query)
         await show_rec_panel_handler(dummy_update, context)
-    else:
-        await update.message.reply_text("تم إلغاء عملية جني الأرباح.")
+
     return ConversationHandler.END
 
 def register_management_handlers(application: Application):
