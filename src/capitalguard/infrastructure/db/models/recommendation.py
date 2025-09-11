@@ -1,4 +1,4 @@
-# --- START OF MODIFIED FILE: src/capitalguard/infrastructure/db/models/recommendation.py ---
+# --- START OF FINAL, CORRECTED FILE (V12): src/capitalguard/infrastructure/db/models/recommendation.py ---
 import sqlalchemy as sa
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float,
@@ -47,35 +47,34 @@ class RecommendationORM(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     alert_meta = Column(JSONB, nullable=False, server_default=sa.text("'{}'::jsonb"))
     
-    # ✅ --- START: NEW TRACKING FIELDS ---
     highest_price_reached = Column(Float, nullable=True)
     lowest_price_reached = Column(Float, nullable=True)
-    # ✅ --- END: NEW TRACKING FIELDS ---
 
     # Defines the relationship back to the User model
     user = relationship("User", back_populates="recommendations")
 
-    # Relationship to PublishedMessage
+    # ✅ --- START: FIX for FOR UPDATE Error ---
+    # Change loading strategy from 'joined' to 'selectin'.
+    # This performs a separate, efficient query for related messages,
+    # avoiding the FOR UPDATE conflict with LEFT OUTER JOIN.
     published_messages = relationship(
         "PublishedMessage", 
         back_populates="recommendation", 
         cascade="all, delete-orphan",
-        lazy="joined"
+        lazy="selectin" 
     )
+    # ✅ --- END: FIX for FOR UPDATE Error ---
 
-    # ✅ --- START: NEW RELATIONSHIP to RecommendationEvent ---
-    # Defines the one-to-many relationship for the historical log.
     events = relationship(
         "RecommendationEvent",
         back_populates="recommendation",
         cascade="all, delete-orphan",
-        lazy="select" # Use 'select' to avoid loading all events by default
+        lazy="select"
     )
-    # ✅ --- END: NEW RELATIONSHIP ---
 
     def __repr__(self):
         return f"<RecommendationORM(id={self.id}, user_id={self.user_id}, asset='{self.asset}')>"
 
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
 Index("idx_recs_asset_status",  RecommendationORM.asset, RecommendationORM.status)
-# --- END OF MODIFIED FILE ---
+# --- END OF FINAL, CORRECTED FILE (V12) ---
