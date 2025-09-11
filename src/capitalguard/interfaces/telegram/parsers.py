@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V11): src/capitalguard/interfaces/telegram/parsers.py ---
+# --- START OF FINAL, REVIEWED, AND ROBUST FILE (V14): src/capitalguard/interfaces/telegram/parsers.py ---
 import re
 import unicodedata
 from typing import Dict, Any, List, Optional
@@ -6,8 +6,8 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# ✅ --- START: ADDED MISSING PARSING FUNCTIONS ---
-# These functions were previously in management_handlers.py and are now centralized here.
+# ✅ --- START: Centralized Parsing Functions ---
+# These functions are now the single source of truth for number parsing.
 _AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
 _SEPARATORS_REGEX = re.compile(r"[,\u060C;:|\t\r\n]+")
@@ -61,7 +61,7 @@ def parse_number_list(s: str) -> List[float]:
     if not tokens: raise ValueError("لم يتم العثور على أي أرقام.")
     tokens = _coalesce_num_suffix_tokens(tokens)
     return [_parse_one_number(t) for t in tokens]
-# ✅ --- END: ADDED MISSING PARSING FUNCTIONS ---
+# ✅ --- END: Centralized Parsing Functions ---
 
 
 def parse_quick_command(text: str) -> Optional[Dict[str, Any]]:
@@ -129,4 +129,4 @@ def parse_text_editor(text: str) -> Optional[Dict[str, Any]]:
         except ValueError: continue
     if not all(k in data for k in ['asset', 'side', 'entry', 'stop_loss', 'targets']): return None
     return data
-# --- END OF FINAL, CORRECTED FILE (V11) ---
+# --- END OF FINAL, REVIEWED, AND ROBUST FILE (V14) ---
