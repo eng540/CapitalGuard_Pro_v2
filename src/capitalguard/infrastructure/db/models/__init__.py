@@ -1,25 +1,14 @@
-# --- START OF MODIFIED FILE: src/capitalguard/infrastructure/db/models/__init__.py ---
-# This file makes the 'models' directory a package and ensures all models are discoverable.
+# --- START OF FILE: src/capitalguard/infrastructure/db/models/__init__.py ---
+"""
+Lightweight package initializer for ORM models.
+
+WHY:
+- Alembic imports `capitalguard.infrastructure.db.models` during env setup.
+- Keep this file minimal to avoid importing non-existing/heavy modules at startup.
+- Import specific models explicitly at their usage sites instead of relying on package exports.
+"""
+
 from .base import Base
-from .auth import User, Role, UserRole
-from .recommendation import RecommendationORM
-from .channel import Channel
-from .published_message import PublishedMessage
 
-# ✅ --- START: NEW MODEL IMPORT ---
-# Expose the new RecommendationEvent model so Alembic and the app can discover it.
-from .recommendation_event import RecommendationEvent
-# ✅ --- END: NEW MODEL IMPORT ---
-
-
-__all__ = [
-    "Base", 
-    "User", 
-    "Role", 
-    "UserRole", 
-    "RecommendationORM", 
-    "Channel", 
-    "PublishedMessage",
-    "RecommendationEvent"  # ✅ Add the new model to __all__
-]
-# --- END OF MODIFIED FILE ---
+__all__ = ["Base"]
+# --- END OF FILE ---
