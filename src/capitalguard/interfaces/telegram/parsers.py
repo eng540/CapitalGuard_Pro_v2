@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V8): src/capitalguard/interfaces/telegram/parsers.py ---
+# --- START OF FINAL, CORRECTED FILE (V11): src/capitalguard/interfaces/telegram/parsers.py ---
 import re
 import unicodedata
 from typing import Dict, Any, List, Optional
@@ -7,6 +7,7 @@ import logging
 log = logging.getLogger(__name__)
 
 # ✅ --- START: ADDED MISSING PARSING FUNCTIONS ---
+# These functions were previously in management_handlers.py and are now centralized here.
 _AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
 _SEPARATORS_REGEX = re.compile(r"[,\u060C;:|\t\r\n]+")
@@ -128,4 +129,4 @@ def parse_text_editor(text: str) -> Optional[Dict[str, Any]]:
         except ValueError: continue
     if not all(k in data for k in ['asset', 'side', 'entry', 'stop_loss', 'targets']): return None
     return data
-# --- END OF FINAL, CORRECTED FILE ---
+# --- END OF FINAL, CORRECTED FILE (V11) ---
