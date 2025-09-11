@@ -1,4 +1,4 @@
-# --- START OF COMPLETE MODIFIED FILE: src/capitalguard/infrastructure/db/models/recommendation.py ---
+# --- START OF MODIFIED FILE: src/capitalguard/infrastructure/db/models/recommendation.py ---
 import sqlalchemy as sa
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float,
@@ -14,8 +14,6 @@ class RecommendationORM(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     
-    # --- ✅ ARCHITECTURAL LEAP: user_id is now a mandatory foreign key ---
-    # Every recommendation MUST belong to a user.
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     asset = Column(String, index=True, nullable=False)
@@ -34,8 +32,6 @@ class RecommendationORM(Base):
     )
 
     # --- LEGACY FIELDS (to be deprecated) ---
-    # These fields are kept for now for backward compatibility during the transition,
-    # but new logic should use the `published_messages` relationship.
     channel_id = Column(BigInteger, index=True, nullable=True)
     message_id = Column(BigInteger, nullable=True)
     # --- END LEGACY FIELDS ---
@@ -51,24 +47,35 @@ class RecommendationORM(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     alert_meta = Column(JSONB, nullable=False, server_default=sa.text("'{}'::jsonb"))
     
+    # ✅ --- START: NEW TRACKING FIELDS ---
+    highest_price_reached = Column(Float, nullable=True)
+    lowest_price_reached = Column(Float, nullable=True)
+    # ✅ --- END: NEW TRACKING FIELDS ---
+
     # Defines the relationship back to the User model
     user = relationship("User", back_populates="recommendations")
 
-    # ✅ --- NEW RELATIONSHIP to PublishedMessage ---
-    # Defines the one-to-many relationship. When a RecommendationORM is loaded,
-    # its associated PublishedMessage objects will also be loaded efficiently.
+    # Relationship to PublishedMessage
     published_messages = relationship(
         "PublishedMessage", 
         back_populates="recommendation", 
         cascade="all, delete-orphan",
-        lazy="joined" # Use joined loading for performance optimization
+        lazy="joined"
     )
-    # --- END NEW RELATIONSHIP ---
+
+    # ✅ --- START: NEW RELATIONSHIP to RecommendationEvent ---
+    # Defines the one-to-many relationship for the historical log.
+    events = relationship(
+        "RecommendationEvent",
+        back_populates="recommendation",
+        cascade="all, delete-orphan",
+        lazy="select" # Use 'select' to avoid loading all events by default
+    )
+    # ✅ --- END: NEW RELATIONSHIP ---
 
     def __repr__(self):
         return f"<RecommendationORM(id={self.id}, user_id={self.user_id}, asset='{self.asset}')>"
 
-# Existing indexes are good, no changes needed here.
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
 Index("idx_recs_asset_status",  RecommendationORM.asset, RecommendationORM.status)
-# --- END OF COMPLETE MODIFIED FILE ---
+# --- END OF MODIFIED FILE ---
