@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V8): src/capitalguard/domain/entities.py ---
+# --- START OF FINAL, CORRECTED FILE (V11): src/capitalguard/domain/entities.py ---
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List
@@ -52,11 +52,12 @@ class Recommendation:
 
     alert_meta: dict = field(default_factory=dict)
 
-    # ✅ --- START: FIX for TypeError ---
-    # Add the new tracking fields to the domain entity definition.
+    # ✅ --- START: FIX for TypeError in Watcher ---
+    # Add the new tracking fields to the domain entity definition so it can
+    # accept this data when being created from a database row.
     highest_price_reached: Optional[float] = None
     lowest_price_reached: Optional[float] = None
-    # ✅ --- END: FIX for TypeError ---
+    # ✅ --- END: FIX for TypeError in Watcher ---
 
     def activate(self) -> None:
         """
@@ -75,4 +76,4 @@ class Recommendation:
         self.exit_price = exit_price
         self.updated_at = datetime.utcnow()
         self.closed_at = self.updated_at
-# --- END OF FINAL, CORRECTED FILE (V8) ---
+# --- END OF FINAL, CORRECTED FILE (V11) ---
