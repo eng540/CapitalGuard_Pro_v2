@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V16): src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, CORRECTED FILE (V17): src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
@@ -10,6 +10,11 @@ from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from capitalguard.domain.ports import RecommendationRepoPort, NotifierPort
 from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository, ChannelRepository
 from capitalguard.infrastructure.db.base import SessionLocal
+
+# ✅ --- START: FIX for NameError ---
+# Import the missing keyboard function
+from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
+# ✅ --- END: FIX for NameError ---
 
 log = logging.getLogger(__name__)
 
@@ -26,15 +31,12 @@ class TradeService:
         self.repo = repo
         self.notifier = notifier
 
-    # ✅ --- START: FIX ---
-    # Move the helper function back to where it belongs: inside the service that uses it.
     def _load_user_linked_channels(self, uid_int: int, only_active: bool = True) -> List[Any]:
         """Returns a list of linked channel ORM rows for a user."""
         with SessionLocal() as s:
             user = UserRepository(s).find_by_telegram_id(uid_int)
             if not user: return []
             return ChannelRepository(s).list_by_user(user.id, only_active=only_active)
-    # ✅ --- END: FIX ---
 
     # --- Validation Helpers ---
     def _ensure_symbols_cache(self) -> None:
@@ -102,7 +104,6 @@ class TradeService:
             report["failed"].append({"channel_id": None, "reason": "USER_NOT_RESOLVED"})
             return rec, report
             
-        # ✅ FIX: Call the function on `self` (the service) instead of `self.repo`
         channels = self._load_user_linked_channels(uid_int, only_active=True)
         if channel_ids: channels = [ch for ch in channels if ch.telegram_channel_id in set(channel_ids)]
         
@@ -187,4 +188,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FINAL, CORRECTED FILE (V16) ---
+# --- END OF FINAL, CORRECTED FILE (V17) ---
