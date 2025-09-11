@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V12): src/capitalguard/infrastructure/db/repository.py ---
+# --- START OF FINAL, CORRECTED FILE (V12.1): src/capitalguard/infrastructure/db/repository.py ---
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict
@@ -16,7 +16,7 @@ from .base import SessionLocal
 log = logging.getLogger(__name__)
 
 # =========================
-# User & Channel Repositories (Unchanged - Confirmed Stable)
+# User & Channel Repositories (Stable)
 # =========================
 class UserRepository:
     def __init__(self, session: Session): self.session = session
@@ -39,7 +39,7 @@ class ChannelRepository:
         q = self.session.query(Channel).filter(Channel.user_id == user_id)
         if only_active: q = q.filter(Channel.is_active.is_(True))
         return q.order_by(Channel.created_at.desc()).all()
-    # Other methods are stable and unchanged.
+    # ... other methods are stable and unchanged.
 
 # =========================
 # Recommendation Repository (Final Version)
@@ -95,7 +95,6 @@ class RecommendationRepository:
         if rec.id is None: raise ValueError("Recommendation ID is required for update")
         with SessionLocal() as s:
             try:
-                # ✅ FIX: Removed .with_for_update() to prevent the database error.
                 row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).first()
                 if not row: raise ValueError(f"Recommendation #{rec.id} not found")
                 
@@ -130,7 +129,8 @@ class RecommendationRepository:
     # --- Read Operations ---
     def get(self, rec_id: int) -> Optional[Recommendation]:
         with SessionLocal() as s:
-            row = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.id == rec.id).first()
+            # ✅ FIX: Use the correct variable name 'rec_id' instead of 'rec.id'
+            row = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.id == rec_id).first()
             return self._to_entity(row)
 
     def get_by_id_for_user(self, rec_id: int, user_telegram_id: Union[int, str]) -> Optional[Recommendation]:
@@ -184,4 +184,4 @@ class RecommendationRepository:
                 'message_id': first_pub_data['telegram_message_id'],
                 'published_at': datetime.now(timezone.utc)
             }); s.commit()
-# --- END OF FINAL, CORRECTED FILE (V12) ---
+# --- END OF FINAL, CORRECTED FILE (V12.1) ---
