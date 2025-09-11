@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V11): src/capitalguard/domain/entities.py ---
+# --- START OF FINAL, REVIEWED, AND ROBUST FILE (V14): src/capitalguard/domain/entities.py ---
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List
@@ -76,4 +76,4 @@ class Recommendation:
         self.exit_price = exit_price
         self.updated_at = datetime.utcnow()
         self.closed_at = self.updated_at
-# --- END OF FINAL, CORRECTED FILE (V11) ---
+# --- END OF FINAL, REVIEWED, AND ROBUST FILE (V14) ---
