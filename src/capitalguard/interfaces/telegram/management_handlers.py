@@ -402,4 +402,4 @@ def register_management_handlers(application: Application):
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler),
         group=1
     )
-# --- END OF FINAL, CORRECTED FILE (V8) ---
+# --- END OF FINAL, CORRECTED FILE (V14) ---
