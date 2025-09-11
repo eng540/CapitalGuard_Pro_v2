@@ -1,4 +1,4 @@
-# --- START OF COMPLETE MODIFIED FILE: src/capitalguard/domain/entities.py ---
+# --- START OF FINAL, CORRECTED FILE (V8): src/capitalguard/domain/entities.py ---
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List
@@ -32,8 +32,6 @@ class Recommendation:
     id: Optional[int] = None
 
     # --- Publication Fields (Legacy) ---
-    # These are kept for temporary backward compatibility but the source of truth
-    # is the `published_messages` table, accessed via the repository.
     channel_id: Optional[int] = None
     message_id: Optional[int] = None
     published_at: Optional[datetime] = None
@@ -52,22 +50,13 @@ class Recommendation:
     activated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
 
-    # ✅ MODIFIED: Added a detailed docstring for the alert_meta field.
-    alert_meta: dict = field(
-        default_factory=dict,
-        metadata={
-            "description": (
-                "A stateful JSON field to store metadata about alerts that have been triggered. "
-                "This prevents duplicate notifications. Example keys:\n"
-                " - 'trailing_applied': bool (True if SL has been moved to BE)\n"
-                " - 'near_sl_alerted': bool (True if a near-SL private alert was sent)\n"
-                " - 'near_tp1_alerted': bool (True if a near-TP1 private alert was sent)\n"
-                " - 'tp1_hit_notified': bool (True if a public notification for TP1 hit was sent)\n"
-                " - 'tp2_hit_notified': bool (etc. for all TPs)"
-            )
-        }
-    )
-    # --- END OF MODIFICATION ---
+    alert_meta: dict = field(default_factory=dict)
+
+    # ✅ --- START: FIX for TypeError ---
+    # Add the new tracking fields to the domain entity definition.
+    highest_price_reached: Optional[float] = None
+    lowest_price_reached: Optional[float] = None
+    # ✅ --- END: FIX for TypeError ---
 
     def activate(self) -> None:
         """
@@ -77,8 +66,6 @@ class Recommendation:
             self.status = RecommendationStatus.ACTIVE
             self.updated_at = datetime.utcnow()
             self.activated_at = self.updated_at
-            # For market orders, the activation happens at creation, so this method is
-            # primarily for LIMIT/STOP_MARKET orders. The entry price is already set.
 
     def close(self, exit_price: float) -> None:
         """Closes the recommendation with a given exit price."""
@@ -88,4 +75,4 @@ class Recommendation:
         self.exit_price = exit_price
         self.updated_at = datetime.utcnow()
         self.closed_at = self.updated_at
-# --- END OF COMPLETE MODIFIED FILE ---
+# --- END OF FINAL, CORRECTED FILE (V8) ---
