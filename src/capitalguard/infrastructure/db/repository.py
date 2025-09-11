@@ -1,4 +1,4 @@
-# --- START OF MODIFIED FILE: src/capitalguard/infrastructure/db/repository.py ---
+# --- START OF FINAL MODIFIED FILE: src/capitalguard/infrastructure/db/repository.py ---
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict
@@ -9,14 +9,13 @@ from sqlalchemy.orm import joinedload, Session
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
-from .models import RecommendationORM, User, Channel, PublishedMessage
-from .models.recommendation_event import RecommendationEvent # ✅ Import the new model
+from .models import RecommendationORM, User, Channel, PublishedMessage, RecommendationEvent
 
 from .base import SessionLocal
 
 log = logging.getLogger(__name__)
 
-# ... (UserRepository and ChannelRepository remain unchanged for now) ...
+# ... (UserRepository and ChannelRepository remain unchanged) ...
 class UserRepository:
     def __init__(self, session: Session): self.session = session
     def find_by_telegram_id(self, telegram_id: int) -> Optional[User]:
@@ -41,7 +40,7 @@ class ChannelRepository:
     # ... (other methods in ChannelRepository are unchanged) ...
 
 # =========================
-# Recommendation Repository (HEAVILY MODIFIED)
+# Recommendation Repository (Event-Driven)
 # =========================
 class RecommendationRepository:
     # --- Helpers ---
@@ -64,18 +63,12 @@ class RecommendationRepository:
             lowest_price_reached=row.lowest_price_reached,
         )
 
-    # --- Write Operations (Now with Event Logging) ---
+    # --- Write Operations ---
     def add_with_event(self, rec: Recommendation) -> Recommendation:
-        """
-        Adds a new recommendation and logs the 'CREATE' event in a single transaction.
-        """
-        if not rec.user_id or not str(rec.user_id).isdigit():
-            raise ValueError("A valid user_id (Telegram ID) is required.")
-        
+        if not rec.user_id or not str(rec.user_id).isdigit(): raise ValueError("A valid user_id (Telegram ID) is required.")
         with SessionLocal() as s:
             try:
                 user = UserRepository(s).find_or_create(int(rec.user_id))
-                
                 row = RecommendationORM(
                     user_id=user.id, asset=rec.asset.value, side=rec.side.value,
                     entry=rec.entry.value, stop_loss=rec.stop_loss.value, targets=rec.targets.values,
@@ -86,65 +79,56 @@ class RecommendationRepository:
                 )
                 s.add(row)
                 s.flush()
-
                 create_event = RecommendationEvent(
-                    recommendation_id=row.id,
-                    event_type='CREATE',
-                    event_timestamp=row.created_at,
-                    event_data={
-                        'entry': rec.entry.value,
-                        'sl': rec.stop_loss.value,
-                        'targets': rec.targets.values,
-                        'order_type': rec.order_type.value
-                    }
+                    recommendation_id=row.id, event_type='CREATE', event_timestamp=row.created_at,
+                    event_data={'entry': rec.entry.value, 'sl': rec.stop_loss.value, 'targets': rec.targets.values, 'order_type': rec.order_type.value}
                 )
                 s.add(create_event)
-                
                 s.commit()
                 s.refresh(row, attribute_names=["user"])
                 return self._to_entity(row)
             except Exception as e:
-                s.rollback()
-                log.error("Failed to add recommendation with event: %s", e, exc_info=True)
-                raise
+                s.rollback(); log.error("Failed to add recommendation with event: %s", e, exc_info=True); raise
 
     def update_with_event(self, rec: Recommendation, event_type: str, event_data: Dict[str, Any]) -> Recommendation:
-        """
-        Updates a recommendation's state and logs a corresponding event in a single transaction.
-        """
         if rec.id is None: raise ValueError("Recommendation ID is required for update")
-        
         with SessionLocal() as s:
             try:
                 row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).with_for_update().first()
                 if not row: raise ValueError(f"Recommendation #{rec.id} not found")
-
                 # Update state
-                row.status = rec.status
-                row.stop_loss = rec.stop_loss.value
-                row.targets = rec.targets.values
-                row.notes = rec.notes
-                row.exit_price = rec.exit_price
-                row.activated_at = rec.activated_at
-                row.closed_at = rec.closed_at
-                row.alert_meta = rec.alert_meta
-                row.highest_price_reached = rec.highest_price_reached
-                row.lowest_price_reached = rec.lowest_price_reached
-                
-                new_event = RecommendationEvent(
-                    recommendation_id=row.id,
-                    event_type=event_type,
-                    event_data=event_data
-                )
+                row.status = rec.status; row.stop_loss = rec.stop_loss.value; row.targets = rec.targets.values
+                row.notes = rec.notes; row.exit_price = rec.exit_price; row.activated_at = rec.activated_at
+                row.closed_at = rec.closed_at; row.alert_meta = rec.alert_meta
+                row.highest_price_reached = rec.highest_price_reached; row.lowest_price_reached = rec.lowest_price_reached
+                # Create event
+                new_event = RecommendationEvent(recommendation_id=row.id, event_type=event_type, event_data=event_data)
                 s.add(new_event)
-                
                 s.commit()
                 s.refresh(row, attribute_names=["user"])
                 return self._to_entity(row)
             except Exception as e:
-                s.rollback()
-                log.error("Failed to update recommendation with event: %s", e, exc_info=True)
-                raise
+                s.rollback(); log.error("Failed to update recommendation with event: %s", e, exc_info=True); raise
+
+    def update(self, rec: Recommendation) -> Recommendation:
+        """
+        Performs a simple state update WITHOUT logging an event.
+        Used for frequent, non-critical updates like price tracking.
+        """
+        if rec.id is None: raise ValueError("Recommendation ID is required for update")
+        with SessionLocal() as s:
+            try:
+                row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).first()
+                if not row: raise ValueError(f"Recommendation #{rec.id} not found")
+                # Update only the fields that are expected to change frequently
+                row.alert_meta = rec.alert_meta
+                row.highest_price_reached = rec.highest_price_reached
+                row.lowest_price_reached = rec.lowest_price_reached
+                s.commit()
+                s.refresh(row, attribute_names=["user"])
+                return self._to_entity(row)
+            except Exception as e:
+                s.rollback(); log.error("Failed to perform simple update: %s", e, exc_info=True); raise
 
     # --- Read Operations ---
     def get(self, rec_id: int) -> Optional[Recommendation]:
@@ -161,7 +145,7 @@ class RecommendationRepository:
 
     def check_if_event_exists(self, rec_id: int, event_type: str) -> bool:
         with SessionLocal() as s:
-            return s.query(RecommendationEvent).filter_by(recommendation_id=rec_id, event_type=event_type).first() is not None
+            return s.query(RecommendationEvent.id).filter_by(recommendation_id=rec_id, event_type=event_type).first() is not None
 
     # --- Publication Data (Unchanged) ---
     def get_published_messages(self, rec_id: int) -> List[PublishedMessage]:
@@ -178,4 +162,4 @@ class RecommendationRepository:
                 'message_id': first_pub_data['telegram_message_id'],
                 'published_at': datetime.now(timezone.utc)
             }); s.commit()
-# --- END OF MODIFIED FILE ---
+# --- END OF FINAL MODIFIED FILE ---
