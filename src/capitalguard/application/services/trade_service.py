@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V13): src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, CORRECTED AND ROBUST FILE (V15): src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
@@ -12,7 +12,6 @@ from capitalguard.infrastructure.db.repository import RecommendationRepository
 
 log = logging.getLogger(__name__)
 
-# This helper is now only used here, so it's fine to keep it local.
 def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
     try: return int(user_id) if user_id is not None else None
     except (TypeError, ValueError): return None
@@ -99,7 +98,6 @@ class TradeService:
             return rec, report
             
         keyboard = public_channel_keyboard(rec.id)
-        # ✅ FIX: Initialize the 'publications' list
         publications = []
         for ch in channels:
             try:
@@ -120,25 +118,78 @@ class TradeService:
         return rec, report
 
     def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
-        # ... (This function is correct and unchanged) ...
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status != RecommendationStatus.PENDING: return None
+        
+        rec.activate()
+        rec.highest_price_reached = rec.entry.value
+        rec.lowest_price_reached = rec.entry.value
+        
+        event_data = {"activated_at": rec.activated_at.isoformat()}
+        return self.repo.update_with_event(rec, "ACTIVATED", event_data)
 
     def close(self, rec_id: int, exit_price: float) -> Recommendation:
-        # ... (This function is correct and unchanged) ...
+        rec = self.repo.get(rec_id)
+        if not rec: raise ValueError(f"Recommendation {rec_id} not found.")
+        
+        old_status = rec.status
+        rec.close(exit_price)
+        
+        event_data = {
+            "old_status": old_status.value,
+            "exit_price": exit_price,
+            "closed_at": rec.closed_at.isoformat()
+        }
+        return self.repo.update_with_event(rec, "CLOSED", event_data)
 
     def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
-        # ... (This function is correct and unchanged) ...
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status == RecommendationStatus.CLOSED: raise ValueError("Recommendation not found or is closed.")
+        
+        old_sl = rec.stop_loss.value
+        self._validate_sl_vs_entry(rec.side.value, rec.entry.value, new_sl)
+        
+        rec.stop_loss = Price(new_sl)
+        
+        event_data = {"old_sl": old_sl, "new_sl": new_sl}
+        return self.repo.update_with_event(rec, "SL_UPDATE", event_data)
 
     def update_targets(self, rec_id: int, new_targets: List[float]) -> Recommendation:
-        # ... (This function is correct and unchanged) ...
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status == RecommendationStatus.CLOSED: raise ValueError("Recommendation not found or is closed.")
+        
+        old_targets = rec.targets.values
+        self._validate_targets(rec.side.value, rec.entry.value, new_targets)
+        
+        rec.targets = Targets(new_targets)
+        
+        event_data = {"old_targets": old_targets, "new_targets": new_targets}
+        return self.repo.update_with_event(rec, "TP_UPDATE", event_data)
 
     def take_partial_profit(self, rec_id: int, percentage: float, price: float) -> Recommendation:
-        # ... (This function is correct and unchanged) ...
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status != RecommendationStatus.ACTIVE:
+            raise ValueError("Partial profit can only be taken on active recommendations.")
+        
+        event_data = {"percentage": percentage, "price": price}
+        return self.repo.update_with_event(rec, "PARTIAL_PROFIT_TAKEN", event_data)
 
     def update_price_tracking(self, rec_id: int, current_price: float) -> Optional[Recommendation]:
-        # ... (This function is correct and unchanged) ...
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status != RecommendationStatus.ACTIVE: return None
 
-    # ✅ FIX: Re-add the missing function
+        updated = False
+        if rec.highest_price_reached is None or current_price > rec.highest_price_reached:
+            rec.highest_price_reached = current_price
+            updated = True
+        if rec.lowest_price_reached is None or current_price < rec.lowest_price_reached:
+            rec.lowest_price_reached = current_price
+            updated = True
+            
+        if updated:
+            return self.repo.update(rec)
+        return None
+
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
-        """Delegates the call to the repository to get recent assets for a user."""
         return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FINAL, CORRECTED FILE (V13) ---
+# --- END OF FINAL, CORRECTED AND ROBUST FILE (V15) ---
