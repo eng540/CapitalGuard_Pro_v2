@@ -1,4 +1,4 @@
-# --- START OF FINAL MODIFIED FILE (V6): src/capitalguard/infrastructure/notify/telegram.py ---
+# --- START OF FINAL, CORRECTED AND ROBUST FILE (V6): src/capitalguard/infrastructure/notify/telegram.py ---
 import logging
 from typing import Optional, Tuple, Dict, Any
 
@@ -12,6 +12,12 @@ from capitalguard.interfaces.telegram.ui_texts import build_trade_card_text
 log = logging.getLogger(__name__)
 
 class TelegramNotifier:
+    """
+    Handles all outbound communication to the Telegram Bot API.
+    - Explicitly targets channels, no default channel concept.
+    - Robustly handles API errors and returns consistent types.
+    """
+
     def __init__(self) -> None:
         self.bot_token: Optional[str] = settings.TELEGRAM_BOT_TOKEN
         self.api_base: Optional[str] = (f"https://api.telegram.org/bot{self.bot_token}" if self.bot_token else None)
@@ -26,27 +32,34 @@ class TelegramNotifier:
                 resp.raise_for_status()
                 data = resp.json()
             if not data.get("ok"):
-                log.error("Telegram API error on %s: %s", method, data.get("description", "unknown"))
+                log.error("Telegram API error on %s: %s (payload=%s)", method, data.get("description", "unknown"), payload)
                 return None
             return data.get("result")
+        except httpx.HTTPStatusError as e:
+            body = e.response.text if getattr(e, "response", None) is not None else "<no-body>"
+            log.error("Telegram API HTTP error on %s: %s | body=%s", method, e, body)
+            return None
         except Exception:
-            log.exception("Telegram API call '%s' failed", method)
+            log.exception("Telegram API call '%s' failed with exception", method)
             return None
 
-    def _send_text(self, chat_id: int, text: str, **kwargs) -> Optional[Tuple[int, int]]:
+    def _send_text(self, chat_id: int, text: str, keyboard: Optional[InlineKeyboardMarkup] = None, **kwargs) -> Optional[Tuple[int, int]]:
         payload: Dict[str, Any] = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True, **kwargs}
-        if 'keyboard' in kwargs and kwargs['keyboard']:
-            payload["reply_markup"] = kwargs['keyboard'].to_dict()
+        if keyboard:
+            payload["reply_markup"] = keyboard.to_dict()
         
         result = self._post("sendMessage", payload)
         if result and "message_id" in result and "chat" in result:
-            try: return (int(result["chat"]["id"]), int(result["message_id"]))
-            except (ValueError, TypeError): pass
+            try:
+                return (int(result["chat"]["id"]), int(result["message_id"]))
+            except (ValueError, TypeError):
+                pass
         return None
 
     def _edit_text(self, chat_id: int, message_id: int, text: str, keyboard: Optional[InlineKeyboardMarkup] = None) -> bool:
         payload: Dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-        if keyboard: payload["reply_markup"] = keyboard.to_dict()
+        if keyboard:
+            payload["reply_markup"] = keyboard.to_dict()
         return bool(self._post("editMessageText", payload))
 
     def post_to_channel(self, channel_id: int, rec: Recommendation, keyboard: Optional[InlineKeyboardMarkup] = None) -> Optional[Tuple[int, int]]:
@@ -62,10 +75,27 @@ class TelegramNotifier:
         self._send_text(chat_id=chat_id, text=final_text, keyboard=keyboard)
 
     def send_private_text(self, chat_id: int, text: str):
-        """Sends a simple text message to a private chat."""
+        """Sends a simple text message to a private chat, used for quick alerts."""
         self._send_text(chat_id=chat_id, text=text)
 
+    def edit_recommendation_card(self, rec: Recommendation, keyboard: Optional[InlineKeyboardMarkup] = None) -> bool:
+        """[DEPRECATED] Edits a card using channel_id/message_id from the rec object."""
+        if not rec.channel_id or not rec.message_id:
+            return False
+        return self.edit_recommendation_card_by_ids(
+            channel_id=int(rec.channel_id),
+            message_id=int(rec.message_id),
+            rec=rec,
+            keyboard=keyboard
+        )
+
     def edit_recommendation_card_by_ids(self, channel_id: int, message_id: int, rec: Recommendation, keyboard: Optional[InlineKeyboardMarkup] = None) -> bool:
+        """Edits a previously posted recommendation card in a channel using explicit IDs."""
         new_text = build_trade_card_text(rec)
-        return self._edit_text(chat_id=channel_id, message_id=message_id, text=new_text, keyboard=keyboard)
+        return self._edit_text(
+            chat_id=channel_id,
+            message_id=message_id,
+            text=new_text,
+            keyboard=keyboard,
+        )
 # --- END OF FINAL MODIFIED FILE (V6) ---
