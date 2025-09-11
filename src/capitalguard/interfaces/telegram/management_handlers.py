@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V8): src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FINAL, CORRECTED FILE (V12): src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 import types
 from time import time
@@ -14,6 +14,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
     ConversationHandler,
+    CommandHandler  # ✅ FIX: Import CommandHandler
 )
 
 from .helpers import get_service
@@ -25,7 +26,6 @@ from .keyboards import (
     build_open_recs_keyboard,
 )
 from .ui_texts import build_trade_card_text
-# ✅ FIX: This import will now work because the functions exist in parsers.py
 from .parsers import parse_number, parse_number_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
@@ -36,8 +36,7 @@ log = logging.getLogger(__name__)
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 (PARTIAL_PROFIT_PERCENT, PARTIAL_PROFIT_PRICE) = range(2)
 
-# ✅ FIX: All redundant parsing functions have been removed from this file.
-
+# --- Helper Functions ---
 def _parse_tail_int(data: str) -> Optional[int]:
     try: return int(data.split(":")[-1])
     except (ValueError, IndexError): return None
@@ -49,6 +48,15 @@ def _parse_cq_parts(data: str, expected: int) -> Optional[list]:
     except Exception: return None
 
 async def _noop_answer(*args, **kwargs): return None
+
+def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int) -> bool:
+    key = (f"rate_limit_{chat_id}_{message_id}",)
+    last_update = context.bot_data.get(key, 0)
+    now = time()
+    if (now - last_update) < 20: # 20 second cooldown
+        return True
+    context.bot_data[key] = now
+    return False
 
 def _notify_all_channels(context: ContextTypes.DEFAULT_TYPE, rec_id: int, text: str):
     repo = get_service(context, "trade_service").repo
@@ -348,7 +356,17 @@ async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_T
 async def cancel_partial_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     for key in ('partial_profit_rec_id', 'partial_profit_percent', 'original_message'):
         context.user_data.pop(key, None)
-    await update.message.reply_text("تم إلغاء عملية جني الأرباح.")
+    # Try to edit the original message to show the panel again
+    original_message = context.user_data.get('original_message')
+    if original_message:
+        dummy_query = types.SimpleNamespace(
+            message=original_message, data=f"rec:show_panel:{context.user_data.get('partial_profit_rec_id')}",
+            answer=_noop_answer, from_user=update.effective_user
+        )
+        dummy_update = Update(update.update_id, callback_query=dummy_query)
+        await show_rec_panel_handler(dummy_update, context)
+    else:
+        await update.message.reply_text("تم إلغاء عملية جني الأرباح.")
     return ConversationHandler.END
 
 def register_management_handlers(application: Application):
@@ -381,4 +399,4 @@ def register_management_handlers(application: Application):
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler),
         group=1
     )
-# --- END OF FINAL, CORRECTED FILE (V7) ---
+# --- END OF FINAL, CORRECTED FILE (V8) ---
