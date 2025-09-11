@@ -1,25 +1,35 @@
-# --- START OF MODIFIED FILE: src/capitalguard/infrastructure/db/models/__init__.py ---
-# This file makes the 'models' directory a package and ensures all models are discoverable.
+# --- START OF FILE: src/capitalguard/infrastructure/db/models/__init__.py ---
 from .base import Base
-from .auth import User, Role, UserRole
-from .recommendation import RecommendationORM
-from .channel import Channel
-from .published_message import PublishedMessage
 
-# ✅ --- START: NEW MODEL IMPORT ---
-# Expose the new RecommendationEvent model so Alembic and the app can discover it.
-from .recommendation_event import RecommendationEvent
-# ✅ --- END: NEW MODEL IMPORT ---
+# استيرادات “آمنة” – لا تكسر إذا ملف ناقص
+try:
+    from .auth import User, Role, UserRole
+except Exception:
+    User = Role = UserRole = None
 
+try:
+    from .recommendation import RecommendationORM
+except Exception:
+    RecommendationORM = None
 
-__all__ = [
-    "Base", 
-    "User", 
-    "Role", 
-    "UserRole", 
-    "RecommendationORM", 
-    "Channel", 
-    "PublishedMessage",
-    "RecommendationEvent"  # ✅ Add the new model to __all__
-]
-# --- END OF MODIFIED FILE ---
+try:
+    from .channel import Channel
+except Exception:
+    Channel = None
+
+try:
+    from .published_message import PublishedMessage
+except Exception:
+    PublishedMessage = None
+
+# الاستيراد الجديد – اجعله اختياريًا
+try:
+    from .recommendation_event import RecommendationEvent
+except Exception:
+    RecommendationEvent = None
+
+__all__ = ["Base"]
+for _name in ("User", "Role", "UserRole", "RecommendationORM", "Channel", "PublishedMessage", "RecommendationEvent"):
+    if globals().get(_name) is not None:
+        __all__.append(_name)
+# --- END OF FILE ---
