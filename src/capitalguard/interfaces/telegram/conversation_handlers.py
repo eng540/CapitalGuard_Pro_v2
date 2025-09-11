@@ -1,4 +1,4 @@
-# --- START OF CORRECTED AND FINAL FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
+# --- START OF FINAL, CORRECTED AND ROBUST FILE (V5): src/capitalguard/interfaces/telegram/conversation_handlers.py ---
 import logging
 import uuid
 from typing import List, Dict, Any, Set
@@ -47,10 +47,10 @@ def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     for key in (CONVERSATION_DATA_KEY, 'last_interactive_message_id', 'original_query_message'):
         context.user_data.pop(key, None)
 
-# ... (بقية الدوال المساعدة من _ensure_token_maps إلى _load_user_active_channels تبقى كما هي) ...
 def _ensure_token_maps(context: ContextTypes.DEFAULT_TYPE) -> None:
     if REV_TOKENS_MAP not in context.bot_data: context.bot_data[REV_TOKENS_MAP] = {}
     if REV_TOKENS_REVERSE not in context.bot_data: context.bot_data[REV_TOKENS_REVERSE] = {}
+
 def _get_or_make_token_for_review(context: ContextTypes.DEFAULT_TYPE, review_key: str) -> str:
     _ensure_token_maps(context)
     rev_map: Dict[str, str] = context.bot_data[REV_TOKENS_REVERSE]
@@ -61,9 +61,11 @@ def _get_or_make_token_for_review(context: ContextTypes.DEFAULT_TYPE, review_key
     tok_map[candidate] = review_key
     rev_map[review_key] = candidate
     return candidate
+
 def _resolve_review_key_from_token(context: ContextTypes.DEFAULT_TYPE, token: str) -> str | None:
     _ensure_token_maps(context)
     return context.bot_data[REV_TOKENS_MAP].get(token)
+
 def _load_user_active_channels(user_tg_id: int) -> List[Dict[str, Any]]:
     with SessionLocal() as s:
         user = UserRepository(s).find_or_create(user_tg_id)
@@ -149,13 +151,26 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 async def unexpected_input_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_message = "أمر أو زر غير متوقع."
-    if update.message:
-        await update.message.reply_text(f"⚠️ {user_message} تم إنهاء عملية إنشاء التوصية الحالية.")
+    """Handles any input that is not expected in the current conversation state."""
+    # Check if there's an active conversation to cancel
+    if context.user_data.get(CONVERSATION_DATA_KEY) or context.user_data.get('current_review_key'):
+        if update.message:
+            await update.message.reply_text(
+                "⚠️ تم استلام مدخل غير متوقع. تم إنهاء عملية إنشاء التوصية الحالية.\n"
+                "يمكنك الآن استخدام الأوامر الأخرى بشكل طبيعي."
+            )
+        elif update.callback_query:
+            await update.callback_query.answer("إجراء غير صالح. تم إنهاء المحادثة الحالية.", show_alert=True)
+            # Try to edit the message to remove the old keyboard
+            try:
+                await update.callback_query.edit_message_text("تم إنهاء المحادثة.")
+            except Exception:
+                pass
+    
     _clean_conversation_state(context)
+    # Let the update be processed by other handlers
     return ConversationHandler.END
 
-# ... (بقية الدوال من choose_channels_handler إلى notes_received تبقى كما هي) ...
 async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -173,6 +188,7 @@ async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_
     if not isinstance(selected, set): selected = set(); context.user_data[sel_key] = selected
     kb = build_channel_picker_keyboard(token, channels, selected, page=1)
     await query.edit_message_text("📢 اختر القنوات التي تريد النشر إليها ثم اضغط «🚀 نشر المحدد».", reply_markup=kb)
+
 async def channel_picker_nav_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -183,6 +199,7 @@ async def channel_picker_nav_handler(update: Update, context: ContextTypes.DEFAU
     selected: Set[int] = context.user_data.get(sel_key, set())
     kb = build_channel_picker_keyboard(token, channels, selected, page=page)
     await query.edit_message_reply_markup(reply_markup=kb)
+
 async def channel_picker_toggle_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -196,10 +213,12 @@ async def channel_picker_toggle_handler(update: Update, context: ContextTypes.DE
     channels = _load_user_active_channels(query.from_user.id)
     kb = build_channel_picker_keyboard(token, channels, selected, page=page)
     await query.edit_message_reply_markup(reply_markup=kb)
+
 async def channel_picker_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await show_review_card(update, context, is_edit=True)
+
 async def channel_picker_confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("جارٍ النشر للقنوات المحددة...")
@@ -230,11 +249,13 @@ async def channel_picker_confirm_handler(update: Update, context: ContextTypes.D
     finally:
         _clean_conversation_state(context)
     return ConversationHandler.END
+
 async def change_method_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     await query.message.edit_text("⚙️ اختر طريقتك المفضلة:", reply_markup=main_creation_keyboard())
     return CHOOSE_METHOD
+
 async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -248,17 +269,20 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await query.message.edit_text("📋 وضع المحرّر النصي.\n\nألصق التوصية.", reply_markup=change_method_keyboard())
         return TEXT_EDITOR
     return ConversationHandler.END
+
 async def quick_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = parse_quick_command(update.message.text)
     if not data: await update.message.reply_text("❌ صيغة غير صحيحة."); return QUICK_COMMAND
     context.user_data[CONVERSATION_DATA_KEY] = data
     return await show_review_card(update, context)
+
 async def text_editor_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = parse_text_editor(update.message.text)
     if not data: await update.message.reply_text("❌ تعذّر تحليل النص."); return TEXT_EDITOR
     if 'order_type' not in data or not data['order_type']: data['order_type'] = 'LIMIT'
     context.user_data[CONVERSATION_DATA_KEY] = data
     return await show_review_card(update, context)
+
 async def start_interactive_builder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
     message = update.message or update.callback_query.message
@@ -269,6 +293,7 @@ async def start_interactive_builder(update: Update, context: ContextTypes.DEFAUL
     sent_message = await message.reply_text("🚀 Interactive Builder\n\n1️⃣ اختر أصلاً أو اكتب الرمز:", reply_markup=asset_choice_keyboard(recent_assets))
     context.user_data['last_interactive_message_id'] = sent_message.message_id
     return I_ASSET_CHOICE
+
 async def asset_chosen_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -282,6 +307,7 @@ async def asset_chosen_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     draft['market'] = market
     await query.message.edit_text(f"✅ Asset: {asset.upper()}\n\n2️⃣ اختر الاتجاه:", reply_markup=side_market_keyboard(market))
     return I_SIDE_MARKET
+
 async def asset_chosen_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     last_message_id = context.user_data.pop('last_interactive_message_id', None)
     if last_message_id:
@@ -300,6 +326,7 @@ async def asset_chosen_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     sent_message = await update.message.reply_text(f"✅ Asset: {asset}\n\n2️⃣ اختر الاتجاه:", reply_markup=side_market_keyboard(market))
     context.user_data['last_interactive_message_id'] = sent_message.message_id
     return I_SIDE_MARKET
+
 async def side_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -308,6 +335,7 @@ async def side_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     asset = context.user_data[CONVERSATION_DATA_KEY]['asset']
     await query.message.edit_text(f"✅ Asset: {asset} ({side})\n\n3️⃣ اختر نوع أمر الدخول:", reply_markup=order_type_keyboard())
     return I_ORDER_TYPE
+
 async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -317,10 +345,12 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if order_type == 'MARKET': await query.message.edit_text("✅ Order Type: Market\n\n4️⃣ أرسل: `STOP TARGETS...`")
     else: await query.message.edit_text(f"✅ Order Type: {order_type}\n\n4️⃣ أرسل: `ENTRY STOP TARGETS...`")
     return I_PRICES
+
 def _parse_price_string(price_str: str) -> float:
     s = price_str.strip().lower()
     if 'k' in s: return float(s.replace('k', '')) * 1000
     return float(s)
+
 async def prices_received_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         draft = context.user_data[CONVERSATION_DATA_KEY]
@@ -338,11 +368,13 @@ async def prices_received_interactive(update: Update, context: ContextTypes.DEFA
     except (ValueError, IndexError):
         await update.message.reply_text("❌ تنسيق أسعار غير صالح. حاول مرة أخرى.")
         return I_PRICES
+
 async def change_market_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     await query.message.edit_reply_markup(reply_markup=market_choice_keyboard())
     return I_SIDE_MARKET
+
 async def market_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -354,6 +386,7 @@ async def market_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data[CONVERSATION_DATA_KEY]['market'] = market
     await query.message.edit_reply_markup(reply_markup=side_market_keyboard(market))
     return I_SIDE_MARKET
+
 async def add_notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -366,6 +399,7 @@ async def add_notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data['original_query_message'] = query.message
     await query.message.edit_text(f"{query.message.text}\n\n✍️ أرسل ملاحظاتك الآن.")
     return I_NOTES
+
 async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     notes = update.message.text.strip()
     review_key = context.user_data.get('current_review_key')
@@ -419,4 +453,4 @@ def register_conversation_handlers(app: Application):
         per_message=False,
     )
     app.add_handler(creation_conv_handler)
-# --- END OF CORRECTED AND FINAL FILE ---
+# --- END OF FINAL, CORRECTED AND ROBUST FILE (V5) ---
