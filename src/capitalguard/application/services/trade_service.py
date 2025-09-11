@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V17): src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, REVIEWED, AND ROBUST FILE (V18): src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
@@ -10,11 +10,8 @@ from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from capitalguard.domain.ports import RecommendationRepoPort, NotifierPort
 from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository, ChannelRepository
 from capitalguard.infrastructure.db.base import SessionLocal
-
-# ✅ --- START: FIX for NameError ---
-# Import the missing keyboard function
 from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
-# ✅ --- END: FIX for NameError ---
+from capitalguard.interfaces.telegram.ui_texts import _pct
 
 log = logging.getLogger(__name__)
 
@@ -32,11 +29,37 @@ class TradeService:
         self.notifier = notifier
 
     def _load_user_linked_channels(self, uid_int: int, only_active: bool = True) -> List[Any]:
-        """Returns a list of linked channel ORM rows for a user."""
         with SessionLocal() as s:
             user = UserRepository(s).find_by_telegram_id(uid_int)
             if not user: return []
             return ChannelRepository(s).list_by_user(user.id, only_active=only_active)
+
+    def _notify_all_channels(self, rec_id: int, text: str):
+        published_messages = self.repo.get_published_messages(rec_id)
+        for msg_meta in published_messages:
+            try:
+                self.notifier.post_notification_reply(
+                    chat_id=msg_meta.telegram_channel_id, message_id=msg_meta.telegram_message_id, text=text
+                )
+            except Exception as e:
+                log.warning("Failed to send reply notification for rec #%s to channel %s: %s", rec_id, msg_meta.telegram_channel_id, e)
+
+    def _update_all_cards(self, rec: Recommendation):
+        published_messages = self.repo.get_published_messages(rec.id)
+        if not published_messages: return
+        
+        log.info(f"Updating {len(published_messages)} cards for rec #{rec.id}...")
+        keyboard = public_channel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
+        for msg_meta in published_messages:
+            try:
+                self.notifier.edit_recommendation_card_by_ids(
+                    channel_id=msg_meta.telegram_channel_id,
+                    message_id=msg_meta.telegram_message_id,
+                    rec=rec,
+                    keyboard=keyboard
+                )
+            except Exception as e:
+                log.warning("Failed to update card for rec #%s in channel %s: %s", rec.id, msg_meta.telegram_channel_id, e)
 
     # --- Validation Helpers ---
     def _ensure_symbols_cache(self) -> None:
@@ -107,70 +130,96 @@ class TradeService:
         channels = self._load_user_linked_channels(uid_int, only_active=True)
         if channel_ids: channels = [ch for ch in channels if ch.telegram_channel_id in set(channel_ids)]
         
-        if not channels:
-            return rec, report
+        if not channels: return rec, report
             
         keyboard = public_channel_keyboard(rec.id)
-        publications = []
+        
         for ch in channels:
             try:
                 res = self.notifier.post_to_channel(ch.telegram_channel_id, rec, keyboard)
                 if res:
-                    publications.append({"recommendation_id": rec.id, "telegram_channel_id": res[0], "telegram_message_id": res[1]})
+                    publication_data = [{"recommendation_id": rec.id, "telegram_channel_id": res[0], "telegram_message_id": res[1]}]
+                    self.repo.save_published_messages(publication_data)
                     report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res[1]})
                 else: report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": "POST_FAILED"})
             except Exception as e:
                 log.error("Failed to publish to channel %s: %s", ch.telegram_channel_id, e, exc_info=True)
                 report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": str(e)})
                 
-        if publications:
-            self.repo.save_published_messages(publications)
-            self.repo.update_legacy_publication_fields(rec_id, publications[0])
-            return self.repo.get(rec_id), report
+        if report["success"]:
+            first_pub = report["success"][0]
+            self.repo.update_legacy_publication_fields(rec_id, {'telegram_channel_id': first_pub['channel_id'], 'telegram_message_id': first_pub['message_id']})
             
-        return rec, report
+        return self.repo.get(rec_id), report
 
     def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.PENDING: return None
+        
         rec.activate()
         rec.highest_price_reached = rec.entry.value
         rec.lowest_price_reached = rec.entry.value
-        event_data = {"activated_at": rec.activated_at.isoformat()}
-        return self.repo.update_with_event(rec, "ACTIVATED", event_data)
-
+        
+        updated_rec = self.repo.update_with_event(rec, "ACTIVATED", {"activated_at": rec.activated_at.isoformat()})
+        
+        self._update_all_cards(updated_rec)
+        notification_text = f"<b>✅ تفعيل #{updated_rec.asset.value}</b>\nتم الدخول في صفقة {updated_rec.side.value.upper()} عند سعر ~{updated_rec.entry.value:g}."
+        self._notify_all_channels(rec_id, notification_text)
+        
+        return updated_rec
+    
     def close(self, rec_id: int, exit_price: float) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec: raise ValueError(f"Recommendation {rec_id} not found.")
+        
         old_status = rec.status
         rec.close(exit_price)
-        event_data = {"old_status": old_status.value, "exit_price": exit_price, "closed_at": rec.closed_at.isoformat()}
-        return self.repo.update_with_event(rec, "CLOSED", event_data)
+        
+        updated_rec = self.repo.update_with_event(rec, "CLOSED", {"old_status": old_status.value, "exit_price": exit_price, "closed_at": rec.closed_at.isoformat()})
+        
+        self._update_all_cards(updated_rec)
+        pnl = _pct(rec.entry.value, exit_price, rec.side.value)
+        emoji, r_text = ("🏆", "ربح") if pnl >= 0 else ("💔", "خسارة")
+        notification_text = f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\nتم الإغلاق عند {exit_price:g} بنتيجة {r_text} <b>{pnl:+.2f}%</b>."
+        self._notify_all_channels(rec_id, notification_text)
+        
+        return updated_rec
 
     def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec or rec.status == RecommendationStatus.CLOSED: raise ValueError("Recommendation not found or is closed.")
+        
         old_sl = rec.stop_loss.value
         self._validate_sl_vs_entry(rec.side.value, rec.entry.value, new_sl)
         rec.stop_loss = Price(new_sl)
-        event_data = {"old_sl": old_sl, "new_sl": new_sl}
-        return self.repo.update_with_event(rec, "SL_UPDATE", event_data)
+        
+        updated_rec = self.repo.update_with_event(rec, "SL_UPDATE", {"old_sl": old_sl, "new_sl": new_sl})
+        
+        self._update_all_cards(updated_rec)
+        return updated_rec
 
     def update_targets(self, rec_id: int, new_targets: List[float]) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec or rec.status == RecommendationStatus.CLOSED: raise ValueError("Recommendation not found or is closed.")
+        
         old_targets = rec.targets.values
         self._validate_targets(rec.side.value, rec.entry.value, new_targets)
         rec.targets = Targets(new_targets)
-        event_data = {"old_targets": old_targets, "new_targets": new_targets}
-        return self.repo.update_with_event(rec, "TP_UPDATE", event_data)
+        
+        updated_rec = self.repo.update_with_event(rec, "TP_UPDATE", {"old_targets": old_targets, "new_targets": new_targets})
+        
+        self._update_all_cards(updated_rec)
+        return updated_rec
 
     def take_partial_profit(self, rec_id: int, percentage: float, price: float) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.ACTIVE:
             raise ValueError("Partial profit can only be taken on active recommendations.")
-        event_data = {"percentage": percentage, "price": price}
-        return self.repo.update_with_event(rec, "PARTIAL_PROFIT_TAKEN", event_data)
+        
+        updated_rec = self.repo.update_with_event(rec, "PARTIAL_PROFIT_TAKEN", {"percentage": percentage, "price": price})
+        
+        self._update_all_cards(updated_rec)
+        return updated_rec
 
     def update_price_tracking(self, rec_id: int, current_price: float) -> Optional[Recommendation]:
         rec = self.repo.get(rec_id)
@@ -188,4 +237,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FINAL, CORRECTED FILE (V17) ---
+# --- END OF FINAL, CORRECTED AND ROBUST FILE (V18) ---
