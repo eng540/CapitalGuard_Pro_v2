@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V9): src/capitalguard/infrastructure/sched/watcher_ws.py ---
+# --- START OF FINAL, REVIEWED, AND ROBUST FILE (V10): src/capitalguard/infrastructure/sched/watcher_ws.py ---
 import asyncio
 import logging
 from dotenv import load_dotenv
@@ -14,23 +14,24 @@ from capitalguard.domain.entities import OrderType, RecommendationStatus
 log = logging.getLogger("capitalguard.watcher")
 
 async def main():
+    # --- Service Initialization ---
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
     trade_service = TradeService(repo=repo, notifier=notifier)
     ws_client = BinanceWS()
 
     async def on_price_update(symbol: str, price: float, _raw_data):
+        """
+        Core handler for every price tick. Optimized to query only relevant data.
+        """
         log.debug(f"[WS] {symbol} -> {price}")
 
         try:
-            # ✅ FIX: Fetch ALL open recommendations once
-            all_open_recs = await asyncio.to_thread(trade_service.repo.list_open)
-
-            # ✅ FIX: Filter in memory instead of in the DB call
-            pending_recs = [r for r in all_open_recs if r.asset.value == symbol and r.status == RecommendationStatus.PENDING]
-            active_recs = [r for r in all_open_recs if r.asset.value == symbol and r.status == RecommendationStatus.ACTIVE]
-
             # --- 1. Activate PENDING recommendations ---
+            # ✅ FIX: Query only for PENDING recommendations for the specific symbol
+            pending_recs = await asyncio.to_thread(
+                trade_service.repo.list_open, symbol=symbol, status=RecommendationStatus.PENDING
+            )
             for rec in pending_recs:
                 entry, side = rec.entry.value, rec.side.value
                 order_type_val = rec.order_type.value
@@ -44,25 +45,33 @@ async def main():
                         is_triggered = True
 
                 if is_triggered:
+                    # This service call now handles event logging
                     await asyncio.to_thread(trade_service.activate_recommendation, rec.id)
 
             # --- 2. Fast-path SL auto-close for ACTIVE recommendations ---
+            # ✅ FIX: Query only for ACTIVE recommendations for the specific symbol
+            active_recs = await asyncio.to_thread(
+                trade_service.repo.list_open, symbol=symbol, status=RecommendationStatus.ACTIVE
+            )
             for rec in active_recs:
                 sl, side = rec.stop_loss.value, rec.side.value
                 sl_hit = (side == "LONG" and price <= sl) or (side == "SHORT" and price >= sl)
                 if sl_hit:
                     log.warning(f"SL HIT DETECTED for REC #{rec.id} ({symbol}) at price {price}. Closing...")
+                    # This service call now handles event logging
                     await asyncio.to_thread(trade_service.close, rec.id, price)
 
         except Exception as e:
             log.error(f"Error during on_price_update for {symbol}: {e}", exc_info=True)
 
+    # --- Main Loop ---
     while True:
         try:
+            # Fetch all open recommendations once to determine which symbols to watch
             open_recs_for_symbols = await asyncio.to_thread(trade_service.repo.list_open)
             symbols_to_watch = {rec.asset.value for rec in open_recs_for_symbols}
             if not symbols_to_watch:
-                symbols_to_watch = {"BTCUSDT"}
+                symbols_to_watch = {"BTCUSDT"} # Default to keep connection alive
 
             log.info(f"Watching symbols: {symbols_to_watch}")
             
@@ -86,4 +95,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log.info("Watcher stopped manually.")
-# --- END OF FINAL, CORRECTED FILE (V9) ---
+# --- END OF FINAL, REVIEWED, AND ROBUST FILE (V10) ---
