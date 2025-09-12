@@ -99,14 +99,24 @@ class TradeService:
         if side_upper == "SHORT" and not (sl >= entry): 
             raise ValueError("For SHORT trades, Stop Loss must be >= Entry Price.")
 
-    def _validate_targets(self, side: str, entry: float, tps: List[float]) -> None:
+    # ✅ --- START: FIX for Target Sorting ---
+    def _validate_and_sort_targets(self, side: str, entry: float, tps: List[float]) -> List[float]:
+        """Validates targets and sorts them logically based on the trade side."""
         if not tps: 
             raise ValueError("At least one target is required.")
+        
         side_upper = side.upper()
-        if side_upper == "LONG" and not all(tp > entry for tp in tps): 
-            raise ValueError("For LONG trades, all targets must be > Entry Price.")
-        elif side_upper == "SHORT" and not all(tp < entry for tp in tps): 
-            raise ValueError("For SHORT trades, all targets must be < Entry Price.")
+        if side_upper == "LONG":
+            if not all(tp > entry for tp in tps): 
+                raise ValueError("For LONG trades, all targets must be > Entry Price.")
+            return sorted(tps)  # Sort ascending for LONG
+        elif side_upper == "SHORT":
+            if not all(tp < entry for tp in tps): 
+                raise ValueError("For SHORT trades, all targets must be < Entry Price.")
+            return sorted(tps, reverse=True)  # Sort descending for SHORT
+        else:
+            raise ValueError("Invalid trade side.")
+    # ✅ --- END: FIX for Target Sorting ---
 
     # --- Core Business Logic ---
 
@@ -122,14 +132,16 @@ class TradeService:
             status, final_entry = RecommendationStatus.PENDING, kwargs['entry']
             
         self._validate_sl_vs_entry(kwargs['side'], final_entry, kwargs['stop_loss'])
-        self._validate_targets(kwargs['side'], final_entry, kwargs['targets'])
+        
+        # ✅ Use the new sorting and validation function
+        sorted_targets = self._validate_and_sort_targets(kwargs['side'], final_entry, kwargs['targets'])
         
         rec = Recommendation(
             asset=Symbol(asset), 
             side=Side(kwargs['side']), 
             entry=Price(final_entry),
             stop_loss=Price(kwargs['stop_loss']), 
-            targets=Targets(kwargs['targets']),
+            targets=Targets(sorted_targets),
             order_type=order_type_enum, 
             status=status, 
             market=kwargs['market'],
@@ -214,7 +226,7 @@ class TradeService:
         
         return updated_rec
     
-    def close(self, rec_id: int, exit_price: float) -> Recommendation:
+    def close(self, rec_id: int, exit_price: float, reason: str = "MANUAL_CLOSE") -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec: 
             raise ValueError(f"Recommendation {rec_id} not found.")
@@ -225,14 +237,25 @@ class TradeService:
         updated_rec = self.repo.update_with_event(rec, "CLOSED", {
             "old_status": old_status.value, 
             "exit_price": exit_price, 
-            "closed_at": rec.closed_at.isoformat()
+            "closed_at": rec.closed_at.isoformat(), 
+            "reason": reason
         })
         
+        # ✅ --- START: FIX for Final TP Notification ---
+        # If the reason for closing is hitting the final TP, send the TP hit notification first.
+        if reason == "FINAL_TP_HIT" and updated_rec.targets.values:
+            last_tp = updated_rec.targets.values[-1]
+            tp_count = len(updated_rec.targets.values)
+            tp_notification = f"<b>🔥 الهدف #{tp_count} (الأخير) تحقق لـ #{updated_rec.asset.value}!</b>\nالسعر وصل إلى {last_tp:g}."
+            self._notify_all_channels(rec_id, tp_notification)
+            time.sleep(0.5)  # Small delay to ensure notification order
+        # ✅ --- END: FIX for Final TP Notification ---
+
         self._update_all_cards(updated_rec)
         pnl = _pct(rec.entry.value, exit_price, rec.side.value)
         emoji, r_text = ("🏆", "ربح") if pnl >= 0 else ("💔", "خسارة")
-        notification_text = f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\nتم الإغلاق عند {exit_price:g} بنتيجة {r_text} <b>{pnl:+.2f}%</b>."
-        self._notify_all_channels(rec_id, notification_text)
+        close_notification = f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\nتم الإغلاق عند {exit_price:g} بنتيجة {r_text} <b>{pnl:+.2f}%</b>."
+        self._notify_all_channels(rec_id, close_notification)
         
         return updated_rec
 
@@ -250,7 +273,6 @@ class TradeService:
             "new_sl": new_sl
         })
         
-        # ✅ Send notification for SL updates
         self._update_all_cards(updated_rec)
         is_be = (new_sl == rec.entry.value)
         if is_be:
@@ -267,17 +289,17 @@ class TradeService:
             raise ValueError("Recommendation not found or is closed.")
         
         old_targets = rec.targets.values
-        self._validate_targets(rec.side.value, rec.entry.value, new_targets)
-        rec.targets = Targets(new_targets)
+        # ✅ Use the new sorting and validation function
+        sorted_targets = self._validate_and_sort_targets(rec.side.value, rec.entry.value, new_targets)
+        rec.targets = Targets(sorted_targets)
         
         updated_rec = self.repo.update_with_event(rec, "TP_UPDATE", {
             "old_targets": old_targets, 
-            "new_targets": new_targets
+            "new_targets": sorted_targets
         })
         
-        # ✅ Send notification for TP updates
         self._update_all_cards(updated_rec)
-        targets_str = ", ".join(map(lambda p: f"{p:g}", new_targets))
+        targets_str = ", ".join(map(lambda p: f"{p:g}", sorted_targets))
         notification_text = f"<b>🎯 تحديث الأهداف لـ #{updated_rec.asset.value}</b>\nالأهداف الجديدة هي: [{targets_str}]."
         self._notify_all_channels(rec_id, notification_text)
 
