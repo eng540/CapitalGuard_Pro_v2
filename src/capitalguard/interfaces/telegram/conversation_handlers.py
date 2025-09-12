@@ -1,4 +1,4 @@
-# --- START OF FULL, CORRECTED AND FINAL FILE (V6): src/capitalguard/interfaces/telegram/conversation_handlers.py ---
+# --- START OF FULL, FINAL, AND READY-TO-USE FILE ---
 import logging
 import uuid
 import types
@@ -16,14 +16,15 @@ from .keyboards import (
     market_choice_keyboard, order_type_keyboard, build_channel_picker_keyboard
 )
 from .commands import (
-    main_creation_keyboard, change_method_keyboard,
-    newrec_entry_point, settings_cmd
+    main_creation_keyboard, change_method_keyboard, settings_cmd
 )
 from .parsers import parse_quick_command, parse_text_editor
 from .auth import ALLOWED_USER_FILTER
 
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+from capitalguard.application.services.market_data_service import MarketDataService
+from capitalguard.application.services.trade_service import TradeService
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,64 @@ def _load_user_active_channels(user_tg_id: int) -> List[Dict[str, Any]]:
 
 # --- Core Conversation Handlers ---
 
+async def start_interactive_builder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    The single, centralized function for starting the interactive builder.
+    Always fetches recent assets and displays the keyboard.
+    """
+    _clean_conversation_state(context)
+    message = update.message or (update.callback_query.message if update.callback_query else None)
+    if not message:
+        return ConversationHandler.END
+
+    context.user_data[CONVERSATION_DATA_KEY] = {}
+    trade_service: TradeService = get_service(context, "trade_service")
+    user_id = str(update.effective_user.id)
+    recent_assets = trade_service.get_recent_assets_for_user(user_id, limit=5)
+    
+    text = "🚀 Interactive Builder\n\n1️⃣ اختر أصلاً أو اكتب الرمز:"
+    keyboard = asset_choice_keyboard(recent_assets)
+
+    if update.callback_query:
+        await update.callback_query.message.edit_text(text, reply_markup=keyboard)
+    else:
+        await message.reply_text(text, reply_markup=keyboard)
+
+    return I_ASSET
+
+async def newrec_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Entry point for the /newrec command. Checks for user preferences and routes the flow.
+    """
+    preferred_method = context.user_data.get(USER_PREFERENCE_KEY)
+
+    if preferred_method == "interactive":
+        return await start_interactive_builder(update, context)
+    
+    if preferred_method == "quick":
+        await update.message.reply_text(
+            "⚡️ وضع الأمر السريع.\n\n"
+            "أرسل توصيتك برسالة واحدة تبدأ بـ /rec\n"
+            "مثال: /rec BTCUSDT LONG 65000 64000 66k",
+            reply_markup=change_method_keyboard()
+        )
+        return QUICK_COMMAND
+        
+    if preferred_method == "editor":
+        await update.message.reply_text(
+            "📋 وضع المحرّر النصي.\n\n"
+            "ألصق توصيتك بشكل حقول:\n"
+            "Asset: BTCUSDT\nSide: LONG\nEntry: 65000\nStop: 64000\nTargets: 66k 68k",
+            reply_markup=change_method_keyboard()
+        )
+        return TEXT_EDITOR
+
+    await update.message.reply_text(
+        "🚀 إنشاء توصية جديدة.\n\nاختر طريقتك المفضلة للإدخال:",
+        reply_markup=main_creation_keyboard()
+    )
+    return CHOOSE_METHOD
+
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, is_edit: bool = False) -> int:
     message = update.message or (update.callback_query.message if update.callback_query else None)
     if not message: return ConversationHandler.END
@@ -124,7 +183,6 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             draft.setdefault("notes", "")
             draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
         
-        # The service is now silent, so the handler is responsible for the final message.
         saved_rec = trade_service.create_recommendation(
             asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
             entry=entry_price, stop_loss=draft["stop_loss"], targets=draft["targets"],
@@ -158,7 +216,6 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 async def unexpected_input_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles any input that is not expected in the current conversation state."""
     if context.user_data.get(CONVERSATION_DATA_KEY) is not None or context.user_data.get('current_review_key'):
         user_message = "أمر أو زر غير متوقع."
         if update.message:
@@ -285,17 +342,6 @@ async def text_editor_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data[CONVERSATION_DATA_KEY] = data
     return await show_review_card(update, context)
 
-async def start_interactive_builder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    _clean_conversation_state(context)
-    message = update.message or update.callback_query.message
-    context.user_data[CONVERSATION_DATA_KEY] = {}
-    trade_service = get_service(context, "trade_service")
-    user_id = str(update.effective_user.id)
-    recent_assets = trade_service.get_recent_assets_for_user(user_id, limit=5)
-    sent_message = await message.reply_text("🚀 Interactive Builder\n\n1️⃣ اختر أصلاً أو اكتب الرمز:", reply_markup=asset_choice_keyboard(recent_assets))
-    context.user_data['last_interactive_message_id'] = sent_message.message_id
-    return I_ASSET
-
 async def asset_chosen_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -303,38 +349,50 @@ async def asset_chosen_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     if asset.lower() == "new":
         await query.message.edit_text("✍️ أرسل رمز الأصل الآن (مثال: BTCUSDT).")
         return I_ASSET
-    draft = context.user_data[CONVERSATION_DATA_KEY]
+    draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
     draft['asset'] = asset.upper()
     market = context.user_data.get('preferred_market', 'Futures')
     draft['market'] = market
+    context.user_data[CONVERSATION_DATA_KEY] = draft
     await query.message.edit_text(f"✅ Asset: {asset.upper()}\n\n2️⃣ اختر الاتجاه:", reply_markup=side_market_keyboard(market))
     return I_SIDE_MARKET
 
 async def asset_chosen_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    last_message_id = context.user_data.pop('last_interactive_message_id', None)
-    if last_message_id:
-        try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=last_message_id)
-        except Exception: pass
-    raw = (update.message.text or "").strip()
-    if raw.lower() in {"new", "جديد"}:
-        sent = await update.message.reply_text("⚠️ هذا زر إضافة. اكتب رمزًا حقيقيًا.")
-        context.user_data['last_interactive_message_id'] = sent.message_id
+    raw_asset = (update.message.text or "").strip().upper()
+    if not raw_asset:
+        await update.message.reply_text("⚠️ إدخال غير صالح. الرجاء إرسال رمز.")
         return I_ASSET
-    asset = raw.upper()
-    draft = context.user_data[CONVERSATION_DATA_KEY]
-    draft['asset'] = asset
-    market = context.user_data.get('preferred_market', 'Futures')
-    draft['market'] = market
-    sent_message = await update.message.reply_text(f"✅ Asset: {asset}\n\n2️⃣ اختر الاتجاه:", reply_markup=side_market_keyboard(market))
-    context.user_data['last_interactive_message_id'] = sent_message.message_id
+
+    market_data_service: MarketDataService = get_service(context, "market_data_service")
+    preferred_market = context.user_data.get('preferred_market', 'Futures')
+    
+    if not market_data_service.is_valid_symbol(raw_asset, preferred_market):
+        error_msg = (
+            f"❌ الرمز '{raw_asset}' غير صالح أو غير متوفر في السوق الافتراضي ({preferred_market}).\n\n"
+            "تأكد من أن الرمز صحيح وحاول مرة أخرى."
+        )
+        await update.message.reply_text(error_msg)
+        return I_ASSET
+
+    draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
+    draft['asset'] = raw_asset
+    draft['market'] = preferred_market
+    context.user_data[CONVERSATION_DATA_KEY] = draft
+    
+    await update.message.reply_text(
+        f"✅ Asset: {raw_asset}\n\n2️⃣ اختر الاتجاه:",
+        reply_markup=side_market_keyboard(preferred_market)
+    )
     return I_SIDE_MARKET
 
 async def side_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     side = query.data.split('_')[1]
-    context.user_data[CONVERSATION_DATA_KEY]['side'] = side
-    asset = context.user_data[CONVERSATION_DATA_KEY]['asset']
+    draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
+    draft['side'] = side
+    context.user_data[CONVERSATION_DATA_KEY] = draft
+    asset = draft.get('asset', 'N/A')
     await query.message.edit_text(f"✅ Asset: {asset} ({side})\n\n3️⃣ اختر نوع أمر الدخول:", reply_markup=order_type_keyboard())
     return I_ORDER_TYPE
 
@@ -342,8 +400,9 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
     order_type = query.data.split('_')[1]
-    draft = context.user_data[CONVERSATION_DATA_KEY]
+    draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
     draft['order_type'] = order_type
+    context.user_data[CONVERSATION_DATA_KEY] = draft
     if order_type == 'MARKET': await query.message.edit_text("✅ Order Type: Market\n\n4️⃣ أرسل: `STOP TARGETS...`")
     else: await query.message.edit_text(f"✅ Order Type: {order_type}\n\n4️⃣ أرسل: `ENTRY STOP TARGETS...`")
     return I_PRICES
@@ -355,7 +414,7 @@ def _parse_price_string(price_str: str) -> float:
 
 async def prices_received_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
-        draft = context.user_data[CONVERSATION_DATA_KEY]
+        draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
         order_type = draft.get('order_type')
         parts = update.message.text.strip().replace(',', ' ').split()
         if order_type == 'MARKET':
@@ -366,6 +425,7 @@ async def prices_received_interactive(update: Update, context: ContextTypes.DEFA
             if len(parts) < 3: raise ValueError("Entry, Stop, and at least one Target are required.")
             draft["entry"], draft["stop_loss"] = _parse_price_string(parts[0]), _parse_price_string(parts[1])
             draft["targets"] = [_parse_price_string(t) for t in parts[2:]]
+        context.user_data[CONVERSATION_DATA_KEY] = draft
         return await show_review_card(update, context)
     except (ValueError, IndexError):
         await update.message.reply_text("❌ تنسيق أسعار غير صالح. حاول مرة أخرى.")
@@ -381,11 +441,13 @@ async def market_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     query = update.callback_query
     await query.answer()
     choice = query.data
-    market = context.user_data[CONVERSATION_DATA_KEY].get('market', 'Futures')
+    draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
+    market = draft.get('market', 'Futures')
     if choice != "market_back":
         market = choice.split('_')[1]
         context.user_data['preferred_market'] = market
-    context.user_data[CONVERSATION_DATA_KEY]['market'] = market
+    draft['market'] = market
+    context.user_data[CONVERSATION_DATA_KEY] = draft
     await query.message.edit_reply_markup(reply_markup=side_market_keyboard(market))
     return I_SIDE_MARKET
 
@@ -424,7 +486,7 @@ def register_conversation_handlers(app: Application):
             CommandHandler("settings", settings_cmd, filters=ALLOWED_USER_FILTER),
         ],
         states={
-            CHOOSE_METHOD: [CallbackQueryHandler(method_chosen, pattern="^method_"), change_method_cb, MessageHandler(filters.TEXT & ~filters.COMMAND, asset_chosen_text)],
+            CHOOSE_METHOD: [CallbackQueryHandler(method_chosen, pattern="^method_"), change_method_cb],
             QUICK_COMMAND: [change_method_cb, MessageHandler(filters.COMMAND & filters.Regex(r'^\/rec'), quick_command_handler)],
             TEXT_EDITOR: [change_method_cb, MessageHandler(filters.TEXT & ~filters.COMMAND, text_editor_handler)],
             I_ASSET: [change_method_cb, CallbackQueryHandler(asset_chosen_button, pattern="^asset_"), MessageHandler(filters.TEXT & ~filters.COMMAND, asset_chosen_text)],
@@ -455,4 +517,4 @@ def register_conversation_handlers(app: Application):
         per_message=False,
     )
     app.add_handler(creation_conv_handler)
-# --- END OF FINAL, CORRECTED AND ROBUST FILE (V6) ---
+# --- END OF FULL, FINAL, AND READY-TO-USE FILE ---
