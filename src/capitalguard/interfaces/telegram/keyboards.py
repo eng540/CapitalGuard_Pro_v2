@@ -1,35 +1,30 @@
-# --- START OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
+# --- START OF FINAL, UPDATED FILE (V23): src/capitalguard/interfaces/telegram/keyboards.py ---
 from typing import List, Dict, Optional, Iterable, Set
 import math
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from capitalguard.domain.entities import Recommendation, RecommendationStatus
+from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.interfaces.telegram.ui_texts import _pct
 
-# Constant for pagination
 ITEMS_PER_PAGE = 8
-
 
 def build_open_recs_keyboard(
     items: List[Recommendation],
     current_page: int,
-    price_service: PriceService,
-    seq_map: Optional[Dict[int, int]] = None,
+    price_service: PriceService
 ) -> InlineKeyboardMarkup:
     keyboard: List[List[InlineKeyboardButton]] = []
-
     total_items = len(items)
     total_pages = math.ceil(total_items / ITEMS_PER_PAGE) if total_items else 1
     start_index = (current_page - 1) * ITEMS_PER_PAGE
-    end_index = start_index + ITEMS_PER_PAGE
-
-    paginated_items = items[start_index:end_index]
+    paginated_items = items[start_index : start_index + ITEMS_PER_PAGE]
 
     for rec in paginated_items:
-        display_id = seq_map.get(rec.id, rec.id) if seq_map else rec.id
-
+        # ✅ Use the new analyst_rec_id for display if available
+        display_id = getattr(rec, 'analyst_rec_id', rec.id) or rec.id
+        
         if rec.status == RecommendationStatus.PENDING:
             status_icon = "⏳"
             button_text = f"{status_icon} #{display_id} - {rec.asset.value} ({rec.side.value}) | معلقة"
@@ -42,10 +37,7 @@ def build_open_recs_keyboard(
                 if live_price:
                     pnl = _pct(rec.entry.value, live_price, rec.side.value)
                     status_icon = "🟢" if pnl >= 0 else "🔴"
-                    button_text = (
-                        f"{status_icon} #{display_id} - {rec.asset.value} "
-                        f"({rec.side.value}) | PnL: {pnl:+.2f}%"
-                    )
+                    button_text = f"{status_icon} #{display_id} - {rec.asset.value} ({rec.side.value}) | PnL: {pnl:+.2f}%"
                 else:
                     status_icon = "▶️"
                     button_text = f"{status_icon} #{display_id} - {rec.asset.value} ({rec.side.value}) | نشطة"
@@ -53,31 +45,19 @@ def build_open_recs_keyboard(
             status_icon = "ℹ️"
             button_text = f"{status_icon} #{display_id} - {rec.asset.value} ({rec.side.value})"
 
-        callback_data = f"rec:show_panel:{rec.id}"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"rec:show_panel:{rec.id}")])
 
     nav_buttons: List[InlineKeyboardButton] = []
     if current_page > 1:
-        nav_buttons.append(
-            InlineKeyboardButton("⬅️ السابق", callback_data=f"open_nav:page:{current_page - 1}")
-        )
-
-    total_pages = max(total_pages, 1)
+        nav_buttons.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"open_nav:page:{current_page - 1}"))
     if total_pages > 1:
-        nav_buttons.append(
-            InlineKeyboardButton(f"صفحة {current_page}/{total_pages}", callback_data="noop")
-        )
-
+        nav_buttons.append(InlineKeyboardButton(f"صفحة {current_page}/{total_pages}", callback_data="noop"))
     if current_page < total_pages:
-        nav_buttons.append(
-            InlineKeyboardButton("التالي ➡️", callback_data=f"open_nav:page:{current_page + 1}")
-        )
-
+        nav_buttons.append(InlineKeyboardButton("التالي ➡️", callback_data=f"open_nav:page:{current_page + 1}"))
     if nav_buttons:
         keyboard.append(nav_buttons)
 
     return InlineKeyboardMarkup(keyboard)
-
 
 def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -89,55 +69,79 @@ def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         ]
     )
 
-
 def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+    """The main control panel for an analyst."""
+    return InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec_id}"),
-                InlineKeyboardButton("✏️ تعديل", callback_data=f"rec:edit_menu:{rec_id}"),
-            ],
-            [
-                InlineKeyboardButton("🛡️ نقل للـ BE", callback_data=f"rec:move_be:{rec_id}"),
-                InlineKeyboardButton("💰 إغلاق 50% (ملاحظة)", callback_data=f"rec:close_partial:{rec_id}"),
-            ],
-            [InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_start:{rec_id}")],
-            [InlineKeyboardButton("⬅️ العودة لقائمة التوصيات", callback_data=f"open_nav:page:1")],
-        ]
-    )
-
+            InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec_id}"),
+            InlineKeyboardButton("✏️ تعديل", callback_data=f"rec:edit_menu:{rec_id}"),
+        ],
+        [
+            # ✅ New "Exit Strategy" screen
+            InlineKeyboardButton("📈 استراتيجية الخروج", callback_data=f"rec:strategy_menu:{rec_id}"),
+        ],
+        [
+            InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_start:{rec_id}")
+        ],
+        [InlineKeyboardButton("⬅️ العودة لقائمة التوصيات", callback_data=f"open_nav:page:1")],
+    ])
 
 def analyst_edit_menu_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+    """The sub-menu for editing SL/TP."""
+    return InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton("🛑 تعديل الوقف", callback_data=f"rec:edit_sl:{rec_id}"),
-                InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"rec:edit_tp:{rec_id}"),
-            ],
-            [InlineKeyboardButton("⬅️ العودة للوحة التحكم", callback_data=f"rec:back_to_main:{rec_id}")],
-        ]
-    )
+            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=f"rec:edit_sl:{rec_id}"),
+            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"rec:edit_tp:{rec_id}"),
+        ],
+        [InlineKeyboardButton("⬅️ العودة للوحة التحكم", callback_data=f"rec:back_to_main:{rec_id}")],
+    ])
 
+# ✅ --- START: NEW STRATEGY KEYBOARD ---
+def build_exit_strategy_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
+    """Builds the dynamic keyboard for the exit strategy management screen."""
+    rec_id = rec.id
+    current_strategy = rec.exit_strategy
+    
+    # Auto-close at final TP
+    auto_close_text = "🎯 الإغلاق عند الهدف الأخير"
+    if current_strategy == ExitStrategy.CLOSE_AT_FINAL_TP:
+        auto_close_text = f"✅ {auto_close_text}"
+    
+    # Manual close only
+    manual_close_text = "✍️ الإغلاق اليدوي فقط"
+    if current_strategy == ExitStrategy.MANUAL_CLOSE_ONLY:
+        manual_close_text = f"✅ {manual_close_text}"
+
+    keyboard = [
+        [InlineKeyboardButton(auto_close_text, callback_data=f"rec:set_strategy:{rec_id}:{ExitStrategy.CLOSE_AT_FINAL_TP.value}")],
+        [InlineKeyboardButton(manual_close_text, callback_data=f"rec:set_strategy:{rec_id}:{ExitStrategy.MANUAL_CLOSE_ONLY.value}")],
+        [InlineKeyboardButton("🛡️ وضع/تعديل وقف الربح", callback_data=f"rec:set_profit_stop:{rec_id}")],
+    ]
+    
+    if getattr(rec, "profit_stop_price", None) is not None:
+        keyboard.append([InlineKeyboardButton("🗑️ إزالة وقف الربح", callback_data=f"rec:set_profit_stop:{rec_id}:remove")])
+        
+    keyboard.append([InlineKeyboardButton("⬅️ العودة للوحة التحكم", callback_data=f"rec:back_to_main:{rec_id}")])
+    
+    return InlineKeyboardMarkup(keyboard)
+# ✅ --- END: NEW STRATEGY KEYBOARD ---
 
 def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton(
-                    "✅ تأكيد الإغلاق", callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"
-                ),
+                InlineKeyboardButton("✅ تأكيد الإغلاق", callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"),
                 InlineKeyboardButton("❌ تراجع", callback_data=f"rec:cancel_close:{rec_id}"),
             ]
         ]
     )
 
-
+# -------- بقية لوحات المفاتيح الثابتة (بدون تغيير) --------
 def asset_choice_keyboard(recent_assets: List[str]) -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(asset, callback_data=f"asset_{asset}") for asset in recent_assets]
     keyboard_layout = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
     keyboard_layout.append([InlineKeyboardButton("✍️ اكتب أصلاً جديدًا", callback_data="asset_new")])
     return InlineKeyboardMarkup(keyboard_layout)
-
 
 def side_market_keyboard(current_market: str = "Futures") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -150,7 +154,6 @@ def side_market_keyboard(current_market: str = "Futures") -> InlineKeyboardMarku
         ]
     )
 
-
 def market_choice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -158,7 +161,6 @@ def market_choice_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("⬅️ عودة", callback_data="market_back")],
         ]
     )
-
 
 def order_type_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -168,7 +170,6 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("Stop Market (دخول بعد اختراق سعر معين)", callback_data="type_STOP_MARKET")],
         ]
     )
-
 
 def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
     """
@@ -189,7 +190,6 @@ def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{review_token}")],
         ]
     )
-
 
 # -------- مُنتقي القنوات المتعددة --------
 def build_channel_picker_keyboard(
@@ -241,4 +241,4 @@ def build_channel_picker_keyboard(
     ])
 
     return InlineKeyboardMarkup(rows)
-# --- END OF FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
+# --- END OF FINAL, UPDATED FILE (V23): src/capitalguard/interfaces/telegram/keyboards.py ---
