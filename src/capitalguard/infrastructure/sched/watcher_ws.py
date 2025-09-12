@@ -1,24 +1,29 @@
-# --- START OF FINAL, CORRECTED FILE (V11): src/capitalguard/infrastructure/sched/watcher_ws.py ---
+# --- START OF CORRECTED AND REFACTORED FILE: src/capitalguard/infrastructure/sched/watcher_ws.py ---
 import asyncio
 import logging
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# ✅ --- 1. استيراد "مصنع الخدمات" المركزي ---
+from capitalguard.boot import build_services
 from capitalguard.infrastructure.market.ws_client import BinanceWS
-from capitalguard.application.services.trade_service import TradeService
-from capitalguard.infrastructure.db.repository import RecommendationRepository
-from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.domain.entities import OrderType, RecommendationStatus
 
 log = logging.getLogger("capitalguard.watcher")
 
 async def main():
-    # --- Service Initialization ---
-    repo = RecommendationRepository()
-    notifier = TelegramNotifier()
-    trade_service = TradeService(repo=repo, notifier=notifier)
+    # ✅ --- 2. بناء جميع الخدمات مرة واحدة باستخدام الدالة المركزية ---
+    log.info("Building services for the watcher...")
+    services = build_services()
+    trade_service = services["trade_service"]
+    market_data_service = services["market_data_service"]
     ws_client = BinanceWS()
+
+    # ✅ --- 3. التأكد من أن cache الأصول ممتلئ قبل بدء المراقبة ---
+    log.info("Populating initial symbols cache for the watcher...")
+    await market_data_service.refresh_symbols_cache()
+    log.info("Symbols cache populated. Starting main watcher loop.")
 
     async def on_price_update(symbol: str, price: float, _raw_data):
         """
@@ -27,10 +32,7 @@ async def main():
         log.debug(f"[WS] {symbol} -> {price}")
 
         try:
-            # ✅ FIX: Fetch ALL open recommendations once per price update
             all_open_recs = await asyncio.to_thread(trade_service.repo.list_open)
-
-            # ✅ FIX: Filter in memory instead of passing arguments to the repository
             pending_recs = [r for r in all_open_recs if r.asset.value == symbol and r.status == RecommendationStatus.PENDING]
             active_recs = [r for r in all_open_recs if r.asset.value == symbol and r.status == RecommendationStatus.ACTIVE]
 
@@ -91,4 +93,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log.info("Watcher stopped manually.")
-# --- END OF FINAL, CORRECTED FILE (V11) ---
+# --- END OF CORRECTED AND REFACTORED FILE ---
