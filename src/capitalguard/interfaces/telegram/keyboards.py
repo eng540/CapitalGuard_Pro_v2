@@ -1,4 +1,4 @@
-# --- START OF FINAL, UPDATED FILE (V23): src/capitalguard/interfaces/telegram/keyboards.py ---
+# --- START OF FULL, FINAL, AND READY-TO-USE FILE ---
 from typing import List, Dict, Optional, Iterable, Set
 import math
 
@@ -9,6 +9,17 @@ from capitalguard.application.services.price_service import PriceService
 from capitalguard.interfaces.telegram.ui_texts import _pct
 
 ITEMS_PER_PAGE = 8
+
+def main_creation_keyboard() -> InlineKeyboardMarkup:
+    """
+    Displays the main menu for choosing a recommendation creation method.
+    Includes hints for the direct commands.
+    """
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 المنشئ التفاعلي (/new)", callback_data="method_interactive")],
+        [InlineKeyboardButton("⚡️ الأمر السريع (/rec)", callback_data="method_quick")],
+        [InlineKeyboardButton("📋 المحرر النصي (/editor)", callback_data="method_editor")],
+    ])
 
 def build_open_recs_keyboard(
     items: List[Recommendation],
@@ -22,7 +33,6 @@ def build_open_recs_keyboard(
     paginated_items = items[start_index : start_index + ITEMS_PER_PAGE]
 
     for rec in paginated_items:
-        # ✅ Use the new analyst_rec_id for display if available
         display_id = getattr(rec, 'analyst_rec_id', rec.id) or rec.id
         
         if rec.status == RecommendationStatus.PENDING:
@@ -70,14 +80,12 @@ def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     )
 
 def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """The main control panel for an analyst."""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec_id}"),
             InlineKeyboardButton("✏️ تعديل", callback_data=f"rec:edit_menu:{rec_id}"),
         ],
         [
-            # ✅ New "Exit Strategy" screen
             InlineKeyboardButton("📈 استراتيجية الخروج", callback_data=f"rec:strategy_menu:{rec_id}"),
         ],
         [
@@ -87,7 +95,6 @@ def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     ])
 
 def analyst_edit_menu_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """The sub-menu for editing SL/TP."""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🛑 تعديل الوقف", callback_data=f"rec:edit_sl:{rec_id}"),
@@ -96,18 +103,14 @@ def analyst_edit_menu_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⬅️ العودة للوحة التحكم", callback_data=f"rec:back_to_main:{rec_id}")],
     ])
 
-# ✅ --- START: NEW STRATEGY KEYBOARD ---
 def build_exit_strategy_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
-    """Builds the dynamic keyboard for the exit strategy management screen."""
     rec_id = rec.id
     current_strategy = rec.exit_strategy
     
-    # Auto-close at final TP
     auto_close_text = "🎯 الإغلاق عند الهدف الأخير"
     if current_strategy == ExitStrategy.CLOSE_AT_FINAL_TP:
         auto_close_text = f"✅ {auto_close_text}"
     
-    # Manual close only
     manual_close_text = "✍️ الإغلاق اليدوي فقط"
     if current_strategy == ExitStrategy.MANUAL_CLOSE_ONLY:
         manual_close_text = f"✅ {manual_close_text}"
@@ -124,7 +127,6 @@ def build_exit_strategy_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
     keyboard.append([InlineKeyboardButton("⬅️ العودة للوحة التحكم", callback_data=f"rec:back_to_main:{rec_id}")])
     
     return InlineKeyboardMarkup(keyboard)
-# ✅ --- END: NEW STRATEGY KEYBOARD ---
 
 def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -136,7 +138,6 @@ def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMark
         ]
     )
 
-# -------- بقية لوحات المفاتيح الثابتة (بدون تغيير) --------
 def asset_choice_keyboard(recent_assets: List[str]) -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(asset, callback_data=f"asset_{asset}") for asset in recent_assets]
     keyboard_layout = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
@@ -172,12 +173,6 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
     )
 
 def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
-    """
-    لوحة مراجعة الصفقة قبل الحفظ/النشر.
-    - زر "نشر في القنوات الفعّالة" = ينشر لكل القنوات الفعّالة (السلوك القديم).
-    - زر "اختيار القنوات" = يفتح مُنتقي القنوات المتعددة.
-    NOTE: نستخدم review_token القصير (<64 بايت لكل callback_data).
-    """
     return InlineKeyboardMarkup(
         [
             [
@@ -191,7 +186,6 @@ def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
         ]
     )
 
-# -------- مُنتقي القنوات المتعددة --------
 def build_channel_picker_keyboard(
     review_token: str,
     channels: Iterable[dict],
@@ -199,10 +193,6 @@ def build_channel_picker_keyboard(
     page: int = 1,
     per_page: int = 10,
 ) -> InlineKeyboardMarkup:
-    """
-    channels: iterable of dicts like {id, title, username, telegram_channel_id}
-    selected_ids: set of telegram_channel_id currently selected
-    """
     ch_list = list(channels)
     total = len(ch_list)
     page = max(page, 1)
@@ -223,7 +213,6 @@ def build_channel_picker_keyboard(
             )
         ])
 
-    # nav
     nav: List[InlineKeyboardButton] = []
     max_page = max(1, math.ceil(total / per_page))
     if page > 1:
@@ -234,11 +223,10 @@ def build_channel_picker_keyboard(
     if nav:
         rows.append(nav)
 
-    # actions
     rows.append([
         InlineKeyboardButton("🚀 نشر المحدد", callback_data=f"pubsel:confirm:{review_token}"),
         InlineKeyboardButton("⬅️ رجوع", callback_data=f"pubsel:back:{review_token}"),
     ])
 
     return InlineKeyboardMarkup(rows)
-# --- END OF FINAL, UPDATED FILE (V23): src/capitalguard/interfaces/telegram/keyboards.py ---
+# --- END OF FULL, FINAL, AND READY-TO-USE FILE ---
