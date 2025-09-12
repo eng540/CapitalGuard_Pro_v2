@@ -1,4 +1,4 @@
-# --- START OF FINAL, UPDATED FILE (V24): src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, MODIFIED FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
@@ -12,6 +12,9 @@ from capitalguard.infrastructure.db.repository import RecommendationRepository, 
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
 from capitalguard.interfaces.telegram.ui_texts import _pct
+# ✅ --- 1. استيراد الخدمة الجديدة لإدارة بيانات السوق ---
+from capitalguard.application.services.market_data_service import MarketDataService
+
 
 log = logging.getLogger(__name__)
 
@@ -23,13 +26,13 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
 
 
 class TradeService:
-    _SYMBOLS_CACHE: set[str] = set()
-    _SYMBOLS_CACHE_TS: float = 0.0
-    _SYMBOLS_CACHE_TTL_SEC: int = 6 * 60 * 60
+    # ❌ --- 2. تم حذف متغيرات الـ Cache القديمة ---
 
-    def __init__(self, repo: RecommendationRepository, notifier: NotifierPort):
+    # ✅ --- 3. تعديل المُنشئ (constructor) ليقبل الخدمة الجديدة ---
+    def __init__(self, repo: RecommendationRepository, notifier: NotifierPort, market_data_service: MarketDataService):
         self.repo = repo
         self.notifier = notifier
+        self.market_data_service = market_data_service
 
     def _load_user_linked_channels(self, uid_int: int, only_active: bool = True) -> List[Any]:
         with SessionLocal() as s:
@@ -75,27 +78,7 @@ class TradeService:
                 )
 
     # --- Validation Helpers ---
-    def _ensure_symbols_cache(self) -> None:
-        now = time.time()
-        if self._SYMBOLS_CACHE and (now - self._SYMBOLS_CACHE_TS) < self._SYMBOLS_CACHE_TTL_SEC:
-            return
-        try:
-            with httpx.Client(timeout=10) as client:
-                r = client.get("https://api.binance.com/api/v3/exchangeInfo")
-                r.raise_for_status()
-                data = r.json()
-            symbols = {s["symbol"].upper() for s in data.get("symbols", []) if s.get("status") == "TRADING"}
-            if symbols:
-                self._SYMBOLS_CACHE, self._SYMBOLS_CACHE_TS = symbols, now
-        except Exception as e:
-            log.exception("Failed to refresh Binance symbols: %s", e)
-
-    def _validate_symbol_exists(self, asset: str) -> str:
-        norm = asset.strip().upper()
-        self._ensure_symbols_cache()
-        if self._SYMBOLS_CACHE and norm not in self._SYMBOLS_CACHE:
-            raise ValueError(f'Invalid symbol "{asset}". Not found on Binance.')
-        return norm
+    # ❌ --- 4. تم حذف دوال التحقق القديمة (_ensure_symbols_cache, _validate_symbol_exists) ---
 
     def _validate_sl_vs_entry_on_create(self, side: str, entry: float, sl: float) -> None:
         """Strict validation during creation only."""
@@ -105,7 +88,6 @@ class TradeService:
         if side_upper == "SHORT" and not (sl > entry):
             raise ValueError("For new SHORT trades, Stop Loss must be > Entry Price.")
 
-    # ✅ --- START: Target validation + auto sorting ---
     def _validate_and_sort_targets(self, side: str, entry: float, tps: List[float]) -> List[float]:
         """Validates targets and sorts them logically based on the trade side."""
         if not tps:
@@ -122,11 +104,16 @@ class TradeService:
             return sorted(tps, reverse=True)  # descending
         else:
             raise ValueError("Invalid trade side.")
-    # ✅ --- END: Target validation + auto sorting ---
 
     # --- Core Business Logic ---
     def create_recommendation(self, **kwargs) -> Recommendation:
-        asset = self._validate_symbol_exists(kwargs['asset'])
+        # ✅ --- 5. استخدام الخدمة الجديدة للتحقق من الرمز والسوق ---
+        asset = kwargs['asset'].strip().upper()
+        market = kwargs.get('market', 'Futures')
+
+        if not self.market_data_service.is_valid_symbol(asset, market):
+            raise ValueError(f"الرمز '{asset}' غير صالح أو غير متوفر في سوق '{market}'.")
+        
         order_type_enum = OrderType(kwargs['order_type'].upper())
 
         if order_type_enum == OrderType.MARKET:
@@ -149,7 +136,7 @@ class TradeService:
             targets=Targets(sorted_targets),
             order_type=order_type_enum,
             status=status,
-            market=kwargs['market'],
+            market=market, # استخدام السوق الذي تم التحقق منه
             notes=kwargs.get('notes'),
             user_id=kwargs.get('user_id'),
             activated_at=datetime.now(timezone.utc) if status == RecommendationStatus.ACTIVE else None,
@@ -255,53 +242,35 @@ class TradeService:
         rec.close(exit_price)
 
         pnl = _pct(rec.entry.value, exit_price, rec.side.value)
-        # Determine close status: PROFIT, LOSS, or BREAKEVEN
-        if pnl > 0.001:
-            close_status = "PROFIT"
-        elif pnl < -0.001:
-            close_status = "LOSS"
-        else:
-            close_status = "BREAKEVEN"
+        if pnl > 0.001: close_status = "PROFIT"
+        elif pnl < -0.001: close_status = "LOSS"
+        else: close_status = "BREAKEVEN"
 
         updated_rec = self.repo.update_with_event(rec, "CLOSED", {
-            "old_status": old_status.value,
-            "exit_price": exit_price,
-            "closed_at": rec.closed_at.isoformat(),
-            "reason": reason,
-            "close_status": close_status
+            "old_status": old_status.value, "exit_price": exit_price,
+            "closed_at": rec.closed_at.isoformat(), "reason": reason, "close_status": close_status
         })
 
-        # Final TP notification (when auto-closed due to final TP) before the closing message
         if reason == "FINAL_TP_HIT" and updated_rec.targets.values:
             last_tp = updated_rec.targets.values[-1]
             tp_count = len(updated_rec.targets.values)
-            tp_notification = (
-                f"<b>🔥 الهدف #{tp_count} (الأخير) تحقق لـ #{updated_rec.asset.value}!</b>\n"
-                f"السعر وصل إلى {last_tp:g}."
-            )
+            tp_notification = (f"<b>🔥 الهدف #{tp_count} (الأخير) تحقق لـ #{updated_rec.asset.value}!</b>\n"
+                             f"السعر وصل إلى {last_tp:g}.")
             self._notify_all_channels(rec_id, tp_notification)
-            time.sleep(0.5)  # preserve ordering visually
+            time.sleep(0.5)
 
         self._update_all_cards(updated_rec)
 
-        if close_status == "PROFIT":
-            emoji, r_text = "🏆", "ربح"
-            close_notification = (
-                f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\n"
-                f"تم الإغلاق عند {exit_price:g} بنتيجة {r_text} <b>{pnl:+.2f}%</b>."
-            )
-        elif close_status == "LOSS":
-            emoji, r_text = "💔", "خسارة"
-            close_notification = (
-                f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\n"
-                f"تم الإغلاق عند {exit_price:g} بنتيجة {r_text} <b>{pnl:+.2f}%</b>."
-            )
+        if close_status == "PROFIT": emoji, r_text = "🏆", "ربح"
+        elif close_status == "LOSS": emoji, r_text = "💔", "خسارة"
+        else: emoji, r_text = "🛡️", "تعادل"
+
+        if close_status in ["PROFIT", "LOSS"]:
+            close_notification = (f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\n"
+                                f"تم الإغلاق عند {exit_price:g} بنتيجة {r_text} <b>{pnl:+.2f}%</b>.")
         else:
-            emoji = "🛡️"
-            close_notification = (
-                f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\n"
-                f"تم الإغلاق عند نقطة الدخول (تعادل)."
-            )
+            close_notification = (f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\n"
+                                f"تم الإغلاق عند نقطة الدخول (تعادل).")
 
         self._notify_all_channels(rec_id, close_notification)
         return updated_rec
@@ -312,25 +281,18 @@ class TradeService:
             raise ValueError("Recommendation not found or is closed.")
 
         old_sl = rec.stop_loss.value
-        # بعد الإنشاء نسمح للمحلل بالمرونة الكاملة بدون قيود صارمة
         rec.stop_loss = Price(new_sl)
 
-        updated_rec = self.repo.update_with_event(rec, "SL_UPDATE", {
-            "old_sl": old_sl,
-            "new_sl": new_sl
-        })
+        updated_rec = self.repo.update_with_event(rec, "SL_UPDATE", {"old_sl": old_sl, "new_sl": new_sl})
 
         self._update_all_cards(updated_rec)
         is_be = (new_sl == rec.entry.value)
         if is_be:
             notification_text = f"<b>🛡️ تأمين صفقة #{updated_rec.asset.value}</b>\nتم نقل وقف الخسارة إلى نقطة الدخول."
         else:
-            notification_text = (
-                f"<b>🛑 تحديث وقف الخسارة لـ #{updated_rec.asset.value}</b>\n"
-                f"وقف الخسارة الجديد هو {new_sl:g}."
-            )
+            notification_text = (f"<b>🛑 تحديث وقف الخسارة لـ #{updated_rec.asset.value}</b>\n"
+                               f"وقف الخسارة الجديد هو {new_sl:g}.")
         self._notify_all_channels(rec_id, notification_text)
-
         return updated_rec
 
     def update_targets(self, rec_id: int, new_targets: List[float]) -> Recommendation:
@@ -342,41 +304,28 @@ class TradeService:
         sorted_targets = self._validate_and_sort_targets(rec.side.value, rec.entry.value, new_targets)
         rec.targets = Targets(sorted_targets)
 
-        updated_rec = self.repo.update_with_event(rec, "TP_UPDATE", {
-            "old_targets": old_targets,
-            "new_targets": sorted_targets
-        })
+        updated_rec = self.repo.update_with_event(rec, "TP_UPDATE", {"old_targets": old_targets, "new_targets": sorted_targets})
 
         self._update_all_cards(updated_rec)
         targets_str = ", ".join(map(lambda p: f"{p:g}", sorted_targets))
-        notification_text = (
-            f"<b>🎯 تحديث الأهداف لـ #{updated_rec.asset.value}</b>\n"
-            f"الأهداف الجديدة هي: [{targets_str}]."
-        )
+        notification_text = (f"<b>🎯 تحديث الأهداف لـ #{updated_rec.asset.value}</b>\n"
+                           f"الأهداف الجديدة هي: [{targets_str}].")
         self._notify_all_channels(rec_id, notification_text)
-
         return updated_rec
 
-    # ✅ --- START: NEW STRATEGY FUNCTIONS ---
     def update_profit_stop(self, rec_id: int, new_profit_stop: Optional[float]) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.ACTIVE:
             raise ValueError("Profit Stop can only be set on active recommendations.")
 
         old_price = rec.profit_stop_price
-
         if new_profit_stop is not None:
-            # Validate that the profit stop is in the profit zone
             if (rec.side.value == "LONG" and new_profit_stop <= rec.entry.value) or \
                (rec.side.value == "SHORT" and new_profit_stop >= rec.entry.value):
                 raise ValueError("Profit Stop price must be in the profit zone.")
-
         rec.profit_stop_price = new_profit_stop
 
-        updated_rec = self.repo.update_with_event(rec, "PROFIT_STOP_SET", {
-            "old_price": old_price,
-            "new_price": new_profit_stop
-        })
+        updated_rec = self.repo.update_with_event(rec, "PROFIT_STOP_SET", {"old_price": old_price, "new_price": new_profit_stop})
 
         self._update_all_cards(updated_rec)
         if new_profit_stop is not None:
@@ -384,7 +333,6 @@ class TradeService:
         else:
             notification_text = f"<b>🗑️ تم إزالة وقف الربح لـ #{updated_rec.asset.value}</b>."
         self._notify_all_channels(rec_id, notification_text)
-
         return updated_rec
 
     def update_exit_strategy(self, rec_id: int, new_strategy: ExitStrategy) -> Recommendation:
@@ -395,43 +343,26 @@ class TradeService:
         old_strategy = rec.exit_strategy
         rec.exit_strategy = new_strategy
 
-        updated_rec = self.repo.update_with_event(rec, "STRATEGY_UPDATE", {
-            "old_strategy": old_strategy.value,
-            "new_strategy": new_strategy.value
-        })
+        updated_rec = self.repo.update_with_event(rec, "STRATEGY_UPDATE", {"old_strategy": old_strategy.value, "new_strategy": new_strategy.value})
 
         self._update_all_cards(updated_rec)
-        strategy_text = (
-            "الإغلاق الآلي عند الهدف الأخير" if new_strategy == ExitStrategy.CLOSE_AT_FINAL_TP
-            else "الإغلاق اليدوي فقط"
-        )
-        notification_text = (
-            f"<b>📈 تم تغيير استراتيجية الخروج لـ #{updated_rec.asset.value}</b> إلى: {strategy_text}."
-        )
+        strategy_text = ("الإغلاق الآلي عند الهدف الأخير" if new_strategy == ExitStrategy.CLOSE_AT_FINAL_TP else "الإغلاق اليدوي فقط")
+        notification_text = (f"<b>📈 تم تغيير استراتيجية الخروج لـ #{updated_rec.asset.value}</b> إلى: {strategy_text}.")
         self._notify_all_channels(rec_id, notification_text)
-
         return updated_rec
-    # ✅ --- END: NEW STRATEGY FUNCTIONS ---
 
     def take_partial_profit(self, rec_id: int, percentage: float, price: float) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.ACTIVE:
             raise ValueError("Partial profit can only be taken on active recommendations.")
 
-        updated_rec = self.repo.update_with_event(rec, "PARTIAL_PROFIT_TAKEN", {
-            "percentage": percentage,
-            "price": price
-        })
+        updated_rec = self.repo.update_with_event(rec, "PARTIAL_PROFIT_TAKEN", {"percentage": percentage, "price": price})
 
-        # Notify
         self._update_all_cards(updated_rec)
         pnl = _pct(rec.entry.value, price, rec.side.value)
-        notification_text = (
-            f"<b>💰 جني أرباح جزئي لـ #{updated_rec.asset.value}</b>\n"
-            f"تم جني {percentage}% من الصفقة عند السعر {price:g} بربح {pnl:+.2f}%."
-        )
+        notification_text = (f"<b>💰 جني أرباح جزئي لـ #{updated_rec.asset.value}</b>\n"
+                           f"تم جني {percentage}% من الصفقة عند السعر {price:g} بربح {pnl:+.2f}%.")
         self._notify_all_channels(rec_id, notification_text)
-
         return updated_rec
 
     def update_price_tracking(self, rec_id: int, current_price: float) -> Optional[Recommendation]:
@@ -453,4 +384,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FINAL, UPDATED FILE (V24): src/capitalguard/application/services/trade_service.py ---
+# --- END OF FINAL, MODIFIED FILE ---
