@@ -1,4 +1,4 @@
-# --- START OF FINAL, REVIEWED, AND ROBUST FILE (V14): src/capitalguard/domain/entities.py ---
+# --- START OF FINAL, UPDATED FILE (V15): src/capitalguard/domain/entities.py ---
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List
@@ -16,6 +16,11 @@ class OrderType(Enum):
     MARKET = "MARKET"
     LIMIT = "LIMIT"
     STOP_MARKET = "STOP_MARKET"
+
+class ExitStrategy(Enum):
+    """Defines the possible exit strategies for a recommendation."""
+    CLOSE_AT_FINAL_TP = "CLOSE_AT_FINAL_TP"   # Default behavior
+    MANUAL_CLOSE_ONLY = "MANUAL_CLOSE_ONLY"   # Will not auto-close at final TP
 
 @dataclass
 class Recommendation:
@@ -50,7 +55,13 @@ class Recommendation:
     activated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
 
+    # Metadata for alerts and UI
     alert_meta: dict = field(default_factory=dict)
+
+    # ✅ --- START: NEW STRATEGY FIELDS ---
+    exit_strategy: ExitStrategy = ExitStrategy.CLOSE_AT_FINAL_TP
+    profit_stop_price: Optional[float] = None
+    # ✅ --- END: NEW STRATEGY FIELDS ---
 
     # ✅ --- START: FIX for TypeError in Watcher ---
     # Add the new tracking fields to the domain entity definition so it can
@@ -76,4 +87,4 @@ class Recommendation:
         self.exit_price = exit_price
         self.updated_at = datetime.utcnow()
         self.closed_at = self.updated_at
-# --- END OF FINAL, REVIEWED, AND ROBUST FILE (V14) ---
+# --- END OF FINAL, UPDATED FILE (V15): src/capitalguard/domain/entities.py ---
