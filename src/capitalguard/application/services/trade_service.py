@@ -1,11 +1,11 @@
-# --- START OF FINAL, MERGED, AND STABLE FILE (V23): src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, UPDATED FILE (V24): src/capitalguard/application/services/trade_service.py ---
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
 import httpx
 
-from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
+from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType, ExitStrategy
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from capitalguard.domain.ports import NotifierPort
 from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository, ChannelRepository
@@ -97,14 +97,15 @@ class TradeService:
             raise ValueError(f'Invalid symbol "{asset}". Not found on Binance.')
         return norm
 
-    def _validate_sl_vs_entry(self, side: str, entry: float, sl: float) -> None:
+    def _validate_sl_vs_entry_on_create(self, side: str, entry: float, sl: float) -> None:
+        """Strict validation during creation only."""
         side_upper = side.upper()
-        if side_upper == "LONG" and not (sl <= entry):
-            raise ValueError("For LONG trades, Stop Loss must be <= Entry Price.")
-        if side_upper == "SHORT" and not (sl >= entry):
-            raise ValueError("For SHORT trades, Stop Loss must be >= Entry Price.")
+        if side_upper == "LONG" and not (sl < entry):
+            raise ValueError("For new LONG trades, Stop Loss must be < Entry Price.")
+        if side_upper == "SHORT" and not (sl > entry):
+            raise ValueError("For new SHORT trades, Stop Loss must be > Entry Price.")
 
-    # ✅ --- START: FIX for Target Sorting ---
+    # ✅ --- START: Target validation + auto sorting ---
     def _validate_and_sort_targets(self, side: str, entry: float, tps: List[float]) -> List[float]:
         """Validates targets and sorts them logically based on the trade side."""
         if not tps:
@@ -114,14 +115,14 @@ class TradeService:
         if side_upper == "LONG":
             if not all(tp > entry for tp in tps):
                 raise ValueError("For LONG trades, all targets must be > Entry Price.")
-            return sorted(tps)  # Sort ascending for LONG
+            return sorted(tps)  # ascending
         elif side_upper == "SHORT":
             if not all(tp < entry for tp in tps):
                 raise ValueError("For SHORT trades, all targets must be < Entry Price.")
-            return sorted(tps, reverse=True)  # Sort descending for SHORT
+            return sorted(tps, reverse=True)  # descending
         else:
             raise ValueError("Invalid trade side.")
-    # ✅ --- END: FIX for Target Sorting ---
+    # ✅ --- END: Target validation + auto sorting ---
 
     # --- Core Business Logic ---
     def create_recommendation(self, **kwargs) -> Recommendation:
@@ -135,9 +136,9 @@ class TradeService:
         else:
             status, final_entry = RecommendationStatus.PENDING, kwargs['entry']
 
-        self._validate_sl_vs_entry(kwargs['side'], final_entry, kwargs['stop_loss'])
+        self._validate_sl_vs_entry_on_create(kwargs['side'], final_entry, kwargs['stop_loss'])
 
-        # ✅ Use the new sorting and validation function
+        # Sorted and validated targets
         sorted_targets = self._validate_and_sort_targets(kwargs['side'], final_entry, kwargs['targets'])
 
         rec = Recommendation(
@@ -152,9 +153,11 @@ class TradeService:
             notes=kwargs.get('notes'),
             user_id=kwargs.get('user_id'),
             activated_at=datetime.now(timezone.utc) if status == RecommendationStatus.ACTIVE else None,
+            exit_strategy=kwargs.get('exit_strategy', ExitStrategy.CLOSE_AT_FINAL_TP),
+            profit_stop_price=kwargs.get('profit_stop_price')
         )
 
-        # ✅ Initialize HH/LL immediately for MARKET entries so stats are consistent.
+        # Initialize HH/LL immediately for MARKET entries so stats are consistent.
         if rec.status == RecommendationStatus.ACTIVE:
             rec.highest_price_reached = rec.entry.value
             rec.lowest_price_reached = rec.entry.value
@@ -251,14 +254,24 @@ class TradeService:
         old_status = rec.status
         rec.close(exit_price)
 
+        pnl = _pct(rec.entry.value, exit_price, rec.side.value)
+        # Determine close status: PROFIT, LOSS, or BREAKEVEN
+        if pnl > 0.001:
+            close_status = "PROFIT"
+        elif pnl < -0.001:
+            close_status = "LOSS"
+        else:
+            close_status = "BREAKEVEN"
+
         updated_rec = self.repo.update_with_event(rec, "CLOSED", {
             "old_status": old_status.value,
             "exit_price": exit_price,
             "closed_at": rec.closed_at.isoformat(),
-            "reason": reason
+            "reason": reason,
+            "close_status": close_status
         })
 
-        # ✅ Final TP notification (when auto-closed due to final TP) before the closing message
+        # Final TP notification (when auto-closed due to final TP) before the closing message
         if reason == "FINAL_TP_HIT" and updated_rec.targets.values:
             last_tp = updated_rec.targets.values[-1]
             tp_count = len(updated_rec.targets.values)
@@ -270,14 +283,27 @@ class TradeService:
             time.sleep(0.5)  # preserve ordering visually
 
         self._update_all_cards(updated_rec)
-        pnl = _pct(rec.entry.value, exit_price, rec.side.value)
-        emoji, r_text = ("🏆", "ربح") if pnl >= 0 else ("💔", "خسارة")
-        close_notification = (
-            f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\n"
-            f"تم الإغلاق عند {exit_price:g} بنتيجة {r_text} <b>{pnl:+.2f}%</b>."
-        )
-        self._notify_all_channels(rec_id, close_notification)
 
+        if close_status == "PROFIT":
+            emoji, r_text = "🏆", "ربح"
+            close_notification = (
+                f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\n"
+                f"تم الإغلاق عند {exit_price:g} بنتيجة {r_text} <b>{pnl:+.2f}%</b>."
+            )
+        elif close_status == "LOSS":
+            emoji, r_text = "💔", "خسارة"
+            close_notification = (
+                f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\n"
+                f"تم الإغلاق عند {exit_price:g} بنتيجة {r_text} <b>{pnl:+.2f}%</b>."
+            )
+        else:
+            emoji = "🛡️"
+            close_notification = (
+                f"<b>{emoji} إغلاق صفقة #{updated_rec.asset.value}</b>\n"
+                f"تم الإغلاق عند نقطة الدخول (تعادل)."
+            )
+
+        self._notify_all_channels(rec_id, close_notification)
         return updated_rec
 
     def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
@@ -286,7 +312,7 @@ class TradeService:
             raise ValueError("Recommendation not found or is closed.")
 
         old_sl = rec.stop_loss.value
-        self._validate_sl_vs_entry(rec.side.value, rec.entry.value, new_sl)
+        # بعد الإنشاء نسمح للمحلل بالمرونة الكاملة بدون قيود صارمة
         rec.stop_loss = Price(new_sl)
 
         updated_rec = self.repo.update_with_event(rec, "SL_UPDATE", {
@@ -331,6 +357,62 @@ class TradeService:
 
         return updated_rec
 
+    # ✅ --- START: NEW STRATEGY FUNCTIONS ---
+    def update_profit_stop(self, rec_id: int, new_profit_stop: Optional[float]) -> Recommendation:
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status != RecommendationStatus.ACTIVE:
+            raise ValueError("Profit Stop can only be set on active recommendations.")
+
+        old_price = rec.profit_stop_price
+
+        if new_profit_stop is not None:
+            # Validate that the profit stop is in the profit zone
+            if (rec.side.value == "LONG" and new_profit_stop <= rec.entry.value) or \
+               (rec.side.value == "SHORT" and new_profit_stop >= rec.entry.value):
+                raise ValueError("Profit Stop price must be in the profit zone.")
+
+        rec.profit_stop_price = new_profit_stop
+
+        updated_rec = self.repo.update_with_event(rec, "PROFIT_STOP_SET", {
+            "old_price": old_price,
+            "new_price": new_profit_stop
+        })
+
+        self._update_all_cards(updated_rec)
+        if new_profit_stop is not None:
+            notification_text = f"<b>🛡️ تم وضع وقف ربح لـ #{updated_rec.asset.value}</b> عند السعر {new_profit_stop:g}."
+        else:
+            notification_text = f"<b>🗑️ تم إزالة وقف الربح لـ #{updated_rec.asset.value}</b>."
+        self._notify_all_channels(rec_id, notification_text)
+
+        return updated_rec
+
+    def update_exit_strategy(self, rec_id: int, new_strategy: ExitStrategy) -> Recommendation:
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status == RecommendationStatus.CLOSED:
+            raise ValueError("Cannot change strategy for a closed recommendation.")
+
+        old_strategy = rec.exit_strategy
+        rec.exit_strategy = new_strategy
+
+        updated_rec = self.repo.update_with_event(rec, "STRATEGY_UPDATE", {
+            "old_strategy": old_strategy.value,
+            "new_strategy": new_strategy.value
+        })
+
+        self._update_all_cards(updated_rec)
+        strategy_text = (
+            "الإغلاق الآلي عند الهدف الأخير" if new_strategy == ExitStrategy.CLOSE_AT_FINAL_TP
+            else "الإغلاق اليدوي فقط"
+        )
+        notification_text = (
+            f"<b>📈 تم تغيير استراتيجية الخروج لـ #{updated_rec.asset.value}</b> إلى: {strategy_text}."
+        )
+        self._notify_all_channels(rec_id, notification_text)
+
+        return updated_rec
+    # ✅ --- END: NEW STRATEGY FUNCTIONS ---
+
     def take_partial_profit(self, rec_id: int, percentage: float, price: float) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.ACTIVE:
@@ -371,4 +453,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FINAL, MERGED, AND STABLE FILE (V23) ---
+# --- END OF FINAL, UPDATED FILE (V24): src/capitalguard/application/services/trade_service.py ---
