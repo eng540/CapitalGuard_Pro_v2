@@ -49,7 +49,7 @@ async def on_startup():
       
     # Schedule the alert service job  
     alert_service = services["alert_service"]  
-    alert_service.schedule_job(ptb_app, interval_sec=60)  
+    alert_service.schedule_job(ptb_app, interval_sec=5)  
       
     # Set the webhook after the bot is fully started  
     if settings.TELEGRAM_WEBHOOK_URL:  
