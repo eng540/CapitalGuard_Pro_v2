@@ -1,4 +1,4 @@
-# --- START OF FILE: src/capitalguard/interfaces/api/main.py ---
+# --- START OF FINAL, MODIFIED FILE: src/capitalguard/interfaces/api/main.py ---
 import logging
 from fastapi import FastAPI, HTTPException, Depends, Request, Query
 from fastapi.responses import HTMLResponse
@@ -27,7 +27,6 @@ app.state.services = services
 
 # --- Telegram Bot Setup ---
 def create_ptb_app() -> Application:
-    # ✅ FIX: Correct indentation for the entire function block.
     persistence = PicklePersistence(filepath="./telegram_bot_persistence")
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
     application.bot_data["services"] = services
@@ -39,19 +38,26 @@ if settings.TELEGRAM_BOT_TOKEN:
     ptb_app = create_ptb_app()
 
 @app.on_event("startup")  
-async def on_startup():  
+async def on_startup():
+    # ✅ --- 1. جلب خدمة بيانات السوق وتشغيل عملية تحديث الـ Cache ---
+    market_data_service = app.state.services.get("market_data_service")
+    if market_data_service:
+        # نقوم بتشغيلها في الخلفية لتجنب حظر بدء تشغيل الخادم
+        asyncio.create_task(market_data_service.refresh_symbols_cache())
+        logging.info("Market data cache refresh task has been scheduled on startup.")
+    else:
+        logging.error("MarketDataService not found in app state. Symbol validation will be unreliable.")
+
+    # --- بقية منطق بدء التشغيل الخاص بالبوت يبقى كما هو ---
     if not ptb_app: return  
       
     await ptb_app.initialize()  
-    # ✅ --- FIX: Start the application to run background tasks like JobQueue ---  
     await ptb_app.start()  
     ptb_app.bot_data["services"] = services  
       
-    # Schedule the alert service job  
     alert_service = services["alert_service"]  
     alert_service.schedule_job(ptb_app, interval_sec=5)  
       
-    # Set the webhook after the bot is fully started  
     if settings.TELEGRAM_WEBHOOK_URL:  
         await ptb_app.bot.set_webhook(  
             url=settings.TELEGRAM_WEBHOOK_URL,   
@@ -62,8 +68,6 @@ async def on_startup():
 @app.on_event("shutdown")  
 async def on_shutdown():  
     if not ptb_app: return  
-      
-    # ✅ --- FIX: Gracefully stop the application ---  
     await ptb_app.stop()  
     await ptb_app.shutdown()
 
@@ -94,7 +98,9 @@ def list_recommendations(
     symbol: str = Query(None),
     status: str = Query(None)
 ):
-    items = trade_service.list_all(symbol=symbol, status=status)
+    # Note: This endpoint now implicitly benefits from the improved symbol validation
+    # when new recommendations are created, but the listing logic itself is unchanged.
+    items = trade_service.repo.list_all(symbol=symbol, status=status)
     return [RecommendationOut.from_orm(item) for item in items]
 
 @app.post("/recommendations/{rec_id}/close", response_model=RecommendationOut, dependencies=[Depends(require_roles({"ANALYST", "ADMIN"}))])
@@ -115,7 +121,7 @@ def dashboard(
     symbol: str = Query(None),
     status: str = Query(None)
 ):
-    items = analytics_service.list_filtered(symbol=symbol, status=status)
+    items = analytics_service.list_filtered_for_user(user_id="dashboard_user", symbol=symbol, status=status) # Example user
     rows = "".join(f"<tr><td>{r.id}</td><td>{r.asset.value}</td><td>{r.side.value}</td><td>{r.status.value}</td></tr>" for r in items)
     html = f"<html><body><h1>Dashboard</h1><table><thead><tr><th>ID</th><th>Asset</th><th>Side</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></body></html>"
     return HTMLResponse(content=html)
@@ -123,4 +129,4 @@ def dashboard(
 # --- Include Routers ---
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
-# --- END OF FILE ---
+# --- END OF FINAL, MODIFIED FILE ---
