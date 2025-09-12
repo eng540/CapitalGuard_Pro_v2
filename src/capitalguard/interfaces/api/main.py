@@ -1,9 +1,9 @@
-# --- START OF FINAL, CORRECTED FILE: src/capitalguard/interfaces/api/main.py ---
+# --- START OF FULL, FINAL, AND READY-TO-USE FILE ---
 import logging
-import asyncio  # ✅ --- تم إضافة هذا السطر ---
+import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Request, Query
 from fastapi.responses import HTMLResponse
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import Application, PicklePersistence
 
 from capitalguard.config import settings
@@ -42,7 +42,6 @@ if settings.TELEGRAM_BOT_TOKEN:
 async def on_startup():
     market_data_service = app.state.services.get("market_data_service")
     if market_data_service:
-        # الآن، استدعاء asyncio.create_task سيعمل بنجاح
         asyncio.create_task(market_data_service.refresh_symbols_cache())
         logging.info("Market data cache refresh task has been scheduled on startup.")
     else:
@@ -51,6 +50,24 @@ async def on_startup():
     if not ptb_app: return  
       
     await ptb_app.initialize()  
+
+    # Define and set the bot commands that will appear in the Telegram interface
+    private_commands = [
+        BotCommand("newrec", "📊 بدء إنشاء توصية جديدة (القائمة)"),
+        BotCommand("new", "💬 بدء المنشئ التفاعلي مباشرة"),
+        BotCommand("rec", "⚡️ استخدام وضع الأمر السريع"),
+        BotCommand("editor", "📋 استخدام المحرر النصي"),
+        BotCommand("open", "📂 عرض التوصيات المفتوحة"),
+        BotCommand("stats", "📈 عرض ملخص الأداء"),
+        BotCommand("channels", "📡 إدارة قنوات النشر"),
+        BotCommand("link_channel", "🔗 ربط قناة جديدة"),
+        BotCommand("cancel", "❌ إلغاء العملية الحالية"),
+        BotCommand("help", "ℹ️ عرض المساعدة"),
+    ]
+    
+    await ptb_app.bot.set_my_commands(private_commands)
+    logging.info("Custom bot commands have been set for private chats.")
+    
     await ptb_app.start()  
     ptb_app.bot_data["services"] = services  
       
@@ -115,7 +132,7 @@ def close_recommendation(
 @app.get("/dashboard", response_class=HTMLResponse, dependencies=[Depends(require_roles({"ANALYST", "ADMIN"}))])
 def dashboard(
     analytics_service: AnalyticsService = Depends(get_analytics_service),
-    user_id: str = "default_user", # Example, should come from auth
+    user_id: str = "default_user",
     symbol: str = Query(None),
     status: str = Query(None)
 ):
@@ -127,4 +144,4 @@ def dashboard(
 # --- Include Routers ---
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
-# --- END OF FINAL, CORRECTED FILE ---
+# --- END OF FULL, FINAL, AND READY-TO-USE FILE ---
