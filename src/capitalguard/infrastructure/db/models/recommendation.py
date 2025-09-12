@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (V12): src/capitalguard/infrastructure/db/models/recommendation.py ---
+# --- START OF FINAL, UPDATED FILE (V13): src/capitalguard/infrastructure/db/models/recommendation.py ---
 import sqlalchemy as sa
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float,
@@ -7,7 +7,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
-from capitalguard.domain.entities import RecommendationStatus, OrderType
+from capitalguard.domain.entities import RecommendationStatus, OrderType, ExitStrategy
 
 class RecommendationORM(Base):
     __tablename__ = "recommendations"
@@ -50,6 +50,16 @@ class RecommendationORM(Base):
     highest_price_reached = Column(Float, nullable=True)
     lowest_price_reached = Column(Float, nullable=True)
 
+    # ✅ --- START: NEW STRATEGY COLUMNS ---
+    exit_strategy = Column(
+        Enum(ExitStrategy, name="exitstrategy", create_type=False),
+        default=ExitStrategy.CLOSE_AT_FINAL_TP,
+        server_default=ExitStrategy.CLOSE_AT_FINAL_TP.value,
+        nullable=False
+    )
+    profit_stop_price = Column(Float, nullable=True)
+    # ✅ --- END: NEW STRATEGY COLUMNS ---
+
     # Defines the relationship back to the User model
     user = relationship("User", back_populates="recommendations")
 
@@ -77,4 +87,4 @@ class RecommendationORM(Base):
 
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
 Index("idx_recs_asset_status",  RecommendationORM.asset, RecommendationORM.status)
-# --- END OF FINAL, CORRECTED FILE (V12) ---
+# --- END OF FINAL, UPDATED FILE (V13): src/capitalguard/infrastructure/db/models/recommendation.py ---
