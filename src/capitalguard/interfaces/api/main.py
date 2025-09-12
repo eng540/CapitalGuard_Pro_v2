@@ -1,5 +1,6 @@
-# --- START OF FINAL, MODIFIED FILE: src/capitalguard/interfaces/api/main.py ---
+# --- START OF FINAL, CORRECTED FILE: src/capitalguard/interfaces/api/main.py ---
 import logging
+import asyncio  # ✅ --- تم إضافة هذا السطر ---
 from fastapi import FastAPI, HTTPException, Depends, Request, Query
 from fastapi.responses import HTMLResponse
 from telegram import Update
@@ -39,16 +40,14 @@ if settings.TELEGRAM_BOT_TOKEN:
 
 @app.on_event("startup")  
 async def on_startup():
-    # ✅ --- 1. جلب خدمة بيانات السوق وتشغيل عملية تحديث الـ Cache ---
     market_data_service = app.state.services.get("market_data_service")
     if market_data_service:
-        # نقوم بتشغيلها في الخلفية لتجنب حظر بدء تشغيل الخادم
+        # الآن، استدعاء asyncio.create_task سيعمل بنجاح
         asyncio.create_task(market_data_service.refresh_symbols_cache())
         logging.info("Market data cache refresh task has been scheduled on startup.")
     else:
         logging.error("MarketDataService not found in app state. Symbol validation will be unreliable.")
 
-    # --- بقية منطق بدء التشغيل الخاص بالبوت يبقى كما هو ---
     if not ptb_app: return  
       
     await ptb_app.initialize()  
@@ -98,8 +97,6 @@ def list_recommendations(
     symbol: str = Query(None),
     status: str = Query(None)
 ):
-    # Note: This endpoint now implicitly benefits from the improved symbol validation
-    # when new recommendations are created, but the listing logic itself is unchanged.
     items = trade_service.repo.list_all(symbol=symbol, status=status)
     return [RecommendationOut.from_orm(item) for item in items]
 
@@ -118,10 +115,11 @@ def close_recommendation(
 @app.get("/dashboard", response_class=HTMLResponse, dependencies=[Depends(require_roles({"ANALYST", "ADMIN"}))])
 def dashboard(
     analytics_service: AnalyticsService = Depends(get_analytics_service),
+    user_id: str = "default_user", # Example, should come from auth
     symbol: str = Query(None),
     status: str = Query(None)
 ):
-    items = analytics_service.list_filtered_for_user(user_id="dashboard_user", symbol=symbol, status=status) # Example user
+    items = analytics_service.list_filtered_for_user(user_id=user_id, symbol=symbol, status=status)
     rows = "".join(f"<tr><td>{r.id}</td><td>{r.asset.value}</td><td>{r.side.value}</td><td>{r.status.value}</td></tr>" for r in items)
     html = f"<html><body><h1>Dashboard</h1><table><thead><tr><th>ID</th><th>Asset</th><th>Side</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></body></html>"
     return HTMLResponse(content=html)
@@ -129,4 +127,4 @@ def dashboard(
 # --- Include Routers ---
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
-# --- END OF FINAL, MODIFIED FILE ---
+# --- END OF FINAL, CORRECTED FILE ---
