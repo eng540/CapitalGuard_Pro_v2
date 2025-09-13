@@ -1,4 +1,4 @@
-# --- START OF FULL, FINAL, AND READY-TO-USE FILE ---
+#START FILE src/capitalguard/interfaces/telegram/keyboards.py #v703
 from typing import List, Dict, Optional, Iterable, Set
 import math
 
@@ -80,6 +80,10 @@ def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     )
 
 def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+    """
+    لوحة التحكم الرئيسية للمحلل.
+    (تعديل هذا الإصدار v703: إضافة زر '💰 جني ربح جزئي' دون تغيير أي سلوك قائم)
+    """
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec_id}"),
@@ -87,6 +91,8 @@ def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📈 استراتيجية الخروج", callback_data=f"rec:strategy_menu:{rec_id}"),
+            # ✅ زر جديد: جني ربح جزئي — يستدعى منطق الإغلاق الجزئي عبر close_partial handler
+            InlineKeyboardButton("💰 جني ربح جزئي", callback_data=f"rec:close_partial:{rec_id}"),
         ],
         [
             InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_start:{rec_id}")
@@ -229,4 +235,4 @@ def build_channel_picker_keyboard(
     ])
 
     return InlineKeyboardMarkup(rows)
-# --- END OF FULL, FINAL, AND READY-TO-USE FILE ---
+#end
