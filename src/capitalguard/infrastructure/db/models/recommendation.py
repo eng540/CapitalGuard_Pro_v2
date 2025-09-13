@@ -1,4 +1,4 @@
-# --- START OF FINAL, UPDATED FILE (V13): src/capitalguard/infrastructure/db/models/recommendation.py ---
+# --- START OF FINAL, COMPLETE, AND READY-TO-USE FILE ---
 import sqlalchemy as sa
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float,
@@ -50,7 +50,6 @@ class RecommendationORM(Base):
     highest_price_reached = Column(Float, nullable=True)
     lowest_price_reached = Column(Float, nullable=True)
 
-    # ✅ --- START: NEW STRATEGY COLUMNS ---
     exit_strategy = Column(
         Enum(ExitStrategy, name="exitstrategy", create_type=False),
         default=ExitStrategy.CLOSE_AT_FINAL_TP,
@@ -58,22 +57,25 @@ class RecommendationORM(Base):
         nullable=False
     )
     profit_stop_price = Column(Float, nullable=True)
-    # ✅ --- END: NEW STRATEGY COLUMNS ---
 
-    # Defines the relationship back to the User model
+    # ✅ --- NEW: OPEN SIZE PERCENT COLUMN ---
+    # This column tracks the remaining open percentage of the trade.
+    open_size_percent = Column(
+        Float,
+        nullable=False,
+        server_default=sa.text('100.0'),
+        default=100.0
+    )
+
+    # --- RELATIONSHIPS ---
     user = relationship("User", back_populates="recommendations")
 
-    # ✅ --- START: FIX for FOR UPDATE Error ---
-    # Change loading strategy from 'joined' to 'selectin'.
-    # This performs a separate, efficient query for related messages,
-    # avoiding the FOR UPDATE conflict with LEFT OUTER JOIN.
     published_messages = relationship(
         "PublishedMessage", 
         back_populates="recommendation", 
         cascade="all, delete-orphan",
         lazy="selectin" 
     )
-    # ✅ --- END: FIX for FOR UPDATE Error ---
 
     events = relationship(
         "RecommendationEvent",
@@ -87,4 +89,4 @@ class RecommendationORM(Base):
 
 Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
 Index("idx_recs_asset_status",  RecommendationORM.asset, RecommendationORM.status)
-# --- END OF FINAL, UPDATED FILE (V13): src/capitalguard/infrastructure/db/models/recommendation.py ---
+# --- END OF FINAL, COMPLETE, AND READY-TO-USE FILE ---
