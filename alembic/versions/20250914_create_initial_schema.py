@@ -1,10 +1,8 @@
-# --- START OF SQUASHED, FINAL MIGRATION FILE ---
-"""Create initial database schema from all previous migrations
+"""Safe initial schema - idempotent
 
 Revision ID: 20250914_create_initial_schema
-Revises: 
+Revises:
 Create Date: 2025-09-14 00:00:00.000000
-
 """
 from alembic import op
 import sqlalchemy as sa
@@ -18,180 +16,168 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # ### Create all tables from scratch ###
+    # --- ENUM Types ---
+    op.execute("""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'recommendationstatus') THEN
+            CREATE TYPE recommendationstatus AS ENUM ('PENDING', 'ACTIVE', 'CLOSED');
+        END IF;
+    END$$;
+    """)
+    op.execute("""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ordertype') THEN
+            CREATE TYPE ordertype AS ENUM ('MARKET', 'LIMIT', 'STOP_MARKET');
+        END IF;
+    END$$;
+    """)
+    op.execute("""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'exitstrategy') THEN
+            CREATE TYPE exitstrategy AS ENUM ('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY');
+        END IF;
+    END$$;
+    """)
 
-    # 1. Create ENUM types for PostgreSQL first
-    op.execute("CREATE TYPE recommendationstatus AS ENUM ('PENDING', 'ACTIVE', 'CLOSED')")
-    op.execute("CREATE TYPE ordertype AS ENUM ('MARKET', 'LIMIT', 'STOP_MARKET')")
-    op.execute("CREATE TYPE exitstrategy AS ENUM ('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY')")
+    # --- Tables ---
+    op.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email VARCHAR NOT NULL UNIQUE,
+        hashed_password VARCHAR,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        telegram_user_id BIGINT NOT NULL UNIQUE,
+        user_type VARCHAR(50) NOT NULL DEFAULT 'trader',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        first_name VARCHAR
+    );
+    """)
 
-    # 2. Create 'users' table
-    op.create_table('users',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('email', sa.String(), nullable=False),
-        sa.Column('hashed_password', sa.String(), nullable=True),
-        sa.Column('is_active', sa.Boolean(), nullable=False, server_default=sa.text('true')),
-        sa.Column('telegram_user_id', sa.BigInteger(), nullable=False),
-        sa.Column('user_type', sa.String(length=50), server_default='trader', nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.Column('first_name', sa.String(), nullable=True),
-        sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_users_email'), 'users', ['email'], unique=True)
-    op.create_index(op.f('ix_users_telegram_user_id'), 'users', ['telegram_user_id'], unique=True)
+    op.execute("""
+    CREATE TABLE IF NOT EXISTS roles (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(64) UNIQUE NOT NULL
+    );
+    """)
 
-    # 3. Create 'roles' and 'user_roles' tables
-    op.create_table('roles',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('name', sa.String(length=64), nullable=False),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('name')
-    )
-    op.create_table('user_roles',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('user_id', sa.Integer(), nullable=False),
-        sa.Column('role_id', sa.Integer(), nullable=False),
-        sa.ForeignKeyConstraint(['role_id'], ['roles.id'], ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('user_id', 'role_id', name='uq_user_role')
-    )
+    op.execute("""
+    CREATE TABLE IF NOT EXISTS user_roles (
+        id SERIAL PRIMARY KEY,
+        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role_id INT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+        UNIQUE(user_id, role_id)
+    );
+    """)
 
-    # 4. Create 'channels' table
-    op.create_table('channels',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('user_id', sa.Integer(), nullable=False),
-        sa.Column('telegram_channel_id', sa.BigInteger(), nullable=False),
-        sa.Column('username', sa.String(length=255), nullable=True),
-        sa.Column('title', sa.String(length=255), nullable=True),
-        sa.Column('is_active', sa.Boolean(), server_default=sa.text('true'), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.Column('last_verified_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('notes', sa.Text(), nullable=True),
-        sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_channels_telegram_channel_id'), 'channels', ['telegram_channel_id'], unique=True)
-    op.create_index(op.f('ix_channels_user_id'), 'channels', ['user_id'], unique=False)
-    op.create_index('uq_channels_username_ci', 'channels', [sa.text('lower(username)')], unique=True, postgresql_where=sa.text('username IS NOT NULL'))
+    op.execute("""
+    CREATE TABLE IF NOT EXISTS channels (
+        id SERIAL PRIMARY KEY,
+        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        telegram_channel_id BIGINT NOT NULL UNIQUE,
+        username VARCHAR(255),
+        title VARCHAR(255),
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_verified_at TIMESTAMPTZ,
+        notes TEXT
+    );
+    """)
 
-    # 5. Create 'recommendations' table with all columns
-    op.create_table('recommendations',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('user_id', sa.Integer(), nullable=False),
-        sa.Column('asset', sa.String(), nullable=False),
-        sa.Column('side', sa.String(), nullable=False),
-        sa.Column('entry', sa.Float(), nullable=False),
-        sa.Column('stop_loss', sa.Float(), nullable=False),
-        sa.Column('targets', sa.JSON(), nullable=False),
-        sa.Column('order_type', sa.Enum('MARKET', 'LIMIT', 'STOP_MARKET', name='ordertype'), nullable=False, server_default='LIMIT'),
-        sa.Column('status', sa.Enum('PENDING', 'ACTIVE', 'CLOSED', name='recommendationstatus'), nullable=False, server_default='PENDING'),
-        sa.Column('channel_id', sa.BigInteger(), nullable=True),
-        sa.Column('message_id', sa.BigInteger(), nullable=True),
-        sa.Column('published_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('market', sa.String(), nullable=True),
-        sa.Column('notes', sa.Text(), nullable=True),
-        sa.Column('exit_price', sa.Float(), nullable=True),
-        sa.Column('activated_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('closed_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.Column('alert_meta', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column('highest_price_reached', sa.Float(), nullable=True),
-        sa.Column('lowest_price_reached', sa.Float(), nullable=True),
-        sa.Column('exit_strategy', sa.Enum('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY', name='exitstrategy'), server_default='CLOSE_AT_FINAL_TP', nullable=False),
-        sa.Column('profit_stop_price', sa.Float(), nullable=True),
-        sa.Column('open_size_percent', sa.Float(), server_default=sa.text('100.0'), nullable=False),
-        sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_recommendations_asset'), 'recommendations', ['asset'], unique=False)
-    op.create_index(op.f('ix_recommendations_channel_id'), 'recommendations', ['channel_id'], unique=False)
-    op.create_index(op.f('ix_recommendations_id'), 'recommendations', ['id'], unique=False)
-    op.create_index(op.f('ix_recommendations_status'), 'recommendations', ['status'], unique=False)
-    op.create_index(op.f('ix_recommendations_user_id'), 'recommendations', ['user_id'], unique=False)
+    op.execute("""
+    CREATE TABLE IF NOT EXISTS recommendations (
+        id SERIAL PRIMARY KEY,
+        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        asset VARCHAR NOT NULL,
+        side VARCHAR NOT NULL,
+        entry FLOAT NOT NULL,
+        stop_loss FLOAT NOT NULL,
+        targets JSON NOT NULL,
+        order_type ordertype NOT NULL DEFAULT 'LIMIT',
+        status recommendationstatus NOT NULL DEFAULT 'PENDING',
+        channel_id BIGINT,
+        message_id BIGINT,
+        published_at TIMESTAMPTZ,
+        market VARCHAR,
+        notes TEXT,
+        exit_price FLOAT,
+        activated_at TIMESTAMPTZ,
+        closed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        alert_meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+        highest_price_reached FLOAT,
+        lowest_price_reached FLOAT,
+        exit_strategy exitstrategy NOT NULL DEFAULT 'CLOSE_AT_FINAL_TP',
+        profit_stop_price FLOAT,
+        open_size_percent FLOAT NOT NULL DEFAULT 100.0
+    );
+    """)
 
-    # 6. Create 'published_messages' table
-    op.create_table('published_messages',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('recommendation_id', sa.Integer(), nullable=False),
-        sa.Column('telegram_channel_id', sa.BigInteger(), nullable=False),
-        sa.Column('telegram_message_id', sa.BigInteger(), nullable=False),
-        sa.Column('published_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.ForeignKeyConstraint(['recommendation_id'], ['recommendations.id'], ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_published_messages_recommendation_id'), 'published_messages', ['recommendation_id'], unique=False)
+    op.execute("""
+    CREATE TABLE IF NOT EXISTS published_messages (
+        id SERIAL PRIMARY KEY,
+        recommendation_id INT NOT NULL REFERENCES recommendations(id) ON DELETE CASCADE,
+        telegram_channel_id BIGINT NOT NULL,
+        telegram_message_id BIGINT NOT NULL,
+        published_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    """)
 
-    # 7. Create 'recommendation_events' table
-    op.create_table('recommendation_events',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('recommendation_id', sa.Integer(), nullable=False),
-        sa.Column('event_type', sa.String(length=50), nullable=False),
-        sa.Column('event_timestamp', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.Column('event_data', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.ForeignKeyConstraint(['recommendation_id'], ['recommendations.id'], ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_recommendation_events_event_type'), 'recommendation_events', ['event_type'], unique=False)
-    op.create_index(op.f('ix_recommendation_events_recommendation_id'), 'recommendation_events', ['recommendation_id'], unique=False)
+    op.execute("""
+    CREATE TABLE IF NOT EXISTS recommendation_events (
+        id SERIAL PRIMARY KEY,
+        recommendation_id INT NOT NULL REFERENCES recommendations(id) ON DELETE CASCADE,
+        event_type VARCHAR(50) NOT NULL,
+        event_timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+        event_data JSONB
+    );
+    """)
 
-    # 8. Create trigger function for updated_at
-    op.execute(
-        """
-        CREATE OR REPLACE FUNCTION set_updated_at()
-        RETURNS TRIGGER AS $$
-        BEGIN
-            NEW.updated_at = now();
-            RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-        """
-    )
-    op.execute(
-        """
-        CREATE TRIGGER trg_recommendations_set_updated_at
-        BEFORE UPDATE ON recommendations
-        FOR EACH ROW
-        EXECUTE FUNCTION set_updated_at();
-        """
-    )
-    # ### end Alembic commands ###
+    # --- Trigger function for updated_at ---
+    op.execute("""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'set_updated_at') THEN
+            CREATE FUNCTION set_updated_at()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.updated_at = now();
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+        END IF;
+    END$$;
+    """)
+
+    # --- Trigger itself ---
+    op.execute("""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_trigger WHERE tgname = 'trg_recommendations_set_updated_at'
+        ) THEN
+            CREATE TRIGGER trg_recommendations_set_updated_at
+            BEFORE UPDATE ON recommendations
+            FOR EACH ROW
+            EXECUTE FUNCTION set_updated_at();
+        END IF;
+    END$$;
+    """)
 
 
 def downgrade() -> None:
-    # ### commands auto generated by Alembic - please adjust! ###
     op.execute("DROP TRIGGER IF EXISTS trg_recommendations_set_updated_at ON recommendations;")
-    op.execute("DROP FUNCTION IF EXISTS set_updated_at();")
-    
-    op.drop_index(op.f('ix_recommendation_events_recommendation_id'), table_name='recommendation_events')
-    op.drop_index(op.f('ix_recommendation_events_event_type'), table_name='recommendation_events')
-    op.drop_table('recommendation_events')
-    
-    op.drop_index(op.f('ix_published_messages_recommendation_id'), table_name='published_messages')
-    op.drop_table('published_messages')
-    
-    op.drop_index(op.f('ix_recommendations_user_id'), table_name='recommendations')
-    op.drop_index(op.f('ix_recommendations_status'), table_name='recommendations')
-    op.drop_index(op.f('ix_recommendations_id'), table_name='recommendations')
-    op.drop_index(op.f('ix_recommendations_channel_id'), table_name='recommendations')
-    op.drop_index(op.f('ix_recommendations_asset'), table_name='recommendations')
-    op.drop_table('recommendations')
-    
-    op.drop_index('uq_channels_username_ci', table_name='channels')
-    op.drop_index(op.f('ix_channels_user_id'), table_name='channels')
-    op.drop_index(op.f('ix_channels_telegram_channel_id'), table_name='channels')
-    op.drop_table('channels')
-    
-    op.drop_table('user_roles')
-    op.drop_table('roles')
-    
-    op.drop_index(op.f('ix_users_telegram_user_id'), table_name='users')
-    op.drop_index(op.f('ix_users_email'), table_name='users')
-    op.drop_table('users')
-    
+    op.execute("DROP FUNCTION IF EXISTS set_updated_at;")
+    op.execute("DROP TABLE IF EXISTS recommendation_events CASCADE;")
+    op.execute("DROP TABLE IF EXISTS published_messages CASCADE;")
+    op.execute("DROP TABLE IF EXISTS recommendations CASCADE;")
+    op.execute("DROP TABLE IF EXISTS channels CASCADE;")
+    op.execute("DROP TABLE IF EXISTS user_roles CASCADE;")
+    op.execute("DROP TABLE IF EXISTS roles CASCADE;")
+    op.execute("DROP TABLE IF EXISTS users CASCADE;")
     op.execute("DROP TYPE IF EXISTS exitstrategy;")
     op.execute("DROP TYPE IF EXISTS ordertype;")
     op.execute("DROP TYPE IF EXISTS recommendationstatus;")
-    # ### end Alembic commands ###
-# --- END OF SQUASHED, FINAL MIGRATION FILE ---
