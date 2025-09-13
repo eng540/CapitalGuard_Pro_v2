@@ -1,4 +1,6 @@
-# --- START OF FINAL, MODIFIED FILE: src/capitalguard/application/services/trade_service.py ---
+#START FILE src/capitalguard/application/services/trade_service.py
+#v3
+
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
@@ -12,7 +14,6 @@ from capitalguard.infrastructure.db.repository import RecommendationRepository, 
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
 from capitalguard.interfaces.telegram.ui_texts import _pct
-# ✅ --- 1. استيراد الخدمة الجديدة لإدارة بيانات السوق ---
 from capitalguard.application.services.market_data_service import MarketDataService
 
 
@@ -26,9 +27,6 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
 
 
 class TradeService:
-    # ❌ --- 2. تم حذف متغيرات الـ Cache القديمة ---
-
-    # ✅ --- 3. تعديل المُنشئ (constructor) ليقبل الخدمة الجديدة ---
     def __init__(self, repo: RecommendationRepository, notifier: NotifierPort, market_data_service: MarketDataService):
         self.repo = repo
         self.notifier = notifier
@@ -78,8 +76,6 @@ class TradeService:
                 )
 
     # --- Validation Helpers ---
-    # ❌ --- 4. تم حذف دوال التحقق القديمة (_ensure_symbols_cache, _validate_symbol_exists) ---
-
     def _validate_sl_vs_entry_on_create(self, side: str, entry: float, sl: float) -> None:
         """Strict validation during creation only."""
         side_upper = side.upper()
@@ -107,7 +103,6 @@ class TradeService:
 
     # --- Core Business Logic ---
     def create_recommendation(self, **kwargs) -> Recommendation:
-        # ✅ --- 5. استخدام الخدمة الجديدة للتحقق من الرمز والسوق ---
         asset = kwargs['asset'].strip().upper()
         market = kwargs.get('market', 'Futures')
 
@@ -136,12 +131,13 @@ class TradeService:
             targets=Targets(sorted_targets),
             order_type=order_type_enum,
             status=status,
-            market=market, # استخدام السوق الذي تم التحقق منه
+            market=market,
             notes=kwargs.get('notes'),
             user_id=kwargs.get('user_id'),
             activated_at=datetime.now(timezone.utc) if status == RecommendationStatus.ACTIVE else None,
             exit_strategy=kwargs.get('exit_strategy', ExitStrategy.CLOSE_AT_FINAL_TP),
-            profit_stop_price=kwargs.get('profit_stop_price')
+            profit_stop_price=kwargs.get('profit_stop_price'),
+            open_size_percent=100.0  # ✅ القيمة الافتراضية للحجم المفتوح
         )
 
         # Initialize HH/LL immediately for MARKET entries so stats are consistent.
@@ -238,6 +234,9 @@ class TradeService:
         if not rec:
             raise ValueError(f"Recommendation {rec_id} not found.")
 
+        # ✅ --- تعديل: الإغلاق الآن يغلق الحجم المتبقي بالكامل ---
+        rec.open_size_percent = 0.0
+
         old_status = rec.status
         rec.close(exit_price)
 
@@ -273,6 +272,43 @@ class TradeService:
                                 f"تم الإغلاق عند نقطة الدخول (تعادل).")
 
         self._notify_all_channels(rec_id, close_notification)
+        return updated_rec
+
+    # ✅ --- 2. إضافة دالة جني الأرباح الجزئي اليدوي ---
+    def take_partial_profit(self, rec_id: int, close_percent: float, price: float) -> Recommendation:
+        rec = self.repo.get(rec_id)
+        if not rec or rec.status != RecommendationStatus.ACTIVE:
+            raise ValueError("Partial profit can only be taken on active recommendations.")
+        if not (0 < close_percent <= rec.open_size_percent):
+            raise ValueError(f"Invalid percentage. Must be between 0 and {rec.open_size_percent}.")
+
+        # تحديث حجم الصفقة
+        rec.open_size_percent -= close_percent
+        
+        pnl_on_part = _pct(rec.entry.value, price, rec.side.value)
+        
+        event_data = {
+            "price": price,
+            "closed_percent": close_percent,
+            "remaining_percent": rec.open_size_percent,
+            "pnl_on_part": pnl_on_part
+        }
+        # نستخدم "MANUAL" لتمييزه عن الجني التلقائي
+        updated_rec = self.repo.update_with_event(rec, "PARTIAL_PROFIT_MANUAL", event_data)
+
+        # إرسال إشعار وتحديث البطاقات
+        notification_text = (
+            f"💰 <b>جني أرباح جزئي ({close_percent}%) لـ #{updated_rec.asset.value}</b>\n"
+            f"تم الإغلاق عند السعر {price:g} بربح {pnl_on_part:+.2f}%."
+        )
+        self._notify_all_channels(rec_id, notification_text)
+        self._update_all_cards(updated_rec)
+
+        # إذا تم إغلاق 100% من الصفقة، نعتبرها مغلقة بالكامل
+        if updated_rec.open_size_percent <= 0:
+            log.info(f"Recommendation #{rec_id} fully closed via partial profits. Marking as closed.")
+            return self.close(rec_id, price, reason="MANUAL_PARTIAL_FULL_CLOSE")
+
         return updated_rec
 
     def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
@@ -351,20 +387,6 @@ class TradeService:
         self._notify_all_channels(rec_id, notification_text)
         return updated_rec
 
-    def take_partial_profit(self, rec_id: int, percentage: float, price: float) -> Recommendation:
-        rec = self.repo.get(rec_id)
-        if not rec or rec.status != RecommendationStatus.ACTIVE:
-            raise ValueError("Partial profit can only be taken on active recommendations.")
-
-        updated_rec = self.repo.update_with_event(rec, "PARTIAL_PROFIT_TAKEN", {"percentage": percentage, "price": price})
-
-        self._update_all_cards(updated_rec)
-        pnl = _pct(rec.entry.value, price, rec.side.value)
-        notification_text = (f"<b>💰 جني أرباح جزئي لـ #{updated_rec.asset.value}</b>\n"
-                           f"تم جني {percentage}% من الصفقة عند السعر {price:g} بربح {pnl:+.2f}%.")
-        self._notify_all_channels(rec_id, notification_text)
-        return updated_rec
-
     def update_price_tracking(self, rec_id: int, current_price: float) -> Optional[Recommendation]:
         rec = self.repo.get(rec_id)
         if not rec or rec.status != RecommendationStatus.ACTIVE:
@@ -384,4 +406,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FINAL, MODIFIED FILE ---
+#end
