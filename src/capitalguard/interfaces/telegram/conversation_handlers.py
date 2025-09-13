@@ -1,4 +1,4 @@
-# --- START OF FULL, RE-ARCHITECTED, AND FINAL FILE ---
+# --- START OF FULL, FINAL, AND READY-TO-USE FILE ---
 import logging
 import uuid
 import types
@@ -27,24 +27,17 @@ from capitalguard.application.services.trade_service import TradeService
 log = logging.getLogger(__name__)
 
 # --- State Definitions ---
-(SELECT_METHOD, QUICK_COMMAND, TEXT_EDITOR, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_NOTES, I_REVIEW) = range(9)
+(SELECT_METHOD, AWAIT_QUICK_COMMAND, AWAIT_TEXT_EDITOR, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_NOTES, I_REVIEW) = range(9)
 CONVERSATION_DATA_KEY = "new_rec_draft"
 REV_TOKENS_MAP = "review_tokens_map"
 REV_TOKENS_REVERSE = "review_tokens_rev"
 
 # --- Helper Functions ---
 def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
-    """A centralized function to clean up all conversation-related data."""
-    review_key = context.user_data.pop('current_review_key', None)
-    if review_key:
-        context.bot_data.pop(review_key, None)
-    
-    review_token = context.user_data.pop('current_review_token', None)
-    if review_token:
-        context.user_data.pop(f"pubsel:{review_token}", None)
-
-    for key in (CONVERSATION_DATA_KEY, 'last_interactive_message_id', 'original_query_message'):
-        context.user_data.pop(key, None)
+    context.user_data.pop(CONVERSATION_DATA_KEY, None)
+    context.user_data.pop('current_review_key', None)
+    context.user_data.pop('current_review_token', None)
+    context.user_data.pop('original_query_message', None)
 
 def _ensure_token_maps(context: ContextTypes.DEFAULT_TYPE) -> None:
     if REV_TOKENS_MAP not in context.bot_data: context.bot_data[REV_TOKENS_MAP] = {}
@@ -71,12 +64,8 @@ def _load_user_active_channels(user_tg_id: int) -> List[Dict[str, Any]]:
         channels = ChannelRepository(s).list_by_user(user.id, only_active=True)
         return [{"id": ch.id, "telegram_channel_id": int(ch.telegram_channel_id), "username": ch.username, "title": ch.title} for ch in channels]
 
-# --- Entry Point Functions for Conversation Handler ---
-
+# --- Entry Point Functions ---
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Entry point for /newrec. Always shows the method selection menu.
-    """
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
     await update.message.reply_text(
@@ -86,15 +75,11 @@ async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_T
     return SELECT_METHOD
 
 async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Entry point for /new. Starts the interactive builder directly.
-    """
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
     trade_service: TradeService = get_service(context, "trade_service")
     user_id = str(update.effective_user.id)
     recent_assets = trade_service.get_recent_assets_for_user(user_id, limit=5)
-    
     await update.message.reply_text(
         "🚀 Interactive Builder\n\n1️⃣ اختر أصلاً أو اكتب الرمز:",
         reply_markup=asset_choice_keyboard(recent_assets)
@@ -102,107 +87,75 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
     return I_ASSET
 
 async def start_quick_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Entry point for /rec. Starts the quick command mode directly.
-    """
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
     await update.message.reply_text(
-        "⚡️ وضع الأمر السريع.\n\n"
-        "أرسل توصيتك الآن برسالة واحدة تبدأ بـ /rec\n"
-        "مثال: /rec BTCUSDT LONG 65000 64000 66k"
+        "⚡️ وضع الأمر السريع.\n\nأرسل الآن توصيتك الكاملة في رسالة واحدة تبدأ بـ /rec"
     )
-    return QUICK_COMMAND
+    return AWAIT_QUICK_COMMAND
 
 async def start_editor_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Entry point for /editor. Starts the text editor mode directly.
-    """
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
     await update.message.reply_text(
-        "📋 وضع المحرّر النصي.\n\n"
-        "ألصق توصيتك الآن بشكل حقول."
+        "📋 وضع المحرّر النصي.\n\nألصق توصيتك الآن بشكل حقول."
     )
-    return TEXT_EDITOR
+    return AWAIT_TEXT_EDITOR
 
 # --- State Handlers ---
-
 async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Handles the button press after the /newrec menu.
-    """
     query = update.callback_query
     await query.answer()
     choice = query.data.split('_')[1]
-
     if choice == "interactive":
         trade_service: TradeService = get_service(context, "trade_service")
         user_id = str(update.effective_user.id)
         recent_assets = trade_service.get_recent_assets_for_user(user_id, limit=5)
-        await query.message.edit_text(
-            "🚀 Interactive Builder\n\n1️⃣ اختر أصلاً أو اكتب الرمز:",
-            reply_markup=asset_choice_keyboard(recent_assets)
-        )
+        await query.message.edit_text("🚀 Interactive Builder\n\n1️⃣ اختر أصلاً أو اكتب الرمز:", reply_markup=asset_choice_keyboard(recent_assets))
         return I_ASSET
     elif choice == "quick":
-        await query.message.edit_text(
-            "⚡️ وضع الأمر السريع.\n\n"
-            "أرسل توصيتك الآن برسالة واحدة تبدأ بـ /rec\n"
-            "مثال: /rec BTCUSDT LONG 65000 64000 66k"
-        )
-        return QUICK_COMMAND
+        await query.message.edit_text("⚡️ وضع الأمر السريع.\n\nأرسل الآن توصيتك الكاملة في رسالة واحدة تبدأ بـ /rec")
+        return AWAIT_QUICK_COMMAND
     elif choice == "editor":
-        await query.message.edit_text(
-            "📋 وضع المحرّر النصي.\n\n"
-            "ألصق توصيتك الآن بشكل حقول."
-        )
-        return TEXT_EDITOR
+        await query.message.edit_text("📋 وضع المحرّر النصي.\n\nألصق توصيتك الآن بشكل حقول.")
+        return AWAIT_TEXT_EDITOR
     return ConversationHandler.END
 
 async def quick_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = parse_quick_command(update.message.text)
     if not data:
-        await update.message.reply_text("❌ صيغة غير صحيحة. تأكد من أن الأمر يبدأ بـ /rec ويحتوي على جميع الحقول.")
-        return QUICK_COMMAND
+        await update.message.reply_text("❌ صيغة غير صحيحة. يجب أن تبدأ الرسالة بـ `/rec` وتحتوي على جميع الحقول. حاول مرة أخرى.")
+        return AWAIT_QUICK_COMMAND
     context.user_data[CONVERSATION_DATA_KEY] = data
     return await show_review_card(update, context)
 
 async def text_editor_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = parse_text_editor(update.message.text)
     if not data:
-        await update.message.reply_text("❌ تعذّر تحليل النص. تأكد من وجود الحقول الأساسية (Asset, Side, Entry, Stop, Targets).")
-        return TEXT_EDITOR
-    if 'order_type' not in data or not data['order_type']:
-        data['order_type'] = 'LIMIT'
+        await update.message.reply_text("❌ تعذّر تحليل النص. تأكد من وجود الحقول الأساسية وحاول مرة أخرى.")
+        return AWAIT_TEXT_EDITOR
     context.user_data[CONVERSATION_DATA_KEY] = data
     return await show_review_card(update, context)
 
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, is_edit: bool = False) -> int:
     message = update.message or (update.callback_query.message if update.callback_query else None)
     if not message: return ConversationHandler.END
-    
     review_key = context.user_data.get('current_review_key')
     data = context.bot_data.get(review_key) if review_key else context.user_data.get(CONVERSATION_DATA_KEY, {})
-    
     if not data or not data.get("asset"):
         await message.reply_text("حدث خطأ، ابدأ من جديد بواسطة /newrec.")
         _clean_conversation_state(context)
         return ConversationHandler.END
-        
     price_service = get_service(context, "price_service")
     preview_price = price_service.get_preview_price(data["asset"], data.get("market", "Futures"))
     review_text = build_review_text_with_price(data, preview_price)
-    
     if not review_key:
         review_key = str(uuid.uuid4())
         context.user_data['current_review_key'] = review_key
         context.bot_data[review_key] = data.copy()
-        
     review_token = _get_or_make_token_for_review(context, review_key)
     context.user_data['current_review_token'] = review_token
     keyboard = review_final_keyboard(review_token)
-    
     try:
         if is_edit and hasattr(message, 'edit_text'):
             await message.edit_text(text=review_text, reply_markup=keyboard, parse_mode='HTML', disable_web_page_preview=True)
@@ -211,24 +164,20 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
     except Exception as e:
         log.warning(f"Edit failed, sending new message. Error: {e}")
         await message.reply_html(text=review_text, reply_markup=keyboard, disable_web_page_preview=True)
-        
     return I_REVIEW
 
 async def asset_chosen_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     asset = query.data.split('_', 1)[1]
-    
     if asset.lower() == "new":
         await query.message.edit_text("✍️ أرسل رمز الأصل الآن (مثال: BTCUSDT).")
         return I_ASSET
-        
     draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
     draft['asset'] = asset.upper()
     market = context.user_data.get('preferred_market', 'Futures')
     draft['market'] = market
     context.user_data[CONVERSATION_DATA_KEY] = draft
-    
     await query.message.edit_text(f"✅ Asset: {asset.upper()}\n\n2️⃣ اختر الاتجاه:", reply_markup=side_market_keyboard(market))
     return I_SIDE_MARKET
 
@@ -237,27 +186,18 @@ async def asset_chosen_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not raw_asset:
         await update.message.reply_text("⚠️ إدخال غير صالح. الرجاء إرسال رمز.")
         return I_ASSET
-
     market_data_service: MarketDataService = get_service(context, "market_data_service")
     preferred_market = context.user_data.get('preferred_market', 'Futures')
-    
     if not market_data_service.is_valid_symbol(raw_asset, preferred_market):
-        error_msg = (
-            f"❌ الرمز '{raw_asset}' غير صالح أو غير متوفر في السوق الافتراضي ({preferred_market}).\n\n"
-            "تأكد من أن الرمز صحيح وحاول مرة أخرى."
-        )
+        error_msg = (f"❌ الرمز '{raw_asset}' غير صالح أو غير متوفر في السوق الافتراضي ({preferred_market}).\n\n"
+                     "تأكد من أن الرمز صحيح وحاول مرة أخرى.")
         await update.message.reply_text(error_msg)
         return I_ASSET
-
     draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
     draft['asset'] = raw_asset
     draft['market'] = preferred_market
     context.user_data[CONVERSATION_DATA_KEY] = draft
-    
-    await update.message.reply_text(
-        f"✅ Asset: {raw_asset}\n\n2️⃣ اختر الاتجاه:",
-        reply_markup=side_market_keyboard(preferred_market)
-    )
+    await update.message.reply_text(f"✅ Asset: {raw_asset}\n\n2️⃣ اختر الاتجاه:", reply_markup=side_market_keyboard(preferred_market))
     return I_SIDE_MARKET
 
 async def side_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -289,7 +229,6 @@ async def prices_received_interactive(update: Update, context: ContextTypes.DEFA
         draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
         order_type = draft.get('order_type')
         parts = update.message.text.strip().replace(',', ' ').split()
-        
         if order_type == 'MARKET':
             if len(parts) < 2: raise ValueError("At least Stop Loss and one Target are required.")
             draft["entry"] = 0
@@ -300,10 +239,8 @@ async def prices_received_interactive(update: Update, context: ContextTypes.DEFA
             draft["entry"] = parse_number(parts[0])
             draft["stop_loss"] = parse_number(parts[1])
             draft["targets"] = parse_targets_list(parts[2:])
-            
         if not draft["targets"]:
             raise ValueError("No valid targets were parsed.")
-
         context.user_data[CONVERSATION_DATA_KEY] = draft
         return await show_review_card(update, context)
     except (ValueError, IndexError) as e:
@@ -366,7 +303,6 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not draft:
         await query.edit_message_text("❌ انتهت صلاحية البطاقة. أعد البدء بـ /newrec.")
         return ConversationHandler.END
-    
     trade_service = get_service(context, "trade_service")
     try:
         live_price = get_service(context, "price_service").get_cached_price(draft["asset"], draft.get("market", "Futures"))
@@ -375,16 +311,13 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if isinstance(entry_val, list):
             draft.setdefault("notes", "")
             draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
-        
         saved_rec = trade_service.create_recommendation(
             asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
             entry=entry_price, stop_loss=draft["stop_loss"], targets=draft["targets"],
             notes=draft.get("notes"), user_id=str(update.effective_user.id),
             order_type=draft.get('order_type', 'LIMIT'), live_price=live_price
         )
-        
         _, report = trade_service.publish_recommendation(rec_id=saved_rec.id, user_id=str(update.effective_user.id))
-        
         if report.get("success"):
             await query.edit_message_text(f"✅ تم الحفظ والنشر بنجاح للتوصية #{saved_rec.id}.")
         else:
@@ -419,7 +352,6 @@ async def unexpected_input_fallback(update: Update, context: ContextTypes.DEFAUL
                 await update.callback_query.edit_message_text("تم إنهاء المحادثة.")
             except Exception:
                 pass
-    
     _clean_conversation_state(context)
     return ConversationHandler.END
 
@@ -511,15 +443,9 @@ def register_conversation_handlers(app: Application):
             CommandHandler("editor", start_editor_entrypoint, filters=ALLOWED_USER_FILTER),
         ],
         states={
-            SELECT_METHOD: [
-                CallbackQueryHandler(method_chosen, pattern="^method_")
-            ],
-            QUICK_COMMAND: [
-                MessageHandler(filters.COMMAND & filters.Regex(r'^\/rec'), quick_command_handler)
-            ],
-            TEXT_EDITOR: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, text_editor_handler)
-            ],
+            SELECT_METHOD: [CallbackQueryHandler(method_chosen, pattern="^method_")],
+            AWAIT_QUICK_COMMAND: [MessageHandler(filters.TEXT, quick_command_handler)],
+            AWAIT_TEXT_EDITOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, text_editor_handler)],
             I_ASSET: [
                 CallbackQueryHandler(asset_chosen_button, pattern="^asset_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, asset_chosen_text)
@@ -529,12 +455,8 @@ def register_conversation_handlers(app: Application):
                 CallbackQueryHandler(change_market_menu, pattern="^change_market_menu$"),
                 CallbackQueryHandler(market_chosen, pattern="^market_")
             ],
-            I_ORDER_TYPE: [
-                CallbackQueryHandler(order_type_chosen, pattern="^type_")
-            ],
-            I_PRICES: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received_interactive)
-            ],
+            I_ORDER_TYPE: [CallbackQueryHandler(order_type_chosen, pattern="^type_")],
+            I_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received_interactive)],
             I_REVIEW: [
                 CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
                 CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
@@ -545,9 +467,7 @@ def register_conversation_handlers(app: Application):
                 CallbackQueryHandler(channel_picker_back_handler, pattern=r"^pubsel:back:"),
                 CallbackQueryHandler(cancel_publish_handler, pattern=r"^rec:cancel:")
             ],
-            I_NOTES: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)
-            ],
+            I_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conv_handler),
@@ -561,4 +481,4 @@ def register_conversation_handlers(app: Application):
         per_message=False,
     )
     app.add_handler(creation_conv_handler)
-# --- END OF FULL, RE-ARCHITECTED, AND FINAL FILE ---
+# --- END OF FULL, FINAL, AND READY-TO-USE FILE ---
