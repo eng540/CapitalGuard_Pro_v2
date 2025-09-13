@@ -28,7 +28,7 @@ from .keyboards import (
     build_exit_strategy_keyboard,
 )
 from .ui_texts import build_trade_card_text
-from .parsers import parse_number, parse_number_list
+from .parsers import parse_number
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 
