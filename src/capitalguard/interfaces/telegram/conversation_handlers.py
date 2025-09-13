@@ -16,7 +16,7 @@ from .keyboards import (
     market_choice_keyboard, order_type_keyboard, build_channel_picker_keyboard,
     main_creation_keyboard
 )
-from .parsers import parse_quick_command, parse_text_editor
+from .parsers import parse_quick_command, parse_text_editor, parse_targets_list, parse_number
 from .auth import ALLOWED_USER_FILTER
 
 from capitalguard.infrastructure.db.base import SessionLocal
@@ -284,28 +284,30 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.message.edit_text(f"✅ Order Type: {order_type}\n\n4️⃣ أرسل: `ENTRY STOP TARGETS...`")
     return I_PRICES
 
-def _parse_price_string(price_str: str) -> float:
-    s = price_str.strip().lower()
-    if 'k' in s: return float(s.replace('k', '')) * 1000
-    return float(s)
-
 async def prices_received_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
         order_type = draft.get('order_type')
         parts = update.message.text.strip().replace(',', ' ').split()
+        
         if order_type == 'MARKET':
             if len(parts) < 2: raise ValueError("At least Stop Loss and one Target are required.")
-            draft["entry"], draft["stop_loss"] = 0, _parse_price_string(parts[0])
-            draft["targets"] = [_parse_price_string(t) for t in parts[1:]]
+            draft["entry"] = 0
+            draft["stop_loss"] = parse_number(parts[0])
+            draft["targets"] = parse_targets_list(parts[1:])
         else:
             if len(parts) < 3: raise ValueError("Entry, Stop, and at least one Target are required.")
-            draft["entry"], draft["stop_loss"] = _parse_price_string(parts[0]), _parse_price_string(parts[1])
-            draft["targets"] = [_parse_price_string(t) for t in parts[2:]]
+            draft["entry"] = parse_number(parts[0])
+            draft["stop_loss"] = parse_number(parts[1])
+            draft["targets"] = parse_targets_list(parts[2:])
+            
+        if not draft["targets"]:
+            raise ValueError("No valid targets were parsed.")
+
         context.user_data[CONVERSATION_DATA_KEY] = draft
         return await show_review_card(update, context)
-    except (ValueError, IndexError):
-        await update.message.reply_text("❌ تنسيق أسعار غير صالح. حاول مرة أخرى.")
+    except (ValueError, IndexError) as e:
+        await update.message.reply_text(f"❌ تنسيق أسعار غير صالح: {e}. حاول مرة أخرى.")
         return I_PRICES
 
 async def change_market_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
