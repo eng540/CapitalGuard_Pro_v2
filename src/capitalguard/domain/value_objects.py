@@ -1,8 +1,10 @@
-# -*- coding: utf-8 -*-
+#START FILE src/capitalguard/domain/value_objects.py
+#v2
+
 from __future__ import annotations
 from dataclasses import dataclass
 import re
-from typing import List
+from typing import List, Dict
 
 class Symbol:
     def __init__(self, value: str) -> None:
@@ -29,8 +31,30 @@ class Price:
         if self.value <= 0:
             raise ValueError("Price must be > 0")
 
+@dataclass
+class Target:
+    """Represents a single profit target with its price and closing percentage."""
+    price: float
+    close_percent: float
+
 class Targets:
-    def __init__(self, values: List[float]) -> None:
+    def __init__(self, values: List[Dict[str, float]] | List[float]) -> None:
         if not values or not isinstance(values, list):
             raise ValueError("targets must be a non-empty list")
-        self.values = [float(v) for v in values]
+        
+        self.values: List[Target] = []
+        # Handle both old format (list of floats) and new format (list of dicts)
+        if all(isinstance(v, (int, float)) for v in values):
+            # Old format: Assume 100% close at the final target
+            total_targets = len(values)
+            for i, v in enumerate(values):
+                # This logic is a placeholder. A real migration would be needed for old data.
+                # For new data, we assume the new format.
+                close_pct = 100.0 if i == total_targets - 1 else 0.0
+                self.values.append(Target(price=float(v), close_percent=close_pct))
+        else:
+            for v in values:
+                if not isinstance(v, dict) or "price" not in v or "close_percent" not in v:
+                    raise ValueError("Invalid target format. Must be a list of {'price': float, 'close_percent': float}")
+                self.values.append(Target(price=float(v["price"]), close_percent=float(v["close_percent"])))
+#end
