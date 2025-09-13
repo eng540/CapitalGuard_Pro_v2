@@ -94,17 +94,14 @@ class RecommendationRepository:
         with SessionLocal() as s:
             try:
                 user = UserRepository(s).find_or_create(int(rec.user_id))
-                
-                # ✅ --- الإصلاح: تحويل كائنات Target إلى قواميس ---
                 targets_for_db = [v.__dict__ for v in rec.targets.values]
-
                 row = RecommendationORM(
                     user_id=user.id,
                     asset=rec.asset.value,
                     side=rec.side.value,
                     entry=rec.entry.value,
                     stop_loss=rec.stop_loss.value,
-                    targets=targets_for_db, # استخدام القائمة المحولة
+                    targets=targets_for_db,
                     order_type=rec.order_type,
                     status=rec.status,
                     market=rec.market,
@@ -124,7 +121,7 @@ class RecommendationRepository:
                     event_data={
                         'entry': rec.entry.value,
                         'sl': rec.stop_loss.value,
-                        'targets': targets_for_db, # استخدام القائمة المحولة هنا أيضًا
+                        'targets': targets_for_db,
                         'order_type': rec.order_type.value
                     }
                 )
@@ -145,13 +142,10 @@ class RecommendationRepository:
                 row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).first()
                 if not row:
                     raise ValueError(f"Recommendation #{rec.id} not found")
-
-                # ✅ --- الإصلاح: تحويل كائنات Target إلى قواميس ---
                 targets_for_db = [v.__dict__ for v in rec.targets.values]
-
                 row.status = rec.status
                 row.stop_loss = rec.stop_loss.value
-                row.targets = targets_for_db # استخدام القائمة المحولة
+                row.targets = targets_for_db
                 row.notes = rec.notes
                 row.exit_price = rec.exit_price
                 row.activated_at = rec.activated_at
@@ -160,7 +154,6 @@ class RecommendationRepository:
                 row.highest_price_reached = rec.highest_price_reached
                 row.lowest_price_reached = rec.lowest_price_reached
                 row.open_size_percent = rec.open_size_percent
-
                 new_event = RecommendationEvent(
                     recommendation_id=row.id,
                     event_type=event_type,
@@ -305,7 +298,8 @@ class RecommendationRepository:
             s.bulk_insert_mappings(PublishedMessage, messages_data)
             s.commit()
 
-    def update_legacy_publication_fields(self, rec_id: int, first_pub_data: Dict[str, Any]]) -> None:
+    # ✅ --- الإصلاح: إزالة القوس المربع الزائد ---
+    def update_legacy_publication_fields(self, rec_id: int, first_pub_data: Dict[str, Any]) -> None:
         with SessionLocal() as s:
             s.query(RecommendationORM).filter(RecommendationORM.id == rec_id).update(
                 {
