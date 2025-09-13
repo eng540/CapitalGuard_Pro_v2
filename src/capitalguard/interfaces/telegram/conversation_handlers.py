@@ -1,4 +1,4 @@
-# --- START OF FULL, FINAL, AND READY-TO-USE FILE ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
 import logging
 import uuid
 import types
@@ -38,6 +38,9 @@ def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('current_review_key', None)
     context.user_data.pop('current_review_token', None)
     context.user_data.pop('original_query_message', None)
+    review_token = context.user_data.pop('current_review_token', None)
+    if review_token:
+        context.user_data.pop(f"pubsel:{review_token}", None)
 
 def _ensure_token_maps(context: ContextTypes.DEFAULT_TYPE) -> None:
     if REV_TOKENS_MAP not in context.bot_data: context.bot_data[REV_TOKENS_MAP] = {}
