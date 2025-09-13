@@ -1,4 +1,6 @@
-# --- START OF FINAL, UPDATED FILE (V15): src/capitalguard/domain/entities.py ---
+#START FILE src/capitalguard/domain/entities.py
+#v16
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List
@@ -49,7 +51,7 @@ class Recommendation:
     # --- Lifecycle & Status Fields ---
     status: RecommendationStatus = RecommendationStatus.PENDING
     exit_price: Optional[float] = None
-    
+
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     activated_at: Optional[datetime] = None
@@ -58,17 +60,16 @@ class Recommendation:
     # Metadata for alerts and UI
     alert_meta: dict = field(default_factory=dict)
 
-    # ✅ --- START: NEW STRATEGY FIELDS ---
+    # --- STRATEGY FIELDS ---
     exit_strategy: ExitStrategy = ExitStrategy.CLOSE_AT_FINAL_TP
     profit_stop_price: Optional[float] = None
-    # ✅ --- END: NEW STRATEGY FIELDS ---
 
-    # ✅ --- START: FIX for TypeError in Watcher ---
-    # Add the new tracking fields to the domain entity definition so it can
-    # accept this data when being created from a database row.
+    # --- PRICE TRACKING FIELDS ---
     highest_price_reached: Optional[float] = None
     lowest_price_reached: Optional[float] = None
-    # ✅ --- END: FIX for TypeError in Watcher ---
+
+    # ✅ --- NEW: OPEN SIZE PERCENT FIELD ---
+    open_size_percent: float = 100.0
 
     def activate(self) -> None:
         """
@@ -87,4 +88,4 @@ class Recommendation:
         self.exit_price = exit_price
         self.updated_at = datetime.utcnow()
         self.closed_at = self.updated_at
-# --- END OF FINAL, UPDATED FILE (V15): src/capitalguard/domain/entities.py ---
+#end
