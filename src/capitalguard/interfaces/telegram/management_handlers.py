@@ -1,4 +1,4 @@
-# --- START OF FINAL, UPDATED FILE (V23): src/capitalguard/interfaces/telegram/management_handlers.py ---
+#START FILE src/capitalguard/interfaces/telegram/management_handlers.py #v24
 import logging
 import types
 from time import time
@@ -34,11 +34,15 @@ from capitalguard.application.services.price_service import PriceService
 
 log = logging.getLogger(__name__)
 
+# ✅ حالات الانتظار العامة + حالات محادثة جني الأرباح الجزئي
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 (PARTIAL_PROFIT_PERCENT, PARTIAL_PROFIT_PRICE) = range(2)
 
+# =========================
 # Helper functions
+# =========================
 def _parse_tail_int(data: str) -> Optional[int]:
+    """Parses the last colon-separated token as int."""
     try:
         return int(data.split(":")[-1])
     except (ValueError, IndexError):
@@ -51,6 +55,9 @@ async def _noop_answer(*args, **kwargs):
     return None
 
 def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int) -> bool:
+    """
+    Simple rate-limit guard per message to avoid excessive edits for the same message.
+    """
     key = f"rate_limit_{chat_id}_{message_id}"
     last_update = context.bot_data.get(key, 0)
     now = time()
@@ -60,8 +67,9 @@ def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_
     return False
 
 
-# --- Handler Functions ---
-
+# =========================
+# Navigation & Panels
+# =========================
 async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -138,6 +146,10 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         log.error(f"Unexpected error in show_rec_panel_handler: {e}", exc_info=True)
 
+
+# =========================
+# Public & Private Updates
+# =========================
 async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
@@ -189,6 +201,10 @@ async def update_private_card(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.callback_query.answer("يجري التحديث...")
     await show_rec_panel_handler(update, context)
 
+
+# =========================
+# Quick Actions
+# =========================
 async def move_sl_to_be_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("جاري النقل...")
@@ -200,6 +216,10 @@ async def move_sl_to_be_handler(update: Update, context: ContextTypes.DEFAULT_TY
             trade_service.update_sl(rec_id, rec.entry.value)
     await show_rec_panel_handler(update, context)
 
+
+# =========================
+# Close flow (full close)
+# =========================
 async def start_close_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
@@ -256,6 +276,10 @@ async def cancel_close_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data.pop(AWAITING_INPUT_KEY, None)
     await show_rec_panel_handler(update, context)
 
+
+# =========================
+# Edit SL/TP
+# =========================
 async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
@@ -309,7 +333,10 @@ async def start_edit_tp_handler(update: Update, context: ContextTypes.DEFAULT_TY
         parse_mode=ParseMode.HTML,
     )
 
-# ✅ --- START: NEW STRATEGY HANDLERS ---
+
+# =========================
+# Exit Strategy Management
+# =========================
 async def strategy_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Displays the exit strategy management screen."""
     query = update.callback_query
@@ -396,8 +423,11 @@ async def start_profit_stop_handler(update: Update, context: ContextTypes.DEFAUL
         text=f"{query.message.text}\n\n<b>🛡️ الرجاء <u>الرد على هذه الرسالة ↩️</u> بسعر وقف الربح الجديد.</b>",
         parse_mode=ParseMode.HTML,
     )
-# ✅ --- END: NEW STRATEGY HANDLERS ---
 
+
+# =========================
+# Generic reply-based receiver for edit/close/profit_stop
+# =========================
 async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if AWAITING_INPUT_KEY not in context.user_data or not update.message.reply_to_message:
         return
@@ -462,8 +492,14 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
         await show_rec_panel_handler(dummy_update, context)
 
 
-# --- Partial Profit Conversation ---
+# =========================
+# Partial Profit Conversation (💰)
+# =========================
 async def partial_profit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Entry point: triggered by callback 'rec:close_partial:<rec_id>'.
+    Asks the analyst for the percentage (0-100], then transitions to price step.
+    """
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
     if rec_id is None:
@@ -481,6 +517,9 @@ async def partial_profit_start(update: Update, context: ContextTypes.DEFAULT_TYP
     return PARTIAL_PROFIT_PERCENT
 
 async def received_partial_percent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Step 1: percentage validation then ask for the realized price.
+    """
     try:
         percentage = parse_number(update.message.text)
         if not (0 < percentage <= 100):
@@ -493,6 +532,9 @@ async def received_partial_percent(update: Update, context: ContextTypes.DEFAULT
         return PARTIAL_PROFIT_PERCENT
 
 async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Step 2: take the price, call service, refresh panel, and end the conversation.
+    """
     try:
         price = parse_number(update.message.text)
         rec_id = context.user_data['partial_profit_rec_id']
@@ -500,11 +542,12 @@ async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_T
         original_message = context.user_data['original_message']
 
         trade_service: TradeService = get_service(context, "trade_service")
+        # يفترض أن TradeService.take_partial_profit يسجل الحدث وينشر الإشعارات المطلوبة
         rec = trade_service.take_partial_profit(rec_id, percentage, price)
 
-        # إشعار القنوات يتم من داخل TradeService.take_partial_profit
         await update.message.reply_text("✅ تم تسجيل جني الأرباح الجزئي بنجاح.")
 
+        # Refresh the main panel
         dummy_query = types.SimpleNamespace(
             message=original_message,
             data=f"rec:show_panel:{rec_id}",
@@ -527,6 +570,9 @@ async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def cancel_partial_profit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Fallback /cancel: clears the conversation state and returns to the panel.
+    """
     original_message = context.user_data.get('original_message')
     rec_id = context.user_data.get('partial_profit_rec_id')
 
@@ -548,6 +594,9 @@ async def cancel_partial_profit(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 
+# =========================
+# Registration
+# =========================
 def register_management_handlers(application: Application):
     # Existing handlers
     application.add_handler(CallbackQueryHandler(navigate_open_recs_handler, pattern=r"^open_nav:page:"))
@@ -568,7 +617,7 @@ def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:"))
     application.add_handler(CallbackQueryHandler(start_profit_stop_handler, pattern=r"^rec:set_profit_stop:"))
 
-    # Partial profit conversation (unchanged entry pattern)
+    # ✅ Partial profit conversation
     partial_profit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(partial_profit_start, pattern=r"^rec:close_partial:")],
         states={
@@ -588,4 +637,4 @@ def register_management_handlers(application: Application):
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler),
         group=1
     )
-# --- END OF FINAL, UPDATED FILE (V23): src/capitalguard/interfaces/telegram/management_handlers.py ---
+#end
