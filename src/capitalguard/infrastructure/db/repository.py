@@ -225,11 +225,24 @@ class RecommendationRepository:
 
     def get(self, rec_id: int) -> Optional[Recommendation]:
         with SessionLocal() as s:
-            # ✅ FIX: Changed 'rec.id' to the correct parameter name 'rec_id'.
             row = (
                 s.query(RecommendationORM)
                 .options(joinedload(RecommendationORM.user))
                 .filter(RecommendationORM.id == rec_id)
+                .first()
+            )
+            return self._to_entity(row)
+
+    # ✅ FIX: Re-added the missing function for secure access from Telegram handlers.
+    def get_by_id_for_user(self, rec_id: int, user_telegram_id: Union[int, str]) -> Optional[Recommendation]:
+        with SessionLocal() as s:
+            user = UserRepository(s).find_by_telegram_id(int(user_telegram_id))
+            if not user:
+                return None
+            row = (
+                s.query(RecommendationORM)
+                .options(joinedload(RecommendationORM.user))
+                .filter(RecommendationORM.id == rec_id, RecommendationORM.user_id == user.id)
                 .first()
             )
             return self._to_entity(row)
