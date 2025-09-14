@@ -72,7 +72,7 @@ class AlertService:
                 continue
 
             try:
-                price = self.price_service.get_preview_price(rec.asset.value, rec.market)
+                price = self.price_service.get_preview_price_sync(rec.asset.value, rec.market)
                 if price is None:
                     continue
 
