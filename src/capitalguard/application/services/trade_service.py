@@ -212,7 +212,7 @@ class TradeService:
                            f"تم الإغلاق عند السعر {price:g} بربح {pnl_on_part:+.2f}%.")
         self._notify_all_channels(rec_id, notification_text)
         self._update_all_cards(updated_rec)
-        if updated_rec.open_size_percent <= 0.01: # Use a small threshold for float comparison
+        if updated_rec.open_size_percent <= 0.01:
             log.info(f"Recommendation #{rec_id} fully closed via partial profits. Marking as closed.")
             reason = "AUTO_PARTIAL_FULL_CLOSE" if triggered_by.upper() == "AUTO" else "MANUAL_PARTIAL_FULL_CLOSE"
             return self.close(rec_id, price, reason=reason)

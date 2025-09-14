@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND READY-TO-USE FILE ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
 import logging
 import os
 import asyncio
@@ -27,7 +27,6 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
         return int(user_id) if user_id is not None else None
     except (TypeError, ValueError):
         return None
-
 
 class AlertService:
     def __init__(self, price_service: PriceService, notifier: any, repo: RecommendationRepository, trade_service: TradeService):
@@ -187,4 +186,4 @@ class AlertService:
                 )
             except Exception:
                 log.warning("Failed to send multi-channel notification for rec #%s to channel %s", rec_id, msg_meta.telegram_channel_id, exc_info=True)
-# --- END OF FINAL, COMPLETE, AND READY-TO-USE FILE ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
