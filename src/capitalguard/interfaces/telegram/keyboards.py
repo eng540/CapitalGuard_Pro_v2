@@ -1,4 +1,4 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
 from typing import List, Dict, Optional, Iterable, Set
 import math
 
@@ -230,4 +230,4 @@ def build_channel_picker_keyboard(
     ])
 
     return InlineKeyboardMarkup(rows)
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
