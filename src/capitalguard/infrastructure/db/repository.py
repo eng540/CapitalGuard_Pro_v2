@@ -225,10 +225,11 @@ class RecommendationRepository:
 
     def get(self, rec_id: int) -> Optional[Recommendation]:
         with SessionLocal() as s:
+            # ✅ FIX: Changed 'rec.id' to the correct parameter name 'rec_id'.
             row = (
                 s.query(RecommendationORM)
                 .options(joinedload(RecommendationORM.user))
-                .filter(RecommendationORM.id == rec.id)
+                .filter(RecommendationORM.id == rec_id)
                 .first()
             )
             return self._to_entity(row)
@@ -305,7 +306,6 @@ class RecommendationRepository:
                 .limit(limit)
                 .all()
             )
-            # ✅ FIX: Convert the list of Row objects to a list of strings.
             return [r[0] for r in results]
 
     def list_all_for_user(self, user_id: int, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
