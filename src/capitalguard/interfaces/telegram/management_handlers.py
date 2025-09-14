@@ -98,7 +98,7 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
             log.warning("Security: User %s tried to access rec #%s", update.effective_user.id, rec_id)
             await context.bot.edit_message_text(chat_id=query.message.chat_id, message_id=query.message.message_id, text=f"❌ لا يمكنك الوصول إلى هذه التوصية.")
             return
-        live_price = price_service.get_cached_price(rec.asset.value, rec.market)
+        live_price = price_service.get_preview_price_sync(rec.asset.value, rec.market)
         if live_price: setattr(rec, "live_price", live_price)
         text = build_trade_card_text(rec)
         keyboard = analyst_control_panel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
@@ -119,7 +119,7 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
         rec = trade_service.repo.get(rec_id)
         if not rec: await query.answer("التوصية غير موجودة.", show_alert=True); return
         if rec.status == RecommendationStatus.CLOSED: await query.answer("الصفقة مغلقة بالفعل.", show_alert=False); return
-        live_price = price_service.get_cached_price(rec.asset.value, rec.market)
+        live_price = price_service.get_preview_price_sync(rec.asset.value, rec.market)
         if not live_price: await query.answer("تعذر جلب السعر.", show_alert=True); return
         setattr(rec, "live_price", live_price)
         new_text = build_trade_card_text(rec)
