@@ -43,7 +43,7 @@ def build_open_recs_keyboard(
                 status_icon = "🛡️"
                 button_text = f"{status_icon} #{display_id} - {rec.asset.value} ({rec.side.value}) | BE"
             else:
-                live_price = price_service.get_cached_price(rec.asset.value, rec.market)
+                live_price = price_service.get_cached_price_sync(rec.asset.value, rec.market)
                 if live_price:
                     pnl = _pct(rec.entry.value, live_price, rec.side.value)
                     status_icon = "🟢" if pnl >= 0 else "🔴"
