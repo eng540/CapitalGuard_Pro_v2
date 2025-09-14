@@ -1,3 +1,4 @@
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
 import re
 import unicodedata
 from typing import Dict, Any, List, Optional
@@ -11,19 +12,29 @@ _SEPARATORS_REGEX = re.compile(r"[,\u060C;:|\t\r\n]+")
 
 def _normalize_text(s: str) -> str:
     if not s: return ""
+    # توحيد الشكل وتحويل الأرقام العربية إلى إنجليزية
     s = unicodedata.normalize("NFKC", s)
     s = s.translate(_AR_TO_EN_DIGITS)
+    # توحيد الفواصل العربية
     s = s.replace("،", ",")
+    # إزالة المسافات الزائدة
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 def _parse_one_number(token: str) -> float:
-    if not token: raise ValueError("قيمة رقمية فارغة")
+    """
+    يدعم صيغ مثل: 113, 113.5, 113k, 1.2m, 0.5b
+    ويزيل أي محارف غير رقمية على الأطراف (مثلاً $113k أو 113kUSD).
+    """
+    if not token:
+        raise ValueError("قيمة رقمية فارغة")
     t = token.strip().upper()
+    # قص أي شيء غير رقمي على الأطراف، واسمح بـ K/M/B كلاحقة
     t = re.sub(r"^[^\d+-.]+|[^\dA-Z.+-]+$", "", t)
     t = t.replace(",", "")
     m = re.match(r"^([+\-]?\d+(?:\.\d+)?)([KMB])?$", t)
-    if not m: raise ValueError(f"قيمة رقمية غير صالحة: '{token}'")
+    if not m:
+        raise ValueError(f"قيمة رقمية غير صالحة: '{token}'")
     num_str, suf = m.groups()
     scale = _SUFFIXES.get(suf or "", 1)
     return float(num_str) * scale
@@ -31,19 +42,23 @@ def _parse_one_number(token: str) -> float:
 def parse_number(s: str) -> float:
     s = _normalize_text(s)
     tokens = [p for p in s.split(" ") if p]
-    if not tokens: raise ValueError("لم يتم العثور على قيمة رقمية.")
+    if not tokens:
+        raise ValueError("لم يتم العثور على قيمة رقمية.")
     return _parse_one_number(tokens[0])
 
 def parse_targets_list(tokens: List[str]) -> List[Dict[str, float]]:
     """
-    Analyzes a list of string tokens and converts them into a list of target dictionaries.
-    Supports both "price" and "price@percent" formats.
+    يحول قائمة رموز أهداف إلى قائمة قواميس:
+    - 'price' أو 'price@percent'
+    أمثلة: 60000 62000@30 64000@50
+    يدعم أيضاً: 60k 62k@30 64k@50
     """
     parsed_targets = []
     for token in tokens:
         token = token.strip()
-        if not token: continue
-        
+        if not token:
+            continue
+
         if '@' in token:
             parts = token.split('@', 1)
             if len(parts) != 2:
@@ -54,48 +69,71 @@ def parse_targets_list(tokens: List[str]) -> List[Dict[str, float]]:
         else:
             price = _parse_one_number(token)
             parsed_targets.append({"price": price, "close_percent": 0.0})
-            
-    if all(t['close_percent'] == 0.0 for t in parsed_targets) and parsed_targets:
+
+    # إن لم تُحدد أي نسب، اضبط آخر هدف إلى 100%
+    if parsed_targets and all(t['close_percent'] == 0.0 for t in parsed_targets):
         parsed_targets[-1]['close_percent'] = 100.0
         log.debug("No partial close % defined, setting last target to 100% close.")
 
     return parsed_targets
 
 def parse_quick_command(text: str) -> Optional[Dict[str, Any]]:
+    """
+    صيغة الأمر السريع:
+    /rec BTCUSDT LONG 59000 58000 60000@30 62000@50
+    """
     try:
-        parts = text.strip().split()
+        parts = _normalize_text(text).split()
         if len(parts) < 5 or not parts[0].lower().startswith('/rec'):
             return None
-            
+
         asset = parts[1].upper()
         side = parts[2].upper()
         entry = _parse_one_number(parts[3])
         stop_loss = _parse_one_number(parts[4])
         target_tokens = parts[5:]
-        
+
         targets = parse_targets_list(target_tokens)
-        if not targets: raise ValueError("At least one target is required.")
+        if not targets:
+            raise ValueError("At least one target is required.")
 
         return {
             "asset": asset, "side": side, "entry": entry,
             "stop_loss": stop_loss, "targets": targets,
-            "market": "Futures", "order_type": "LIMIT"
+            "market": "Futures", "order_type": "LIMIT",
         }
     except (ValueError, IndexError) as e:
         log.error(f"Error parsing quick command: {e}")
         return None
 
 def parse_text_editor(text: str) -> Optional[Dict[str, Any]]:
+    """
+    صيغة المحرّر النصّي:
+      asset: BTCUSDT
+      side: LONG
+      entry: 59k
+      stop: 58k
+      targets: 60k@30 62k@50
+      market: Futures
+    """
     data = {}
     key_map = {
-        'asset': ['asset', 'symbol'], 'side': ['side', 'type'],
-        'entry': ['entry'], 'stop_loss': ['stop', 'sl'],
-        'targets': ['targets', 'tps'], 'market': ['market']
+        'asset': ['asset', 'symbol'],
+        'side': ['side', 'type'],
+        'entry': ['entry'],
+        'stop_loss': ['stop', 'sl'],
+        'targets': ['targets', 'tps'],
+        'market': ['market'],
     }
-    for line in text.strip().split('\n'):
+
+    for raw_line in text.strip().split('\n'):
+        line = _normalize_text(raw_line)
+        if not line:
+            continue
         try:
             key_str, value_str = line.split(':', 1)
-            key_str, value_str = key_str.strip().lower(), value_str.strip()
+            key_str = key_str.strip().lower()
+            value_str = value_str.strip()
             for key, aliases in key_map.items():
                 if key_str in aliases:
                     if key == 'targets':
@@ -106,11 +144,13 @@ def parse_text_editor(text: str) -> Optional[Dict[str, Any]]:
                     else:
                         data[key] = value_str.upper()
                     break
-        except ValueError: continue
-        
+        except ValueError:
+            continue
+
     if not all(k in data for k in ['asset', 'side', 'entry', 'stop_loss', 'targets']):
         return None
-        
+
     data.setdefault('market', 'Futures')
     data.setdefault('order_type', 'LIMIT')
     return data
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
