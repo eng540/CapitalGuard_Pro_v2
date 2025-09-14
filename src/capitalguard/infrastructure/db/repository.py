@@ -305,7 +305,7 @@ class RecommendationRepository:
                 .limit(limit)
                 .all()
             )
-            return [r[0] for r in results]
+            return [r for r in results]
 
     def list_all_for_user(self, user_id: int, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
         with SessionLocal() as s:
@@ -316,7 +316,6 @@ class RecommendationRepository:
                 q = q.filter(RecommendationORM.status == RecommendationStatus(status.upper()))
             return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
-    # ✅ FIX 1: Re-added the missing function for the /open command.
     def list_open_for_user(self, user_telegram_id: Union[int, str], **filters) -> List[Recommendation]:
         with SessionLocal() as s:
             user = UserRepository(s).find_by_telegram_id(int(user_telegram_id))
@@ -338,7 +337,6 @@ class RecommendationRepository:
                 q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
             return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
-    # ✅ FIX 2: Re-added the missing function for backward compatibility during publishing.
     def update_legacy_publication_fields(self, rec_id: int, first_pub_data: Dict[str, Any]) -> None:
         with SessionLocal() as s:
             s.query(RecommendationORM).filter(RecommendationORM.id == rec_id).update(
@@ -349,5 +347,4 @@ class RecommendationRepository:
                 }
             )
             s.commit()
-
-```# END
+#end
