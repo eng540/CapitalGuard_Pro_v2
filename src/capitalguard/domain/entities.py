@@ -1,9 +1,7 @@
-#START FILE src/capitalguard/domain/entities.py
-#v16
-
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Any
 from enum import Enum
 from .value_objects import Symbol, Price, Targets, Side
 
@@ -21,8 +19,8 @@ class OrderType(Enum):
 
 class ExitStrategy(Enum):
     """Defines the possible exit strategies for a recommendation."""
-    CLOSE_AT_FINAL_TP = "CLOSE_AT_FINAL_TP"   # Default behavior
-    MANUAL_CLOSE_ONLY = "MANUAL_CLOSE_ONLY"   # Will not auto-close at final TP
+    CLOSE_AT_FINAL_TP = "CLOSE_AT_FINAL_TP"
+    MANUAL_CLOSE_ONLY = "MANUAL_CLOSE_ONLY"
 
 @dataclass
 class Recommendation:
@@ -57,8 +55,9 @@ class Recommendation:
     activated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
 
-    # Metadata for alerts and UI
-    alert_meta: dict = field(default_factory=dict)
+    # --- Metadata for alerts and UI ---
+    # Example usage: {"hit_target_indices": [0, 1]}
+    alert_meta: dict[str, Any] = field(default_factory=dict)
 
     # --- STRATEGY FIELDS ---
     exit_strategy: ExitStrategy = ExitStrategy.CLOSE_AT_FINAL_TP
@@ -68,8 +67,12 @@ class Recommendation:
     highest_price_reached: Optional[float] = None
     lowest_price_reached: Optional[float] = None
 
-    # ✅ --- NEW: OPEN SIZE PERCENT FIELD ---
+    # --- PARTIAL PROFIT FIELD ---
     open_size_percent: float = 100.0
+    
+    # This relationship is populated by the repository, not part of the core domain
+    events: Optional[List[Any]] = field(default=None, repr=False)
+
 
     def activate(self) -> None:
         """
@@ -88,4 +91,4 @@ class Recommendation:
         self.exit_price = exit_price
         self.updated_at = datetime.utcnow()
         self.closed_at = self.updated_at
-#end
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
