@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.domain.value_objects import Target
 
-# --- Helper Functions (Updated to handle Target objects) ---
+# --- Helper Functions ---
 
 def _pct(entry: float, target_price: float, side: str) -> float:
     if not entry or entry == 0: return 0.0
@@ -22,49 +22,6 @@ def _rr(entry: float, sl: float, first_target: Optional[Target], side: str) -> s
         return f"{ratio:.2f}" if isfinite(ratio) else "—"
     except Exception: return "—"
 
-def _rr_actual(entry: float, sl: float, exit_price: Optional[float], side: str) -> str:
-    try:
-        if exit_price is None: return "—"
-        risk = abs(entry - sl)
-        if risk <= 0: return "—"
-        reward = abs(exit_price - entry)
-        ratio = reward / risk
-        return f"{ratio:.2f}" if isfinite(ratio) else "—"
-    except Exception: return "—"
-
-def _format_targets(entry: float, side: str, targets: List[Target]) -> str:
-    lines: List[str] = []
-    for i, target in enumerate(targets, start=1):
-        try:
-            pct = _pct(entry, target.price, side)
-            line = f"• TP{i}: {target.price:g} ({pct:+.2f}%)"
-            if target.close_percent > 0 and target.close_percent < 100:
-                line += f" <i>(إغلاق {target.close_percent}%)</i>"
-            lines.append(line)
-        except (ValueError, TypeError): continue
-    return "\n".join(lines) if lines else "—"
-
-def _format_targets_for_active_trade(entry: float, side: str, targets: List[Target], live_price: float) -> str:
-    lines: List[str] = []
-    for i, target in enumerate(targets, start=1):
-        try:
-            pct = _pct(entry, target.price, side)
-            total_dist = abs(target.price - entry)
-            progress = 0
-            if side.upper() == "LONG":
-                progress = min(100, (live_price - entry) / total_dist * 100) if total_dist > 0 else (100 if live_price >= target.price else 0)
-            else: # SHORT
-                progress = min(100, (entry - live_price) / total_dist * 100) if total_dist > 0 else (100 if live_price <= target.price else 0)
-            
-            progress = max(0, progress)
-            blocks = int(progress / 10)
-            progress_bar = '█' * blocks + '─' * (10 - blocks)
-            
-            line = f"• TP{i}: {target.price:g} ({pct:+.2f}%) - <i>[{progress_bar}] {progress:.0f}%</i>"
-            lines.append(line)
-        except (ValueError, TypeError): continue
-    return "\n".join(lines) if lines else "—"
-
 def _entry_scalar_and_zone(entry_val: Any) -> Tuple[float, Optional[Tuple[float, float]]]:
     if isinstance(entry_val, (list, tuple)) and entry_val:
         try:
@@ -77,68 +34,138 @@ def _entry_scalar_and_zone(entry_val: Any) -> Tuple[float, Optional[Tuple[float,
     try: return float(entry_val or 0), None
     except Exception: return 0.0, None
 
-# --- Main Card Builder ---
-def build_trade_card_text(rec: Recommendation) -> str:
-    rec_id = getattr(rec, "id", None)
-    asset = getattr(getattr(rec, "asset", None), "value", "N/A")
-    side = getattr(getattr(rec, "side", None), "value", "N/A")
-    entry = float(getattr(getattr(rec, "entry", None), "value", 0))
-    sl = float(getattr(getattr(rec, "stop_loss", None), "value", 0))
-    tps = getattr(getattr(rec, "targets", None), "values", [])
-    status = getattr(rec, "status", RecommendationStatus.PENDING)
-    live_price = getattr(rec, "live_price", None)
-    open_size = getattr(rec, "open_size_percent", 100.0)
-    now_utc = datetime.now(timezone.utc).strftime('%H:%M %Z')
+# --- Card Building Logic ---
 
-    title_line = f"<b>{asset}</b> — {side}"
-    if rec_id:
-        title_line = f"Signal #{rec_id} | <b>{asset}</b> — {side}"
-
-    body_lines: List[str] = []
-    targets_text: str = ""
-
-    if status == RecommendationStatus.PENDING:
-        body_lines.append("Status: ⏳ <b>PENDING ENTRY</b>")
-        if live_price and isfinite(live_price):
-            dist_pct = _pct(entry, float(live_price), "LONG")
-            body_lines.append(f"<i>Live Price ({now_utc}): {float(live_price):g}</i>")
-            body_lines.append(f"<i>Distance to Entry: {abs(dist_pct):.2f}%</i>")
-        body_lines.append(f"\nEntry 💰: {entry:g}")
-        body_lines.append(f"SL 🛑: {sl:g}")
-        targets_text = "<u>Targets (Plan)</u>:\n" + _format_targets(entry, side, tps)
-
-    elif status == RecommendationStatus.ACTIVE:
-        body_lines.append(f"Status: 🟢 <b>ACTIVE</b> (الحجم المفتوح: {open_size:.2f}%)")
-        if live_price and isfinite(live_price):
-            pnl = _pct(entry, float(live_price), side)
-            body_lines.append(f"<i>Live Price ({now_utc}): {float(live_price):g} (PnL: {pnl:+.2f}%)</i>")
-        body_lines.append(f"\nEntry 💰: {entry:g}")
-        body_lines.append(f"SL 🛑: {sl:g}")
-        
-        targets_text = "<u>Targets (Live Progress)</u>:\n"
-        if live_price and isfinite(live_price):
-            targets_text += _format_targets_for_active_trade(entry, side, tps, float(live_price))
-        else:
-            targets_text += _format_targets(entry, side, tps)
-
-    elif status == RecommendationStatus.CLOSED:
-        exit_p = getattr(rec, 'exit_price', None)
-        pnl = _pct(entry, float(exit_p), side) if exit_p is not None and isfinite(exit_p) else 0.0
-        rr_act = _rr_actual(entry, sl, float(exit_p or 0), side)
-        body_lines.append(f"Status: ✅ <b>CLOSED</b> at {float(exit_p):g}" if exit_p is not None else "Status: ✅ <b>CLOSED</b>")
-        result_line = f"Result: <b>Profit of {pnl:+.2f}%</b>" if pnl >= 0 else f"Result: <b>Loss of {pnl:+.2f}%</b>"
-        body_lines.append(f"{result_line} (R/R act: {rr_act})")
-        targets_text = ""
-
-    notes_text = f"\nNotes: <i>{rec.notes or '—'}</i>"
-    footer_lines = [f"#{asset} #Signal #{side}"]
-
-    final_parts = [title_line] + body_lines
-    if targets_text:
-        final_parts.append(targets_text)
-    final_parts.extend([notes_text] + footer_lines)
+def _build_pending_card(rec: Recommendation, live_price: Optional[float]) -> str:
+    entry = rec.entry.value
+    sl = rec.stop_loss.value
+    tps = rec.targets.values
+    tp1 = tps[0] if tps else None
     
-    return "\n".join(final_parts)
+    lines = [
+        f"⏳ **PENDING | {rec.asset.value} | {rec.side.value}** {'🟢' if rec.side.value == 'LONG' else '🔴'}",
+        f"Signal #{rec.id} | {rec.market} Market",
+        "━━━━━━━━━━━━━━",
+        "**The Plan:**",
+        f"💰 **Entry:** {entry:g}",
+        f"🛑 **Stop:** {sl:g}",
+        "🎯 **Targets:**"
+    ]
+    
+    for i, target in enumerate(tps, start=1):
+        pct = _pct(entry, target.price, rec.side.value)
+        line = f"  • TP{i}: {target.price:g} ({pct:+.2f}%)"
+        if target.close_percent > 0 and target.close_percent < 100:
+            line += f" <i>(إغلاق {target.close_percent}%)</i>"
+        lines.append(line)
+        
+    lines.extend([
+        "",
+        f"📈 **R/R (plan):** {_rr(entry, sl, tp1, rec.side.value)}",
+        f"📝 **ملاحظات:** {rec.notes or '—'}",
+        "━━━━━━━━━━━━━━",
+        f"#{rec.asset.value} #Signal"
+    ])
+    return "\n".join(lines)
+
+def _build_active_card(rec: Recommendation, live_price: Optional[float]) -> str:
+    entry = rec.entry.value
+    sl = rec.stop_loss.value
+    tps = rec.targets.values
+    pnl_text = f"PnL: {_pct(entry, live_price, rec.side.value):+.2f}%" if live_price else ""
+    
+    header_icon = "📈" if not live_price or _pct(entry, live_price, rec.side.value) >= 0 else "📉"
+    
+    lines = [
+        f"{header_icon} **ACTIVE | {rec.asset.value} | {rec.side.value}** {'🟢' if rec.side.value == 'LONG' else '🔴'}",
+        f"Signal #{rec.id} | {pnl_text}",
+        "━━━━━━━━━━━━━━━━━━━━━━"
+    ]
+    
+    if live_price:
+        lines.extend([
+            f"  🛜 **Live Price:**   **{live_price:g}**",
+            f"  *♻️ Updated @ {datetime.now(timezone.utc).strftime('%H:%M UTC')}*",
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ])
+        
+    lines.append("**PERFORMANCE**")
+    lines.append(f"💰 **Entry:** {entry:g}")
+    
+    stop_text = f"🛑 **Stop:** {sl:g}"
+    if sl == entry:
+        stop_text = f"🛡️ **Stop:** {sl:g} (Secured)"
+    lines.append(stop_text)
+    
+    if rec.profit_stop_price:
+        lines.append(f"🔒 **Profit Stop:** {rec.profit_stop_price:g}")
+        
+    lines.append(f"📦 **Open Size:** {rec.open_size_percent:.2f}%")
+    
+    lines.append("\n**EXIT PLAN**")
+    lines.append("🎯 **Targets:**")
+    
+    hit_targets = rec.alert_meta.get('hit_target_indices', [])
+    for i, target in enumerate(tps):
+        icon = "✅" if i in hit_targets else ("🚀" if i == len(hit_targets) else "⏳")
+        line = f"  • {icon} TP{i+1}: {target.price:g}"
+        if target.close_percent > 0 and target.close_percent < 100 and i not in hit_targets:
+            line += f" (Close {target.close_percent}%)"
+        lines.append(line)
+        
+    # Logbook section
+    events = rec.events or []
+    partial_profit_events = [e for e in events if "PARTIAL_PROFIT" in e.event_type]
+    if partial_profit_events:
+        lines.append("\n**LOGBOOK**")
+        lines.append("💰 **Profits Taken:**")
+        for i, event in enumerate(partial_profit_events):
+            data = event.event_data
+            lines.append(f"  • Closed {data.get('closed_percent', 0)}% at {data.get('price', 0):g} (+{data.get('pnl_on_part', 0):.2f}%)")
+
+    lines.extend([
+        f"\n📝 **Notes:** {rec.notes or '—'}",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"#{rec.asset.value} #Signal"
+    ])
+    return "\n".join(lines)
+
+def _build_closed_card(rec: Recommendation) -> str:
+    entry = rec.entry.value
+    sl = rec.stop_loss.value
+    exit_price = rec.exit_price or 0.0
+    pnl = _pct(entry, exit_price, rec.side.value)
+    
+    if pnl > 0.001:
+        header_icon, result_text = "🏆", "WIN"
+    elif pnl < -0.001:
+        header_icon, result_text = "💔", "LOSS"
+    else:
+        header_icon, result_text = "🛡️", "BREAKEVEN"
+        
+    lines = [
+        f"{header_icon} **CLOSED | {rec.asset.value} | {rec.side.value}** {'🟢' if rec.side.value == 'LONG' else '🔴'}",
+        f"Signal #{rec.id} | {result_text}",
+        "━━━━━━━━━━━━━━",
+        "**Trade Summary:**",
+        f"💰 **Entry:** {entry:g}",
+        f"🏁 **Exit:** {exit_price:g}",
+        f"{'📈' if pnl >= 0 else '📉'} **Final Result:** {pnl:+.2f}%",
+        f"\n📝 **ملاحظات:** {rec.notes or '—'}",
+        "━━━━━━━━━━━━━━",
+        f"#{rec.asset.value} #Signal"
+    ]
+    return "\n".join(lines)
+
+def build_trade_card_text(rec: Recommendation) -> str:
+    live_price = getattr(rec, "live_price", None)
+    if rec.status == RecommendationStatus.PENDING:
+        return _build_pending_card(rec, live_price)
+    elif rec.status == RecommendationStatus.ACTIVE:
+        return _build_active_card(rec, live_price)
+    elif rec.status == RecommendationStatus.CLOSED:
+        return _build_closed_card(rec)
+    return "Invalid recommendation state."
 
 # --- Other builders ---
 def build_review_text(draft: dict) -> str:
@@ -159,12 +186,12 @@ def build_review_text(draft: dict) -> str:
     
     zone_line = f"\nEntry Zone: {zone[0]:g} — {zone[1]:g}" if zone else ""
     return (
-        "📝 <b>مراجعة التوصية</b>\n\n"
-        f"<b>{asset}</b> | {market} / {side}\n"
+        "📝 **مراجعة التوصية**\n\n"
+        f"**{asset}** | {market} / {side}\n"
         f"Entry 💰: {entry_scalar:g}{zone_line}\n"
         f"SL 🛑: {sl:g}\n"
         f"<u>Targets</u>:\n{lines_tps}\n\n"
-        f"R/R (plan): <b>{planned_rr}</b>\n"
+        f"R/R (plan): **{planned_rr}**\n"
         f"ملاحظات: <i>{notes}</i>\n\n"
         "هل تريد نشر هذه التوصية في القناة؟"
     )
@@ -180,7 +207,7 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     closed_recs = stats.get('closed_recommendations', 0); win_rate = stats.get('overall_win_rate', '0.00%')
     total_pnl = stats.get('total_pnl_percent', '0.00%')
     lines = [
-        "📊 <b>Your Performance Summary</b> 📊", "─" * 15, f"Total Recommendations: <b>{total}</b>",
+        "📊 **Your Performance Summary** 📊", "─" * 15, f"Total Recommendations: <b>{total}</b>",
         f"Open Trades: <b>{open_recs}</b>", f"Closed Trades: <b>{closed_recs}</b>", "─" * 15,
         f"Overall Win Rate: <b>{win_rate}</b>", f"Total PnL (Cumulative %): <b>{total_pnl}</b>", "─" * 15,
         f"<i>Report generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>",
