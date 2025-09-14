@@ -5,7 +5,6 @@ from time import time
 from typing import Optional, List, Dict
 
 from telegram import Update
-# ✅ --- الإصلاح: تم تغيير مسار استيراد ParseMode ---
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import (
@@ -32,6 +31,7 @@ from .ui_texts import build_trade_card_text
 from .parsers import parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
+from .conversation_handlers import show_review_card, CONVERSATION_DATA_KEY
 
 log = logging.getLogger(__name__)
 
@@ -81,13 +81,6 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
         if "Message is not modified" not in str(e): log.warning(f"Error in navigate_open_recs_handler: {e}")
     except Exception as e:
         log.error(f"Unexpected error in navigate_open_recs_handler: {e}", exc_info=True)
-
-async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # This function is now defined in conversation_handlers, but we keep a stub here
-    # in case it's needed for other management flows in the future.
-    # For now, it's better to import it where needed.
-    # This is a placeholder to avoid circular imports if we were to call it from here.
-    pass
 
 async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -287,14 +280,37 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
             trade_service.update_sl(rec_id, new_sl)
         elif action == "edit_tp":
             target_dicts = parse_targets_list(user_input.split())
-            new_targets_prices = [t['price'] for t in target_dicts]
-            if not new_targets_prices: raise ValueError("لم يتم توفير أهداف.")
-            trade_service.update_targets(rec_id, new_targets_prices)
+            trade_service.update_targets(rec_id, target_dicts)
         await show_rec_panel_handler(dummy_update, context)
     except Exception as e:
         log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ خطأ: {e}")
         await show_rec_panel_handler(dummy_update, context)
+
+async def prices_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.reply_to_message or not context.user_data:
+        return
+    draft = context.user_data.get(CONVERSATION_DATA_KEY)
+    if not draft or 'order_type' not in draft:
+        return
+    try:
+        order_type = draft['order_type']
+        parts = (update.message.text or "").strip().replace(',', ' ').split()
+        if order_type == 'MARKET':
+            if len(parts) < 2: raise ValueError("At least Stop Loss and one Target are required.")
+            draft["entry"] = 0
+            draft["stop_loss"] = parse_number(parts[0])
+            draft["targets"] = parse_targets_list(parts[1:])
+        else:
+            if len(parts) < 3: raise ValueError("Entry, Stop, and at least one Target are required.")
+            draft["entry"] = parse_number(parts[0])
+            draft["stop_loss"] = parse_number(parts[1])
+            draft["targets"] = parse_targets_list(parts[2:])
+        if not draft["targets"]:
+            raise ValueError("No valid targets were parsed.")
+        await show_review_card(update, context)
+    except (ValueError, IndexError) as e:
+        await update.message.reply_text(f"❌ تنسيق أسعار غير صالح: {e}. قم بالرد مرة أخرى بالتنسيق الصحيح.")
 
 async def partial_profit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -382,4 +398,5 @@ def register_management_handlers(application: Application):
     application.add_handler(partial_profit_conv)
     
     application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, received_input_handler), group=1)
+    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, prices_reply_handler), group=2)
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
