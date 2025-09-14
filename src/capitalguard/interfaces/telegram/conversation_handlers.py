@@ -1,4 +1,5 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+#START src/capitalguard/interfaces/telegram/conversation_handlers.py
+# --- START OF FULL, SIMPLIFIED, AND FINAL FILE ---
 import logging
 import uuid
 import types
@@ -16,7 +17,7 @@ from .keyboards import (
     market_choice_keyboard, order_type_keyboard, build_channel_picker_keyboard,
     main_creation_keyboard
 )
-from .parsers import parse_quick_command, parse_text_editor, parse_targets_list, parse_number
+from .parsers import parse_quick_command, parse_text_editor
 from .auth import ALLOWED_USER_FILTER
 
 from capitalguard.infrastructure.db.base import SessionLocal
@@ -193,29 +194,6 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.message.edit_text(f"✅ Order Type: {order_type}\n\n{prompt}")
     return I_PRICES
 
-async def prices_received_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
-        order_type = draft.get('order_type')
-        parts = (update.message.text or "").strip().replace(',', ' ').split()
-        if order_type == 'MARKET':
-            if len(parts) < 2: raise ValueError("At least Stop Loss and one Target are required.")
-            draft["entry"] = 0
-            draft["stop_loss"] = parse_number(parts[0])
-            draft["targets"] = parse_targets_list(parts[1:])
-        else:
-            if len(parts) < 3: raise ValueError("Entry, Stop, and at least one Target are required.")
-            draft["entry"] = parse_number(parts[0])
-            draft["stop_loss"] = parse_number(parts[1])
-            draft["targets"] = parse_targets_list(parts[2:])
-        if not draft["targets"]: raise ValueError("No valid targets were parsed.")
-        context.user_data[CONVERSATION_DATA_KEY] = draft
-        await show_review_card(update, context)
-        return I_REVIEW
-    except (ValueError, IndexError) as e:
-        await update.message.reply_text(f"❌ تنسيق أسعار غير صالح: {e}. حاول مرة أخرى.")
-        return I_PRICES
-
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, is_edit: bool = False) -> int:
     message = update.message or (update.callback_query.message if update.callback_query else None)
     if not message: return ConversationHandler.END
@@ -352,7 +330,7 @@ def register_conversation_handlers(app: Application):
             ],
             I_SIDE_MARKET: [CallbackQueryHandler(side_chosen, pattern="^side_")],
             I_ORDER_TYPE: [CallbackQueryHandler(order_type_chosen, pattern="^type_")],
-            I_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received_interactive)],
+            I_PRICES: [],
             I_REVIEW: [
                 CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
                 CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
@@ -369,4 +347,5 @@ def register_conversation_handlers(app: Application):
         persistent=False,
     )
     app.add_handler(conv_handler)
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+# --- END OF FULL, SIMPLIFIED, AND FINAL FILE ---
+#END
