@@ -1,4 +1,3 @@
-#src/capitalguard/infrastructure/db/repository.py```python
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict
@@ -105,7 +104,6 @@ class RecommendationRepository:
         if not row:
             return None
         
-        # Safely access user's telegram_id
         user_telegram_id = str(row.user.telegram_user_id) if getattr(row, "user", None) else None
 
         return Recommendation(
@@ -158,7 +156,7 @@ class RecommendationRepository:
                     open_size_percent=rec.open_size_percent,
                 )
                 s.add(row)
-                s.flush() # Flush to get the new row.id
+                s.flush()
                 
                 create_event = RecommendationEvent(
                     recommendation_id=row.id,
@@ -182,7 +180,6 @@ class RecommendationRepository:
                 row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).first()
                 if not row: raise ValueError(f"Recommendation #{rec.id} not found")
                 
-                # Update fields from the domain entity
                 row.status = rec.status
                 row.stop_loss = rec.stop_loss.value
                 row.targets = [v.__dict__ for v in rec.targets.values]
@@ -248,10 +245,6 @@ class RecommendationRepository:
             return [self._to_entity(r) for r in rows]
 
     def list_open_by_symbol(self, symbol: str) -> List[Recommendation]:
-        """
-        ✅ NEW: Efficiently fetches open recommendations for a specific symbol.
-        Used by the watcher to reduce the scope of data processing.
-        """
         with SessionLocal() as s:
             rows = (
                 s.query(RecommendationORM)
@@ -265,14 +258,8 @@ class RecommendationRepository:
             return [self._to_entity(r) for r in rows]
 
     def get_events_for_recommendations(self, rec_ids: List[int]) -> Dict[int, set[str]]:
-        """
-        ✅ NEW & CRITICAL: Fetches all event types for a list of recommendation IDs in a single query.
-        This solves the N+1 query problem in the AlertService.
-        Returns a dictionary mapping rec_id to a set of its event_types for fast lookups.
-        """
         if not rec_ids:
             return {}
-        
         with SessionLocal() as s:
             results = s.query(
                 RecommendationEvent.recommendation_id,
@@ -280,7 +267,6 @@ class RecommendationRepository:
             ).filter(
                 RecommendationEvent.recommendation_id.in_(rec_ids)
             ).all()
-
         event_map = {}
         for rec_id, event_type in results:
             event_map.setdefault(rec_id, set()).add(event_type)
@@ -303,8 +289,7 @@ class RecommendationRepository:
     def get_recent_assets_for_user(self, user_telegram_id: Union[str, int], limit: int = 5) -> List[str]:
         with SessionLocal() as s:
             user = UserRepository(s).find_by_telegram_id(int(user_telegram_id))
-            if not user:
-                return []
+            if not user: return []
             subq = (
                 s.query(
                     RecommendationORM.asset,
@@ -330,4 +315,39 @@ class RecommendationRepository:
             if status:
                 q = q.filter(RecommendationORM.status == RecommendationStatus(status.upper()))
             return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
-#end
+
+    # ✅ FIX 1: Re-added the missing function for the /open command.
+    def list_open_for_user(self, user_telegram_id: Union[int, str], **filters) -> List[Recommendation]:
+        with SessionLocal() as s:
+            user = UserRepository(s).find_by_telegram_id(int(user_telegram_id))
+            if not user:
+                return []
+            q = (
+                s.query(RecommendationORM)
+                .options(joinedload(RecommendationORM.user))
+                .filter(
+                    RecommendationORM.user_id == user.id,
+                    RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE]),
+                )
+            )
+            if filters.get("symbol"):
+                q = q.filter(RecommendationORM.asset.ilike(f'%{filters["symbol"].upper()}%'))
+            if filters.get("side"):
+                q = q.filter(RecommendationORM.side == Side(filters["side"].upper()).value)
+            if filters.get("status"):
+                q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
+            return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
+
+    # ✅ FIX 2: Re-added the missing function for backward compatibility during publishing.
+    def update_legacy_publication_fields(self, rec_id: int, first_pub_data: Dict[str, Any]) -> None:
+        with SessionLocal() as s:
+            s.query(RecommendationORM).filter(RecommendationORM.id == rec_id).update(
+                {
+                    'channel_id': first_pub_data['telegram_channel_id'],
+                    'message_id': first_pub_data['telegram_message_id'],
+                    'published_at': datetime.now(timezone.utc),
+                }
+            )
+            s.commit()
+
+```# END
