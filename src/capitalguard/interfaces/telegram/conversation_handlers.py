@@ -3,7 +3,7 @@
 import logging
 import uuid
 import types
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import (
     Application, ContextTypes, ConversationHandler, CommandHandler,
@@ -17,7 +17,7 @@ from .keyboards import (
     market_choice_keyboard, order_type_keyboard, build_channel_picker_keyboard,
     main_creation_keyboard
 )
-from .parsers import parse_quick_command, parse_text_editor
+from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
 from .auth import ALLOWED_USER_FILTER
 
 from capitalguard.infrastructure.db.base import SessionLocal
@@ -187,12 +187,69 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
     draft['order_type'] = order_type
     context.user_data[CONVERSATION_DATA_KEY] = draft
+
     if order_type == 'MARKET':
-        prompt = "4️⃣ الآن، أرسل الأسعار بالتنسيق:\n`STOP TARGETS...`"
+        prompt = (
+            "4️⃣ أرسل الأسعار بصيغة سطر واحد:\n"
+            "<code>STOP  TARGETS...</code>\n"
+            "مثال:\n"
+            "<code>58000   60000@30 62000@50</code>\n\n"
+            "• STOP = وقف الخسارة\n"
+            "• TARGETS = أهداف بشكل <code>سعر@نسبة</code>، آخر هدف يُغلق 100% تلقائيًا إذا لم تُحدد نسب."
+        )
     else:
-        prompt = "4️⃣ الآن، أرسل الأسعار بالتنسيق:\n`ENTRY STOP TARGETS...`"
-    await query.message.edit_text(f"✅ Order Type: {order_type}\n\n{prompt}")
+        prompt = (
+            "4️⃣ أرسل الأسعار بصيغة سطر واحد:\n"
+            "<code>ENTRY  STOP  TARGETS...</code>\n"
+            "مثال:\n"
+            "<code>59000  58000  60000@30 62000@50</code>\n\n"
+            "• ENTRY = سعر الدخول\n"
+            "• STOP = وقف الخسارة\n"
+            "• TARGETS = أهداف بشكل <code>سعر@نسبة</code>، آخر هدف يُغلق 100% تلقائيًا إذا لم تُحدد نسب."
+        )
+    await query.message.edit_text(f"✅ Order Type: {order_type}\n\n{prompt}", parse_mode="HTML")
     return I_PRICES
+
+# ✅ NEW: prices handler للمسار التفاعلي
+async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
+    if not draft or 'order_type' not in draft:
+        await update.message.reply_text("❌ مفقود نوع الأمر. ابدأ من جديد بـ /newrec.")
+        return ConversationHandler.END
+
+    order_type = draft['order_type'].upper()
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text("❌ لم أستطع قراءة الأسعار، أعد الإرسال وفق المثال المعروض.")
+        return I_PRICES
+
+    tokens = text.replace(",", " ").split()
+    try:
+        if order_type == 'MARKET':
+            if len(tokens) < 2:
+                raise ValueError("صيغة MARKET تتطلب: STOP ثم TARGETS...")
+            stop_val = parse_number(tokens[0])
+            targets = parse_targets_list(tokens[1:])
+            draft['stop_loss'] = stop_val
+            draft['targets'] = targets
+            # ENTRY سيتم تحديده فعليًا عند التفعيل؛ نضع قيمة شكلية لتجاوز التحقق
+            draft['entry'] = draft.get('entry') or stop_val
+        else:
+            if len(tokens) < 3:
+                raise ValueError("صيغة LIMIT/STOP_MARKET تتطلب: ENTRY STOP ثم TARGETS...")
+            entry_val = parse_number(tokens[0])
+            stop_val = parse_number(tokens[1])
+            targets = parse_targets_list(tokens[2:])
+            draft['entry'] = entry_val
+            draft['stop_loss'] = stop_val
+            draft['targets'] = targets
+
+    except ValueError as e:
+        await update.message.reply_text(f"❌ خطأ في التنسيق: {e}\n\nأعد الإرسال وفق المثال المعروض.")
+        return I_PRICES
+
+    context.user_data[CONVERSATION_DATA_KEY] = draft
+    return await show_review_card(update, context)
 
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, is_edit: bool = False) -> int:
     message = update.message or (update.callback_query.message if update.callback_query else None)
@@ -233,7 +290,7 @@ async def add_notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data['current_review_key'] = review_key
     context.user_data['current_review_token'] = token
     context.user_data['original_query_message'] = query.message
-    await query.message.edit_text(f"{query.message.text}\n\n✍️ أرسل ملاحظاتك الآن.")
+    await query.message.edit_text(f"{query.message.text}\n\n✍️ أرسل ملاحظاتك الآن.", parse_mode='HTML', disable_web_page_preview=True)
     return I_NOTES
 
 async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -262,6 +319,7 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     trade_service = get_service(context, "trade_service")
     try:
         price_service = get_service(context, "price_service")
+        # ملاحظة: إن لم تكن get_cached_price async لديك، استخدم get_preview_price أو لف الاستدعاء بما يناسبك
         live_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"))
         saved_rec = trade_service.create_recommendation(
             asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
@@ -331,7 +389,7 @@ def register_conversation_handlers(app: Application):
             ],
             I_SIDE_MARKET: [CallbackQueryHandler(side_chosen, pattern="^side_")],
             I_ORDER_TYPE: [CallbackQueryHandler(order_type_chosen, pattern="^type_")],
-            I_PRICES: [],
+            I_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received)],
             I_REVIEW: [
                 CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
                 CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
@@ -349,4 +407,4 @@ def register_conversation_handlers(app: Application):
     )
     app.add_handler(conv_handler)
 # --- END OF FULL, SIMPLIFIED, AND FINAL FILE ---
-#END```
+#END
