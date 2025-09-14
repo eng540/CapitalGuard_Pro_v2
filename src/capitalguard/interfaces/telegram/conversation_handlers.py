@@ -216,9 +216,119 @@ async def prices_received_interactive(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text(f"❌ تنسيق أسعار غير صالح: {e}. حاول مرة أخرى.")
         return I_PRICES
 
+async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    message = update.message or (update.callback_query.message if update.callback_query else None)
+    if not message: return ConversationHandler.END
+    review_key = context.user_data.get('current_review_key')
+    data = context.bot_data.get(review_key) if review_key else context.user_data.get(CONVERSATION_DATA_KEY, {})
+    if not data or not data.get("asset"):
+        await message.reply_text("حدث خطأ، ابدأ من جديد بواسطة /newrec.")
+        _clean_conversation_state(context)
+        return ConversationHandler.END
+    price_service = get_service(context, "price_service")
+    preview_price = price_service.get_preview_price(data["asset"], data.get("market", "Futures"))
+    review_text = build_review_text_with_price(data, preview_price)
+    if not review_key:
+        review_key = str(uuid.uuid4())
+        context.user_data['current_review_key'] = review_key
+        context.bot_data[review_key] = data.copy()
+    review_token = _get_or_make_token_for_review(context, review_key)
+    context.user_data['current_review_token'] = review_token
+    keyboard = review_final_keyboard(review_token)
+    try:
+        if is_edit and hasattr(message, 'edit_text'):
+            await message.edit_text(text=review_text, reply_markup=keyboard, parse_mode='HTML', disable_web_page_preview=True)
+        else:
+            await message.reply_html(text=review_text, reply_markup=keyboard, disable_web_page_preview=True)
+    except Exception as e:
+        log.warning(f"Edit failed, sending new message. Error: {e}")
+        await message.reply_html(text=review_text, reply_markup=keyboard, disable_web_page_preview=True)
+    return I_REVIEW
+
+async def add_notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    token = query.data.split(':')[2]
+    review_key = _resolve_review_key_from_token(context, token)
+    if not review_key or review_key not in context.bot_data:
+        await query.message.edit_text("❌ انتهت صلاحية البطاقة."); return ConversationHandler.END
+    context.user_data['current_review_key'] = review_key
+    context.user_data['current_review_token'] = token
+    context.user_data['original_query_message'] = query.message
+    await query.message.edit_text(f"{query.message.text}\n\n✍️ أرسل ملاحظاتك الآن.")
+    return I_NOTES
+
+async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    notes = update.message.text.strip()
+    review_key = context.user_data.get('current_review_key')
+    original_message = context.user_data.pop('original_query_message', None)
+    if review_key and review_key in context.bot_data and original_message:
+        draft = context.bot_data[review_key]
+        draft['notes'] = notes if notes.lower() not in ['skip', 'none'] else None
+        try: await update.message.delete()
+        except Exception: pass
+        dummy_update = Update(update.update_id, callback_query=types.SimpleNamespace(message=original_message, data=''))
+        return await show_review_card(dummy_update, context, is_edit=True)
+    await update.message.reply_text("حدث خلل. ابدأ من جديد بـ /newrec.")
+    return ConversationHandler.END
+
+async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer("جارٍ الحفظ والنشر...")
+    token = query.data.split(":")[2]
+    review_key = _resolve_review_key_from_token(context, token)
+    draft = context.bot_data.get(review_key) if review_key else None
+    if not draft:
+        await query.edit_message_text("❌ انتهت صلاحية البطاقة. أعد البدء بـ /newrec.")
+        return ConversationHandler.END
+    trade_service = get_service(context, "trade_service")
+    try:
+        live_price = get_service(context, "price_service").get_cached_price(draft["asset"], draft.get("market", "Futures"))
+        entry_val = draft["entry"]
+        entry_price = entry_val[0] if isinstance(entry_val, list) else entry_val
+        if isinstance(entry_val, list):
+            draft.setdefault("notes", "")
+            draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
+        saved_rec = trade_service.create_recommendation(
+            asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
+            entry=entry_price, stop_loss=draft["stop_loss"], targets=draft["targets"],
+            notes=draft.get("notes"), user_id=str(update.effective_user.id),
+            order_type=draft.get('order_type', 'LIMIT'), live_price=live_price
+        )
+        _, report = trade_service.publish_recommendation(rec_id=saved_rec.id, user_id=str(update.effective_user.id))
+        if report.get("success"):
+            await query.edit_message_text(f"✅ تم الحفظ والنشر بنجاح للتوصية #{saved_rec.id}.")
+        else:
+            await query.edit_message_text(f"⚠️ تم حفظ التوصية #{saved_rec.id}، ولكن فشل النشر.")
+    except Exception as e:
+        log.exception("Handler failed to save/publish recommendation.")
+        await query.edit_message_text(f"❌ فشل الحفظ/النشر: {e}")
+    finally:
+        _clean_conversation_state(context)
+    return ConversationHandler.END
+
+async def cancel_publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    _clean_conversation_state(context)
+    await query.edit_message_text("تم إلغاء العملية.")
+    return ConversationHandler.END
+
 async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
     await update.message.reply_text("تم إلغاء المحادثة الحالية.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+async def unexpected_input_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if context.user_data.get(CONVERSATION_DATA_KEY) is not None or context.user_data.get('current_review_key'):
+        user_message = "أمر أو زر غير متوقع."
+        if update.message:
+            await update.message.reply_text(f"⚠️ {user_message} تم إنهاء عملية إنشاء التوصية الحالية.")
+        elif update.callback_query:
+            await update.callback_query.answer("إجراء غير صالح.", show_alert=True)
+            try: await update.callback_query.edit_message_text("تم إنهاء المحادثة.")
+            except Exception: pass
+    _clean_conversation_state(context)
     return ConversationHandler.END
 
 def register_conversation_handlers(app: Application):
@@ -239,10 +349,20 @@ def register_conversation_handlers(app: Application):
             I_SIDE_MARKET: [CallbackQueryHandler(side_chosen, pattern="^side_")],
             I_ORDER_TYPE: [CallbackQueryHandler(order_type_chosen, pattern="^type_")],
             I_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received_interactive)],
+            I_REVIEW: [
+                CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
+                CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
+                CallbackQueryHandler(cancel_publish_handler, pattern=r"^rec:cancel:")
+            ],
+            I_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_conv_handler)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_conv_handler),
+            MessageHandler(filters.COMMAND, unexpected_input_fallback),
+            CallbackQueryHandler(unexpected_input_fallback),
+        ],
         name="recommendation_creation",
         persistent=False,
     )
     app.add_handler(conv_handler)
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---```
