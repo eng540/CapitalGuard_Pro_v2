@@ -140,7 +140,7 @@ def build_trade_card_text(rec: Recommendation) -> str:
     
     return "\n".join(final_parts)
 
-# --- Other builders (Corrected for Target objects) ---
+# --- Other builders ---
 def build_review_text(draft: dict) -> str:
     asset = (draft.get("asset", "") or "").upper()
     side = (draft.get("side", "") or "").upper()
@@ -186,4 +186,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
         f"<i>Report generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>",
     ]
     return "\n".join(lines)
-# --- END OF FINAL, CORRECTED, AND READY-TO-USE FILE ---```
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
