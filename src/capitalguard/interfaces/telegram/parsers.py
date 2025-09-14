@@ -1,4 +1,3 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
 import re
 import unicodedata
 from typing import Dict, Any, List, Optional
@@ -27,7 +26,7 @@ def _parse_one_number(token: str) -> float:
     if not m: raise ValueError(f"قيمة رقمية غير صالحة: '{token}'")
     num_str, suf = m.groups()
     scale = _SUFFIXES.get(suf or "", 1)
-    return float(num_str)
+    return float(num_str) * scale
 
 def parse_number(s: str) -> float:
     s = _normalize_text(s)
@@ -115,4 +114,3 @@ def parse_text_editor(text: str) -> Optional[Dict[str, Any]]:
     data.setdefault('market', 'Futures')
     data.setdefault('order_type', 'LIMIT')
     return data
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---```
