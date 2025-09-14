@@ -216,7 +216,7 @@ async def prices_received_interactive(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text(f"❌ تنسيق أسعار غير صالح: {e}. حاول مرة أخرى.")
         return I_PRICES
 
-async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, is_edit: bool = False) -> int:
     message = update.message or (update.callback_query.message if update.callback_query else None)
     if not message: return ConversationHandler.END
     review_key = context.user_data.get('current_review_key')
@@ -284,22 +284,26 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     trade_service = get_service(context, "trade_service")
     try:
         live_price = get_service(context, "price_service").get_cached_price(draft["asset"], draft.get("market", "Futures"))
-        entry_val = draft["entry"]
-        entry_price = entry_val[0] if isinstance(entry_val, list) else entry_val
-        if isinstance(entry_val, list):
-            draft.setdefault("notes", "")
-            draft["notes"] += f"\nEntry Zone: {entry_val[0]}-{entry_val[-1]}"
         saved_rec = trade_service.create_recommendation(
             asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
-            entry=entry_price, stop_loss=draft["stop_loss"], targets=draft["targets"],
+            entry=draft["entry"], stop_loss=draft["stop_loss"], targets=draft["targets"],
             notes=draft.get("notes"), user_id=str(update.effective_user.id),
             order_type=draft.get('order_type', 'LIMIT'), live_price=live_price
         )
         _, report = trade_service.publish_recommendation(rec_id=saved_rec.id, user_id=str(update.effective_user.id))
         if report.get("success"):
-            await query.edit_message_text(f"✅ تم الحفظ والنشر بنجاح للتوصية #{saved_rec.id}.")
+            success_count = len(report["success"])
+            await query.edit_message_text(f"✅ تم الحفظ بنجاح ونشر التوصية #{saved_rec.id} إلى {success_count} قناة.")
         else:
-            await query.edit_message_text(f"⚠️ تم حفظ التوصية #{saved_rec.id}، ولكن فشل النشر.")
+            fail_reason = "غير معروف"
+            if report.get("failed"):
+                fail_reason = report["failed"][0].get("reason", "فشل في الاتصال بـ API")
+            await query.edit_message_text(
+                f"⚠️ تم حفظ التوصية #{saved_rec.id}، ولكن فشل النشر.\n"
+                f"<b>السبب:</b> {fail_reason}\n\n"
+                "<i>يرجى التحقق من أن البوت مسؤول في القناة ولديه صلاحية النشر.</i>",
+                parse_mode='HTML'
+            )
     except Exception as e:
         log.exception("Handler failed to save/publish recommendation.")
         await query.edit_message_text(f"❌ فشل الحفظ/النشر: {e}")
@@ -365,4 +369,4 @@ def register_conversation_handlers(app: Application):
         persistent=False,
     )
     app.add_handler(conv_handler)
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---```
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
