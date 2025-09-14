@@ -228,7 +228,7 @@ class RecommendationRepository:
             row = (
                 s.query(RecommendationORM)
                 .options(joinedload(RecommendationORM.user))
-                .filter(RecommendationORM.id == rec_id)
+                .filter(RecommendationORM.id == rec.id)
                 .first()
             )
             return self._to_entity(row)
@@ -305,7 +305,8 @@ class RecommendationRepository:
                 .limit(limit)
                 .all()
             )
-            return [r for r in results]
+            # ✅ FIX: Convert the list of Row objects to a list of strings.
+            return [r[0] for r in results]
 
     def list_all_for_user(self, user_id: int, symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
         with SessionLocal() as s:
@@ -347,4 +348,3 @@ class RecommendationRepository:
                 }
             )
             s.commit()
-#end
