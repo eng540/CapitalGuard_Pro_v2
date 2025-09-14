@@ -109,30 +109,28 @@ class AlertService:
                         tp_price = target.price
                         close_percent = target.close_percent
                         
-                        # Check for intermediate TP hit notification
                         event_type_hit = f"TP{i+1}_HIT"
                         if not self.repo.check_if_event_exists(rec.id, event_type_hit):
                             is_tp_hit = (side == "LONG" and price >= tp_price) or (side == "SHORT" and price <= tp_price)
                             if is_tp_hit:
                                 log.info(f"TP{i+1} hit for rec #{rec.id}. Logging event, notifying, and updating cards.")
                                 
-                                # ✅ --- التغيير الجوهري: تحديث alert_meta ---
-                                # Add the index of the hit target to a list in alert_meta
                                 hit_targets = rec.alert_meta.get('hit_target_indices', [])
                                 if i not in hit_targets:
                                     hit_targets.append(i)
                                 rec.alert_meta['hit_target_indices'] = hit_targets
                                 
-                                # Save the event and the updated alert_meta
                                 updated_rec = self.repo.update_with_event(rec, event_type_hit, {"price": price, "target": tp_price})
                                 
-                                # Send notification and update all cards to show the checkmark
-                                note = f"<b>🔥 الهدف #{i+1} تحقق لـ #{rec.asset.value}!</b>\nالسعر وصل إلى {tp_price:g}."
+                                # ✅ --- قالب الإشعار الجديد ---
+                                note = (
+                                    f"🔥 **Target {i+1} Hit!** | Signal #{rec.id}\n\n"
+                                    f"**{rec.asset.value}** has reached the target at **{tp_price:g}**."
+                                )
                                 self._notify_all_channels(rec.id, note)
                                 self.trade_service._update_all_cards(updated_rec)
                                 action_count += 1
 
-                                # Now, check if this target also triggers an auto partial profit
                                 if close_percent > 0:
                                     log.info(f"Auto partial profit triggered for rec #{rec.id} at TP{i+1}.")
                                     self.trade_service.take_partial_profit(
@@ -141,10 +139,8 @@ class AlertService:
                                         tp_price,
                                         triggered_by="AUTO"
                                     )
-                                    # The take_partial_profit service will handle its own event and card update
                                     action_count += 1
                                 
-                                # Break after handling the first untriggered target to avoid multiple triggers in one tick
                                 break
 
                 # --- Near-touch alerts ---
@@ -191,5 +187,5 @@ class AlertService:
                     text=text
                 )
             except Exception:
-                log.warning("Failed to send multi-channel notification for rec #%s to channel %s", rec_id, msg_meta.telegram_channel_id, exc_info=True)
+                log.warning("Failed to send multi-channel notification for rec #%s to channel %s", rec.id, msg_meta.telegram_channel_id, exc_info=True)
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
