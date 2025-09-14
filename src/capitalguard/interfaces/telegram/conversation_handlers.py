@@ -35,12 +35,13 @@ REV_TOKENS_REVERSE = "review_tokens_rev"
 # --- Helper Functions ---
 def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop(CONVERSATION_DATA_KEY, None)
-    context.user_data.pop('current_review_key', None)
-    context.user_data.pop('current_review_token', None)
-    context.user_data.pop('original_query_message', None)
+    review_key = context.user_data.pop('current_review_key', None)
+    if review_key:
+        context.bot_data.pop(review_key, None)
     review_token = context.user_data.pop('current_review_token', None)
     if review_token:
         context.user_data.pop(f"pubsel:{review_token}", None)
+    context.user_data.pop('original_query_message', None)
 
 def _ensure_token_maps(context: ContextTypes.DEFAULT_TYPE) -> None:
     if REV_TOKENS_MAP not in context.bot_data: context.bot_data[REV_TOKENS_MAP] = {}
@@ -447,7 +448,7 @@ def register_conversation_handlers(app: Application):
         ],
         states={
             SELECT_METHOD: [CallbackQueryHandler(method_chosen, pattern="^method_")],
-            AWAIT_QUICK_COMMAND: [MessageHandler(filters.TEXT, quick_command_handler)],
+            AWAIT_QUICK_COMMAND: [MessageHandler(filters.Regex(r'^\/rec'), quick_command_handler)],
             AWAIT_TEXT_EDITOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, text_editor_handler)],
             I_ASSET: [
                 CallbackQueryHandler(asset_chosen_button, pattern="^asset_"),
