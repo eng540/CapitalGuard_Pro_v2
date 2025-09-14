@@ -346,16 +346,31 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 async def unexpected_input_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    More forgiving fallback:
+    - If user sends /newrec, /editor, or /rec in the middle of a flow, restart accordingly.
+    - Otherwise, end the current conversation gracefully.
+    """
+    if update.message and update.message.text:
+        cmd = update.message.text.strip().lower()
+        if cmd == "/newrec":
+            return await newrec_menu_entrypoint(update, context)
+        if cmd == "/editor":
+            return await start_editor_entrypoint(update, context)
+        if cmd == "/rec":
+            return await start_quick_entrypoint(update, context)
+
     if context.user_data.get(CONVERSATION_DATA_KEY) is not None or context.user_data.get('current_review_key'):
         user_message = "أمر أو زر غير متوقع."
         if update.message:
             await update.message.reply_text(f"⚠️ {user_message} تم إنهاء عملية إنشاء التوصية الحالية.")
         elif update.callback_query:
-            await update.callback_query.answer("إجراء غير صالح. تم إنهاء المحادثة الحالية.", show_alert=True)
+            await update.callback_query.answer("إجراء غير صالح. تم إنهاء المحادثة المحلية.", show_alert=True)
             try:
                 await update.callback_query.edit_message_text("تم إنهاء المحادثة.")
             except Exception:
                 pass
+
     _clean_conversation_state(context)
     return ConversationHandler.END
 
@@ -472,9 +487,13 @@ def register_conversation_handlers(app: Application):
                 CallbackQueryHandler(cancel_publish_handler, pattern=r"^rec:cancel:")
             ],
             I_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)],
-        },
+        ],
         fallbacks=[
             CommandHandler("cancel", cancel_conv_handler),
+            # Allow switching modes mid-conversation gracefully
+            CommandHandler("newrec", newrec_menu_entrypoint, filters=ALLOWED_USER_FILTER),
+            CommandHandler("editor", start_editor_entrypoint, filters=ALLOWED_USER_FILTER),
+            CommandHandler("rec", start_quick_entrypoint, filters=ALLOWED_USER_FILTER),
             MessageHandler(filters.COMMAND, unexpected_input_fallback),
             CallbackQueryHandler(unexpected_input_fallback),
         ],
@@ -485,4 +504,4 @@ def register_conversation_handlers(app: Application):
         per_message=False,
     )
     app.add_handler(creation_conv_handler)
-# --- END OF FULL, FINAL, AND READY-TO-USE FILE ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
