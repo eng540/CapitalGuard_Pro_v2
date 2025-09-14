@@ -261,7 +261,8 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
     trade_service = get_service(context, "trade_service")
     try:
-        live_price = get_service(context, "price_service").get_cached_price(draft["asset"], draft.get("market", "Futures"))
+        price_service = get_service(context, "price_service")
+        live_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"))
         saved_rec = trade_service.create_recommendation(
             asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
             entry=draft["entry"], stop_loss=draft["stop_loss"], targets=draft["targets"],
@@ -348,4 +349,4 @@ def register_conversation_handlers(app: Application):
     )
     app.add_handler(conv_handler)
 # --- END OF FULL, SIMPLIFIED, AND FINAL FILE ---
-#END
+#END```
