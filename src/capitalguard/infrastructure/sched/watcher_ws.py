@@ -20,9 +20,7 @@ async def main():
     """
     # --- Pre-flight Check ---
     enable_watcher = os.getenv("ENABLE_WATCHER", "1").lower() in ("1", "true", "yes")
-    # We check the provider from the service, as it might have changed due to fallback
-    temp_services = build_services()
-    provider = temp_services["market_data_service"].provider
+    provider = os.getenv("MARKET_DATA_PROVIDER", "binance").lower()
 
     if not enable_watcher or provider != "binance":
         log.warning(f"Watcher is disabled. Reason: ENABLE_WATCHER={enable_watcher}, PROVIDER={provider}. Exiting gracefully.")
@@ -35,15 +33,16 @@ async def main():
     market_data_service = services["market_data_service"]
     ws_client = BinanceWS()
 
-    log.info("Populating initial symbols cache for the watcher...")
-    await market_data_service.refresh_symbols_cache()
-    
-    # Final check in case the refresh caused a fallback
+    # The watcher assumes the main API service is responsible for populating the cache.
+    # It will wait a moment for the cache to likely be populated by the other service.
+    await asyncio.sleep(15) # Give the API service a head start to populate the cache
+
+    # Final check in case the API service's refresh caused a fallback
     if market_data_service.provider != "binance":
-        log.warning(f"Watcher is stopping because market data provider fell back to '{market_data_service.provider}'.")
+        log.warning(f"Watcher is stopping because market data provider has fallen back to '{market_data_service.provider}'.")
         return
 
-    log.info("Symbols cache populated. Starting main watcher loop.")
+    log.info("Watcher services built. Starting main loop.")
 
     async def on_price_update(symbol: str, price: float, _raw_data):
         """
