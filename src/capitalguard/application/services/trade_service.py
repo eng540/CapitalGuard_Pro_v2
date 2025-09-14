@@ -1,9 +1,8 @@
-# --- START OF FINAL, COMPLETE, AND READY-TO-USE FILE ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
 import logging
 import time
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
-import httpx
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType, ExitStrategy
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
@@ -14,7 +13,6 @@ from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
 from capitalguard.interfaces.telegram.ui_texts import _pct
 from capitalguard.application.services.market_data_service import MarketDataService
 
-
 log = logging.getLogger(__name__)
 
 def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
@@ -22,7 +20,6 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
         return int(user_id) if user_id is not None else None
     except (TypeError, ValueError):
         return None
-
 
 class TradeService:
     def __init__(self, repo: RecommendationRepository, notifier: NotifierPort, market_data_service: MarketDataService):
@@ -56,7 +53,6 @@ class TradeService:
         published_messages = self.repo.get_published_messages(rec.id)
         if not published_messages:
             return
-
         log.info("Updating %d cards for rec #%s...", len(published_messages), rec.id)
         keyboard = public_channel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
         for msg_meta in published_messages:
@@ -80,21 +76,6 @@ class TradeService:
         if side_upper == "SHORT" and not (sl > entry):
             raise ValueError("For new SHORT trades, Stop Loss must be > Entry Price.")
 
-    def _validate_and_sort_targets(self, side: str, entry: float, tps: List[float]) -> List[float]:
-        if not tps:
-            raise ValueError("At least one target is required.")
-        side_upper = side.upper()
-        if side_upper == "LONG":
-            if not all(tp > entry for tp in tps):
-                raise ValueError("For LONG trades, all targets must be > Entry Price.")
-            return sorted(tps)
-        elif side_upper == "SHORT":
-            if not all(tp < entry for tp in tps):
-                raise ValueError("For SHORT trades, all targets must be < Entry Price.")
-            return sorted(tps, reverse=True)
-        else:
-            raise ValueError("Invalid trade side.")
-
     def create_recommendation(self, **kwargs) -> Recommendation:
         asset = kwargs['asset'].strip().upper()
         market = kwargs.get('market', 'Futures')
@@ -110,14 +91,19 @@ class TradeService:
             status, final_entry = RecommendationStatus.PENDING, kwargs['entry']
 
         self._validate_sl_vs_entry_on_create(kwargs['side'], final_entry, kwargs['stop_loss'])
-        sorted_targets = self._validate_and_sort_targets(kwargs['side'], final_entry, kwargs['targets'])
+        
+        targets_vo = Targets(kwargs['targets'])
+        for target in targets_vo.values:
+            if (kwargs['side'].upper() == 'LONG' and target.price <= final_entry) or \
+               (kwargs['side'].upper() == 'SHORT' and target.price >= final_entry):
+                raise ValueError(f"Target price {target.price} is not valid for a {kwargs['side']} trade with entry {final_entry}.")
 
         rec = Recommendation(
             asset=Symbol(asset),
             side=Side(kwargs['side']),
             entry=Price(final_entry),
             stop_loss=Price(kwargs['stop_loss']),
-            targets=Targets(sorted_targets),
+            targets=targets_vo,
             order_type=order_type_enum,
             status=status,
             market=market,
@@ -192,7 +178,7 @@ class TradeService:
         else: close_status = "BREAKEVEN"
         updated_rec = self.repo.update_with_event(rec, "CLOSED", {"old_status": old_status.value, "exit_price": exit_price, "closed_at": rec.closed_at.isoformat(), "reason": reason, "close_status": close_status})
         if reason == "FINAL_TP_HIT" and updated_rec.targets.values:
-            last_tp_price, _ = updated_rec.targets.values[-1].price, updated_rec.targets.values[-1].close_percent
+            last_tp_price = updated_rec.targets.values[-1].price
             tp_count = len(updated_rec.targets.values)
             tp_notification = (f"<b>🔥 الهدف #{tp_count} (الأخير) تحقق لـ #{updated_rec.asset.value}!</b>\n"
                              f"السعر وصل إلى {last_tp_price:g}.")
@@ -226,7 +212,7 @@ class TradeService:
                            f"تم الإغلاق عند السعر {price:g} بربح {pnl_on_part:+.2f}%.")
         self._notify_all_channels(rec_id, notification_text)
         self._update_all_cards(updated_rec)
-        if updated_rec.open_size_percent <= 0:
+        if updated_rec.open_size_percent <= 0.01: # Use a small threshold for float comparison
             log.info(f"Recommendation #{rec_id} fully closed via partial profits. Marking as closed.")
             reason = "AUTO_PARTIAL_FULL_CLOSE" if triggered_by.upper() == "AUTO" else "MANUAL_PARTIAL_FULL_CLOSE"
             return self.close(rec_id, price, reason=reason)
@@ -248,15 +234,14 @@ class TradeService:
         self._notify_all_channels(rec_id, notification_text)
         return updated_rec
 
-    def update_targets(self, rec_id: int, new_targets: List[float]) -> Recommendation:
+    def update_targets(self, rec_id: int, new_targets: List[Dict[str, float]]) -> Recommendation:
         rec = self.repo.get(rec_id)
         if not rec or rec.status == RecommendationStatus.CLOSED: raise ValueError("Recommendation not found or is closed.")
-        old_targets = [t.price for t in rec.targets.values]
-        sorted_targets = self._validate_and_sort_targets(rec.side.value, rec.entry.value, new_targets)
-        rec.targets = Targets(sorted_targets)
-        updated_rec = self.repo.update_with_event(rec, "TP_UPDATE", {"old_targets": old_targets, "new_targets": sorted_targets})
+        old_targets = [t.__dict__ for t in rec.targets.values]
+        rec.targets = Targets(new_targets)
+        updated_rec = self.repo.update_with_event(rec, "TP_UPDATE", {"old_targets": old_targets, "new_targets": new_targets})
         self._update_all_cards(updated_rec)
-        targets_str = ", ".join(map(lambda p: f"{p:g}", sorted_targets))
+        targets_str = ", ".join([f"{t.price:g}" for t in rec.targets.values])
         notification_text = (f"<b>🎯 تحديث الأهداف لـ #{updated_rec.asset.value}</b>\n"
                            f"الأهداف الجديدة هي: [{targets_str}].")
         self._notify_all_channels(rec_id, notification_text)
@@ -307,4 +292,4 @@ class TradeService:
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         return self.repo.get_recent_assets_for_user(user_id, limit)
-# --- END OF FINAL, COMPLETE, AND READY-TO-USE FILE ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
