@@ -1,12 +1,18 @@
 #START src/capitalguard/application/services/price_service.py
 import logging
 import os
+import asyncio
 from dataclasses import dataclass
+from typing import Optional
+
 from capitalguard.infrastructure.pricing.binance import BinancePricing
 from capitalguard.infrastructure.pricing.coingecko_client import CoinGeckoClient
-from capitalguard.infrastructure.cache import price_cache
+from capitalguard.infrastructure.cache import InMemoryCache
 
 log = logging.getLogger(__name__)
+
+# We instantiate the cache here to be used by the service instance
+price_cache = InMemoryCache(ttl_seconds=60)
 
 @dataclass
 class PriceService:
@@ -14,27 +20,29 @@ class PriceService:
     A service layer for fetching prices that can adapt its source.
     It uses a caching layer to prevent rate limiting and can switch
     between Binance and CoinGecko based on the environment configuration.
+    It provides both async and sync methods for fetching prices.
     """
 
-    async def get_cached_price(self, symbol: str, market: str) -> float | None:
+    async def get_cached_price(self, symbol: str, market: str) -> Optional[float]:
         """
-        Gets the price for a symbol, preferring a cached value if available.
-        If the price is not in the cache, it fetches from the configured
-        provider (Binance or CoinGecko) and caches it.
+        (Async) Gets the price for a symbol, preferring a cached value.
+        If not cached, it fetches from the configured provider and caches the result.
         """
         provider = os.getenv("MARKET_DATA_PROVIDER", "binance").lower()
         cache_key = f"price:{provider}:{market.lower()}:{symbol.upper()}"
         
-        # 1. Try to get from cache first
         cached_price = price_cache.get(cache_key)
         if cached_price is not None:
             return cached_price
             
-        # 2. If not in cache, fetch from the actual provider
-        live_price = None
+        live_price: Optional[float] = None
         if provider == "binance":
             is_spot = (str(market or "Spot").lower().startswith("spot"))
-            live_price = BinancePricing.get_price(symbol, spot=is_spot)
+            # Binance client is synchronous, so we run it in a thread pool
+            loop = asyncio.get_running_loop()
+            live_price = await loop.run_in_executor(
+                None, BinancePricing.get_price, symbol, is_spot
+            )
         elif provider == "coingecko":
             cg_client = CoinGeckoClient()
             live_price = await cg_client.get_price(symbol)
@@ -42,15 +50,17 @@ class PriceService:
             log.error(f"Unknown market data provider: {provider}")
             return None
         
-        # 3. If fetched successfully, store it in the cache for next time
         if live_price is not None:
-            # Use a shorter TTL for CoinGecko as its API has stricter rate limits
             ttl = 30 if provider == "coingecko" else 60
             price_cache.set(cache_key, live_price, ttl_seconds=ttl)
             
         return live_price
 
-    async def get_preview_price(self, symbol: str, market: str) -> float | None:
-        """This method now acts as an alias for the cached version for consistency."""
-        return await self.get_cached_price(symbol, market)
-#END
+    def get_cached_price_sync(self, symbol: str, market: str) -> Optional[float]:
+        """
+        (Sync Wrapper) Gets the price for a symbol.
+        This is a synchronous bridge to the async get_cached_price method,
+        making it easy to call from synchronous code like keyboards.py or alert_service.py.
+        """
+        try:
+            #
