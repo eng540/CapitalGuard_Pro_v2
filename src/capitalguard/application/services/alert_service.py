@@ -56,7 +56,6 @@ class AlertService:
 
     @staticmethod
     def _extract_tp_price(tp) -> float:
-        """Extracts the price from a target, supporting both old and new formats."""
         try:
             return float(getattr(tp, "price"))
         except Exception:
@@ -104,42 +103,49 @@ class AlertService:
                         action_count += 1
                         continue
 
-                # --- Automated Partial Profit-Taking Logic ---
+                # --- Automated Partial Profit-Taking & Intermediate TP notifications ---
                 if rec.targets.values:
                     for i, target in enumerate(rec.targets.values):
-                        if not hasattr(target, 'close_percent') or target.close_percent <= 0:
-                            continue
-
-                        event_type = f"PARTIAL_PROFIT_AUTO_TP{i+1}"
-                        if self.repo.check_if_event_exists(rec.id, event_type):
-                            continue
-
-                        is_tp_hit = (side == "LONG" and price >= target.price) or (side == "SHORT" and price <= target.price)
-                        if is_tp_hit:
-                            log.info(f"Auto partial profit triggered for rec #{rec.id} at TP{i+1} ({target.price}).")
-                            self.trade_service.take_partial_profit(
-                                rec.id,
-                                target.close_percent,
-                                target.price,
-                                triggered_by="AUTO"
-                            )
-                            action_count += 1
-                            break
-
-                # --- Intermediate TP notifications ---
-                if rec.targets.values:
-                    targets_to_notify = rec.targets.values if len(rec.targets.values) == 1 else rec.targets.values[:-1]
-                    for i, tp_raw in enumerate(targets_to_notify, start=1):
-                        tp_price = self._extract_tp_price(tp_raw)
-                        event_type = f"TP{i}_HIT"
-                        if not self.repo.check_if_event_exists(rec.id, event_type):
+                        tp_price = target.price
+                        close_percent = target.close_percent
+                        
+                        # Check for intermediate TP hit notification
+                        event_type_hit = f"TP{i+1}_HIT"
+                        if not self.repo.check_if_event_exists(rec.id, event_type_hit):
                             is_tp_hit = (side == "LONG" and price >= tp_price) or (side == "SHORT" and price <= tp_price)
                             if is_tp_hit:
-                                log.info(f"TP{i} hit for rec #{rec.id}. Logging event and notifying.")
-                                self.repo.update_with_event(rec, event_type, {"price": price, "target": tp_price})
-                                note = f"<b>🔥 الهدف #{i} تحقق لـ #{rec.asset.value}!</b>\nالسعر وصل إلى {tp_price:g}."
+                                log.info(f"TP{i+1} hit for rec #{rec.id}. Logging event, notifying, and updating cards.")
+                                
+                                # ✅ --- التغيير الجوهري: تحديث alert_meta ---
+                                # Add the index of the hit target to a list in alert_meta
+                                hit_targets = rec.alert_meta.get('hit_target_indices', [])
+                                if i not in hit_targets:
+                                    hit_targets.append(i)
+                                rec.alert_meta['hit_target_indices'] = hit_targets
+                                
+                                # Save the event and the updated alert_meta
+                                updated_rec = self.repo.update_with_event(rec, event_type_hit, {"price": price, "target": tp_price})
+                                
+                                # Send notification and update all cards to show the checkmark
+                                note = f"<b>🔥 الهدف #{i+1} تحقق لـ #{rec.asset.value}!</b>\nالسعر وصل إلى {tp_price:g}."
                                 self._notify_all_channels(rec.id, note)
+                                self.trade_service._update_all_cards(updated_rec)
                                 action_count += 1
+
+                                # Now, check if this target also triggers an auto partial profit
+                                if close_percent > 0:
+                                    log.info(f"Auto partial profit triggered for rec #{rec.id} at TP{i+1}.")
+                                    self.trade_service.take_partial_profit(
+                                        rec.id,
+                                        close_percent,
+                                        tp_price,
+                                        triggered_by="AUTO"
+                                    )
+                                    # The take_partial_profit service will handle its own event and card update
+                                    action_count += 1
+                                
+                                # Break after handling the first untriggered target to avoid multiple triggers in one tick
+                                break
 
                 # --- Near-touch alerts ---
                 if near_alert_pct > 0:
