@@ -1,4 +1,3 @@
-# --- START OF FINAL, CORRECTED, AND READY-TO-USE FILE ---
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict
@@ -6,6 +5,7 @@ from typing import List, Optional, Any, Union, Dict
 import sqlalchemy as sa
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload, Session
+from sqlalchemy.exc import IntegrityError
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
@@ -15,12 +15,19 @@ from .base import SessionLocal
 
 log = logging.getLogger(__name__)
 
+# -----------------------------
+# Users
+# -----------------------------
 class UserRepository:
     def __init__(self, session: Session):
         self.session = session
 
     def find_by_telegram_id(self, telegram_id: int) -> Optional[User]:
-        return self.session.query(User).filter(User.telegram_user_id == telegram_id).first()
+        return (
+            self.session.query(User)
+            .filter(User.telegram_user_id == telegram_id)
+            .first()
+        )
 
     def find_or_create(self, telegram_id: int, **kwargs) -> User:
         user = self.find_by_telegram_id(telegram_id)
@@ -39,9 +46,31 @@ class UserRepository:
         self.session.refresh(new_user)
         return new_user
 
+
+# -----------------------------
+# Channels
+# -----------------------------
 class ChannelRepository:
+    """
+    واجهة قنوات تيليجرام (قابلة للاستخدام direto مع Handlers الربط):
+      - add(owner_user_id, telegram_channel_id, title=None, username=None, notes=None, is_active=True) -> Channel
+      - get_by_telegram_channel_id(tg_id) -> Optional[Channel]
+      - list_by_user(user_id, only_active: bool=False) -> List[Channel]
+      - set_active(user_id, telegram_channel_id, active: bool) -> None
+      - update_title_username(telegram_channel_id, title, username) -> Channel
+    ملاحظة: النموذج Channel (بحسب ملفك) لا يحتوي can_post، لذلك لم نستخدمه هنا.
+    """
+
     def __init__(self, session: Session):
         self.session = session
+
+    # --- Queries ---
+    def get_by_telegram_channel_id(self, telegram_channel_id: int) -> Optional[Channel]:
+        return (
+            self.session.query(Channel)
+            .filter(Channel.telegram_channel_id == telegram_channel_id)
+            .first()
+        )
 
     def list_by_user(self, user_id: int, only_active: bool = False) -> List[Channel]:
         q = self.session.query(Channel).filter(Channel.user_id == user_id)
@@ -49,6 +78,113 @@ class ChannelRepository:
             q = q.filter(Channel.is_active.is_(True))
         return q.order_by(Channel.created_at.desc()).all()
 
+    # --- Mutations ---
+    def add(
+        self,
+        owner_user_id: int,
+        telegram_channel_id: int,
+        *,
+        title: Optional[str] = None,
+        username: Optional[str] = None,
+        notes: Optional[str] = None,
+        is_active: bool = True,
+    ) -> Channel:
+        """
+        ينشئ (أو يُحدّث) ربط قناة تيليجرام بمستخدم مالك.
+        - يضمن عدم التكرار عبر telegram_channel_id.
+        - يُحدّث الحقول (title/username/notes/is_active/last_verified_at) عند وجود سجل سابق.
+        - في حال وجود القناة بمالك مختلف، سيتم نقل الملكية إلى owner_user_id (قرار عملي لتبسيط تجربة الربط).
+        """
+        ch = self.get_by_telegram_channel_id(telegram_channel_id)
+        now = datetime.now(timezone.utc)
+
+        if ch:
+            # تحديث القناة القائمة
+            if ch.user_id != owner_user_id:
+                log.warning(
+                    "Reassigning channel %s ownership from user_id=%s to user_id=%s",
+                    telegram_channel_id, ch.user_id, owner_user_id
+                )
+                ch.user_id = owner_user_id
+
+            if title:
+                ch.title = title
+            if username is not None:
+                ch.username = username or None
+            if notes is not None:
+                ch.notes = notes or None
+
+            ch.is_active = bool(is_active)
+            ch.last_verified_at = now
+
+            try:
+                self.session.commit()
+            except IntegrityError as ie:
+                self.session.rollback()
+                # احتمال تعارض username unique:
+                raise ValueError(f"Username is already used by another channel: {username}") from ie
+
+            self.session.refresh(ch)
+            return ch
+
+        # إنشاء جديد
+        ch = Channel(
+            user_id=owner_user_id,
+            telegram_channel_id=telegram_channel_id,
+            username=username or None,
+            title=title or None,
+            is_active=bool(is_active),
+            notes=notes or None,
+            last_verified_at=now,
+        )
+        self.session.add(ch)
+        try:
+            self.session.commit()
+        except IntegrityError as ie:
+            self.session.rollback()
+            raise ValueError("Failed to add channel (integrity error). Possible duplicate username or tg_id.") from ie
+
+        self.session.refresh(ch)
+        return ch
+
+    def set_active(self, owner_user_id: int, telegram_channel_id: int, active: bool) -> None:
+        ch = (
+            self.session.query(Channel)
+            .filter(
+                Channel.user_id == owner_user_id,
+                Channel.telegram_channel_id == telegram_channel_id,
+            )
+            .first()
+        )
+        if not ch:
+            raise ValueError("Channel not found for this user.")
+        ch.is_active = bool(active)
+        ch.last_verified_at = datetime.now(timezone.utc)
+        self.session.commit()
+
+    def update_title_username(
+        self, telegram_channel_id: int, *, title: Optional[str] = None, username: Optional[str] = None
+    ) -> Channel:
+        ch = self.get_by_telegram_channel_id(telegram_channel_id)
+        if not ch:
+            raise ValueError("Channel not found.")
+        if title is not None:
+            ch.title = title
+        if username is not None:
+            ch.username = username or None
+        ch.last_verified_at = datetime.now(timezone.utc)
+        try:
+            self.session.commit()
+        except IntegrityError as ie:
+            self.session.rollback()
+            raise ValueError("Username already in use by another channel.") from ie
+        self.session.refresh(ch)
+        return ch
+
+
+# -----------------------------
+# Recommendations
+# -----------------------------
 class RecommendationRepository:
     @staticmethod
     def _coerce_enum(value: Any, enum_cls):
@@ -298,7 +434,7 @@ class RecommendationRepository:
             s.bulk_insert_mappings(PublishedMessage, messages_data)
             s.commit()
 
-    # ✅ --- الإصلاح: إزالة القوس المربع الزائد ---
+    # ✅ FIX: removed stray bracket, kept your intent
     def update_legacy_publication_fields(self, rec_id: int, first_pub_data: Dict[str, Any]) -> None:
         with SessionLocal() as s:
             s.query(RecommendationORM).filter(RecommendationORM.id == rec_id).update(
@@ -329,4 +465,3 @@ class RecommendationRepository:
         with SessionLocal() as s:
             s.bulk_insert_mappings(RecommendationEvent, events_data)
             s.commit()
-# --- END OF FINAL, CORRECTED, AND READY-TO-USE FILE ---
