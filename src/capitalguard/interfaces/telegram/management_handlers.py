@@ -1,4 +1,5 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+#START src/capitalguard/interfaces/telegram/management_handlers.py
+# --- START OF FULL, RE-ARCHITECTED, AND FINAL FILE ---
 import logging
 import types
 from time import time
@@ -31,7 +32,7 @@ from .ui_texts import build_trade_card_text
 from .parsers import parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
-from .conversation_handlers import show_review_card, CONVERSATION_DATA_KEY
+from .conversation_handlers import show_review_card, CONVERSATION_DATA_KEY, I_REVIEW, I_PRICES
 
 log = logging.getLogger(__name__)
 
@@ -249,19 +250,18 @@ async def start_profit_stop_handler(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
     await context.bot.edit_message_text(chat_id=query.message.chat_id, message_id=query.message.message_id, text=f"{query.message.text}\n\n<b>🛡️ الرجاء <u>الرد على هذه الرسالة ↩️</u> بسعر وقف الربح الجديد.</b>", parse_mode=ParseMode.HTML)
 
-async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.reply_to_message or not context.user_data:
-        return
+async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
+    if not update.message or not context.user_data:
+        return None
 
-    # --- Case 1: Reply for managing an existing recommendation ---
     if AWAITING_INPUT_KEY in context.user_data:
         state = context.user_data.pop(AWAITING_INPUT_KEY, None)
-        if not state: return
+        if not state: return None
         
         original_message = state.get("original_message")
-        if not original_message or update.message.reply_to_message.message_id != original_message.message_id:
+        if not original_message or not update.message.reply_to_message or update.message.reply_to_message.message_id != original_message.message_id:
             context.user_data[AWAITING_INPUT_KEY] = state
-            return
+            return None
 
         action, rec_id = state["action"], state["rec_id"]
         user_input = update.message.text.strip()
@@ -278,27 +278,26 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 trade_service.update_profit_stop(rec_id, price)
                 dummy_update.callback_query.data = f"rec:strategy_menu:{rec_id}"
                 await strategy_menu_handler(dummy_update, context)
-                return
-            if action == "close":
+            elif action == "close":
                 exit_price = parse_number(user_input)
                 text = f"هل تؤكد إغلاق <b>#{rec_id}</b> عند <b>{exit_price:g}</b>؟"
                 keyboard = confirm_close_keyboard(rec_id, exit_price)
                 await context.bot.edit_message_text(chat_id=original_message.chat_id, message_id=original_message.message_id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-                return
             elif action == "edit_sl":
                 new_sl = parse_number(user_input)
                 trade_service.update_sl(rec_id, new_sl)
             elif action == "edit_tp":
                 target_dicts = parse_targets_list(user_input.split())
                 trade_service.update_targets(rec_id, target_dicts)
-            await show_rec_panel_handler(dummy_update, context)
+            
+            if action in ["edit_sl", "edit_tp"]:
+                await show_rec_panel_handler(dummy_update, context)
         except Exception as e:
             log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ خطأ: {e}")
             await show_rec_panel_handler(dummy_update, context)
-        return
+        return None
 
-    # --- Case 2: Reply with prices for a new recommendation ---
     draft = context.user_data.get(CONVERSATION_DATA_KEY)
     if draft and 'order_type' in draft:
         try:
@@ -314,12 +313,13 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 draft["entry"] = parse_number(parts[0])
                 draft["stop_loss"] = parse_number(parts[1])
                 draft["targets"] = parse_targets_list(parts[2:])
-            if not draft["targets"]:
-                raise ValueError("No valid targets were parsed.")
+            if not draft["targets"]: raise ValueError("No valid targets were parsed.")
             await show_review_card(update, context)
+            return I_REVIEW
         except (ValueError, IndexError) as e:
-            await update.message.reply_text(f"❌ تنسيق أسعار غير صالح: {e}. قم بالرد مرة أخرى بالتنسيق الصحيح.")
-        return
+            await update.message.reply_text(f"❌ تنسيق أسعار غير صالح: {e}. حاول مرة أخرى.")
+            return I_PRICES
+    return None
 
 async def partial_profit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -406,5 +406,6 @@ def register_management_handlers(application: Application):
     )
     application.add_handler(partial_profit_conv)
     
-    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler))
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler), group=1)
+# --- END OF FULL, RE-ARCHITECTED, AND FINAL FILE ---
+#END
