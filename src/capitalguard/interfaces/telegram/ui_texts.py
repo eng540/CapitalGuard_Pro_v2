@@ -1,4 +1,4 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE --
 from __future__ import annotations
 from typing import Iterable, List, Optional, Dict, Any, Tuple
 from math import isfinite
