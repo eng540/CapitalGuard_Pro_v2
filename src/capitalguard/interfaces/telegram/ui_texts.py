@@ -1,10 +1,10 @@
-# --- START OF FINAL, CORRECTED, AND READY-TO-USE FILE ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
 from __future__ import annotations
 from typing import Iterable, List, Optional, Dict, Any, Tuple
 from math import isfinite
 from datetime import datetime, timezone
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
-from capitalguard.domain.value_objects import Target # Import Target
+from capitalguard.domain.value_objects import Target
 
 # --- Helper Functions (Updated to handle Target objects) ---
 
@@ -38,7 +38,7 @@ def _format_targets(entry: float, side: str, targets: List[Target]) -> str:
         try:
             pct = _pct(entry, target.price, side)
             line = f"• TP{i}: {target.price:g} ({pct:+.2f}%)"
-            if target.close_percent > 0:
+            if target.close_percent > 0 and target.close_percent < 100:
                 line += f" <i>(إغلاق {target.close_percent}%)</i>"
             lines.append(line)
         except (ValueError, TypeError): continue
@@ -50,7 +50,6 @@ def _format_targets_for_active_trade(entry: float, side: str, targets: List[Targ
         try:
             pct = _pct(entry, target.price, side)
             total_dist = abs(target.price - entry)
-            current_dist = abs(live_price - entry)
             progress = 0
             if side.upper() == "LONG":
                 progress = min(100, (live_price - entry) / total_dist * 100) if total_dist > 0 else (100 if live_price >= target.price else 0)
@@ -67,7 +66,6 @@ def _format_targets_for_active_trade(entry: float, side: str, targets: List[Targ
     return "\n".join(lines) if lines else "—"
 
 def _entry_scalar_and_zone(entry_val: Any) -> Tuple[float, Optional[Tuple[float, float]]]:
-    # This function remains the same as it handles raw input
     if isinstance(entry_val, (list, tuple)) and entry_val:
         try:
             first, last = float(entry_val[0]), float(entry_val[-1])
@@ -79,15 +77,14 @@ def _entry_scalar_and_zone(entry_val: Any) -> Tuple[float, Optional[Tuple[float,
     try: return float(entry_val or 0), None
     except Exception: return 0.0, None
 
-# --- Main Card Builder (Corrected for Target objects) ---
+# --- Main Card Builder ---
 def build_trade_card_text(rec: Recommendation) -> str:
     rec_id = getattr(rec, "id", None)
     asset = getattr(getattr(rec, "asset", None), "value", "N/A")
     side = getattr(getattr(rec, "side", None), "value", "N/A")
     entry = float(getattr(getattr(rec, "entry", None), "value", 0))
     sl = float(getattr(getattr(rec, "stop_loss", None), "value", 0))
-    targets_obj = getattr(rec, "targets", None)
-    tps = getattr(targets_obj, "values", []) # This is now a List[Target]
+    tps = getattr(getattr(rec, "targets", None), "values", [])
     status = getattr(rec, "status", RecommendationStatus.PENDING)
     live_price = getattr(rec, "live_price", None)
     open_size = getattr(rec, "open_size_percent", 100.0)
@@ -103,7 +100,7 @@ def build_trade_card_text(rec: Recommendation) -> str:
     if status == RecommendationStatus.PENDING:
         body_lines.append("Status: ⏳ <b>PENDING ENTRY</b>")
         if live_price and isfinite(live_price):
-            dist_pct = _pct(entry, float(live_price), "LONG") # Here it's just for distance, side doesn't matter
+            dist_pct = _pct(entry, float(live_price), "LONG")
             body_lines.append(f"<i>Live Price ({now_utc}): {float(live_price):g}</i>")
             body_lines.append(f"<i>Distance to Entry: {abs(dist_pct):.2f}%</i>")
         body_lines.append(f"\nEntry 💰: {entry:g}")
@@ -151,14 +148,15 @@ def build_review_text(draft: dict) -> str:
     entry_scalar, zone = _entry_scalar_and_zone(draft.get("entry"))
     sl = float(draft.get("stop_loss", 0) or 0)
     
-    # This part needs to handle raw input which is just floats
     raw_tps = draft.get("targets", [])
-    tps_for_display = [Target(price=p, close_percent=0) for p in raw_tps]
+    tps_for_display = [Target(price=t['price'], close_percent=t['close_percent']) for t in raw_tps]
     
     tp1 = tps_for_display[0] if tps_for_display else None
     planned_rr = _rr(entry_scalar, sl, tp1, side)
     notes = draft.get("notes") or "-"
-    lines_tps = "\n".join([f"• TP{i}: {tp.price:g}" for i, tp in enumerate(tps_for_display, start=1)]) or "—"
+    
+    lines_tps = _format_targets(entry_scalar, side, tps_for_display)
+    
     zone_line = f"\nEntry Zone: {zone[0]:g} — {zone[1]:g}" if zone else ""
     return (
         "📝 <b>مراجعة التوصية</b>\n\n"
@@ -188,4 +186,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
         f"<i>Report generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>",
     ]
     return "\n".join(lines)
-# --- END OF FINAL, CORRECTED, AND READY-TO-USE FILE ---
+# --- END OF FINAL, CORRECTED, AND READY-TO-USE FILE ---```
