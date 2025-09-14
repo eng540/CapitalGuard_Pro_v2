@@ -63,4 +63,18 @@ class PriceService:
         making it easy to call from synchronous code like keyboards.py or alert_service.py.
         """
         try:
-            #
+            # If an event loop is already running, use it to run the async function
+            loop = asyncio.get_running_loop()
+            return loop.run_until_complete(self.get_cached_price(symbol, market))
+        except RuntimeError:
+            # If no event loop is running, create a new one
+            return asyncio.run(self.get_cached_price(symbol, market))
+
+    async def get_preview_price(self, symbol: str, market: str) -> Optional[float]:
+        """(Async) Alias for the async cached version for consistency in async contexts."""
+        return await self.get_cached_price(symbol, market)
+
+    def get_preview_price_sync(self, symbol: str, market: str) -> Optional[float]:
+        """(Sync) Alias for the sync cached version for consistency in sync contexts."""
+        return self.get_cached_price_sync(symbol, market)
+#END
