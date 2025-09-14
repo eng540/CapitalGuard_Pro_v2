@@ -4,7 +4,9 @@ import types
 from time import time
 from typing import Optional, List, Dict
 
-from telegram import Update, ParseMode
+from telegram import Update
+# ✅ --- الإصلاح: تم تغيير مسار استيراد ParseMode ---
+from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -79,6 +81,13 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
         if "Message is not modified" not in str(e): log.warning(f"Error in navigate_open_recs_handler: {e}")
     except Exception as e:
         log.error(f"Unexpected error in navigate_open_recs_handler: {e}", exc_info=True)
+
+async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # This function is now defined in conversation_handlers, but we keep a stub here
+    # in case it's needed for other management flows in the future.
+    # For now, it's better to import it where needed.
+    # This is a placeholder to avoid circular imports if we were to call it from here.
+    pass
 
 async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -277,8 +286,6 @@ async def received_input_handler(update: Update, context: ContextTypes.DEFAULT_T
             new_sl = parse_number(user_input)
             trade_service.update_sl(rec_id, new_sl)
         elif action == "edit_tp":
-            # The parser now returns a list of dicts, but the service expects a list of floats for this specific legacy function.
-            # This is a point of potential refactoring, but for now, we adapt.
             target_dicts = parse_targets_list(user_input.split())
             new_targets_prices = [t['price'] for t in target_dicts]
             if not new_targets_prices: raise ValueError("لم يتم توفير أهداف.")
@@ -346,21 +353,21 @@ async def cancel_partial_profit(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 def register_management_handlers(application: Application):
-    application.add_handler(CallbackQueryHandler(navigate_open_recs_handler, pattern=r"^open_nav:page:"))
-    application.add_handler(CallbackQueryHandler(show_rec_panel_handler, pattern=r"^rec:show_panel:"))
-    application.add_handler(CallbackQueryHandler(update_public_card, pattern=r"^rec:update_public:"))
-    application.add_handler(CallbackQueryHandler(update_private_card, pattern=r"^rec:update_private:"))
-    application.add_handler(CallbackQueryHandler(move_sl_to_be_handler, pattern=r"^rec:move_be:"))
-    application.add_handler(CallbackQueryHandler(start_close_flow_handler, pattern=r"^rec:close_start:"))
-    application.add_handler(CallbackQueryHandler(show_edit_menu_handler, pattern=r"^rec:edit_menu:"))
-    application.add_handler(CallbackQueryHandler(back_to_main_panel_handler, pattern=r"^rec:back_to_main:"))
-    application.add_handler(CallbackQueryHandler(start_edit_sl_handler, pattern=r"^rec:edit_sl:"))
-    application.add_handler(CallbackQueryHandler(start_edit_tp_handler, pattern=r"^rec:edit_tp:"))
-    application.add_handler(CallbackQueryHandler(confirm_close_handler, pattern=r"^rec:confirm_close:"))
-    application.add_handler(CallbackQueryHandler(cancel_close_handler, pattern=r"^rec:cancel_close:"))
-    application.add_handler(CallbackQueryHandler(strategy_menu_handler, pattern=r"^rec:strategy_menu:"))
-    application.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:"))
-    application.add_handler(CallbackQueryHandler(start_profit_stop_handler, pattern=r"^rec:set_profit_stop:"))
+    application.add_handler(CallbackQueryHandler(navigate_open_recs_handler, pattern=r"^open_nav:page:", block=False))
+    application.add_handler(CallbackQueryHandler(show_rec_panel_handler, pattern=r"^rec:show_panel:", block=False))
+    application.add_handler(CallbackQueryHandler(update_public_card, pattern=r"^rec:update_public:", block=False))
+    application.add_handler(CallbackQueryHandler(update_private_card, pattern=r"^rec:update_private:", block=False))
+    application.add_handler(CallbackQueryHandler(move_sl_to_be_handler, pattern=r"^rec:move_be:", block=False))
+    application.add_handler(CallbackQueryHandler(start_close_flow_handler, pattern=r"^rec:close_start:", block=False))
+    application.add_handler(CallbackQueryHandler(show_edit_menu_handler, pattern=r"^rec:edit_menu:", block=False))
+    application.add_handler(CallbackQueryHandler(back_to_main_panel_handler, pattern=r"^rec:back_to_main:", block=False))
+    application.add_handler(CallbackQueryHandler(start_edit_sl_handler, pattern=r"^rec:edit_sl:", block=False))
+    application.add_handler(CallbackQueryHandler(start_edit_tp_handler, pattern=r"^rec:edit_tp:", block=False))
+    application.add_handler(CallbackQueryHandler(confirm_close_handler, pattern=r"^rec:confirm_close:", block=False))
+    application.add_handler(CallbackQueryHandler(cancel_close_handler, pattern=r"^rec:cancel_close:", block=False))
+    application.add_handler(CallbackQueryHandler(strategy_menu_handler, pattern=r"^rec:strategy_menu:", block=False))
+    application.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:", block=False))
+    application.add_handler(CallbackQueryHandler(start_profit_stop_handler, pattern=r"^rec:set_profit_stop:", block=False))
     
     partial_profit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(partial_profit_start, pattern=r"^rec:close_partial:")],
