@@ -208,10 +208,16 @@ class TradeService:
         event_type = "PARTIAL_PROFIT_AUTO" if triggered_by.upper() == "AUTO" else "PARTIAL_PROFIT_MANUAL"
         event_data = {"price": price, "closed_percent": close_percent, "remaining_percent": rec.open_size_percent, "pnl_on_part": pnl_on_part, "triggered_by": triggered_by}
         updated_rec = self.repo.update_with_event(rec, event_type, event_data)
-        notification_text = (f"💰 <b>جني أرباح جزئي ({close_percent}%) لـ #{updated_rec.asset.value}</b>\n"
-                           f"تم الإغلاق عند السعر {price:g} بربح {pnl_on_part:+.2f}%.")
+        
+        # ✅ --- قالب الإشعار الجديد ---
+        notification_text = (
+            f"💰 **Partial Profit Taken** | Signal #{rec.id}\n\n"
+            f"Closed **{close_percent:.2f}%** of **{rec.asset.value}** at **{price:g}** for a **{pnl_on_part:+.2f}%** profit.\n\n"
+            f"<i>Remaining open size: {rec.open_size_percent:.2f}%</i>"
+        )
         self._notify_all_channels(rec_id, notification_text)
         self._update_all_cards(updated_rec)
+        
         if updated_rec.open_size_percent <= 0.01:
             log.info(f"Recommendation #{rec_id} fully closed via partial profits. Marking as closed.")
             reason = "AUTO_PARTIAL_FULL_CLOSE" if triggered_by.upper() == "AUTO" else "MANUAL_PARTIAL_FULL_CLOSE"
@@ -225,12 +231,19 @@ class TradeService:
         rec.stop_loss = Price(new_sl)
         updated_rec = self.repo.update_with_event(rec, "SL_UPDATE", {"old_sl": old_sl, "new_sl": new_sl})
         self._update_all_cards(updated_rec)
+        
+        # ✅ --- قالب الإشعار الجديد ---
         is_be = (new_sl == rec.entry.value)
         if is_be:
-            notification_text = f"<b>🛡️ تأمين صفقة #{updated_rec.asset.value}</b>\nتم نقل وقف الخسارة إلى نقطة الدخول."
+            notification_text = (
+                f"🛡️ **Trade Secured!** | Signal #{rec.id}\n\n"
+                f"Stop Loss for **{rec.asset.value}** has been moved to entry price (**{new_sl:g}**)."
+            )
         else:
-            notification_text = (f"<b>🛑 تحديث وقف الخسارة لـ #{updated_rec.asset.value}</b>\n"
-                               f"وقف الخسارة الجديد هو {new_sl:g}.")
+            notification_text = (
+                f"🛑 **Stop Loss Updated** | Signal #{rec.id}\n\n"
+                f"New Stop Loss for **{rec.asset.value}** is now **{new_sl:g}**."
+            )
         self._notify_all_channels(rec_id, notification_text)
         return updated_rec
 
