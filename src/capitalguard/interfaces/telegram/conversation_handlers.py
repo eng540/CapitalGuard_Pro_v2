@@ -204,7 +204,7 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
         _clean_conversation_state(context)
         return ConversationHandler.END
     price_service = get_service(context, "price_service")
-    preview_price = price_service.get_preview_price(data["asset"], data.get("market", "Futures"))
+    preview_price = await price_service.get_preview_price(data["asset"], data.get("market", "Futures"))
     review_text = build_review_text_with_price(data, preview_price)
     if not review_key:
         review_key = str(uuid.uuid4())
