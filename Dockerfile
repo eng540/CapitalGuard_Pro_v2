@@ -9,14 +9,12 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src
 
 # Install system dependencies required for building Python packages and running the app.
-# Using --no-install-recommends keeps the image size smaller.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
       gcc \
       libpq-dev \
       curl \
       ca-certificates \
-      dos2unix \
       supervisor \
  && rm -rf /var/lib/apt/lists/*
 
@@ -25,7 +23,6 @@ RUN useradd -m -u 10001 appuser
 WORKDIR /app
 
 # Copy and install Python dependencies.
-# This is done in a separate layer to leverage Docker's caching.
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
  && pip install --no-cache-dir -r /app/requirements.txt
@@ -36,13 +33,7 @@ COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini
 COPY config/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# ✅ BULLETPROOF FIX: Copy the entrypoint script first, then explicitly fix its format and permissions.
-# This ensures it is always ready to be executed.
-COPY entrypoint.sh /app/entrypoint.sh
-RUN dos2unix /app/entrypoint.sh \
- && chmod +x /app/entrypoint.sh
-
-# Change ownership of the entire app directory to the non-root user.
+# Change ownership of the app directory to the non-root user.
 RUN chown -R appuser:appuser /app
 USER appuser
 
@@ -53,5 +44,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fsS http://127.0.0.1:${PORT:-8000}/health || exit 1
 
-# Set the entrypoint script as the command to run when the container starts.
-ENTRYPOINT ["/app/entrypoint.sh"]
+# No ENTRYPOINT is defined here. The command will be fully specified in docker-compose.
