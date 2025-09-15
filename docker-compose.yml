@@ -1,3 +1,4 @@
+# --- START OF FILE: docker-compose.yml ---
 version: "3.9"
 
 services:
@@ -20,11 +21,10 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     env_file:
-      - .env
+      - .env # Pass all variables from .env file
     environment:
-      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-cg}:${POSTGRES_PASSWORD:-cgpass}@db:5432/${POSTGRES_DB:-capitalguard}
-    # We use a simple command for now to ensure it starts.
-    command: sh -c "alembic upgrade head && supervisord -c /etc/supervisor/conf.d/supervisord.conf"
+      # Ensure DATABASE_URL is set correctly for Docker Compose networking
+      - DATABASE_URL=postgresql+psycopg://cg:cgpass@db:5432/capitalguard
     depends_on:
       - db
     restart: unless-stopped
@@ -32,16 +32,18 @@ services:
   watcher:
     build:
       context: .
-      dockerfile: Dockerfile
+      # We can reuse the main Dockerfile but override the CMD,
+      # or use a dedicated Dockerfile.watcher. Reusing is more efficient.
+      dockerfile: Dockerfile.watcher
     env_file:
-      - .env
+      - .env # Pass all variables from .env file
     environment:
-      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-cg}:${POSTGRES_PASSWORD:-cgpass}@db:5432/${POSTGRES_DB:-capitalguard}
-    # Simple command for the watcher as well.
-    command: sh -c "sleep 10 && alembic upgrade head && python -m capitalguard.infrastructure.sched.watcher_ws"
+      - DATABASE_URL=postgresql+psycopg://cg:cgpass@db:5432/capitalguard
     depends_on:
       - db
     restart: unless-stopped
 
 volumes:
   pgdata:
+    # This ensures the database data persists across restarts
+# --- END OF FILE ---
