@@ -11,8 +11,6 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # ✅ BEST PRACTICE: Healthcheck ensures that other services only start 
-    # after PostgreSQL is truly ready to accept connections.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cg} -d ${POSTGRES_DB:-capitalguard}"]
       interval: 5s
@@ -29,40 +27,50 @@ services:
     env_file:
       - .env
     environment:
-      # Pass DB connection details to the entrypoint script and the application
-      - DB_HOST=db
-      - DB_PORT=5432
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-cg}:${POSTGRES_PASSWORD:-cgpass}@db:5432/${POSTGRES_DB:-capitalguard}
-    # ✅ FIX: Use depends_on with the service_healthy condition to wait for the DB healthcheck.
     depends_on:
       db:
         condition: service_healthy
-    # ✅ FIX: Pass the database host/port and the final command to the entrypoint script.
-    # The command starts supervisord, which in turn manages the uvicorn process for the API.
-    command: ["db", "5432", "supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+    # ✅ FINAL FIX: Use a shell command to chain the wait, migrate, and exec logic.
+    # This is the most robust way to ensure correct startup order without a separate entrypoint script.
+    command: >
+      sh -c "
+        echo 'API service: Waiting for DB...'
+        # This simple loop waits for the TCP port to be open.
+        while ! nc -z db 5432; do
+          sleep 1
+        done
+        echo 'API service: DB is up. Running migrations...'
+        alembic upgrade head
+        echo 'API service: Migrations complete. Starting supervisor...'
+        exec supervisord -c /etc/supervisor/conf.d/supervisord.conf
+      "
     restart: unless-stopped
 
   watcher:
-    # ✅ BEST PRACTICE: Reuse the same build as the 'api' service to ensure a consistent environment.
-    # This avoids code duplication and potential inconsistencies. We no longer need Dockerfile.watcher.
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
       - .env
     environment:
-      - DB_HOST=db
-      - DB_PORT=5432
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-cg}:${POSTGRES_PASSWORD:-cgpass}@db:5432/${POSTGRES_DB:-capitalguard}
     depends_on:
       db:
         condition: service_healthy
-    # ✅ BEST PRACTICE: Override the command to run the watcher script directly.
-    # The entrypoint.sh script will still run first, wait for the DB, run migrations,
-    # and then execute this specific command.
-    command: ["db", "5432", "python", "-m", "capitalguard.infrastructure.sched.watcher_ws"]
+    # ✅ FINAL FIX: Apply the same robust startup logic for the watcher service.
+    command: >
+      sh -c "
+        echo 'Watcher service: Waiting for DB...'
+        while ! nc -z db 5432; do
+          sleep 1
+        done
+        echo 'Watcher service: DB is up. Running migrations...'
+        alembic upgrade head
+        echo 'Watcher service: Migrations complete. Starting watcher...'
+        exec python -m capitalguard.infrastructure.sched.watcher_ws
+      "
     restart: unless-stopped
 
 volumes:
   pgdata:
-    # This ensures the database data persists across container restarts.
