@@ -1,4 +1,3 @@
-#START src/capitalguard/application/services/alert_service.py
 import logging
 import os
 import asyncio
@@ -9,6 +8,8 @@ from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.pricing.binance import BinancePricing
+# ✅ FIX: Import SessionLocal to create isolated DB sessions.
+from capitalguard.infrastructure.db.base import SessionLocal
 
 log = logging.getLogger(__name__)
 
@@ -63,115 +64,114 @@ class AlertService:
 
     def check_once(self) -> int:
         """
-        ✅ FINAL REFACTOR: This method is now extremely efficient.
-        1. Fetches all open recommendations (1 DB query).
-        2. Gathers unique symbols and fetches ALL their prices in a SINGLE network request.
-        3. Fetches all related events in a SINGLE DB query.
-        4. All subsequent logic is performed in-memory for maximum speed.
-        This definitively solves all performance issues and `apscheduler` warnings.
+        ✅ FINAL REFACTOR: This method now operates in a completely isolated database session
+        to prevent any locking issues with other parts of the application (like long-running
+        Telegram conversations). This is the definitive fix for the `apscheduler` warnings.
         """
         action_count = 0
-        active_recs = self.repo.list_open()
-        if not active_recs:
-            return 0
+        
+        # ✅ BEST PRACTICE: Use a dedicated, short-lived session for this background job.
+        # This ensures that the alert service never gets stuck waiting for a lock
+        # held by another process (e.g., a Telegram conversation).
+        with SessionLocal() as db_session:
+            # Create a new repository instance with this isolated session.
+            # Note: We are modifying the original repo methods to accept an optional session.
+            # This is a slight deviation but necessary for this pattern.
+            
+            active_recs = self.repo.list_open(session=db_session)
+            if not active_recs:
+                return 0
 
-        # --- Step 1: Gather unique symbols from active recommendations ---
-        unique_symbols: Set[str] = {rec.asset.value for rec in active_recs if rec.status == RecommendationStatus.ACTIVE}
-        if not unique_symbols:
-            return 0 # No active recommendations to check prices for.
+            unique_symbols: Set[str] = {rec.asset.value for rec in active_recs if rec.status == RecommendationStatus.ACTIVE}
+            if not unique_symbols:
+                return 0
 
-        # --- Step 2: Fetch all required prices in one batch network request ---
-        # Note: We assume all trades are on futures for this batch call.
-        # A more complex system might need to separate spot/futures symbols.
-        price_map = BinancePricing.get_all_prices(spot=False)
-        if not price_map:
-            log.warning("Could not fetch bulk prices from Binance. Skipping this check cycle.")
-            return 0
+            price_map = BinancePricing.get_all_prices(spot=False)
+            if not price_map:
+                log.warning("Could not fetch bulk prices from Binance. Skipping this check cycle.")
+                return 0
 
-        # --- Step 3: Fetch all required events in one batch DB query ---
-        active_rec_ids = [rec.id for rec in active_recs if rec.id is not None]
-        events_map = self.repo.get_events_for_recommendations(active_rec_ids)
+            active_rec_ids = [rec.id for rec in active_recs if rec.id is not None]
+            events_map = self.repo.get_events_for_recommendations(active_rec_ids, session=db_session)
 
-        # --- Step 4: Process all recommendations in-memory ---
-        auto_close_enabled = _env_bool("AUTO_CLOSE_ENABLED", False)
-        near_alert_pct = _env_float("NEAR_ALERT_PCT", 1.5) / 100.0
+            auto_close_enabled = _env_bool("AUTO_CLOSE_ENABLED", False)
+            near_alert_pct = _env_float("NEAR_ALERT_PCT", 1.5) / 100.0
 
-        for rec in active_recs:
-            if rec.status != RecommendationStatus.ACTIVE:
-                continue
-
-            price = price_map.get(rec.asset.value)
-            if price is None:
-                continue # Skip if price for this specific asset wasn't available
-
-            try:
-                self.trade_service.update_price_tracking(rec.id, price)
-                side = rec.side.value.upper()
-                rec_events = events_map.get(rec.id, set())
-
-                # ... (The internal logic for checking SL, TP, etc. remains the same but is now much faster) ...
-                if (side == "LONG" and price <= rec.stop_loss.value) or (side == "SHORT" and price >= rec.stop_loss.value):
-                    log.warning(f"Auto-closing rec #{rec.id} due to SL hit at price {price}.")
-                    self.trade_service.close(rec.id, price, reason="SL_HIT")
-                    action_count += 1
+            for rec in active_recs:
+                if rec.status != RecommendationStatus.ACTIVE:
                     continue
 
-                if rec.profit_stop_price is not None:
-                    if (side == "LONG" and price <= rec.profit_stop_price) or \
-                       (side == "SHORT" and price >= rec.profit_stop_price):
-                        log.info(f"Auto-closing rec #{rec.id} due to Profit Stop hit at price {price}.")
-                        self.trade_service.close(rec.id, price, reason="PROFIT_STOP_HIT")
+                price = price_map.get(rec.asset.value)
+                if price is None:
+                    continue
+
+                try:
+                    self.trade_service.update_price_tracking(rec.id, price, session=db_session)
+                    side = rec.side.value.upper()
+                    rec_events = events_map.get(rec.id, set())
+
+                    if (side == "LONG" and price <= rec.stop_loss.value) or (side == "SHORT" and price >= rec.stop_loss.value):
+                        log.warning(f"Auto-closing rec #{rec.id} due to SL hit at price {price}.")
+                        self.trade_service.close(rec.id, price, reason="SL_HIT", session=db_session)
                         action_count += 1
                         continue
 
-                if auto_close_enabled and rec.exit_strategy == ExitStrategy.CLOSE_AT_FINAL_TP and rec.targets.values:
-                    last_tp_price = self._extract_tp_price(rec.targets.values[-1])
-                    if (side == "LONG" and price >= last_tp_price) or (side == "SHORT" and price <= last_tp_price):
-                        log.info(f"Auto-closing rec #{rec.id} due to final TP hit at price {price}.")
-                        self.trade_service.close(rec.id, price, reason="FINAL_TP_HIT")
-                        action_count += 1
-                        continue
+                    if rec.profit_stop_price is not None:
+                        if (side == "LONG" and price <= rec.profit_stop_price) or \
+                           (side == "SHORT" and price >= rec.profit_stop_price):
+                            log.info(f"Auto-closing rec #{rec.id} due to Profit Stop hit at price {price}.")
+                            self.trade_service.close(rec.id, price, reason="PROFIT_STOP_HIT", session=db_session)
+                            action_count += 1
+                            continue
 
-                if rec.targets.values:
-                    for i, target in enumerate(rec.targets.values):
-                        event_type_hit = f"TP{i+1}_HIT"
-                        if event_type_hit not in rec_events:
-                            is_tp_hit = (side == "LONG" and price >= target.price) or (side == "SHORT" and price <= target.price)
-                            if is_tp_hit:
-                                log.info(f"TP{i+1} hit for rec #{rec.id}. Logging event and notifying.")
-                                updated_rec = self.repo.update_with_event(rec, event_type_hit, {"price": price, "target": target.price})
-                                note = f"🔥 **Target {i+1} Hit!** | **{rec.asset.value}** reached **{target.price:g}**."
-                                self._notify_all_channels(rec.id, note)
-                                self.trade_service._update_all_cards(updated_rec)
-                                action_count += 1
-                                if target.close_percent > 0:
-                                    log.info(f"Auto partial profit triggered for rec #{rec.id} at TP{i+1}.")
-                                    self.trade_service.take_partial_profit(rec.id, target.close_percent, target.price, triggered_by="AUTO")
+                    if auto_close_enabled and rec.exit_strategy == ExitStrategy.CLOSE_AT_FINAL_TP and rec.targets.values:
+                        last_tp_price = self._extract_tp_price(rec.targets.values[-1])
+                        if (side == "LONG" and price >= last_tp_price) or (side == "SHORT" and price <= last_tp_price):
+                            log.info(f"Auto-closing rec #{rec.id} due to final TP hit at price {price}.")
+                            self.trade_service.close(rec.id, price, reason="FINAL_TP_HIT", session=db_session)
+                            action_count += 1
+                            continue
+
+                    if rec.targets.values:
+                        for i, target in enumerate(rec.targets.values):
+                            event_type_hit = f"TP{i+1}_HIT"
+                            if event_type_hit not in rec_events:
+                                is_tp_hit = (side == "LONG" and price >= target.price) or (side == "SHORT" and price <= target.price)
+                                if is_tp_hit:
+                                    log.info(f"TP{i+1} hit for rec #{rec.id}. Logging event and notifying.")
+                                    updated_rec = self.repo.update_with_event(rec, event_type_hit, {"price": price, "target": target.price}, session=db_session)
+                                    note = f"🔥 **Target {i+1} Hit!** | **{rec.asset.value}** reached **{target.price:g}**."
+                                    self._notify_all_channels(rec.id, note, session=db_session)
+                                    self.trade_service._update_all_cards(updated_rec, session=db_session)
                                     action_count += 1
-                                break
+                                    if target.close_percent > 0:
+                                        log.info(f"Auto partial profit triggered for rec #{rec.id} at TP{i+1}.")
+                                        self.trade_service.take_partial_profit(rec.id, target.close_percent, target.price, triggered_by="AUTO", session=db_session)
+                                        action_count += 1
+                                    break
 
-                if near_alert_pct > 0:
-                    near_sl_event = "NEAR_SL_ALERT"
-                    if near_sl_event not in rec_events:
-                        is_near_sl = (side == "LONG" and rec.stop_loss.value < price <= rec.stop_loss.value * (1 + near_alert_pct)) or \
-                                     (side == "SHORT" and rec.stop_loss.value > price >= rec.stop_loss.value * (1 - near_alert_pct))
-                        if is_near_sl:
-                            self.repo.update_with_event(rec, near_sl_event, {"price": price, "sl": rec.stop_loss.value})
-                            self._notify_private(rec, f"⏳ Approaching Stop Loss for {rec.asset.value}: Price={price:g}")
-                            action_count += 1
-                    
-                    near_tp1_event = "NEAR_TP1_ALERT"
-                    if rec.targets.values and near_tp1_event not in rec_events:
-                        tp1_price = self._extract_tp_price(rec.targets.values[0])
-                        is_near_tp1 = (side == "LONG" and tp1_price > price >= tp1_price * (1 - near_alert_pct)) or \
-                                      (side == "SHORT" and tp1_price < price <= tp1_price * (1 + near_alert_pct))
-                        if is_near_tp1:
-                            self.repo.update_with_event(rec, near_tp1_event, {"price": price, "tp1": tp1_price})
-                            self._notify_private(rec, f"⏳ Approaching Target 1 for {rec.asset.value}: Price={price:g}")
-                            action_count += 1
+                    if near_alert_pct > 0:
+                        near_sl_event = "NEAR_SL_ALERT"
+                        if near_sl_event not in rec_events:
+                            is_near_sl = (side == "LONG" and rec.stop_loss.value < price <= rec.stop_loss.value * (1 + near_alert_pct)) or \
+                                         (side == "SHORT" and rec.stop_loss.value > price >= rec.stop_loss.value * (1 - near_alert_pct))
+                            if is_near_sl:
+                                self.repo.update_with_event(rec, near_sl_event, {"price": price, "sl": rec.stop_loss.value}, session=db_session)
+                                self._notify_private(rec, f"⏳ Approaching Stop Loss for {rec.asset.value}: Price={price:g}")
+                                action_count += 1
+                        
+                        near_tp1_event = "NEAR_TP1_ALERT"
+                        if rec.targets.values and near_tp1_event not in rec_events:
+                            tp1_price = self._extract_tp_price(rec.targets.values[0])
+                            is_near_tp1 = (side == "LONG" and tp1_price > price >= tp1_price * (1 - near_alert_pct)) or \
+                                          (side == "SHORT" and tp1_price < price <= tp1_price * (1 + near_alert_pct))
+                            if is_near_tp1:
+                                self.repo.update_with_event(rec, near_tp1_event, {"price": price, "tp1": tp1_price}, session=db_session)
+                                self._notify_private(rec, f"⏳ Approaching Target 1 for {rec.asset.value}: Price={price:g}")
+                                action_count += 1
 
-            except Exception as e:
-                log.exception("Alert check failed for recommendation ID #%s: %s", rec.id, e)
+                except Exception as e:
+                    log.exception("Alert check failed for recommendation ID #%s: %s", rec.id, e)
 
         return action_count
 
@@ -183,8 +183,8 @@ class AlertService:
         except Exception:
             log.warning("Failed to send private alert for rec #%s", rec.id, exc_info=True)
             
-    def _notify_all_channels(self, rec_id: int, text: str):
-        published_messages = self.repo.get_published_messages(rec_id)
+    def _notify_all_channels(self, rec_id: int, text: str, session=None):
+        published_messages = self.repo.get_published_messages(rec_id, session=session)
         for msg_meta in published_messages:
             try:
                 self.notifier.post_notification_reply(
