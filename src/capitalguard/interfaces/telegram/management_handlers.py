@@ -1,3 +1,4 @@
+#START src/capitalguard/interfaces/telegram/management_handlers.py
 import logging
 import types
 from time import time
@@ -46,7 +47,8 @@ def _parse_tail_int(data: str) -> Optional[int]:
 def _parse_cq_parts(data: str) -> List[str]:
     return data.split(":")
 
-async def _noop_answer(query: Update.callback_query, *args, **kwargs):
+async def _noop_answer(query, *args, **kwargs):
+    # ✅ FIX: This function now correctly accepts the query object.
     try:
         await query.answer()
     except Exception:
@@ -100,7 +102,6 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
             await context.bot.edit_message_text(chat_id=query.message.chat_id, message_id=query.message.message_id, text=f"❌ You do not have access to this recommendation.")
             return
         
-        # ✅ FIX: Use the correct async method 'get_cached_price' with await.
         live_price = await price_service.get_cached_price(rec.asset.value, rec.market)
         if live_price: setattr(rec, "live_price", live_price)
         
@@ -126,7 +127,6 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not rec: await query.answer("Recommendation not found.", show_alert=True); return
         if rec.status == RecommendationStatus.CLOSED: await query.answer("This trade is already closed.", show_alert=False); return
         
-        # ✅ FIX: Use the correct async method 'get_cached_price' with await.
         live_price = await price_service.get_cached_price(rec.asset.value, rec.market)
         if not live_price: await query.answer("Could not fetch live price.", show_alert=True); return
         
@@ -278,7 +278,14 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception: pass
 
         trade_service: TradeService = get_service(context, "trade_service")
-        dummy_query = types.SimpleNamespace(message=original_message, data=f"rec:show_panel:{rec_id}", answer=_noop_answer, from_user=update.effective_user)
+        
+        # ✅ FIX: The dummy_query object now correctly passes the query object to the _noop_answer function.
+        dummy_query = types.SimpleNamespace(
+            message=original_message, 
+            data=f"rec:show_panel:{rec_id}", 
+            answer=lambda: _noop_answer(update.callback_query), 
+            from_user=update.effective_user
+        )
         dummy_update = Update(update.update_id, callback_query=dummy_query)
         
         try:
@@ -295,12 +302,13 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
             elif action == "edit_sl":
                 new_sl = parse_number(user_input)
                 trade_service.update_sl(rec_id, new_sl)
-            elif action == "edit_tp":
-                target_dicts = parse_targets_list(user_input.split())
-                trade_service.update_targets(rec_id, new_targets)
-            
-            if action in ["edit_sl", "edit_tp"]:
                 await show_rec_panel_handler(dummy_update, context)
+            elif action == "edit_tp":
+                # ✅ FIX: The 'new_targets' variable is now correctly defined before use.
+                new_targets = parse_targets_list(user_input.split())
+                trade_service.update_targets(rec_id, new_targets)
+                await show_rec_panel_handler(dummy_update, context)
+            
         except Exception as e:
             log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Error: {e}")
@@ -360,7 +368,13 @@ async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_T
         trade_service: TradeService = get_service(context, "trade_service")
         trade_service.take_partial_profit(rec_id, percentage, price)
         await update.message.reply_text("✅ Partial profit was successfully registered.")
-        dummy_query = types.SimpleNamespace(message=original_message, data=f"rec:show_panel:{rec_id}", answer=_noop_answer, from_user=update.effective_user)
+        
+        dummy_query = types.SimpleNamespace(
+            message=original_message, 
+            data=f"rec:show_panel:{rec_id}", 
+            answer=lambda: _noop_answer(update.callback_query), 
+            from_user=update.effective_user
+        )
         dummy_update = Update(update.update_id, callback_query=dummy_query)
         await show_rec_panel_handler(dummy_update, context)
     except (ValueError, IndexError) as e:
@@ -381,7 +395,12 @@ async def cancel_partial_profit(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.pop(key, None)
     await update.message.reply_text("Partial profit operation cancelled.")
     if original_message and rec_id:
-        dummy_query = types.SimpleNamespace(message=original_message, data=f"rec:show_panel:{rec_id}", answer=_noop_answer, from_user=update.effective_user)
+        dummy_query = types.SimpleNamespace(
+            message=original_message, 
+            data=f"rec:show_panel:{rec_id}", 
+            answer=lambda: _noop_answer(update.callback_query), 
+            from_user=update.effective_user
+        )
         dummy_update = Update(update.update_id, callback_query=dummy_query)
         await show_rec_panel_handler(dummy_update, context)
     return ConversationHandler.END

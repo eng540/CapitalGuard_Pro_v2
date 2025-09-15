@@ -233,7 +233,6 @@ class RecommendationRepository:
             )
             return self._to_entity(row)
 
-    # ✅ FIX: Re-added the missing function for secure access from Telegram handlers.
     def get_by_id_for_user(self, rec_id: int, user_telegram_id: Union[int, str]) -> Optional[Recommendation]:
         with SessionLocal() as s:
             user = UserRepository(s).find_by_telegram_id(int(user_telegram_id))
