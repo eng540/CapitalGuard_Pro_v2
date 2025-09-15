@@ -11,7 +11,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # Healthcheck ensures that other services only start after PostgreSQL is truly ready to accept connections.
+    # ✅ BEST PRACTICE: Healthcheck ensures that other services only start 
+    # after PostgreSQL is truly ready to accept connections.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cg} -d ${POSTGRES_DB:-capitalguard}"]
       interval: 5s
@@ -32,17 +33,18 @@ services:
       - DB_HOST=db
       - DB_PORT=5432
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-cg}:${POSTGRES_PASSWORD:-cgpass}@db:5432/${POSTGRES_DB:-capitalguard}
+    # ✅ FIX: Use depends_on with the service_healthy condition to wait for the DB healthcheck.
     depends_on:
       db:
         condition: service_healthy
-    # Pass the database host/port and the final command to the entrypoint script.
-    # The command starts supervisord, which in turn manages the uvicorn process.
+    # ✅ FIX: Pass the database host/port and the final command to the entrypoint script.
+    # The command starts supervisord, which in turn manages the uvicorn process for the API.
     command: ["db", "5432", "supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
     restart: unless-stopped
 
   watcher:
     # ✅ BEST PRACTICE: Reuse the same build as the 'api' service to ensure a consistent environment.
-    # This avoids code duplication and potential inconsistencies.
+    # This avoids code duplication and potential inconsistencies. We no longer need Dockerfile.watcher.
     build:
       context: .
       dockerfile: Dockerfile
