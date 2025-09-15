@@ -32,19 +32,20 @@ services:
       - DB_HOST=db
       - DB_PORT=5432
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-cg}:${POSTGRES_PASSWORD:-cgpass}@db:5432/${POSTGRES_DB:-capitalguard}
-    # ✅ FIX: Use depends_on with the service_healthy condition to wait for the DB healthcheck.
     depends_on:
       db:
         condition: service_healthy
-    # ✅ FIX: Pass the database host/port and the final command to the entrypoint script.
+    # Pass the database host/port and the final command to the entrypoint script.
+    # The command starts supervisord, which in turn manages the uvicorn process.
     command: ["db", "5432", "supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
     restart: unless-stopped
 
   watcher:
+    # ✅ BEST PRACTICE: Reuse the same build as the 'api' service to ensure a consistent environment.
+    # This avoids code duplication and potential inconsistencies.
     build:
       context: .
-      # Using a dedicated, smaller Dockerfile for the watcher is a good practice.
-      dockerfile: Dockerfile.watcher
+      dockerfile: Dockerfile
     env_file:
       - .env
     environment:
@@ -54,12 +55,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # ✅ FIX: The watcher now also uses the entrypoint script logic from the main Dockerfile.
-    # To make this work, we need to build it from the main Dockerfile but override the CMD.
-    # Let's adjust the build context for this service.
-    # --- BETTER APPROACH: We will modify the Dockerfile.watcher to include the entrypoint ---
-    # For now, let's assume Dockerfile.watcher is also updated.
-    # The command for the watcher is simpler.
+    # ✅ BEST PRACTICE: Override the command to run the watcher script directly.
+    # The entrypoint.sh script will still run first, wait for the DB, run migrations,
+    # and then execute this specific command.
     command: ["db", "5432", "python", "-m", "capitalguard.infrastructure.sched.watcher_ws"]
     restart: unless-stopped
 
