@@ -49,3 +49,4 @@ alembic upgrade head
 # --- Start the Main Application ---
 echo "Entrypoint: Migrations complete. Starting main command: ${CMD}"
 exec $CMD
+```# END
