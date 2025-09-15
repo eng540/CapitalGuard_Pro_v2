@@ -26,11 +26,13 @@ class _SessionManager:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if not self._provided_session and self._session:
-            if exc_type:
-                self._session.rollback()
-            else:
-                self._session.commit()
-            self._session.close()
+            try:
+                if exc_type:
+                    self._session.rollback()
+                else:
+                    self._session.commit()
+            finally:
+                self._session.close()
 
 class UserRepository:
     def find_by_telegram_id(self, telegram_id: int, session: Optional[Session] = None) -> Optional[User]:
@@ -55,6 +57,56 @@ class UserRepository:
             s.flush()
             s.refresh(new_user)
             return new_user
+
+class ChannelRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_by_telegram_channel_id(self, telegram_channel_id: int) -> Optional[Channel]:
+        return self.session.query(Channel).filter(Channel.telegram_channel_id == telegram_channel_id).first()
+
+    def list_by_user(self, user_id: int, only_active: bool = False) -> List[Channel]:
+        q = self.session.query(Channel).filter(Channel.user_id == user_id)
+        if only_active:
+            q = q.filter(Channel.is_active.is_(True))
+        return q.order_by(Channel.created_at.desc()).all()
+
+    def add(self, owner_user_id: int, telegram_channel_id: int, **kwargs) -> Channel:
+        ch = self.get_by_telegram_channel_id(telegram_channel_id)
+        now = datetime.now(timezone.utc)
+        if ch:
+            ch.user_id = owner_user_id
+            ch.title = kwargs.get("title", ch.title)
+            ch.username = kwargs.get("username", ch.username)
+            ch.is_active = kwargs.get("is_active", True)
+            ch.last_verified_at = now
+        else:
+            ch = Channel(
+                user_id=owner_user_id,
+                telegram_channel_id=telegram_channel_id,
+                username=kwargs.get("username"),
+                title=kwargs.get("title"),
+                is_active=kwargs.get("is_active", True),
+                last_verified_at=now,
+            )
+            self.session.add(ch)
+        
+        try:
+            self.session.commit()
+            self.session.refresh(ch)
+            return ch
+        except IntegrityError as e:
+            self.session.rollback()
+            log.error("Failed to add or update channel due to integrity error: %s", e)
+            raise ValueError("Username is already in use by another channel.") from e
+
+    def set_active(self, owner_user_id: int, telegram_channel_id: int, active: bool) -> None:
+        ch = self.session.query(Channel).filter(Channel.user_id == owner_user_id, Channel.telegram_channel_id == telegram_channel_id).first()
+        if not ch:
+            raise ValueError("Channel not found for this user.")
+        ch.is_active = bool(active)
+        ch.last_verified_at = datetime.now(timezone.utc)
+        self.session.commit()
 
 class RecommendationRepository:
     @staticmethod
@@ -146,6 +198,11 @@ class RecommendationRepository:
     def list_open(self, session: Optional[Session] = None) -> List[Recommendation]:
         with _SessionManager(session) as s:
             rows = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])).order_by(RecommendationORM.created_at.desc()).all()
+            return [self._to_entity(r) for r in rows]
+
+    def list_open_by_symbol(self, symbol: str, session: Optional[Session] = None) -> List[Recommendation]:
+        with _SessionManager(session) as s:
+            rows = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.asset == symbol.upper(), RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])).all()
             return [self._to_entity(r) for r in rows]
 
     def get_events_for_recommendations(self, rec_ids: List[int], session: Optional[Session] = None) -> Dict[int, set[str]]:
