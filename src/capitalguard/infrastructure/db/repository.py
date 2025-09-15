@@ -14,6 +14,7 @@ from .base import SessionLocal
 log = logging.getLogger(__name__)
 
 class _SessionManager:
+    """A robust context manager for handling SQLAlchemy sessions."""
     def __init__(self, session: Optional[Session] = None):
         self._provided_session = session
         self._session = None
@@ -31,6 +32,7 @@ class _SessionManager:
                 if exc_type:
                     self._session.rollback()
                 else:
+                    # Only commit if no exception occurred
                     self._session.commit()
             finally:
                 self._session.close()
@@ -126,6 +128,64 @@ class RecommendationRepository:
             open_size_percent=row.open_size_percent, events=row.events,
         )
 
+    def add_with_event(self, rec: Recommendation, session: Optional[Session] = None) -> Recommendation:
+        with _SessionManager(session) as s:
+            user = UserRepository().find_or_create(int(rec.user_id), session=s)
+            targets_for_db = [v.__dict__ for v in rec.targets.values]
+            row = RecommendationORM(
+                user_id=user.id, asset=rec.asset.value, side=rec.side.value, entry=rec.entry.value,
+                stop_loss=rec.stop_loss.value, targets=targets_for_db, order_type=rec.order_type,
+                status=rec.status, market=rec.market, notes=rec.notes, activated_at=rec.activated_at,
+                exit_strategy=rec.exit_strategy, profit_stop_price=rec.profit_stop_price,
+                open_size_percent=rec.open_size_percent,
+            )
+            s.add(row)
+            s.flush()
+            create_event = RecommendationEvent(
+                recommendation_id=row.id, event_type='CREATE',
+                event_timestamp=row.created_at, event_data={'entry': rec.entry.value, 'sl': rec.stop_loss.value}
+            )
+            s.add(create_event)
+            s.flush()
+            s.refresh(row, attribute_names=["user"])
+            return self._to_entity(row)
+
+    def update_with_event(self, rec: Recommendation, event_type: str, event_data: Dict[str, Any], session: Optional[Session] = None) -> Recommendation:
+        with _SessionManager(session) as s:
+            row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).first()
+            if not row: raise ValueError(f"Recommendation #{rec.id} not found")
+            
+            row.status = rec.status
+            row.stop_loss = rec.stop_loss.value
+            row.targets = [v.__dict__ for v in rec.targets.values]
+            row.exit_price = rec.exit_price
+            row.activated_at = rec.activated_at
+            row.closed_at = rec.closed_at
+            row.alert_meta = rec.alert_meta
+            row.highest_price_reached = rec.highest_price_reached
+            row.lowest_price_reached = rec.lowest_price_reached
+            row.exit_strategy = rec.exit_strategy
+            row.profit_stop_price = rec.profit_stop_price
+            row.open_size_percent = rec.open_size_percent
+
+            new_event = RecommendationEvent(recommendation_id=row.id, event_type=event_type, event_data=event_data)
+            s.add(new_event)
+            s.flush()
+            s.refresh(row, attribute_names=["user"])
+            return self._to_entity(row)
+
+    def update(self, rec: Recommendation, session: Optional[Session] = None) -> Recommendation:
+        with _SessionManager(session) as s:
+            row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).first()
+            if not row: raise ValueError(f"Recommendation #{rec.id} not found")
+            
+            row.highest_price_reached = rec.highest_price_reached
+            row.lowest_price_reached = rec.lowest_price_reached
+            
+            s.flush()
+            s.refresh(row, attribute_names=["user"])
+            return self._to_entity(row)
+
     def get(self, rec_id: int, session: Optional[Session] = None) -> Optional[Recommendation]:
         with _SessionManager(session) as s:
             row = s.query(RecommendationORM).options(joinedload(RecommendationORM.user), selectinload(RecommendationORM.events)).filter(RecommendationORM.id == rec_id).first()
@@ -142,6 +202,34 @@ class RecommendationRepository:
         with _SessionManager(session) as s:
             rows = s.query(RecommendationORM).options(joinedload(RecommendationORM.user), selectinload(RecommendationORM.events)).filter(RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])).order_by(RecommendationORM.created_at.desc()).all()
             return [self._to_entity(r) for r in rows]
+
+    def list_open_by_symbol(self, symbol: str, session: Optional[Session] = None) -> List[Recommendation]:
+        with _SessionManager(session) as s:
+            rows = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.asset == symbol.upper(), RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])).all()
+            return [self._to_entity(r) for r in rows]
+
+    def get_events_for_recommendations(self, rec_ids: List[int], session: Optional[Session] = None) -> Dict[int, set[str]]:
+        if not rec_ids: return {}
+        with _SessionManager(session) as s:
+            results = s.query(RecommendationEvent.recommendation_id, RecommendationEvent.event_type).filter(RecommendationEvent.recommendation_id.in_(rec_ids)).all()
+            event_map = {}
+            for rec_id, event_type in results:
+                event_map.setdefault(rec_id, set()).add(event_type)
+            return event_map
+
+    def get_published_messages(self, rec_id: int, session: Optional[Session] = None) -> List[PublishedMessage]:
+        with _SessionManager(session) as s:
+            return s.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
+
+    def list_open_for_user(self, user_telegram_id: Union[int, str], **filters) -> List[Recommendation]:
+        with SessionLocal() as s:
+            user = UserRepository().find_by_telegram_id(int(user_telegram_id), session=s)
+            if not user: return []
+            q = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.user_id == user.id, RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE]))
+            if filters.get("symbol"): q = q.filter(RecommendationORM.asset.ilike(f'%{filters["symbol"].upper()}%'))
+            if filters.get("side"): q = q.filter(RecommendationORM.side == Side(filters["side"].upper()).value)
+            if filters.get("status"): q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
+            return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
     def get_recent_assets_for_user(self, user_telegram_id: Union[str, int], limit: int = 5, session: Optional[Session] = None) -> List[str]:
         with _SessionManager(session) as s:
