@@ -11,11 +11,6 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cg} -d ${POSTGRES_DB:-capitalguard}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
     restart: unless-stopped
 
   api:
@@ -28,23 +23,10 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-cg}:${POSTGRES_PASSWORD:-cgpass}@db:5432/${POSTGRES_DB:-capitalguard}
+    # We use a simple command for now to ensure it starts.
+    command: sh -c "alembic upgrade head && supervisord -c /etc/supervisor/conf.d/supervisord.conf"
     depends_on:
-      db:
-        condition: service_healthy
-    # ✅ FINAL FIX: Use a shell command to chain the wait, migrate, and exec logic.
-    # This is the most robust way to ensure correct startup order without a separate entrypoint script.
-    command: >
-      sh -c "
-        echo 'API service: Waiting for DB...'
-        # This simple loop waits for the TCP port to be open.
-        while ! nc -z db 5432; do
-          sleep 1
-        done
-        echo 'API service: DB is up. Running migrations...'
-        alembic upgrade head
-        echo 'API service: Migrations complete. Starting supervisor...'
-        exec supervisord -c /etc/supervisor/conf.d/supervisord.conf
-      "
+      - db
     restart: unless-stopped
 
   watcher:
@@ -55,21 +37,10 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-cg}:${POSTGRES_PASSWORD:-cgpass}@db:5432/${POSTGRES_DB:-capitalguard}
+    # Simple command for the watcher as well.
+    command: sh -c "sleep 10 && alembic upgrade head && python -m capitalguard.infrastructure.sched.watcher_ws"
     depends_on:
-      db:
-        condition: service_healthy
-    # ✅ FINAL FIX: Apply the same robust startup logic for the watcher service.
-    command: >
-      sh -c "
-        echo 'Watcher service: Waiting for DB...'
-        while ! nc -z db 5432; do
-          sleep 1
-        done
-        echo 'Watcher service: DB is up. Running migrations...'
-        alembic upgrade head
-        echo 'Watcher service: Migrations complete. Starting watcher...'
-        exec python -m capitalguard.infrastructure.sched.watcher_ws
-      "
+      - db
     restart: unless-stopped
 
 volumes:
