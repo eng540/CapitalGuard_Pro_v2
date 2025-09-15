@@ -1,235 +1,240 @@
 import logging
-import time
-from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
+from typing import List, Optional, Any, Union, Dict
 
-from sqlalchemy.orm import Session
+import sqlalchemy as sa
+from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.exc import IntegrityError
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType, ExitStrategy
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
-from capitalguard.domain.ports import NotifierPort
-from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository, ChannelRepository
-from capitalguard.infrastructure.db.base import SessionLocal
-from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
-from capitalguard.interfaces.telegram.ui_texts import _pct
-from capitalguard.application.services.market_data_service import MarketDataService
-from capitalguard.infrastructure.db.models import PublishedMessage, RecommendationORM
+from .models import RecommendationORM, User, Channel, PublishedMessage, RecommendationEvent
+from .base import SessionLocal
 
 log = logging.getLogger(__name__)
 
-def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
-    try:
-        return int(user_id) if user_id is not None and user_id.isdigit() else None
-    except (TypeError, ValueError):
-        return None
+class _SessionManager:
+    """A robust context manager for handling SQLAlchemy sessions."""
+    def __init__(self, session: Optional[Session] = None):
+        self._provided_session = session
+        self._session = None
 
-class TradeService:
-    def __init__(self, repo: RecommendationRepository, notifier: NotifierPort, market_data_service: MarketDataService):
-        self.repo = repo
-        self.notifier = notifier
-        self.market_data_service = market_data_service
-
-    def _load_user_linked_channels(self, uid_int: int, only_active: bool = True) -> List[Any]:
-        with SessionLocal() as s:
-            user = UserRepository().find_by_telegram_id(uid_int, session=s)
-            if not user:
-                return []
-            return ChannelRepository(s).list_by_user(user.id, only_active=only_active)
-
-    def _notify_all_channels(self, rec_id: int, text: str, session: Optional[Session] = None):
-        published_messages = self.repo.get_published_messages(rec_id, session=session)
-        for msg_meta in published_messages:
-            try:
-                self.notifier.post_notification_reply(
-                    chat_id=msg_meta.telegram_channel_id,
-                    message_id=msg_meta.telegram_message_id,
-                    text=text
-                )
-            except Exception as e:
-                log.warning(
-                    "Failed to send reply notification for rec #%s to channel %s: %s",
-                    rec_id, msg_meta.telegram_channel_id, e
-                )
-
-    def _update_all_cards(self, rec: Recommendation, session: Optional[Session] = None):
-        published_messages = self.repo.get_published_messages(rec.id, session=session)
-        if not published_messages:
-            return
-        log.info("Updating %d cards for rec #%s...", len(published_messages), rec.id)
-        keyboard = public_channel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
-        for msg_meta in published_messages:
-            try:
-                self.notifier.edit_recommendation_card_by_ids(
-                    channel_id=msg_meta.telegram_channel_id,
-                    message_id=msg_meta.telegram_message_id,
-                    rec=rec,
-                    keyboard=keyboard
-                )
-            except Exception as e:
-                log.warning(
-                    "Failed to update card for rec #%s in channel %s: %s",
-                    rec.id, msg_meta.telegram_channel_id, e
-                )
-
-    def _validate_sl_vs_entry_on_create(self, side: str, entry: float, sl: float) -> None:
-        side_upper = side.upper()
-        if side_upper == "LONG" and not (sl < entry):
-            raise ValueError("For new LONG trades, Stop Loss must be < Entry Price.")
-        if side_upper == "SHORT" and not (sl > entry):
-            raise ValueError("For new SHORT trades, Stop Loss must be > Entry Price.")
-
-    def create_recommendation(self, **kwargs) -> Recommendation:
-        asset = kwargs['asset'].strip().upper()
-        market = kwargs.get('market', 'Futures')
-        if not self.market_data_service.is_valid_symbol(asset, market):
-            raise ValueError(f"The symbol '{asset}' is not valid or available in the '{market}' market.")
-        
-        order_type_enum = OrderType(kwargs['order_type'].upper())
-        if order_type_enum == OrderType.MARKET:
-            if kwargs.get('live_price') is None:
-                raise ValueError("Live price is required for Market orders.")
-            status, final_entry = RecommendationStatus.ACTIVE, kwargs['live_price']
+    def __enter__(self) -> Session:
+        if self._provided_session:
+            self._session = self._provided_session
         else:
-            status, final_entry = RecommendationStatus.PENDING, kwargs['entry']
+            self._session = SessionLocal()
+        return self._session
 
-        self._validate_sl_vs_entry_on_create(kwargs['side'], final_entry, kwargs['stop_loss'])
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if not self._provided_session and self._session:
+            try:
+                if exc_type:
+                    self._session.rollback()
+                else:
+                    # Only commit if no exception occurred
+                    self._session.commit()
+            finally:
+                self._session.close()
+
+class UserRepository:
+    def find_by_telegram_id(self, telegram_id: int, session: Optional[Session] = None) -> Optional[User]:
+        with _SessionManager(session) as s:
+            return s.query(User).filter(User.telegram_user_id == telegram_id).first()
+
+    def find_or_create(self, telegram_id: int, session: Optional[Session] = None, **kwargs) -> User:
+        with _SessionManager(session) as s:
+            user = s.query(User).filter(User.telegram_user_id == telegram_id).first()
+            if user:
+                return user
+            
+            log.info("Creating new user for telegram_id=%s", telegram_id)
+            new_user = User(
+                telegram_user_id=telegram_id,
+                email=kwargs.get("email") or f"tg{telegram_id}@telegram.local",
+                user_type=(kwargs.get("user_type") or "trader"),
+                is_active=True,
+                first_name=kwargs.get("first_name"),
+            )
+            s.add(new_user)
+            s.flush()
+            s.refresh(new_user)
+            return new_user
+
+class ChannelRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_by_telegram_channel_id(self, telegram_channel_id: int) -> Optional[Channel]:
+        return self.session.query(Channel).filter(Channel.telegram_channel_id == telegram_channel_id).first()
+
+    def list_by_user(self, user_id: int, only_active: bool = False) -> List[Channel]:
+        q = self.session.query(Channel).filter(Channel.user_id == user_id)
+        if only_active:
+            q = q.filter(Channel.is_active.is_(True))
+        return q.order_by(Channel.created_at.desc()).all()
+
+    def add(self, owner_user_id: int, telegram_channel_id: int, **kwargs) -> Channel:
+        ch = self.get_by_telegram_channel_id(telegram_channel_id)
+        now = datetime.now(timezone.utc)
+        if ch:
+            ch.user_id = owner_user_id
+            ch.title = kwargs.get("title", ch.title)
+            ch.username = kwargs.get("username", ch.username)
+            ch.is_active = kwargs.get("is_active", True)
+            ch.last_verified_at = now
+        else:
+            ch = Channel(
+                user_id=owner_user_id,
+                telegram_channel_id=telegram_channel_id,
+                username=kwargs.get("username"),
+                title=kwargs.get("title"),
+                is_active=kwargs.get("is_active", True),
+                last_verified_at=now,
+            )
+            self.session.add(ch)
         
-        targets_vo = Targets(kwargs['targets'])
-        for target in targets_vo.values:
-            if (kwargs['side'].upper() == 'LONG' and target.price <= final_entry) or \
-               (kwargs['side'].upper() == 'SHORT' and target.price >= final_entry):
-                raise ValueError(f"Target price {target.price} is not valid for a {kwargs['side']} trade with entry {final_entry}.")
+        try:
+            self.session.commit()
+            self.session.refresh(ch)
+            return ch
+        except IntegrityError as e:
+            self.session.rollback()
+            log.error("Failed to add or update channel due to integrity error: %s", e)
+            raise ValueError("Username is already in use by another channel.") from e
 
-        recommendation_entity = Recommendation(
-            asset=Symbol(asset), side=Side(kwargs['side']), entry=Price(final_entry),
-            stop_loss=Price(kwargs['stop_loss']), targets=targets_vo, order_type=order_type_enum,
-            status=status, market=market, notes=kwargs.get('notes'), user_id=kwargs.get('user_id'),
-            activated_at=datetime.now(timezone.utc) if status == RecommendationStatus.ACTIVE else None,
-            exit_strategy=kwargs.get('exit_strategy', ExitStrategy.CLOSE_AT_FINAL_TP),
-            profit_stop_price=kwargs.get('profit_stop_price'), open_size_percent=100.0
+    def set_active(self, owner_user_id: int, telegram_channel_id: int, active: bool) -> None:
+        ch = self.session.query(Channel).filter(Channel.user_id == owner_user_id, Channel.telegram_channel_id == telegram_channel_id).first()
+        if not ch:
+            raise ValueError("Channel not found for this user.")
+        ch.is_active = bool(active)
+        ch.last_verified_at = datetime.now(timezone.utc)
+        self.session.commit()
+
+class RecommendationRepository:
+    @staticmethod
+    def _to_entity(row: RecommendationORM) -> Optional[Recommendation]:
+        if not row: return None
+        user_telegram_id = str(row.user.telegram_user_id) if getattr(row, "user", None) else None
+        return Recommendation(
+            id=row.id, asset=Symbol(row.asset), side=Side(row.side), entry=Price(row.entry),
+            stop_loss=Price(row.stop_loss), targets=Targets(list(row.targets or [])),
+            order_type=OrderType(row.order_type), status=RecommendationStatus(row.status),
+            market=row.market, notes=row.notes, user_id=user_telegram_id, created_at=row.created_at,
+            updated_at=row.updated_at, exit_price=row.exit_price, activated_at=row.activated_at,
+            closed_at=row.closed_at, alert_meta=dict(row.alert_meta or {}),
+            highest_price_reached=row.highest_price_reached, lowest_price_reached=row.lowest_price_reached,
+            exit_strategy=ExitStrategy(row.exit_strategy), profit_stop_price=row.profit_stop_price,
+            open_size_percent=row.open_size_percent, events=row.events,
         )
 
-        if recommendation_entity.status == RecommendationStatus.ACTIVE:
-            recommendation_entity.highest_price_reached = recommendation_entity.entry.value
-            recommendation_entity.lowest_price_reached = recommendation_entity.entry.value
+    def add_with_event(self, rec: Recommendation, session: Optional[Session] = None) -> Recommendation:
+        with _SessionManager(session) as s:
+            user = UserRepository().find_or_create(int(rec.user_id), session=s)
+            targets_for_db = [v.__dict__ for v in rec.targets.values]
+            row = RecommendationORM(
+                user_id=user.id, asset=rec.asset.value, side=rec.side.value, entry=rec.entry.value,
+                stop_loss=rec.stop_loss.value, targets=targets_for_db, order_type=rec.order_type,
+                status=rec.status, market=rec.market, notes=rec.notes, activated_at=rec.activated_at,
+                exit_strategy=rec.exit_strategy, profit_stop_price=rec.profit_stop_price,
+                open_size_percent=rec.open_size_percent,
+            )
+            s.add(row)
+            s.flush()
+            create_event = RecommendationEvent(
+                recommendation_id=row.id, event_type='CREATE',
+                event_timestamp=row.created_at, event_data={'entry': rec.entry.value, 'sl': rec.stop_loss.value}
+            )
+            s.add(create_event)
+            s.flush()
+            s.refresh(row, attribute_names=["user"])
+            return self._to_entity(row)
 
-        return self.repo.add_with_event(recommendation_entity)
+    def update_with_event(self, rec: Recommendation, event_type: str, event_data: Dict[str, Any], session: Optional[Session] = None) -> Recommendation:
+        with _SessionManager(session) as s:
+            row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).first()
+            if not row: raise ValueError(f"Recommendation #{rec.id} not found")
+            
+            row.status = rec.status
+            row.stop_loss = rec.stop_loss.value
+            row.targets = [v.__dict__ for v in rec.targets.values]
+            row.exit_price = rec.exit_price
+            row.activated_at = rec.activated_at
+            row.closed_at = rec.closed_at
+            row.alert_meta = rec.alert_meta
+            row.highest_price_reached = rec.highest_price_reached
+            row.lowest_price_reached = rec.lowest_price_reached
+            row.exit_strategy = rec.exit_strategy
+            row.profit_stop_price = rec.profit_stop_price
+            row.open_size_percent = rec.open_size_percent
 
-    def publish_recommendation(self, rec_id: int, user_id: Optional[str], channel_ids: Optional[List[int]] = None) -> Tuple[Optional[Recommendation], Dict[str, List[Dict[str, Any]]]]:
-        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
-        
+            new_event = RecommendationEvent(recommendation_id=row.id, event_type=event_type, event_data=event_data)
+            s.add(new_event)
+            s.flush()
+            s.refresh(row, attribute_names=["user"])
+            return self._to_entity(row)
+
+    def update(self, rec: Recommendation, session: Optional[Session] = None) -> Recommendation:
+        with _SessionManager(session) as s:
+            row = s.query(RecommendationORM).filter(RecommendationORM.id == rec.id).first()
+            if not row: raise ValueError(f"Recommendation #{rec.id} not found")
+            
+            row.highest_price_reached = rec.highest_price_reached
+            row.lowest_price_reached = rec.lowest_price_reached
+            
+            s.flush()
+            s.refresh(row, attribute_names=["user"])
+            return self._to_entity(row)
+
+    def get(self, rec_id: int, session: Optional[Session] = None) -> Optional[Recommendation]:
+        with _SessionManager(session) as s:
+            row = s.query(RecommendationORM).options(joinedload(RecommendationORM.user), selectinload(RecommendationORM.events)).filter(RecommendationORM.id == rec_id).first()
+            return self._to_entity(row)
+
+    def get_by_id_for_user(self, rec_id: int, user_telegram_id: Union[int, str], session: Optional[Session] = None) -> Optional[Recommendation]:
+        with _SessionManager(session) as s:
+            user = UserRepository().find_by_telegram_id(int(user_telegram_id), session=s)
+            if not user: return None
+            row = s.query(RecommendationORM).options(joinedload(RecommendationORM.user), selectinload(RecommendationORM.events)).filter(RecommendationORM.id == rec_id, RecommendationORM.user_id == user.id).first()
+            return self._to_entity(row)
+
+    def list_open(self, session: Optional[Session] = None) -> List[Recommendation]:
+        with _SessionManager(session) as s:
+            rows = s.query(RecommendationORM).options(joinedload(RecommendationORM.user), selectinload(RecommendationORM.events)).filter(RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])).order_by(RecommendationORM.created_at.desc()).all()
+            return [self._to_entity(r) for r in rows]
+
+    def list_open_by_symbol(self, symbol: str, session: Optional[Session] = None) -> List[Recommendation]:
+        with _SessionManager(session) as s:
+            rows = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.asset == symbol.upper(), RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])).all()
+            return [self._to_entity(r) for r in rows]
+
+    def get_events_for_recommendations(self, rec_ids: List[int], session: Optional[Session] = None) -> Dict[int, set[str]]:
+        if not rec_ids: return {}
+        with _SessionManager(session) as s:
+            results = s.query(RecommendationEvent.recommendation_id, RecommendationEvent.event_type).filter(RecommendationEvent.recommendation_id.in_(rec_ids)).all()
+            event_map = {}
+            for rec_id, event_type in results:
+                event_map.setdefault(rec_id, set()).add(event_type)
+            return event_map
+
+    def get_published_messages(self, rec_id: int, session: Optional[Session] = None) -> List[PublishedMessage]:
+        with _SessionManager(session) as s:
+            return s.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
+
+    def list_open_for_user(self, user_telegram_id: Union[int, str], **filters) -> List[Recommendation]:
         with SessionLocal() as s:
-            rec = self.repo.get(rec_id, session=s)
-            if not rec:
-                raise ValueError(f"Recommendation {rec_id} not found for publishing.")
+            user = UserRepository().find_by_telegram_id(int(user_telegram_id), session=s)
+            if not user: return []
+            q = s.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(RecommendationORM.user_id == user.id, RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE]))
+            if filters.get("symbol"): q = q.filter(RecommendationORM.asset.ilike(f'%{filters["symbol"].upper()}%'))
+            if filters.get("side"): q = q.filter(RecommendationORM.side == Side(filters["side"].upper()).value)
+            if filters.get("status"): q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
+            return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
-            uid_int = _parse_int_user_id(user_id or rec.user_id)
-            if not uid_int:
-                report["failed"].append({"channel_id": None, "reason": "User ID could not be resolved or is invalid."})
-                return rec, report
-
-            channels = self._load_user_linked_channels(uid_int, only_active=True)
-            if channel_ids:
-                channels = [ch for ch in channels if ch.telegram_channel_id in set(channel_ids)]
-            
-            if not channels:
-                return rec, report
-
-            keyboard = public_channel_keyboard(rec.id)
-            for ch in channels:
-                try:
-                    res = self.notifier.post_to_channel(ch.telegram_channel_id, rec, keyboard)
-                    if res:
-                        publication_data = [{"recommendation_id": rec.id, "telegram_channel_id": res[0], "telegram_message_id": res[1]}]
-                        s.bulk_insert_mappings(PublishedMessage, publication_data)
-                        report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res[1]})
-                    else:
-                        report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": "Notifier failed to post."})
-                except Exception as e:
-                    log.error("Failed to publish to channel %s: %s", ch.telegram_channel_id, e, exc_info=True)
-                    report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": str(e)})
-            
-            if report["success"]:
-                first_pub = report["success"][0]
-                s.query(RecommendationORM).filter(RecommendationORM.id == rec_id).update(
-                    {'channel_id': first_pub['channel_id'], 'message_id': first_pub['message_id'], 'published_at': datetime.now(timezone.utc)}
-                )
-            
-            s.commit()
-            
-        return self.repo.get(rec_id), report
-
-    def close(self, rec_id: int, exit_price: float, reason: str = "MANUAL_CLOSE", session: Optional[Session] = None) -> Recommendation:
-        rec = self.repo.get(rec_id, session=session)
-        if not rec: raise ValueError(f"Recommendation {rec_id} not found.")
-        if rec.status == RecommendationStatus.CLOSED:
-            log.warning("Attempted to close an already closed recommendation: #%d", rec_id)
-            return rec
-            
-        rec.open_size_percent = 0.0
-        old_status = rec.status
-        rec.close(exit_price)
-        pnl = _pct(rec.entry.value, exit_price, rec.side.value)
-        
-        if pnl > 0.001: close_status = "PROFIT"
-        elif pnl < -0.001: close_status = "LOSS"
-        else: close_status = "BREAKEVEN"
-        
-        updated_rec = self.repo.update_with_event(rec, "CLOSED", {"old_status": old_status.value, "exit_price": exit_price, "closed_at": rec.closed_at.isoformat(), "reason": reason, "close_status": close_status}, session=session)
-        
-        self._update_all_cards(updated_rec, session=session)
-        
-        if close_status == "PROFIT": emoji, r_text = "🏆", "Profit"
-        elif close_status == "LOSS": emoji, r_text = "💔", "Loss"
-        else: emoji, r_text = "🛡️", "Breakeven"
-        
-        close_notification = (f"<b>{emoji} Trade Closed #{updated_rec.asset.value}</b>\n"
-                            f"Closed at {exit_price:g} for a result of <b>{pnl:+.2f}%</b> ({r_text}).")
-        self._notify_all_channels(rec_id, close_notification, session=session)
-        return updated_rec
-
-    def take_partial_profit(self, rec_id: int, close_percent: float, price: float, triggered_by: str = "MANUAL", session: Optional[Session] = None) -> Recommendation:
-        rec = self.repo.get(rec_id, session=session)
-        if not rec or rec.status != RecommendationStatus.ACTIVE:
-            raise ValueError("Partial profit can only be taken on active recommendations.")
-        if not (0 < close_percent <= rec.open_size_percent):
-            raise ValueError(f"Invalid percentage. Must be between 0 and {rec.open_size_percent}.")
-        
-        rec.open_size_percent -= close_percent
-        pnl_on_part = _pct(rec.entry.value, price, rec.side.value)
-        event_type = "PARTIAL_PROFIT_AUTO" if triggered_by.upper() == "AUTO" else "PARTIAL_PROFIT_MANUAL"
-        event_data = {"price": price, "closed_percent": close_percent, "remaining_percent": rec.open_size_percent, "pnl_on_part": pnl_on_part, "triggered_by": triggered_by}
-        updated_rec = self.repo.update_with_event(rec, event_type, event_data, session=session)
-        
-        notification_text = (
-            f"💰 **Partial Profit Taken** | Signal #{rec.id}\n\n"
-            f"Closed **{close_percent:.2f}%** of **{rec.asset.value}** at **{price:g}** for a **{pnl_on_part:+.2f}%** profit.\n\n"
-            f"<i>Remaining open size: {rec.open_size_percent:.2f}%</i>"
-        )
-        self._notify_all_channels(rec_id, notification_text, session=session)
-        self._update_all_cards(updated_rec, session=session)
-        
-        if updated_rec.open_size_percent <= 0.01:
-            log.info(f"Recommendation #{rec_id} fully closed via partial profits. Marking as closed.")
-            reason = "AUTO_PARTIAL_FULL_CLOSE" if triggered_by.upper() == "AUTO" else "MANUAL_PARTIAL_FULL_CLOSE"
-            return self.close(rec_id, price, reason=reason, session=session)
-        return updated_rec
-
-    def update_price_tracking(self, rec_id: int, current_price: float, session: Optional[Session] = None) -> Optional[Recommendation]:
-        rec = self.repo.get(rec_id, session=session)
-        if not rec or rec.status != RecommendationStatus.ACTIVE: return None
-        updated = False
-        if rec.highest_price_reached is None or current_price > rec.highest_price_reached:
-            rec.highest_price_reached = current_price
-            updated = True
-        if rec.lowest_price_reached is None or current_price < rec.lowest_price_reached:
-            rec.lowest_price_reached = current_price
-            updated = True
-        if updated: return self.repo.update(rec, session=session)
-        return None
-
-    def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
-        uid_int = _parse_int_user_id(user_id)
-        if not uid_int: return []
-        with SessionLocal() as s:
-            return self.repo.get_recent_assets_for_user(user_telegram_id=uid_int, limit=limit, session=s)
+    def get_recent_assets_for_user(self, user_telegram_id: Union[str, int], limit: int = 5, session: Optional[Session] = None) -> List[str]:
+        with _SessionManager(session) as s:
+            user = UserRepository().find_by_telegram_id(int(user_telegram_id), session=s)
+            if not user: return []
+            subq = s.query(RecommendationORM.asset, sa.func.max(RecommendationORM.created_at).label("max_created_at")).filter(RecommendationORM.user_id == user.id).group_by(RecommendationORM.asset).subquery()
+            results = s.query(subq.c.asset).order_by(subq.c.max_created_at.desc()).limit(limit).all()
+            return [r[0] for r in results]
