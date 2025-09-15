@@ -13,6 +13,7 @@ from .base import SessionLocal
 log = logging.getLogger(__name__)
 
 class _SessionManager:
+    """A robust context manager for handling SQLAlchemy sessions."""
     def __init__(self, session: Optional[Session] = None):
         self._provided_session = session
         self._session = None
@@ -30,6 +31,7 @@ class _SessionManager:
                 if exc_type:
                     self._session.rollback()
                 else:
+                    # Only commit if no exception occurred
                     self._session.commit()
             finally:
                 self._session.close()
@@ -227,3 +229,11 @@ class RecommendationRepository:
             if filters.get("side"): q = q.filter(RecommendationORM.side == Side(filters["side"].upper()).value)
             if filters.get("status"): q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
             return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
+
+    def get_recent_assets_for_user(self, user_telegram_id: Union[str, int], limit: int = 5, session: Optional[Session] = None) -> List[str]:
+        with _SessionManager(session) as s:
+            user = UserRepository().find_by_telegram_id(int(user_telegram_id), session=s)
+            if not user: return []
+            subq = s.query(RecommendationORM.asset, sa.func.max(RecommendationORM.created_at).label("max_created_at")).filter(RecommendationORM.user_id == user.id).group_by(RecommendationORM.asset).subquery()
+            results = s.query(subq.c.asset).order_by(subq.c.max_created_at.desc()).limit(limit).all()
+            return [r[0] for r in results]
