@@ -232,4 +232,4 @@ class TradeService:
         uid_int = _parse_int_user_id(user_id)
         if not uid_int: return []
         with SessionLocal() as s:
-            return self.repo.get_recent_assets_for_user(user_id=uid_int, limit=limit, session=s)
+            return self.repo.get_recent_assets_for_user(user_telegram_id=uid_int, limit=limit, session=s)
