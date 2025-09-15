@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType, ExitStrategy
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from capitalguard.domain.ports import NotifierPort
-from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository
+from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository, ChannelRepository
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
 from capitalguard.interfaces.telegram.ui_texts import _pct
@@ -28,6 +28,13 @@ class TradeService:
         self.repo = repo
         self.notifier = notifier
         self.market_data_service = market_data_service
+
+    def _load_user_linked_channels(self, uid_int: int, only_active: bool = True) -> List[Any]:
+        with SessionLocal() as s:
+            user = UserRepository().find_by_telegram_id(uid_int, session=s)
+            if not user:
+                return []
+            return ChannelRepository(s).list_by_user(user.id, only_active=only_active)
 
     def _notify_all_channels(self, rec_id: int, text: str, session: Optional[Session] = None):
         published_messages = self.repo.get_published_messages(rec_id, session=session)
@@ -108,6 +115,50 @@ class TradeService:
 
         return self.repo.add_with_event(recommendation_entity)
 
+    def publish_recommendation(self, rec_id: int, user_id: Optional[str], channel_ids: Optional[List[int]] = None) -> Tuple[Optional[Recommendation], Dict[str, List[Dict[str, Any]]]]:
+        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
+        
+        with SessionLocal() as s:
+            rec = self.repo.get(rec_id, session=s)
+            if not rec:
+                raise ValueError(f"Recommendation {rec_id} not found for publishing.")
+
+            uid_int = _parse_int_user_id(user_id or rec.user_id)
+            if not uid_int:
+                report["failed"].append({"channel_id": None, "reason": "User ID could not be resolved or is invalid."})
+                return rec, report
+
+            channels = self._load_user_linked_channels(uid_int, only_active=True)
+            if channel_ids:
+                channels = [ch for ch in channels if ch.telegram_channel_id in set(channel_ids)]
+            
+            if not channels:
+                return rec, report
+
+            keyboard = public_channel_keyboard(rec.id)
+            for ch in channels:
+                try:
+                    res = self.notifier.post_to_channel(ch.telegram_channel_id, rec, keyboard)
+                    if res:
+                        publication_data = [{"recommendation_id": rec.id, "telegram_channel_id": res[0], "telegram_message_id": res[1]}]
+                        s.bulk_insert_mappings(PublishedMessage, publication_data)
+                        report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res[1]})
+                    else:
+                        report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": "Notifier failed to post."})
+                except Exception as e:
+                    log.error("Failed to publish to channel %s: %s", ch.telegram_channel_id, e, exc_info=True)
+                    report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": str(e)})
+            
+            if report["success"]:
+                first_pub = report["success"][0]
+                s.query(RecommendationORM).filter(RecommendationORM.id == rec_id).update(
+                    {'channel_id': first_pub['channel_id'], 'message_id': first_pub['message_id'], 'published_at': datetime.now(timezone.utc)}
+                )
+            
+            s.commit()
+            
+        return self.repo.get(rec_id), report
+
     def close(self, rec_id: int, exit_price: float, reason: str = "MANUAL_CLOSE", session: Optional[Session] = None) -> Recommendation:
         rec = self.repo.get(rec_id, session=session)
         if not rec: raise ValueError(f"Recommendation {rec_id} not found.")
@@ -181,4 +232,4 @@ class TradeService:
         uid_int = _parse_int_user_id(user_id)
         if not uid_int: return []
         with SessionLocal() as s:
-            return self.repo.get_recent_assets_for_user(uid_int, limit=limit, session=s)
+            return self.repo.get_recent_assets_for_user(user_id=uid_int, limit=limit, session=s)
