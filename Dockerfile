@@ -56,4 +56,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 # Set the entrypoint script as the command to run when the container starts.
 # The actual application command will be passed via docker-compose.
 ENTRYPOINT ["/app/entrypoint.sh"]
-```# END
