@@ -1,12 +1,12 @@
-FROM --platform=linux/amd64 python:3.11.9-slim-bookworm
+# --- START OF FILE: Dockerfile ---
+FROM --platform=linux/amd64 mirror.gcr.io/library/python:3.11.9-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app/src
+    PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential gcc libpq-dev curl ca-certificates supervisor \
+      build-essential gcc libpq-dev curl ca-certificates dos2unix supervisor \
  && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 10001 appuser
@@ -16,12 +16,21 @@ COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
  && pip install --no-cache-dir -r /app/requirements.txt
 
-COPY . /app
+COPY src /app/src
+COPY alembic /app/alembic
+COPY alembic.ini /app/alembic.ini
 
+COPY config/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY entrypoint.sh /app/entrypoint.sh
+RUN dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
+ENV PYTHONPATH=/app/src
 RUN chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000
-
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fsS http://127.0.0.1:${PORT:-8000}/health || exit 1
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+# --- END OF FILE ---
