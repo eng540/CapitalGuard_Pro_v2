@@ -12,7 +12,6 @@ from capitalguard.infrastructure.db.repository import RecommendationRepository
 log = logging.getLogger(__name__)
 
 # --- Environment Variable Helpers ---
-# These helpers ensure safe parsing of environment variables with defaults.
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.getenv(name)
     return str(v).strip().lower() in ("1", "true", "yes", "on") if v is not None else default
@@ -26,7 +25,7 @@ def _env_float(name: str, default: float) -> float:
 
 def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
     try:
-        return int(user_id) if user_id is not None else None
+        return int(user_id) if user_id is not None and user_id.isdigit() else None
     except (TypeError, ValueError):
         return None
 
@@ -41,14 +40,13 @@ class AlertService:
         self.repo = repo
         self.trade_service = trade_service
 
-    def schedule_job(self, app, interval_sec: int = 60):
+    def schedule_job(self, app, interval_sec: int = 5):
         """Schedules the main check_once job to run repeatedly."""
         jq = getattr(app, "job_queue", None)
         if jq is None:
             log.warning("JobQueue not available on the application; skipping alert scheduling.")
             return
         try:
-            # Run the job in a separate thread to avoid blocking the asyncio event loop
             jq.run_repeating(self._job_callback, interval=interval_sec, first=15)
             log.info("Alert job scheduled to run every %ss", interval_sec)
         except Exception as e:
@@ -58,7 +56,6 @@ class AlertService:
         """Async wrapper for the synchronous check_once method."""
         try:
             loop = asyncio.get_running_loop()
-            # Run the blocking DB and processing logic in a thread pool executor
             num_actions = await loop.run_in_executor(None, self.check_once)
             if num_actions and num_actions > 0:
                 log.info("Alert job finished, triggered %d actions.", num_actions)
@@ -81,11 +78,9 @@ class AlertService:
         if not active_recs:
             return 0
 
-        # --- Configuration ---
         auto_close_enabled = _env_bool("AUTO_CLOSE_ENABLED", False)
         near_alert_pct = _env_float("NEAR_ALERT_PCT", 1.5) / 100.0
 
-        # ✅ FIX: Pre-fetch all events for the active recommendations in a single query.
         active_rec_ids = [rec.id for rec in active_recs if rec.id is not None]
         events_map = self.repo.get_events_for_recommendations(active_rec_ids)
 
@@ -100,16 +95,13 @@ class AlertService:
 
                 self.trade_service.update_price_tracking(rec.id, price)
                 side = rec.side.value.upper()
-                
-                # Get the set of events for the current recommendation for fast, in-memory lookups.
                 rec_events = events_map.get(rec.id, set())
 
-                # --- Priority 1: Stop Loss & Profit Stop ---
                 if (side == "LONG" and price <= rec.stop_loss.value) or (side == "SHORT" and price >= rec.stop_loss.value):
                     log.warning(f"Auto-closing rec #{rec.id} due to SL hit at price {price}.")
                     self.trade_service.close(rec.id, price, reason="SL_HIT")
                     action_count += 1
-                    continue # Move to the next recommendation
+                    continue
 
                 if rec.profit_stop_price is not None:
                     if (side == "LONG" and price <= rec.profit_stop_price) or \
@@ -119,7 +111,6 @@ class AlertService:
                         action_count += 1
                         continue
 
-                # --- Priority 2: Final Target Auto-Close ---
                 if auto_close_enabled and rec.exit_strategy == ExitStrategy.CLOSE_AT_FINAL_TP and rec.targets.values:
                     last_tp_price = self._extract_tp_price(rec.targets.values[-1])
                     if (side == "LONG" and price >= last_tp_price) or (side == "SHORT" and price <= last_tp_price):
@@ -128,11 +119,9 @@ class AlertService:
                         action_count += 1
                         continue
 
-                # --- Priority 3: Intermediate TP Hits & Partial Profit-Taking ---
                 if rec.targets.values:
                     for i, target in enumerate(rec.targets.values):
                         event_type_hit = f"TP{i+1}_HIT"
-                        # ✅ FIX: Replace DB call with a fast in-memory set lookup.
                         if event_type_hit not in rec_events:
                             is_tp_hit = (side == "LONG" and price >= target.price) or (side == "SHORT" and price <= target.price)
                             if is_tp_hit:
@@ -142,14 +131,12 @@ class AlertService:
                                 self._notify_all_channels(rec.id, note)
                                 self.trade_service._update_all_cards(updated_rec)
                                 action_count += 1
-
                                 if target.close_percent > 0:
                                     log.info(f"Auto partial profit triggered for rec #{rec.id} at TP{i+1}.")
                                     self.trade_service.take_partial_profit(rec.id, target.close_percent, target.price, triggered_by="AUTO")
                                     action_count += 1
-                                break # Process only one TP hit per check cycle
+                                break
 
-                # --- Priority 4: Near-touch alerts (less critical) ---
                 if near_alert_pct > 0:
                     near_sl_event = "NEAR_SL_ALERT"
                     if near_sl_event not in rec_events:
@@ -157,7 +144,7 @@ class AlertService:
                                      (side == "SHORT" and rec.stop_loss.value > price >= rec.stop_loss.value * (1 - near_alert_pct))
                         if is_near_sl:
                             self.repo.update_with_event(rec, near_sl_event, {"price": price, "sl": rec.stop_loss.value})
-                            self._notify_private(rec, f"⏳ اقتراب من وقف الخسارة لـ {rec.asset.value}: السعر={price:g}")
+                            self._notify_private(rec, f"⏳ Approaching Stop Loss for {rec.asset.value}: Price={price:g}")
                             action_count += 1
                     
                     near_tp1_event = "NEAR_TP1_ALERT"
@@ -167,7 +154,7 @@ class AlertService:
                                       (side == "SHORT" and tp1_price < price <= tp1_price * (1 + near_alert_pct))
                         if is_near_tp1:
                             self.repo.update_with_event(rec, near_tp1_event, {"price": price, "tp1": tp1_price})
-                            self._notify_private(rec, f"⏳ اقتراب من الهدف الأول لـ {rec.asset.value}: السعر={price:g}")
+                            self._notify_private(rec, f"⏳ Approaching Target 1 for {rec.asset.value}: Price={price:g}")
                             action_count += 1
 
             except Exception as e:
@@ -194,4 +181,3 @@ class AlertService:
                 )
             except Exception:
                 log.warning("Failed to send multi-channel notification for rec #%s to channel %s", rec_id, msg_meta.telegram_channel_id, exc_info=True)
-#end
