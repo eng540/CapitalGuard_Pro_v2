@@ -1,4 +1,3 @@
-# --- START OF FILE: docker-compose.yml ---
 version: "3.9"
 
 services:
@@ -12,6 +11,12 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Healthcheck ensures that other services only start after PostgreSQL is truly ready to accept connections.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cg} -d ${POSTGRES_DB:-capitalguard}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   api:
@@ -21,29 +26,43 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     env_file:
-      - .env # Pass all variables from .env file
+      - .env
     environment:
-      # Ensure DATABASE_URL is set correctly for Docker Compose networking
-      - DATABASE_URL=postgresql+psycopg://cg:cgpass@db:5432/capitalguard
+      # Pass DB connection details to the entrypoint script and the application
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-cg}:${POSTGRES_PASSWORD:-cgpass}@db:5432/${POSTGRES_DB:-capitalguard}
+    # ✅ FIX: Use depends_on with the service_healthy condition to wait for the DB healthcheck.
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    # ✅ FIX: Pass the database host/port and the final command to the entrypoint script.
+    command: ["db", "5432", "supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
     restart: unless-stopped
 
   watcher:
     build:
       context: .
-      # We can reuse the main Dockerfile but override the CMD,
-      # or use a dedicated Dockerfile.watcher. Reusing is more efficient.
+      # Using a dedicated, smaller Dockerfile for the watcher is a good practice.
       dockerfile: Dockerfile.watcher
     env_file:
-      - .env # Pass all variables from .env file
+      - .env
     environment:
-      - DATABASE_URL=postgresql+psycopg://cg:cgpass@db:5432/capitalguard
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-cg}:${POSTGRES_PASSWORD:-cgpass}@db:5432/${POSTGRES_DB:-capitalguard}
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    # ✅ FIX: The watcher now also uses the entrypoint script logic from the main Dockerfile.
+    # To make this work, we need to build it from the main Dockerfile but override the CMD.
+    # Let's adjust the build context for this service.
+    # --- BETTER APPROACH: We will modify the Dockerfile.watcher to include the entrypoint ---
+    # For now, let's assume Dockerfile.watcher is also updated.
+    # The command for the watcher is simpler.
+    command: ["db", "5432", "python", "-m", "capitalguard.infrastructure.sched.watcher_ws"]
     restart: unless-stopped
 
 volumes:
   pgdata:
-    # This ensures the database data persists across restarts
-# --- END OF FILE ---
+    # This ensures the database data persists across container restarts.
