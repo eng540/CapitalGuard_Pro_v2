@@ -1,5 +1,5 @@
-# --- START OF FILE: Makefile ---
-.PHONY: init dev api watcher bot test migrate fmt
+# --- START OF FINAL, IMPROVED FILE ---
+.PHONY: init dev api watcher bot test migrate fmt rebuild
 
 init:
 	python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
@@ -14,7 +14,6 @@ api:
 watcher:
 	. .venv/bin/activate && python -m capitalguard.infrastructure.sched.watcher_ws
 
-# ✅ FIX: Added the 'bot' command for local development polling.
 bot:
 	. .venv/bin/activate && python -m capitalguard.interfaces.telegram.bot_polling_runner
 
@@ -24,7 +23,14 @@ migrate:
 test:
 	. .venv/bin/activate && pytest -q
 
-# A simple formatter target using black can be useful.
 fmt:
 	. .venv/bin/activate && pip install black && black src/ tests/
-# --- END OF FILE ---```
+
+# ✅ NEW: Added a robust command for clean rebuilding of Docker containers.
+# This command stops and removes old containers, then rebuilds images from scratch
+# without using the cache, ensuring all code changes are applied.
+rebuild:
+	docker compose down
+	docker compose up --build --force-recreate --no-cache
+
+# --- END OF FINAL, IMPROVED FILE ---
