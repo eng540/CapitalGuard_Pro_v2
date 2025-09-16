@@ -1,4 +1,6 @@
-#START src/capitalguard/infrastructure/market/ws_client.py
+# --- START OF DIAGNOSTIC, MODIFIED FILE (v_ws_keepalive_test) ---
+# src/capitalguard/infrastructure/market/ws_client.py
+
 import asyncio
 import json
 import websockets
@@ -28,7 +30,6 @@ class BinanceWS:
             log.warning("No symbols provided to combined_stream, returning.")
             return
 
-        # Format for combined streams: /stream?streams=btcusdt@miniTicker/ethusdt@miniTicker
         streams = [f"{s.lower()}@miniTicker" for s in symbols]
         stream_path = "/stream?streams=" + "/".join(streams)
         url = f"{self.BASE}{stream_path}"
@@ -36,13 +37,16 @@ class BinanceWS:
         log.info(f"Connecting to combined WebSocket stream for {len(symbols)} symbols.")
 
         try:
-            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+            # ✅ DIAGNOSTIC CHANGE: Reduced ping interval and timeout from 20s to 10s.
+            # This is to test the hypothesis that an intermediate network device (e.g., NAT gateway in the cloud environment)
+            # is dropping the connection due to perceived inactivity. By sending pings more frequently,
+            # we keep the connection "active" in the eyes of the network hardware.
+            async with websockets.connect(url, ping_interval=10, ping_timeout=10) as ws:
                 log.info("Successfully connected to Binance combined stream.")
                 async for msg in ws:
                     try:
                         payload = json.loads(msg)
                         
-                        # Combined streams have a specific format: {"stream": "...", "data": {...}}
                         data = payload.get("data")
                         if not data:
                             continue
@@ -51,18 +55,17 @@ class BinanceWS:
                         price = float(data.get("c", 0.0))
                         
                         if symbol and price > 0:
-                            # Await the provided handler to process the price update
                             await handler(symbol, price, data)
 
                     except json.JSONDecodeError:
                         log.warning("Failed to decode WebSocket JSON message: %s", msg)
                     except Exception:
-                        # Log the full exception for better debugging
                         log.exception("An error occurred in the WebSocket message handler.")
         
         except websockets.exceptions.ConnectionClosed as e:
             log.warning(f"WebSocket connection closed unexpectedly: {e}. Will be reconnected by the watcher.")
-            raise # Re-raise to allow the watcher's main loop to handle reconnection logic
+            raise
         except Exception:
             log.exception("A critical error occurred in the WebSocket client.")
             raise
+# --- END OF DIAGNOSTIC, MODIFIED FILE (v_ws_keepalive_test) ---
