@@ -119,7 +119,7 @@ class TradeService:
           
         targets_vo = Targets(kwargs['targets'])  
         for target in targets_vo.values:  
-            if (kwargs['side'].upper() == 'LONG' and target.price <= final_entry) or \  
+            if (kwargs['side'].upper() == 'LONG' and target.price <= final_entry) or   
                (kwargs['side'].upper() == 'SHORT' and target.price >= final_entry):  
                 raise ValueError(f"Target price {target.price} is not valid for a {kwargs['side']} trade with entry {final_entry}.")  
 
