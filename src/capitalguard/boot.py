@@ -1,5 +1,8 @@
 # --- START OF CORRECTED FILE: src/capitalguard/boot.py ---
 import os
+from typing import Optional
+from telegram.ext import Application
+
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.report_service import ReportService
 from capitalguard.application.services.analytics_service import AnalyticsService
@@ -12,15 +15,19 @@ from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.infrastructure.execution.binance_exec import BinanceExec, BinanceCreds
 
-def build_services() -> dict:
+def build_services(ptb_app: Optional[Application] = None) -> dict:
     """
     Composition Root: Builds all services once and returns them in a dictionary.
+
+    ✅ FIX: Accepts an optional `ptb_app` argument to inject into the notifier,
+    allowing the notifier to access bot-specific context like the username.
     """
     # Infrastructure Components
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
+    if ptb_app:
+        notifier.set_ptb_app(ptb_app) # Inject the app instance
     
-    # ✅ --- تم استعادة المنطق الصحيح لجلب بيانات الاعتماد من متغيرات البيئة ---
     spot_creds = BinanceCreds(
         api_key=os.getenv("BINANCE_API_KEY", ""),
         api_secret=os.getenv("BINANCE_API_SECRET", "")
@@ -35,7 +42,13 @@ def build_services() -> dict:
     # Application Services
     market_data_service = MarketDataService()
     price_service = PriceService()
-    trade_service = TradeService(repo=repo, notifier=notifier, market_data_service=market_data_service)
+    # ✅ FIX: Pass the price_service to the TradeService constructor
+    trade_service = TradeService(
+        repo=repo, 
+        notifier=notifier, 
+        market_data_service=market_data_service,
+        price_service=price_service
+    )
     report_service = ReportService(repo=repo)
     analytics_service = AnalyticsService(repo=repo)
     risk_service = RiskService(exec_spot=exec_spot, exec_futu=exec_futu)
