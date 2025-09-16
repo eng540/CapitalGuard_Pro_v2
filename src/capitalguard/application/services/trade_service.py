@@ -1,4 +1,4 @@
-# --- START OF FINAL, RE-ARCHITECTED, SECURED, AND PRODUCTION-READY FILE ---
+# --- START OF FINAL, APPROVED, AND PRODUCTION-READY FILE ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
@@ -211,11 +211,23 @@ class TradeService:
                 if not rec or rec.status == RecommendationStatus.CLOSED:
                     raise ValueError(f"Cannot update {field_name} for recommendation #{rec_id}.")
                 
-                old_value = getattr(rec, field_name)
+                # Extract old value for logging before it's changed
+                old_value_for_event = getattr(rec, field_name)
+                if hasattr(old_value_for_event, 'value'): # Handle ValueObjects
+                    old_value_for_event = old_value_for_event.value
+
                 if validation_func: validation_func(rec, new_value)
                 
                 setattr(rec, field_name, new_value)
-                event_data = {"old_value": str(old_value), event_key: str(new_value)}
+                
+                # Prepare new value for logging
+                new_value_for_event = new_value
+                if hasattr(new_value_for_event, 'value'): # Handle ValueObjects
+                    new_value_for_event = new_value_for_event.value
+                elif hasattr(new_value_for_event, 'values'): # Handle Targets
+                     new_value_for_event = [v.__dict__ for v in new_value_for_event.values]
+
+                event_data = {"old_value": str(old_value_for_event), event_key: str(new_value_for_event)}
                 updated_rec = self.repo.update_with_event(session, rec, event_type, event_data)
 
                 asyncio.run(self._update_all_cards_async(session, updated_rec))
@@ -228,8 +240,8 @@ class TradeService:
                 session.rollback(); raise
 
     def update_sl_for_user(self, rec_id: int, user_telegram_id: str, new_sl_float: float) -> Recommendation:
-        def validate_sl(rec, new_sl):
-            if (rec.side.value == "LONG" and new_sl >= rec.entry.value) or (rec.side.value == "SHORT" and new_sl <= rec.entry.value):
+        def validate_sl(rec, new_sl_vo):
+            if (rec.side.value == "LONG" and new_sl_vo.value >= rec.entry.value) or (rec.side.value == "SHORT" and new_sl_vo.value <= rec.entry.value):
                 raise ValueError("New Stop Loss is invalid relative to the entry price.")
         return self._generic_update_for_user(rec_id, user_telegram_id, "stop_loss", Price(new_sl_float), validate_sl, "SL_UPDATED", "new_sl", "✏️ **Stop Loss Updated** for #{asset} to **{value.value:g}**.")
 
@@ -250,7 +262,7 @@ class TradeService:
             try:
                 rec = self.repo.get_by_id_for_user(session, rec_id, uid_int)
                 if not rec or rec.status != RecommendationStatus.ACTIVE: raise ValueError("Partial profit can only be taken on active recommendations.")
-                if not (0 < close_percent <= rec.open_size_percent): raise ValueError(f"Invalid percentage. Must be between 0 and {rec.open_size_percent}.")
+                if not (0 < close_percent <= rec.open_size_percent): raise ValueError(f"Invalid percentage. Must be between 0 and {rec.open_size_percent:.2f}.")
                 
                 rec.open_size_percent -= close_percent
                 pnl_on_part = _pct(rec.entry.value, price, rec.side.value)
@@ -260,7 +272,7 @@ class TradeService:
                 self._notify_all_channels(session, rec_id, f"💰 **Partial Profit Taken** | Closed **{close_percent:.2f}%** of **{rec.asset.value}** at **{price:g}** for a **{pnl_on_part:+.2f}%** profit.")
                 
                 if updated_rec.open_size_percent <= 0.01:
-                    session.commit() # Commit partial profit before closing
+                    session.commit()
                     return self.close_recommendation_for_user(rec_id, user_telegram_id, price, reason="MANUAL_PARTIAL_FULL_CLOSE")
                 
                 asyncio.run(self._update_all_cards_async(session, updated_rec))
@@ -304,4 +316,4 @@ class TradeService:
                     session.commit()
             except Exception:
                 session.rollback(); log.exception(f"Failed to update price tracking for rec #{rec_id}")
-# --- END OF FINAL, RE-ARCHITECTED, SECURED, AND PRODUCTION-READY FILE ---
+# --- END OF FINAL, APPROVED, AND PRODUCTION-READY FILE ---
