@@ -1,4 +1,6 @@
-# --- START OF FINAL, CORRECTED AND ROBUST FILE: src/capitalguard/infrastructure/sched/watcher_ws.py ---
+# --- START OF FINAL, RE-ARCHITECTED AND PRODUCTION-READY FILE (Version 8.0.3) ---
+# src/capitalguard/infrastructure/sched/watcher_ws.py
+
 import asyncio
 import logging
 import os
@@ -8,7 +10,7 @@ import websockets
 # Load environment variables at the very beginning
 load_dotenv()
 
-from capitalguard.boot import build_services
+from capitalguard.boot import bootstrap_app
 from capitalguard.infrastructure.market.ws_client import BinanceWS
 from capitalguard.domain.entities import OrderType, RecommendationStatus
 from capitalguard.application.services.trade_service import TradeService
@@ -30,68 +32,56 @@ async def main():
         log.warning(f"Watcher is disabled. Reason: ENABLE_WATCHER={enable_watcher}, PROVIDER={provider}. Exiting gracefully.")
         return
 
-    log.info("Building services for the watcher...")
-    services = build_services()
+    log.info("Bootstrapping application for the watcher...")
+    ptb_app = bootstrap_app()
+    if not ptb_app:
+        log.error("Failed to bootstrap application. Check TELEGRAM_BOT_TOKEN setting.")
+        return
+        
+    services = ptb_app.bot_data["services"]
     trade_service: TradeService = services["trade_service"]
     ws_client = BinanceWS()
-    log.info("Watcher services built successfully.")
+    log.info("Watcher services built and configured successfully.")
 
     async def on_price_update(symbol: str, price: float, _raw_data: dict):
         """
         Core handler for every price tick received from the WebSocket stream.
         This function contains the critical logic for reacting to price changes.
         """
-        log.debug(f"[WS] Price Update: {symbol} -> {price}")
-        # Use a single session for all operations within this handler.
+        # This function's logic remains the same, but it now runs with correctly configured services.
         with SessionLocal() as session:
             try:
-                # Fetch all open recommendations for the specific symbol that just updated
                 open_recs_for_symbol = trade_service.repo.list_open_by_symbol(session, symbol)
 
                 if not open_recs_for_symbol:
                     return
 
-                pending_recs = [r for r in open_recs_for_symbol if r.status == RecommendationStatus.PENDING]
-                active_recs = [r for r in open_recs_for_symbol if r.status == RecommendationStatus.ACTIVE]
-
-                # --- Process Pending Recommendations ---
-                for rec in pending_recs:
-                    entry, side = rec.entry.value, rec.side.value
-                    order_type_val = rec.order_type.value
-                    is_triggered = False
-                    
-                    if order_type_val == OrderType.LIMIT.value:
-                        if (side == "LONG" and price <= entry) or (side == "SHORT" and price >= entry):
+                for rec in open_recs_for_symbol:
+                    if rec.status == RecommendationStatus.PENDING:
+                        entry, side, order_type = rec.entry.value, rec.side.value, rec.order_type.value
+                        is_triggered = False
+                        if order_type == OrderType.LIMIT.value and ((side == "LONG" and price <= entry) or (side == "SHORT" and price >= entry)):
                             is_triggered = True
-                    elif order_type_val == OrderType.STOP_MARKET.value:
-                        if (side == "LONG" and price >= entry) or (side == "SHORT" and price <= entry):
+                        elif order_type == OrderType.STOP_MARKET.value and ((side == "LONG" and price >= entry) or (side == "SHORT" and price <= entry)):
                             is_triggered = True
-                    
-                    if is_triggered:
-                        log.info(f"ACTIVATING pending recommendation #{rec.id} for {symbol} at price {price}.")
-                        # This service method manages its own session.
-                        trade_service.activate_recommendation(rec.id)
+                        
+                        if is_triggered:
+                            log.info(f"ACTIVATING pending recommendation #{rec.id} for {symbol} at price {price}.")
+                            trade_service.activate_recommendation(rec.id)
 
-                # --- Process Active Recommendations ---
-                for rec in active_recs:
-                    sl, side = rec.stop_loss.value, rec.side.value
-                    sl_hit = (side == "LONG" and price <= sl) or (side == "SHORT" and price >= sl)
-                    
-                    if sl_hit:
-                        log.warning(f"STOP LOSS HIT DETECTED for REC #{rec.id} ({symbol}) at price {price}. Closing...")
-                        # This service method manages its own session.
-                        trade_service.close(rec.id, price, reason="SL_HIT_WATCHER")
-                
-                # No explicit commit needed as service methods handle their own transactions.
+                    elif rec.status == RecommendationStatus.ACTIVE:
+                        sl, side = rec.stop_loss.value, rec.side.value
+                        if (side == "LONG" and price <= sl) or (side == "SHORT" and price >= sl):
+                            log.warning(f"STOP LOSS HIT DETECTED for REC #{rec.id} ({symbol}) at price {price}. Closing...")
+                            # The service method needs the user context to close securely
+                            trade_service.close_recommendation_for_user(rec.id, rec.user_id, price, reason="SL_HIT_WATCHER")
             except Exception as e:
                 log.error(f"Error during on_price_update for {symbol}: {e}", exc_info=True)
-                # Rollback is handled by the context manager of the service methods.
 
-    # --- Main Loop ---
+    # Main Loop
     while True:
         try:
             symbols_to_watch = []
-            # Create a session to fetch the list of symbols to watch.
             with SessionLocal() as session:
                 all_open_recs = trade_service.repo.list_open(session)
                 symbols_to_watch = list({rec.asset.value for rec in all_open_recs})
@@ -121,4 +111,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         log.info("Watcher stopped manually by user.")
-# --- END OF FINAL, CORRECTED AND ROBUST FILE ---
+
+# --- END OF FINAL, RE-ARCHITECTED AND PRODUCTION-READY FILE (Version 8.0.3) ---
