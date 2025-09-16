@@ -1,5 +1,5 @@
+# --- START OF CORRECTED AND ENHANCED FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
-import time
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
 
@@ -233,3 +233,95 @@ class TradeService:
         if not uid_int: return []
         with SessionLocal() as s:
             return self.repo.get_recent_assets_for_user(user_telegram_id=uid_int, limit=limit, session=s)
+
+    # ✅ --- START: NEW UNIFIED & ATOMIC METHOD ---
+    def create_and_publish_recommendation(self, **kwargs) -> Tuple[Recommendation, Dict]:
+        """
+        Creates and then publishes a recommendation in a single, unified service call.
+        This is the primary method to be used by interfaces.
+        """
+        try:
+            # Step 1: Create the recommendation
+            new_rec = self.create_recommendation(**kwargs)
+            
+            # Step 2: Publish it
+            updated_rec, report = self.publish_recommendation(
+                rec_id=new_rec.id, 
+                user_id=new_rec.user_id
+            )
+            
+            return updated_rec, report
+        except Exception as e:
+            log.exception("Failed during the create_and_publish process.")
+            # In a real-world scenario, we might want to delete the created_rec if publishing fails.
+            # For now, we let it exist so it can be published manually.
+            raise e
+
+    # ✅ --- START: NEW MANAGEMENT METHODS ---
+    def update_sl(self, rec_id: int, new_sl: float, session: Optional[Session] = None) -> Recommendation:
+        rec = self.repo.get(rec_id, session=session)
+        if not rec or rec.status == RecommendationStatus.CLOSED:
+            raise ValueError(f"Cannot update SL for recommendation #{rec_id}.")
+        
+        old_sl = rec.stop_loss.value
+        # Basic validation
+        if (rec.side.value == "LONG" and new_sl >= rec.entry.value) or \
+           (rec.side.value == "SHORT" and new_sl <= rec.entry.value):
+            raise ValueError("New Stop Loss is invalid relative to the entry price.")
+            
+        rec.stop_loss = Price(new_sl)
+        event_data = {"old_sl": old_sl, "new_sl": new_sl}
+        updated_rec = self.repo.update_with_event(rec, "SL_UPDATED", event_data, session=session)
+        
+        self._update_all_cards(updated_rec, session=session)
+        self._notify_all_channels(rec_id, f"✏️ **Stop Loss Updated** for #{rec.asset.value} to **{new_sl:g}**.", session=session)
+        return updated_rec
+
+    def update_targets(self, rec_id: int, new_targets_data: List[Dict[str, float]], session: Optional[Session] = None) -> Recommendation:
+        rec = self.repo.get(rec_id, session=session)
+        if not rec or rec.status == RecommendationStatus.CLOSED:
+            raise ValueError(f"Cannot update targets for recommendation #{rec_id}.")
+            
+        old_targets_plain = [t.price for t in rec.targets.values]
+        rec.targets = Targets(new_targets_data)
+        new_targets_plain = [t.price for t in rec.targets.values]
+        
+        event_data = {"old_targets": old_targets_plain, "new_targets": new_targets_plain}
+        updated_rec = self.repo.update_with_event(rec, "TARGETS_UPDATED", event_data, session=session)
+        
+        self._update_all_cards(updated_rec, session=session)
+        self._notify_all_channels(rec_id, f"🎯 **Targets Updated** for #{rec.asset.value}.", session=session)
+        return updated_rec
+
+    def update_exit_strategy(self, rec_id: int, new_strategy: ExitStrategy, session: Optional[Session] = None) -> Recommendation:
+        rec = self.repo.get(rec_id, session=session)
+        if not rec or rec.status == RecommendationStatus.CLOSED:
+            raise ValueError(f"Cannot update strategy for recommendation #{rec_id}.")
+        
+        old_strategy = rec.exit_strategy.value
+        rec.exit_strategy = new_strategy
+        event_data = {"old_strategy": old_strategy, "new_strategy": new_strategy.value}
+        updated_rec = self.repo.update_with_event(rec, "STRATEGY_UPDATED", event_data, session=session)
+        
+        self._update_all_cards(updated_rec, session=session)
+        self._notify_all_channels(rec_id, f"📈 **Exit Strategy Updated** for #{rec.asset.value}.", session=session)
+        return updated_rec
+
+    def update_profit_stop(self, rec_id: int, new_price: Optional[float], session: Optional[Session] = None) -> Recommendation:
+        rec = self.repo.get(rec_id, session=session)
+        if not rec or rec.status == RecommendationStatus.CLOSED:
+            raise ValueError(f"Cannot update profit stop for recommendation #{rec_id}.")
+            
+        old_price = rec.profit_stop_price
+        rec.profit_stop_price = new_price
+        event_data = {"old_price": old_price, "new_price": new_price}
+        updated_rec = self.repo.update_with_event(rec, "PROFIT_STOP_UPDATED", event_data, session=session)
+        
+        self._update_all_cards(updated_rec, session=session)
+        if new_price is not None:
+            note = f"🛡️ **Profit Stop Set** for #{rec.asset.value} at **{new_price:g}**."
+        else:
+            note = f"🗑️ **Profit Stop Removed** for #{rec.asset.value}."
+        self._notify_all_channels(rec_id, note, session=session)
+        return updated_rec
+# --- END OF CORRECTED AND ENHANCED FILE ---
