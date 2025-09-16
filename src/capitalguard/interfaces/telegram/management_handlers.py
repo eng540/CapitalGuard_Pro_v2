@@ -85,16 +85,7 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
         if "Message is not modified" not in str(e): log.warning(f"Error in navigate_open_recs_handler: {e}")
     except Exception as e:
         log.error(f"Unexpected error in navigate_open_recs_handler: {e}", exc_info=True)
-import time
-from capitalguard.infrastructure.db.base import SessionLocal
-start_time = time.time()
-try:
-    with SessionLocal() as s:
-        s.execute(text("SELECT 1"))
-    duration = time.time() - start_time
-    log.info(f"DB connection health check took: {duration:.4f} seconds.")
-except Exception as e:
-    log.error(f"DB connection health check FAILED: {e}")
+
 async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
