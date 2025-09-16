@@ -1,4 +1,4 @@
-# --- START OF FINAL, FULLY CORRECTED AND ROBUST FILE: src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, CORRECTED AND ENHANCED FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
@@ -170,9 +170,7 @@ class TradeService:
             log.exception("Error during the create_and_publish process. The transaction will be rolled back by the caller.")
             raise e
 
-    # ✅ NEWLY ADDED FUNCTION
     def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
-        """Activates a PENDING recommendation."""
         with SessionLocal() as session:
             try:
                 rec = self.repo.get(session, rec_id)
@@ -203,7 +201,6 @@ class TradeService:
                 raise
 
     def close(self, rec_id: int, exit_price: float, reason: str = "MANUAL_CLOSE", session: Optional[Session] = None) -> Recommendation:
-        # This method can be called from other service methods, so it needs to handle its own session.
         with SessionLocal() as sess:
             try:
                 rec = self.repo.get(sess, rec_id)
@@ -293,12 +290,14 @@ class TradeService:
                 session.rollback()
                 raise
 
+    # ✅ MODIFICATION: This function is now robust and manages its own session.
     def update_price_tracking(self, rec_id: int, current_price: float) -> Optional[Recommendation]:
         with SessionLocal() as session:
             try:
                 rec = self.repo.get(session, rec_id)
                 if not rec or rec.status != RecommendationStatus.ACTIVE:
                     return None
+                
                 updated = False
                 if rec.highest_price_reached is None or current_price > rec.highest_price_reached:
                     rec.highest_price_reached = current_price
@@ -306,11 +305,17 @@ class TradeService:
                 if rec.lowest_price_reached is None or current_price < rec.lowest_price_reached:
                     rec.lowest_price_reached = current_price
                     updated = True
+                
                 if updated:
-                    return self.repo.update(session, rec)
-                return None
-            finally:
-                session.commit()
+                    updated_rec = self.repo.update(session, rec)
+                    session.commit()
+                    return updated_rec
+                
+                return None # No changes, no need to commit.
+            except Exception:
+                session.rollback()
+                log.exception(f"Failed to update price tracking for rec #{rec_id}")
+                raise
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
         uid_int = _parse_int_user_id(user_id)
