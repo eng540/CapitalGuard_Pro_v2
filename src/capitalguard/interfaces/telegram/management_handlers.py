@@ -38,9 +38,10 @@ log = logging.getLogger(__name__)
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 (AWAIT_PARTIAL_PERCENT, AWAIT_PARTIAL_PRICE) = range(2)
 
-# --- View Helper Functions ---
+# --- View Helper Functions (Refactored Logic) ---
 
 async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, rec_id: int, user_id: int):
+    """A reusable function to build and send/edit the analyst control panel."""
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
     
@@ -66,6 +67,7 @@ async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, chat_id: i
                 log.warning(f"Failed to edit message for rec panel: {e}")
 
 async def _send_or_edit_strategy_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, rec_id: int, user_id: int):
+    """A reusable function to build and send/edit the strategy menu."""
     trade_service: TradeService = get_service(context, "trade_service")
     with SessionLocal() as session:
         rec = trade_service.repo.get_by_id_for_user(session, rec_id, user_id)
@@ -323,6 +325,55 @@ async def set_strategy_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     trade_service.update_exit_strategy(rec_id, ExitStrategy(strategy_value))
     await _send_or_edit_strategy_menu(context, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
 
+async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    rec_id = _parse_tail_int(query.data)
+    if not rec_id: return
+
+    text = f"{query.message.text}\n\n--- \n<b>اختر طريقة الإغلاق:</b>"
+    keyboard = build_close_options_keyboard(rec_id)
+    await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
+async def close_at_market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    rec_id = _parse_tail_int(query.data)
+    if not rec_id:
+        await query.answer("Invalid request.", show_alert=True)
+        return
+
+    await query.answer("Fetching market price & closing...")
+    
+    trade_service: TradeService = get_service(context, "trade_service")
+    price_service: PriceService = get_service(context, "price_service")
+
+    try:
+        with SessionLocal() as session:
+            rec = trade_service.repo.get(session, rec_id)
+            if not rec:
+                await query.edit_message_text("❌ Recommendation not found.")
+                return
+
+            live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
+            if not live_price:
+                await query.answer("Could not fetch live price. Please try again.", show_alert=True)
+                return
+        
+        trade_service.close(rec_id, live_price, reason="MANUAL_MARKET_CLOSE")
+        await query.answer("Trade closed successfully!")
+
+    except Exception as e:
+        log.error(f"Error during market close for rec #{rec_id}: {e}", exc_info=True)
+        await context.bot.send_message(chat_id=query.from_user.id, text=f"❌ Failed to close trade: {e}")
+
+async def close_with_manual_price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    rec_id = _parse_tail_int(query.data)
+    if rec_id is None: await query.answer("Bad request.", show_alert=True); return
+    context.user_data[AWAITING_INPUT_KEY] = {"action": "close", "rec_id": rec_id, "original_message": query.message}
+    await query.answer()
+    await query.edit_message_text(f"{query.message.text}\n\n<b>✍️ يرجى <u>الرد على هذه الرسالة ↩️</u> بسعر الإغلاق المحدد للتوصية #{rec_id}.</b>", parse_mode=ParseMode.HTML)
+
 # --- Partial Profit Conversation ---
 async def partial_profit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -392,6 +443,11 @@ def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:", block=False))
     application.add_handler(CallbackQueryHandler(update_private_card, pattern=r"^rec:update_private:", block=False))
     application.add_handler(CallbackQueryHandler(update_public_card, pattern=r"^rec:update_public:", block=False))
+    
+    # Redesigned Close Flow
+    application.add_handler(CallbackQueryHandler(show_close_menu_handler, pattern=r"^rec:close_menu:", block=False))
+    application.add_handler(CallbackQueryHandler(close_at_market_handler, pattern=r"^rec:close_market:", block=False))
+    application.add_handler(CallbackQueryHandler(close_with_manual_price_handler, pattern=r"^rec:close_manual:", block=False))
 
     partial_profit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(partial_profit_start, pattern=r"^rec:close_partial:")],
