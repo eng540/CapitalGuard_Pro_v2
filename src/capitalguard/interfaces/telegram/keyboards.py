@@ -1,4 +1,4 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
+# --- START OF FINAL, RE-DESIGNED AND COMPLETE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
 from typing import List, Iterable, Set
 import math
 
@@ -29,7 +29,7 @@ async def build_open_recs_keyboard(
     price_service: PriceService,
 ) -> InlineKeyboardMarkup:
     """
-    ✅ Async version to be awaited from async handlers.
+    Async version to be awaited from async handlers.
     Fetches live prices via `await price_service.get_cached_price(...)`
     to avoid calling any sync wrappers inside a running event loop.
     """
@@ -86,7 +86,7 @@ def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📊 تتبّع الإشارة", callback_data=f"rec:track:{rec_id}"),
+                InlineKeyboardButton("📊 تتبّع الإشارة", url=f"https://t.me/{bot_username}?start=track_{rec_id}"), # Assuming you have bot_username
                 InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}"),
             ]
         ]
@@ -104,9 +104,18 @@ def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("💰 جني ربح جزئي", callback_data=f"rec:close_partial:{rec_id}"),
         ],
         [
-            InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_start:{rec_id}")
+            InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_menu:{rec_id}")
         ],
         [InlineKeyboardButton("⬅️ العودة لقائمة التوصيات", callback_data=f"open_nav:page:1")],
+    ])
+
+
+def build_close_options_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+    """Builds the keyboard for choosing the closing method."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📉 إغلاق بسعر السوق الآن", callback_data=f"rec:close_market:{rec_id}")],
+        [InlineKeyboardButton("✍️ إغلاق بسعر محدد", callback_data=f"rec:close_manual:{rec_id}")],
+        [InlineKeyboardButton("⬅️ إلغاء", callback_data=f"rec:back_to_main:{rec_id}")],
     ])
 
 
@@ -253,4 +262,4 @@ def build_channel_picker_keyboard(
     ])
 
     return InlineKeyboardMarkup(rows)
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
+# --- END OF FINAL, RE-DESIGNED AND COMPLETE FILE ---

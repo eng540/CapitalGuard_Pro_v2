@@ -1,4 +1,4 @@
-# --- START OF FINAL, FULLY CORRECTED AND COMPLETE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FINAL, FULLY RE-DESIGNED AND COMPLETE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 import logging
 from time import time
 from typing import Optional
@@ -25,6 +25,7 @@ from .keyboards import (
     build_open_recs_keyboard,
     build_exit_strategy_keyboard,
     public_channel_keyboard,
+    build_close_options_keyboard,
 )
 from .ui_texts import build_trade_card_text
 from .parsers import parse_number, parse_targets_list
@@ -37,10 +38,9 @@ log = logging.getLogger(__name__)
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 (AWAIT_PARTIAL_PERCENT, AWAIT_PARTIAL_PRICE) = range(2)
 
-# --- View Helper Functions (Refactored Logic) ---
+# --- View Helper Functions ---
 
 async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, rec_id: int, user_id: int):
-    """A reusable function to build and send/edit the analyst control panel."""
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
     
@@ -66,7 +66,6 @@ async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, chat_id: i
                 log.warning(f"Failed to edit message for rec panel: {e}")
 
 async def _send_or_edit_strategy_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, rec_id: int, user_id: int):
-    """A reusable function to build and send/edit the strategy menu."""
     trade_service: TradeService = get_service(context, "trade_service")
     with SessionLocal() as session:
         rec = trade_service.repo.get_by_id_for_user(session, rec_id, user_id)
