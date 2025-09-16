@@ -86,7 +86,7 @@ def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📊 تتبّع الإشارة", url=f"https://t.me/{bot_username}?start=track_{rec_id}"), # Assuming you have bot_username
+                InlineKeyboardButton("📊 تتبّع الإشارة", #url=f"https://t.me/{bot_username}?start=track_{rec_id}"), # Assuming you have bot_username
                 InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}"),
             ]
         ]
