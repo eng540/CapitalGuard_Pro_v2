@@ -1,4 +1,4 @@
-# --- START OF FINAL, RE-ARCHITECTED FILE: src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, FULLY CORRECTED AND ROBUST FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
@@ -170,7 +170,40 @@ class TradeService:
             log.exception("Error during the create_and_publish process. The transaction will be rolled back by the caller.")
             raise e
 
+    # ✅ NEWLY ADDED FUNCTION
+    def activate_recommendation(self, rec_id: int) -> Optional[Recommendation]:
+        """Activates a PENDING recommendation."""
+        with SessionLocal() as session:
+            try:
+                rec = self.repo.get(session, rec_id)
+                if not rec:
+                    log.error(f"activate_recommendation: Recommendation #{rec_id} not found.")
+                    return None
+                
+                if rec.status != RecommendationStatus.PENDING:
+                    log.warning(f"Attempted to activate a non-pending recommendation #{rec_id} with status {rec.status.value}")
+                    return rec
+
+                rec.status = RecommendationStatus.ACTIVE
+                rec.activated_at = datetime.now(timezone.utc)
+                rec.highest_price_reached = rec.entry.value
+                rec.lowest_price_reached = rec.entry.value
+                
+                event_data = {"activated_at": rec.activated_at.isoformat()}
+                updated_rec = self.repo.update_with_event(session, rec, "ACTIVATED", event_data)
+                
+                self._update_all_cards(session, updated_rec)
+                self._notify_all_channels(session, rec_id, f"▶️ **Trade Activated** | **{rec.asset.value}** entry price has been reached.")
+                
+                session.commit()
+                return updated_rec
+            except Exception:
+                session.rollback()
+                log.exception(f"Failed to activate recommendation #{rec_id}")
+                raise
+
     def close(self, rec_id: int, exit_price: float, reason: str = "MANUAL_CLOSE", session: Optional[Session] = None) -> Recommendation:
+        # This method can be called from other service methods, so it needs to handle its own session.
         with SessionLocal() as sess:
             try:
                 rec = self.repo.get(sess, rec_id)
@@ -351,4 +384,4 @@ class TradeService:
             except Exception:
                 session.rollback()
                 raise
-# --- END OF FINAL, RE-ARCHITECTED FILE ---
+# --- END OF FINAL, FULLY CORRECTED AND ROBUST FILE ---
