@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
+# --- START OF FINAL, RE-ARCHITECTED FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
 import logging
 import uuid
 import types
@@ -209,7 +209,6 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.message.edit_text(f"✅ Order Type: {order_type}\n\n{prompt}", parse_mode="HTML")
     return I_PRICES
 
-# ✅ NEW: prices handler للمسار التفاعلي
 async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
     if not draft or 'order_type' not in draft:
@@ -231,7 +230,6 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             targets = parse_targets_list(tokens[1:])
             draft['stop_loss'] = stop_val
             draft['targets'] = targets
-            # ENTRY سيتم تحديده فعليًا عند التفعيل؛ نضع قيمة شكلية لتجاوز التحقق
             draft['entry'] = draft.get('entry') or stop_val
         else:
             if len(tokens) < 3:
@@ -260,7 +258,7 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
         _clean_conversation_state(context)
         return ConversationHandler.END
     price_service = get_service(context, "price_service")
-    preview_price = await price_service.get_preview_price(data["asset"], data.get("market", "Futures"))
+    preview_price = await price_service.get_cached_price(data["asset"], data.get("market", "Futures"))
     review_text = build_review_text_with_price(data, preview_price)
     if not review_key:
         review_key = str(uuid.uuid4())
@@ -319,12 +317,10 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
 
-    # ✅ FIX: Use a single, atomic session for the entire create-and-publish operation.
     with SessionLocal() as session:
         try:
             live_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"))
             
-            # Pass the session to the service layer method.
             saved_rec, report = trade_service.create_and_publish_recommendation(
                 session=session,
                 asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
@@ -333,7 +329,7 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 order_type=draft.get('order_type', 'LIMIT'), live_price=live_price
             )
             
-            session.commit() # Commit the transaction if everything was successful.
+            session.commit()
 
             if report.get("success"):
                 success_count = len(report["success"])
@@ -349,7 +345,7 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     parse_mode='HTML'
                 )
         except Exception as e:
-            session.rollback() # Rollback the transaction on any error.
+            session.rollback()
             log.exception("Handler failed to save/publish recommendation.")
             await query.edit_message_text(f"❌ فشل الحفظ/النشر: {e}")
         finally:
@@ -415,4 +411,4 @@ def register_conversation_handlers(app: Application):
         persistent=False,
     )
     app.add_handler(conv_handler)
-# --- END OF FINAL, CORRECTED FILE ---
+# --- END OF FINAL, RE-ARCHITECTED FILE ---
