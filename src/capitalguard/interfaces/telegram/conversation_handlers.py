@@ -1,5 +1,4 @@
-#START src/capitalguard/interfaces/telegram/conversation_handlers.py
-# --- START OF FULL, SIMPLIFIED, AND FINAL FILE ---
+# --- START OF FINAL, CORRECTED FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
 import logging
 import uuid
 import types
@@ -316,36 +315,46 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not draft:
         await query.edit_message_text("❌ انتهت صلاحية البطاقة. أعد البدء بـ /newrec.")
         return ConversationHandler.END
-    trade_service = get_service(context, "trade_service")
-    try:
-        price_service = get_service(context, "price_service")
-        # ملاحظة: إن لم تكن get_cached_price async لديك، استخدم get_preview_price أو لف الاستدعاء بما يناسبك
-        live_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"))
-        saved_rec = trade_service.create_recommendation(
-            asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
-            entry=draft["entry"], stop_loss=draft["stop_loss"], targets=draft["targets"],
-            notes=draft.get("notes"), user_id=str(update.effective_user.id),
-            order_type=draft.get('order_type', 'LIMIT'), live_price=live_price
-        )
-        _, report = trade_service.publish_recommendation(rec_id=saved_rec.id, user_id=str(update.effective_user.id))
-        if report.get("success"):
-            success_count = len(report["success"])
-            await query.edit_message_text(f"✅ تم الحفظ بنجاح ونشر التوصية #{saved_rec.id} إلى {success_count} قناة.")
-        else:
-            fail_reason = "غير معروف"
-            if report.get("failed"):
-                fail_reason = report["failed"][0].get("reason", "فشل في الاتصال بـ API")
-            await query.edit_message_text(
-                f"⚠️ تم حفظ التوصية #{saved_rec.id}، ولكن فشل النشر.\n"
-                f"<b>السبب:</b> {fail_reason}\n\n"
-                "<i>يرجى التحقق من أن البوت مسؤول في القناة ولديه صلاحية النشر.</i>",
-                parse_mode='HTML'
+        
+    trade_service: TradeService = get_service(context, "trade_service")
+    price_service: PriceService = get_service(context, "price_service")
+
+    # ✅ FIX: Use a single, atomic session for the entire create-and-publish operation.
+    with SessionLocal() as session:
+        try:
+            live_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"))
+            
+            # Pass the session to the service layer method.
+            saved_rec, report = trade_service.create_and_publish_recommendation(
+                session=session,
+                asset=draft["asset"], side=draft["side"], market=draft.get("market", "Futures"),
+                entry=draft["entry"], stop_loss=draft["stop_loss"], targets=draft["targets"],
+                notes=draft.get("notes"), user_id=str(update.effective_user.id),
+                order_type=draft.get('order_type', 'LIMIT'), live_price=live_price
             )
-    except Exception as e:
-        log.exception("Handler failed to save/publish recommendation.")
-        await query.edit_message_text(f"❌ فشل الحفظ/النشر: {e}")
-    finally:
-        _clean_conversation_state(context)
+            
+            session.commit() # Commit the transaction if everything was successful.
+
+            if report.get("success"):
+                success_count = len(report["success"])
+                await query.edit_message_text(f"✅ تم الحفظ بنجاح ونشر التوصية #{saved_rec.id} إلى {success_count} قناة.")
+            else:
+                fail_reason = "غير معروف"
+                if report.get("failed"):
+                    fail_reason = report["failed"][0].get("reason", "فشل في الاتصال بـ API")
+                await query.edit_message_text(
+                    f"⚠️ تم حفظ التوصية #{saved_rec.id}، ولكن فشل النشر.\n"
+                    f"<b>السبب:</b> {fail_reason}\n\n"
+                    "<i>يرجى التحقق من أن البوت مسؤول في القناة ولديه صلاحية النشر.</i>",
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            session.rollback() # Rollback the transaction on any error.
+            log.exception("Handler failed to save/publish recommendation.")
+            await query.edit_message_text(f"❌ فشل الحفظ/النشر: {e}")
+        finally:
+            _clean_conversation_state(context)
+            
     return ConversationHandler.END
 
 async def cancel_publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -406,5 +415,4 @@ def register_conversation_handlers(app: Application):
         persistent=False,
     )
     app.add_handler(conv_handler)
-# --- END OF FULL, SIMPLIFIED, AND FINAL FILE ---
-#END
+# --- END OF FINAL, CORRECTED FILE ---
