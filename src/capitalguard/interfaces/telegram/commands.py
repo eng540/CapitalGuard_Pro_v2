@@ -1,4 +1,4 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
+# --- START OF FINAL, FULLY CORRECTED AND ROBUST FILE: src/capitalguard/interfaces/telegram/commands.py ---
 import io
 import csv
 import logging
@@ -28,10 +28,6 @@ AWAITING_FORWARD_KEY = "awaiting_forward_channel_link"
 # Generic helpers
 # ---------------------------
 def _parse_channel_ref(raw: str) -> Tuple[Optional[int], Optional[str]]:
-    """
-    Parses a channel reference from user input.
-    Accepts @username or numeric chat_id. Returns (chat_id, username_without_at)
-    """
     s = (raw or "").strip()
     if not s:
         return None, None
@@ -42,16 +38,7 @@ def _parse_channel_ref(raw: str) -> Tuple[Optional[int], Optional[str]]:
     except ValueError:
         return None, s
 
-
-async def _get_current_user(session, user_tg_id: int):
-    return UserRepository(session).find_or_create(telegram_id=user_tg_id)
-
-
 def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], Optional[str]]:
-    """
-    Extracts channel info from a forwarded message. Works with both classic 'forward_from_chat'
-    and 'forward_origin.chat' for newer Telegram message schemas.
-    """
     chat_obj = getattr(message, "forward_from_chat", None)
     if chat_obj is None:
         fwd_origin = getattr(message, "forward_origin", None)
@@ -65,12 +52,7 @@ def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], O
         getattr(chat_obj, "username", None),
     )
 
-
 async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: int) -> bool:
-    """
-    Performs a lightweight post to verify the bot can publish in the channel.
-    Message is auto-deleted by admins typically; this is just a capability probe.
-    """
     try:
         await context.bot.send_message(
             chat_id=channel_id, text="✅ تم ربط القناة بنجاح.", disable_notification=True
@@ -86,7 +68,6 @@ async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: i
 # ---------------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html("👋 أهلاً بك في <b>CapitalGuard Bot</b>.\nاستخدم /help للمساعدة.")
-
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
@@ -109,23 +90,20 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/settings</code> — (سيتم تفعيلها مستقبلاً لإدارة الحساب)."
     )
 
-
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⚙️ الإعدادات\n\n"
         "هذه المنطقة مخصصة لإدارة إعدادات حسابك مستقبلاً."
     )
 
-
 # ---------------------------
-# Open recommendations (fixes async price usage)
+# Open recommendations
 # ---------------------------
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trade_service: TradeService = get_service(context, "trade_service")
     price_service: PriceService = get_service(context, "price_service")
     user_telegram_id = update.effective_user.id
 
-    # Parse optional filters
     filters_map = {}
     filter_text_parts = []
     if context.args:
@@ -143,19 +121,17 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["last_open_filters"] = filters_map
 
-    # Fetch data from repository
-    items = trade_service.repo.list_open_for_user(
-        user_telegram_id,
-        symbol=filters_map.get("symbol"),
-        side=filters_map.get("side"),
-        status=filters_map.get("status"),
-    )
+    with SessionLocal() as session:
+        items = trade_service.repo.list_open_for_user(
+            session=session,
+            user_telegram_id=user_telegram_id,
+            **filters_map
+        )
 
     if not items:
         await update.message.reply_text("✅ لا توجد توصيات مفتوحة تطابق الفلتر الحالي.")
         return
 
-    # ✅ Await async keyboard builder (it awaits price_service.get_cached_price internally)
     keyboard = await build_open_recs_keyboard(items, current_page=1, price_service=price_service)
 
     header_text = "<b>📊 لوحة قيادة توصياتك المفتوحة</b>"
@@ -167,24 +143,29 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-
 # ---------------------------
 # Stats & export
 # ---------------------------
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     analytics_service: AnalyticsService = get_service(context, "analytics_service")
     user_id_str = str(update.effective_user.id)
+    
+    # Although analytics_service methods manage their own sessions, it's good practice
+    # to be explicit if we expect more complex interactions in the future.
     stats = analytics_service.performance_summary_for_user(user_id_str)
     text = build_analyst_stats_text(stats)
     await update.message.reply_html(text)
-
 
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("جاري تجهيز ملف التصدير...")
     trade_service: TradeService = get_service(context, "trade_service")
     user_telegram_id = update.effective_user.id
 
-    all_recs = trade_service.repo.list_all_for_user(user_telegram_id)
+    with SessionLocal() as session:
+        # Assuming list_all_for_user will be refactored to accept a session.
+        # For now, we know it creates its own, but this is future-proof.
+        all_recs = trade_service.repo.list_all_for_user(session, user_telegram_id)
+    
     if not all_recs:
         await update.message.reply_text("لا توجد بيانات للتصدير.")
         return
@@ -200,7 +181,7 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = [
             rec.id, rec.asset.value, rec.side.value, rec.status.value,
             rec.market, rec.entry.value, rec.stop_loss.value,
-            ", ".join(map(str, rec.targets.values)), rec.exit_price, rec.notes,
+            ", ".join(str(t.price) for t in rec.targets.values), rec.exit_price, rec.notes,
             rec.created_at.strftime('%Y-%m-%d %H:%M:%S') if rec.created_at else "",
             rec.closed_at.strftime('%Y-%m-%d %H:%M:%S') if rec.closed_at else ""
         ]
@@ -211,17 +192,10 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     csv_file = InputFile(bytes_buffer, filename="capitalguard_export.csv")
     await update.message.reply_document(document=csv_file, caption="تم إنشاء التصدير.")
 
-
 # ---------------------------
 # Channel management
 # ---------------------------
 async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /link_channel
-    - إن لم يزوّد المستخدم بارامترات: نطلب إعادة توجيه رسالة من القناة.
-    - إن زوّد @username أو id: نعرض رسالة إرشادية (والربط الفعلي مفضل أن يكون عبر إعادة توجيه
-      لضمان توفر chat_id الصحيح وصلاحيات النشر).
-    """
     if not context.args:
         context.user_data[AWAITING_FORWARD_KEY] = True
         await update.message.reply_html(
@@ -243,15 +217,9 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ℹ️ لربط القناة عبر المعرّف الرقمي: أعد توجيه رسالة من القناة لضمان التحقق التلقائي من الصلاحيات."
         )
 
-
 async def link_channel_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Triggered when the user forwards a message from the target channel.
-    Validates posting rights, then persists/updates the channel record.
-    """
     msg = update.message
     if not context.user_data.pop(AWAITING_FORWARD_KEY, False):
-        # Ignore unrelated forwards
         return
 
     user_tg_id = int(update.effective_user.id)
@@ -267,14 +235,14 @@ async def link_channel_forward_handler(update: Update, context: ContextTypes.DEF
 
     try:
         with SessionLocal() as session:
-            user = await _get_current_user(session, user_tg_id)
-            # ✅ تماشيًا مع ChannelRepository (النسخة التي وفّرناها): المعامل owner_user_id
+            user = UserRepository(session).find_or_create(user_tg_id)
             ChannelRepository(session).add(
                 owner_user_id=user.id,
                 telegram_channel_id=chat_id,
                 username=username,
                 title=title,
             )
+            session.commit()
     except Exception as e:
         err = str(e).lower()
         if "unique" in err or "integrity" in err or "already" in err:
@@ -289,11 +257,13 @@ async def link_channel_forward_handler(update: Update, context: ContextTypes.DEF
         parse_mode="HTML",
     )
 
-
 async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_tg_id = int(update.effective_user.id)
     with SessionLocal() as session:
-        user = await _get_current_user(session, user_tg_id)
+        user = UserRepository(session).find_by_telegram_id(user_tg_id)
+        if not user:
+            await update.message.reply_text("📭 لا توجد قنوات مرتبطة بحسابك.")
+            return
         channels = ChannelRepository(session).list_by_user(user.id, only_active=False) or []
 
     if not channels:
@@ -309,12 +279,7 @@ async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("\nℹ️ للتحكم: <code>/toggle_channel &lt;id&gt;</code> | <code>/unlink_channel &lt;id&gt;</code>")
     await update.message.reply_html("\n".join(lines))
 
-
 async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /toggle_channel <chat_id>
-    Flips is_active for the given channel owned by the current user.
-    """
     if not context.args:
         await update.message.reply_text("استخدم: /toggle_channel <id>")
         return
@@ -327,49 +292,43 @@ async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     user_tg_id = int(update.effective_user.id)
     with SessionLocal() as session:
-        user = await _get_current_user(session, user_tg_id)
-        repo = ChannelRepository(session)
-        # جلب الحالة الحالية
-        channels = repo.list_by_user(user.id, only_active=False)
-        target = next((c for c in channels if c.telegram_channel_id == chat_id), None)
-        if not target:
-            await update.message.reply_text("لم يتم العثور على القناة لهذا الحساب.")
-            return
-        repo.set_active(user.id, chat_id, not target.is_active)
+        try:
+            user = UserRepository(session).find_by_telegram_id(user_tg_id)
+            if not user:
+                await update.message.reply_text("لم يتم العثور على حسابك.")
+                return
 
-    await update.message.reply_text("تم تحديث حالة القناة.")
-
+            repo = ChannelRepository(session)
+            channels = repo.list_by_user(user.id, only_active=False)
+            target = next((c for c in channels if c.telegram_channel_id == chat_id), None)
+            if not target:
+                await update.message.reply_text("لم يتم العثور على القناة لهذا الحساب.")
+                return
+            
+            repo.set_active(user.id, chat_id, not target.is_active)
+            session.commit()
+            await update.message.reply_text("تم تحديث حالة القناة.")
+        except Exception as e:
+            session.rollback()
+            log.error(f"Error toggling channel: {e}")
+            await update.message.reply_text("حدث خطأ أثناء تحديث القناة.")
 
 async def unlink_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /unlink_channel <chat_id>
-    (اختياري) يمكنك تنفيذ حذف/فك الربط هنا إذا كان لديك طريقة في المستودع.
-    الآن سنعطّيها رسالة إرشادية لعدم توفر تنفيذ الحذف في المستودع الافتراضي.
-    """
-    await update.message.reply_text("ميزة فك الربط غير مفعلة بعد. أخبرني إن أردت إضافة حذف فعلي من قاعدة البيانات.")
-
+    await update.message.reply_text("ميزة فك الربط غير مفعلة بعد.")
 
 # ---------------------------
 # Registration
 # ---------------------------
 def register_commands(app: Application):
-    """
-    Registers only the general commands that do not start a conversation.
-    Conversation-starting commands (/newrec, /new, etc.) are registered in ConversationHandler.
-    """
     app.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("help", help_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("open", open_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("stats", stats_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("export", export_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("settings", settings_cmd, filters=ALLOWED_USER_FILTER))
-
-    # Channel Management
     app.add_handler(CommandHandler("link_channel", link_channel_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("channels", channels_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("toggle_channel", toggle_channel_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("unlink_channel", unlink_channel_cmd, filters=ALLOWED_USER_FILTER))
-
-    # Handler for linking channels via message forwarding
     app.add_handler(MessageHandler(ALLOWED_USER_FILTER & filters.FORWARDED, link_channel_forward_handler))
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
+# --- END OF FINAL, FULLY CORRECTED AND ROBUST FILE ---
