@@ -34,8 +34,15 @@ def build_services() -> dict:
 
     # Application Services
     market_data_service = MarketDataService()
-    price_service = PriceService()
-    trade_service = TradeService(repo=repo, notifier=notifier, market_data_service=market_data_service)
+    price_service = PriceService() # ✅ تم إنشاء الكائن
+    # ✅ --- التصحيح الأساسي: تمرير price_service إلى TradeService ---
+    trade_service = TradeService(
+        repo=repo, 
+        notifier=notifier, 
+        market_data_service=market_data_service,
+        price_service=price_service # <-- هذا هو التغيير المطلوب
+    )
+    # --- النهاية ---
     report_service = ReportService(repo=repo)
     analytics_service = AnalyticsService(repo=repo)
     risk_service = RiskService(exec_spot=exec_spot, exec_futu=exec_futu)
