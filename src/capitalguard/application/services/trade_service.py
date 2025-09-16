@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED AND ROBUST FILE: src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, RE-ARCHITECTED FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
@@ -15,11 +15,9 @@ from capitalguard.interfaces.telegram.ui_texts import _pct
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.infrastructure.db.models import PublishedMessage, RecommendationORM
 
-# ✅ FIX 1: Use the special variable __name__ to get the module's logger.
 log = logging.getLogger(__name__)
 
 def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
-    """تحويل معرف المستخدم إلى عدد صحيح"""
     try:
         return int(user_id) if user_id is not None and user_id.isdigit() else None
     except (TypeError, ValueError):
@@ -32,14 +30,12 @@ class TradeService:
         self.market_data_service = market_data_service
 
     def _load_user_linked_channels(self, session: Session, uid_int: int, only_active: bool = True) -> List[Any]:
-        """تحميل القنوات المرتبطة بالمستخدم"""
-        user = UserRepository().find_by_telegram_id(session, uid_int)
+        user = UserRepository(session).find_by_telegram_id(uid_int)
         if not user:
             return []
         return ChannelRepository(session).list_by_user(user.id, only_active=only_active)
 
     def _notify_all_channels(self, session: Session, rec_id: int, text: str):
-        """إرسال إشعار لجميع القنوات المرتبطة بالتوصية"""
         published_messages = self.repo.get_published_messages(session, rec_id)
         for msg_meta in published_messages:
             try:
@@ -55,7 +51,6 @@ class TradeService:
                 )
 
     def _update_all_cards(self, session: Session, rec: Recommendation):
-        """تحديث جميع البطاقات المرتبطة بالتوصية"""
         published_messages = self.repo.get_published_messages(session, rec.id)
         if not published_messages:
             return
@@ -76,7 +71,6 @@ class TradeService:
                 )
 
     def _validate_sl_vs_entry_on_create(self, side: str, entry: float, sl: float) -> None:
-        """التحقق من صحة وقف الخسارة بالنسبة لسعر الدخول"""
         side_upper = side.upper()
         if side_upper == "LONG" and not (sl < entry):
             raise ValueError("For new LONG trades, Stop Loss must be < Entry Price.")
@@ -84,7 +78,6 @@ class TradeService:
             raise ValueError("For new SHORT trades, Stop Loss must be > Entry Price.")
 
     def create_recommendation(self, session: Session, **kwargs) -> Recommendation:
-        """إنشاء توصية جديدة"""
         asset = kwargs['asset'].strip().upper()
         market = kwargs.get('market', 'Futures')
         if not self.market_data_service.is_valid_symbol(asset, market):
@@ -124,7 +117,6 @@ class TradeService:
         return self.repo.add_with_event(session, recommendation_entity)
 
     def publish_recommendation(self, session: Session, rec_id: int, user_id: Optional[str], channel_ids: Optional[List[int]] = None) -> Tuple[Optional[Recommendation], Dict[str, List[Dict[str, Any]]]]:
-        """نشر التوصية إلى القنوات"""
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
         
         rec = self.repo.get(session, rec_id)
@@ -166,10 +158,6 @@ class TradeService:
         return self.repo.get(session, rec_id), report
 
     def create_and_publish_recommendation(self, session: Session, **kwargs) -> Tuple[Recommendation, Dict]:
-        """
-        Creates and then publishes a recommendation within a provided session.
-        The caller is responsible for committing or rolling back the session.
-        """
         try:
             new_rec = self.create_recommendation(session, **kwargs)
             updated_rec, report = self.publish_recommendation(
@@ -183,8 +171,6 @@ class TradeService:
             raise e
 
     def close(self, rec_id: int, exit_price: float, reason: str = "MANUAL_CLOSE", session: Optional[Session] = None) -> Recommendation:
-        """إغلاق التوصية"""
-        # This method can be called from other service methods, so it needs to handle its own session.
         with SessionLocal() as sess:
             try:
                 rec = self.repo.get(sess, rec_id)
@@ -217,7 +203,6 @@ class TradeService:
                 raise
 
     def update_sl(self, rec_id: int, new_sl: float) -> Recommendation:
-        """تحديث وقف الخسارة"""
         with SessionLocal() as session:
             try:
                 rec = self.repo.get(session, rec_id)
@@ -242,7 +227,6 @@ class TradeService:
                 raise
 
     def take_partial_profit(self, rec_id: int, close_percent: float, price: float, triggered_by: str = "MANUAL") -> Recommendation:
-        """أخذ ربح جزئي"""
         with SessionLocal() as session:
             try:
                 rec = self.repo.get(session, rec_id)
@@ -268,7 +252,6 @@ class TradeService:
                 if updated_rec.open_size_percent <= 0.01:
                     log.info(f"Recommendation #{rec_id} fully closed via partial profits. Marking as closed.")
                     reason = "AUTO_PARTIAL_FULL_CLOSE" if triggered_by.upper() == "AUTO" else "MANUAL_PARTIAL_FULL_CLOSE"
-                    # ✅ FIX 2: Pass the current session to the close method to avoid creating a new one.
                     return self.close(rec_id, price, reason=reason, session=session)
                 
                 session.commit()
@@ -278,7 +261,6 @@ class TradeService:
                 raise
 
     def update_price_tracking(self, rec_id: int, current_price: float) -> Optional[Recommendation]:
-        """تحديث تتبع الأسعار"""
         with SessionLocal() as session:
             try:
                 rec = self.repo.get(session, rec_id)
@@ -295,11 +277,9 @@ class TradeService:
                     return self.repo.update(session, rec)
                 return None
             finally:
-                # A commit is needed even if no changes were made to close the transaction.
                 session.commit()
 
     def get_recent_assets_for_user(self, user_id: str, limit: int = 5) -> List[str]:
-        """الحصول على أحدث الأصول للمستخدم"""
         uid_int = _parse_int_user_id(user_id)
         if not uid_int:
             return []
@@ -307,7 +287,6 @@ class TradeService:
             return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
     def update_targets(self, rec_id: int, new_targets_data: List[Dict[str, float]]) -> Recommendation:
-        """تحديث الأهداف"""
         with SessionLocal() as session:
             try:
                 rec = self.repo.get(session, rec_id)
@@ -330,7 +309,6 @@ class TradeService:
                 raise
 
     def update_exit_strategy(self, rec_id: int, new_strategy: ExitStrategy) -> Recommendation:
-        """تحديث استراتيجية الخروج"""
         with SessionLocal() as session:
             try:
                 rec = self.repo.get(session, rec_id)
@@ -351,7 +329,6 @@ class TradeService:
                 raise
 
     def update_profit_stop(self, rec_id: int, new_price: Optional[float]) -> Recommendation:
-        """تحديث وقف الربح"""
         with SessionLocal() as session:
             try:
                 rec = self.repo.get(session, rec_id)
@@ -374,4 +351,4 @@ class TradeService:
             except Exception:
                 session.rollback()
                 raise
-# --- END OF FINAL, CORRECTED AND ROBUST FILE ---
+# --- END OF FINAL, RE-ARCHITECTED FILE ---
