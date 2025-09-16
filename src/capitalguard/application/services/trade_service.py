@@ -24,10 +24,17 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
         return None
 
 class TradeService:
-    def __init__(self, repo: RecommendationRepository, notifier: NotifierPort, market_data_service: MarketDataService):
+    def __init__(
+        self,
+        repo: RecommendationRepository,
+        notifier: NotifierPort,
+        market_data_service: MarketDataService,
+        price_service: PriceService, # ✅ FIX: Added the missing dependency
+    ):
         self.repo = repo
         self.notifier = notifier
         self.market_data_service = market_data_service
+        self.price_service = price_service
 
     def _load_user_linked_channels(self, session: Session, uid_int: int, only_active: bool = True) -> List[Any]:
         user = UserRepository(session).find_by_telegram_id(uid_int)
