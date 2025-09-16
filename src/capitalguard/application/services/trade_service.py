@@ -1,4 +1,6 @@
-# --- START OF FINAL, POLISHED AND ROBUST FILE: src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, RE-ARCHITECTED, AND PRODUCTION-READY FILE (Version 8.0.2) ---
+# src/capitalguard/application/services/trade_service.py
+
 import logging
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
@@ -11,8 +13,6 @@ from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from capitalguard.domain.ports import NotifierPort
 from capitalguard.infrastructure.db.repository import RecommendationRepository, ChannelRepository
 from capitalguard.infrastructure.db.base import SessionLocal
-from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
-from capitalguard.interfaces.telegram.ui_texts import _pct
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.infrastructure.db.models import PublishedMessage, RecommendationORM
@@ -31,6 +31,11 @@ class TradeService:
     Core application service for managing the lifecycle of trade recommendations.
     This service encapsulates all business logic, ensuring that the interface layer
     (e.g., Telegram handlers) remains thin and focused on user interaction.
+
+    Architectural Principles Applied:
+    - User-Scoped Operations: All public methods require a user_id to ensure strict data isolation and security.
+    - Unit of Work: Each public method manages its own database session and transaction, guaranteeing atomicity.
+    - Dependency Inversion: Depends on abstractions (NotifierPort, RecommendationRepository) rather than concrete implementations.
     """
     def __init__(
         self,
@@ -60,7 +65,7 @@ class TradeService:
                 self.notifier.edit_recommendation_card_by_ids,
                 channel_id=msg_meta.telegram_channel_id,
                 message_id=msg_meta.telegram_message_id,
-                rec=rec,
+                rec=rec
             )
             update_tasks.append(task)
         
@@ -199,10 +204,9 @@ class TradeService:
         if not uid_int:
             raise ValueError("Invalid User ID.")
             
-        with SessionLocal() as session:
-            rec = self.repo.get_by_id_for_user(session, rec_id, uid_int)
-            if not rec:
-                raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
+        rec = self.get_recommendation_for_user(rec_id, user_telegram_id)
+        if not rec:
+            raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
 
         live_price = self.price_service.get_cached_price_blocking(rec.asset.value, rec.market, force_refresh=True)
         if live_price is None:
