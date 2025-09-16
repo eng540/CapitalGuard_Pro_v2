@@ -1,17 +1,18 @@
-# --- START OF FILE: src/capitalguard/application/services/analytics_service.py ---
+# --- START OF FINAL, FULLY CORRECTED AND ROBUST FILE: src/capitalguard/application/services/analytics_service.py ---
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple, Dict, Any, Union
+from typing import List, Optional, Tuple, Dict, Any, Union
 from datetime import datetime
 from math import isfinite
 
 from capitalguard.domain.entities import RecommendationStatus
-
+from capitalguard.infrastructure.db.base import SessionLocal
+from capitalguard.infrastructure.db.repository import RecommendationRepository
 
 @dataclass
 class AnalyticsService:
     """Provides advanced, user-scoped analytics."""
-    repo: Any  # RecommendationRepository
+    repo: RecommendationRepository
 
     # ---------------------------
     # Helpers
@@ -58,27 +59,14 @@ class AnalyticsService:
             return None
 
     # ---------------------------
-    # User-scoped queries
-    # ---------------------------
-    def list_filtered_for_user(
-        self,
-        user_id: Union[int, str],
-        symbol: Optional[str] = None,
-        status: Optional[str] = None,
-    ) -> List:
-        """
-        Return recommendations for a specific user with optional DB-side filters.
-        """
-        uid = self._to_int_user_id(user_id)
-        return self.repo.list_all_for_user(user_id=uid, symbol=symbol, status=status)
-
-    # ---------------------------
     # User-scoped metrics
     # ---------------------------
     def win_rate_for_user(self, user_id: Union[int, str]) -> float:
         """Win-rate % for a user's closed trades with an exit price."""
         uid = self._to_int_user_id(user_id)
-        items = self.repo.list_all_for_user(user_id=uid)
+        with SessionLocal() as session:
+            items = self.repo.list_all_for_user(session, user_telegram_id=uid)
+        
         closed = [r for r in items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
         if not closed:
             return 0.0
@@ -99,7 +87,9 @@ class AnalyticsService:
         Returns list of (YYYY-MM-DD, cumulative_pnl_percent).
         """
         uid = self._to_int_user_id(user_id)
-        items = self.repo.list_all_for_user(user_id=uid)
+        with SessionLocal() as session:
+            items = self.repo.list_all_for_user(session, user_telegram_id=uid)
+        
         closed = [r for r in items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None and r.closed_at]
         closed.sort(key=lambda r: r.closed_at)
 
@@ -120,7 +110,8 @@ class AnalyticsService:
           { market: { count, win_rate, sum_pnl } }
         """
         uid = self._to_int_user_id(user_id)
-        items = self.repo.list_all_for_user(user_id=uid)
+        with SessionLocal() as session:
+            items = self.repo.list_all_for_user(session, user_telegram_id=uid)
 
         buckets: Dict[str, List] = {}
         for r in items:
@@ -129,7 +120,6 @@ class AnalyticsService:
 
         out: Dict[str, Dict[str, float]] = {}
         for m, arr in buckets.items():
-            # win-rate within bucket
             closed = [x for x in arr if x.status == RecommendationStatus.CLOSED and x.exit_price is not None]
             wr = 0.0
             if closed:
@@ -158,7 +148,9 @@ class AnalyticsService:
         Comprehensive performance summary for a specific user.
         """
         uid = self._to_int_user_id(user_id)
-        all_items = self.repo.list_all_for_user(user_id=uid)
+        with SessionLocal() as session:
+            all_items = self.repo.list_all_for_user(session, user_telegram_id=uid)
+        
         closed_items = [r for r in all_items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
         open_items = [r for r in all_items if r.status != RecommendationStatus.CLOSED]
 
@@ -179,34 +171,6 @@ class AnalyticsService:
             "total_pnl_percent": f"{total_pnl:.2f}%",
         }
 
-    # ---------------------------
-    # Legacy/global (deprecated) — أبقيناها لتفادي كسر الاستدعاءات القديمة
-    # ---------------------------
-    def performance_summary(self) -> Dict[str, Any]:
-        """[Deprecated] Global summary (غير مقيّد بمستخدم)."""
-        all_items = self.repo.list_all()
-        closed_items = [r for r in all_items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
-        open_items = [r for r in all_items if r.status != RecommendationStatus.CLOSED]
-
-        def _p(r) -> float:
-            return self._pnl_percent(
-                self._val(r.side, "value", r.side),
-                float(self._val(r.entry, "value", r.entry) or 0),
-                float(r.exit_price or 0),
-            )
-
-        total_pnl = sum(_p(r) for r in closed_items)
-        # إعادة استخدام win_rate_for_user غير ممكن هنا لعدم وجود user_id
-        wr = 0.0
-        if closed_items:
-            wins = sum(1 for r in closed_items if _p(r) > 0)
-            wr = wins * 100.0 / len(closed_items)
-
-        return {
-            "total_recommendations": len(all_items),
-            "open_recommendations": len(open_items),
-            "closed_recommendations": len(closed_items),
-            "overall_win_rate": f"{wr:.2f}%",
-            "total_pnl_percent": f"{total_pnl:.2f}%",
-        }
-# --- END OF FILE ---
+    # Note: The global performance_summary is deprecated and has been removed
+    # as it does not fit the user-scoped session management pattern.
+# --- END OF FINAL, FULLY CORRECTED AND ROBUST FILE ---

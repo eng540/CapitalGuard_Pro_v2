@@ -1,4 +1,4 @@
-# --- START OF FINAL, RE-ARCHITECTED FILE: src/capitalguard/infrastructure/db/repository.py ---
+# --- START OF FINAL, FULLY CORRECTED AND COMPLETE FILE: src/capitalguard/infrastructure/db/repository.py ---
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict
@@ -12,9 +12,6 @@ from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from .models import RecommendationORM, User, Channel, PublishedMessage, RecommendationEvent
 
 log = logging.getLogger(__name__)
-
-# The session_scope context manager has been removed as it was the root cause of the issue.
-# Services are now responsible for session management.
 
 class UserRepository:
     def __init__(self, session: Session):
@@ -277,4 +274,22 @@ class RecommendationRepository:
         results = session.query(subq.c.asset).order_by(subq.c.max_created_at.desc()).limit(limit).all()
         
         return [r[0] for r in results]
-# --- END OF FINAL, CORRECTED, AND ROBUST FILE ---
+
+    def list_all_for_user(self, session: Session, user_telegram_id: Union[int, str], symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
+        user = UserRepository(session).find_by_telegram_id(int(user_telegram_id))
+        if not user:
+            return []
+
+        q = session.query(RecommendationORM).options(
+            joinedload(RecommendationORM.user),
+            selectinload(RecommendationORM.events)
+        ).filter(RecommendationORM.user_id == user.id)
+
+        if symbol:
+            q = q.filter(RecommendationORM.asset.ilike(f'%{symbol.upper()}%'))
+        if status:
+            q = q.filter(RecommendationORM.status == RecommendationStatus[status.upper()])
+            
+        rows = q.order_by(RecommendationORM.created_at.desc()).all()
+        return [self._to_entity(r) for r in rows]
+# --- END OF FINAL, FULLY CORRECTED AND COMPLETE FILE ---
