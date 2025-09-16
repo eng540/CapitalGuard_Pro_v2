@@ -72,7 +72,7 @@ async def on_startup():
     ptb_app.bot_data["services"] = services  
       
     #alert_service = services["alert_service"]  
-    alert_service.schedule_job(ptb_app, interval_sec=5)  
+    #alert_service.schedule_job(ptb_app, interval_sec=5)  
       
     if settings.TELEGRAM_WEBHOOK_URL:  
         await ptb_app.bot.set_webhook(  
