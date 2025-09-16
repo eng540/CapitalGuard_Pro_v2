@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED AND ENHANCED FILE: src/capitalguard/application/services/trade_service.py ---
+# --- START OF FINAL, POLISHED AND ROBUST FILE: src/capitalguard/application/services/trade_service.py ---
 import logging
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
@@ -182,10 +182,7 @@ class TradeService:
                     log.warning(f"Attempted to activate a non-pending recommendation #{rec_id} with status {rec.status.value}")
                     return rec
 
-                rec.status = RecommendationStatus.ACTIVE
-                rec.activated_at = datetime.now(timezone.utc)
-                rec.highest_price_reached = rec.entry.value
-                rec.lowest_price_reached = rec.entry.value
+                rec.activate() # Use the domain entity's method
                 
                 event_data = {"activated_at": rec.activated_at.isoformat()}
                 updated_rec = self.repo.update_with_event(session, rec, "ACTIVATED", event_data)
@@ -201,7 +198,7 @@ class TradeService:
                 raise
 
     def close(self, rec_id: int, exit_price: float, reason: str = "MANUAL_CLOSE", session: Optional[Session] = None) -> Recommendation:
-        with SessionLocal() as sess:
+        with SessionLocal() as sess: # Use 'sess' to avoid shadowing the passed-in 'session'
             try:
                 rec = self.repo.get(sess, rec_id)
                 if not rec:
@@ -282,6 +279,7 @@ class TradeService:
                 if updated_rec.open_size_percent <= 0.01:
                     log.info(f"Recommendation #{rec_id} fully closed via partial profits. Marking as closed.")
                     reason = "AUTO_PARTIAL_FULL_CLOSE" if triggered_by.upper() == "AUTO" else "MANUAL_PARTIAL_FULL_CLOSE"
+                    # Pass the current session to the close method to avoid a nested session.
                     return self.close(rec_id, price, reason=reason, session=session)
                 
                 session.commit()
@@ -290,7 +288,6 @@ class TradeService:
                 session.rollback()
                 raise
 
-    # ✅ MODIFICATION: This function is now robust and manages its own session.
     def update_price_tracking(self, rec_id: int, current_price: float) -> Optional[Recommendation]:
         with SessionLocal() as session:
             try:
@@ -311,7 +308,7 @@ class TradeService:
                     session.commit()
                     return updated_rec
                 
-                return None # No changes, no need to commit.
+                return None
             except Exception:
                 session.rollback()
                 log.exception(f"Failed to update price tracking for rec #{rec_id}")
