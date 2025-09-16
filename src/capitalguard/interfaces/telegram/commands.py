@@ -149,9 +149,6 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     analytics_service: AnalyticsService = get_service(context, "analytics_service")
     user_id_str = str(update.effective_user.id)
-    
-    # Although analytics_service methods manage their own sessions, it's good practice
-    # to be explicit if we expect more complex interactions in the future.
     stats = analytics_service.performance_summary_for_user(user_id_str)
     text = build_analyst_stats_text(stats)
     await update.message.reply_html(text)
@@ -162,8 +159,6 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_telegram_id = update.effective_user.id
 
     with SessionLocal() as session:
-        # Assuming list_all_for_user will be refactored to accept a session.
-        # For now, we know it creates its own, but this is future-proof.
         all_recs = trade_service.repo.list_all_for_user(session, user_telegram_id)
     
     if not all_recs:
