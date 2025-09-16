@@ -82,11 +82,23 @@ async def build_open_recs_keyboard(
     return InlineKeyboardMarkup(keyboard)
 
 
-def public_channel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+def public_channel_keyboard(rec_id: int, bot_username: str) -> InlineKeyboardMarkup:
+    """
+    Builds the keyboard for a public channel message.
+    
+    ✅ FIX: This function now explicitly requires `bot_username` to build the URL,
+    making it pure, testable, and free of the NameError.
+    """
+    if not bot_username:
+        # Fallback in case the username is not available, avoids crashing.
+        return InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}")]]
+        )
+
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📊 تتبّع الإشارة", url=f"https://t.me/{bot_username}?start=track_{rec_id}"), # Assuming you have bot_username
+                InlineKeyboardButton("📊 تتبّع الإشارة", url=f"https://t.me/{bot_username}?start=track_{rec_id}"),
                 InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}"),
             ]
         ]
