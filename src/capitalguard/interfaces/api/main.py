@@ -1,4 +1,4 @@
-# --- START OF FINAL, RE-ARCHITECTED AND PRODUCTION-READY FILE (Version 8.0.3) ---
+# -- START OF FINAL, RE-ARCHITECTED AND PRODUCTION-READY FILE (Version 8.0.3) ---
 # src/capitalguard/interfaces/api/main.py
 
 import logging
