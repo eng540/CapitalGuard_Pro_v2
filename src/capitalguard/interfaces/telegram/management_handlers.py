@@ -2,6 +2,7 @@
 import logging
 from time import time
 from typing import Optional
+import types
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -32,6 +33,7 @@ from .parsers import parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.infrastructure.db.base import SessionLocal
+from .conversation_handlers import show_review_card, CONVERSATION_DATA_KEY, I_REVIEW, I_PRICES
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +98,12 @@ def _parse_tail_int(data: str) -> Optional[int]:
 
 def _parse_cq_parts(data: str) -> list[str]:
     return data.split(":")
+
+async def _noop_answer(query, *args, **kwargs):
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
 def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int) -> bool:
     key = f"rate_limit_{chat_id}_{message_id}"
@@ -196,50 +204,87 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
         updated_rec = trade_service.repo.get(session, rec_id)
         setattr(updated_rec, "live_price", live_price)
         new_text = build_trade_card_text(updated_rec)
-        new_keyboard = public_channel_keyboard(rec_id)
+        new_keyboard = public_channel_keyboard(rec.id, notifier.bot_username)
         await query.edit_message_text(text=new_text, reply_markup=new_keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
-async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not context.user_data: return
-    state = context.user_data.get(AWAITING_INPUT_KEY)
-    if not state: return
+async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
+    if not update.message or not context.user_data:
+        return None
 
-    original_message = state.get("original_message")
-    if not original_message or not update.message.reply_to_message or update.message.reply_to_message.message_id != original_message.message_id:
-        return
+    if AWAITING_INPUT_KEY in context.user_data:
+        state = context.user_data.pop(AWAITING_INPUT_KEY, None)
+        if not state: return None
+        
+        original_message = state.get("original_message")
+        if not original_message or not update.message.reply_to_message or update.message.reply_to_message.message_id != original_message.message_id:
+            context.user_data[AWAITING_INPUT_KEY] = state
+            return None
 
-    context.user_data.pop(AWAITING_INPUT_KEY, None)
-    action, rec_id = state["action"], state["rec_id"]
-    user_input = update.message.text.strip()
-    chat_id, message_id, user_id = original_message.chat_id, original_message.message_id, update.effective_user.id
+        action, rec_id = state["action"], state["rec_id"]
+        user_input = update.message.text.strip()
+        chat_id, message_id, user_id = original_message.chat_id, original_message.message_id, update.effective_user.id
 
-    try: await update.message.delete()
-    except Exception: pass
+        try: await update.message.delete()
+        except Exception: pass
 
-    trade_service: TradeService = get_service(context, "trade_service")
-    
-    try:
-        if action == "profit_stop":
-            price = parse_number(user_input)
-            trade_service.update_profit_stop(rec_id, price)
-            await _send_or_edit_strategy_menu(context, chat_id, message_id, rec_id, user_id)
-        elif action == "close":
-            exit_price = parse_number(user_input)
-            text = f"Confirm closing <b>#{rec_id}</b> at <b>{exit_price:g}</b>?"
-            keyboard = confirm_close_keyboard(rec_id, exit_price)
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-        elif action == "edit_sl":
-            new_sl = parse_number(user_input)
-            trade_service.update_sl(rec_id, new_sl)
+        trade_service: TradeService = get_service(context, "trade_service")
+        
+        dummy_query = types.SimpleNamespace(
+            message=original_message, 
+            data=f"rec:show_panel:{rec_id}", 
+            answer=lambda: _noop_answer(query=update.callback_query), 
+            from_user=update.effective_user
+        )
+        dummy_update = Update(update.update_id, callback_query=dummy_query)
+        
+        try:
+            if action == "profit_stop":
+                price = parse_number(user_input)
+                trade_service.update_profit_stop(rec_id, price)
+                dummy_update.callback_query.data = f"rec:strategy_menu:{rec_id}"
+                await strategy_menu_handler(dummy_update, context)
+            elif action == "close":
+                exit_price = parse_number(user_input)
+                text = f"Confirm closing <b>#{rec_id}</b> at <b>{exit_price:g}</b>?"
+                keyboard = confirm_close_keyboard(rec_id, exit_price)
+                await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            elif action == "edit_sl":
+                new_sl = parse_number(user_input)
+                trade_service.update_sl(rec_id, new_sl)
+                await _send_or_edit_rec_panel(context, chat_id, message_id, rec_id, user_id)
+            elif action == "edit_tp":
+                new_targets = parse_targets_list(user_input.split())
+                trade_service.update_targets(rec_id, new_targets)
+                await _send_or_edit_rec_panel(context, chat_id, message_id, rec_id, user_id)
+            
+        except Exception as e:
+            log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ Error: {e}")
             await _send_or_edit_rec_panel(context, chat_id, message_id, rec_id, user_id)
-        elif action == "edit_tp":
-            new_targets = parse_targets_list(user_input.split())
-            trade_service.update_targets(rec_id, new_targets)
-            await _send_or_edit_rec_panel(context, chat_id, message_id, rec_id, user_id)
-    except Exception as e:
-        log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ Error: {e}")
-        await _send_or_edit_rec_panel(context, chat_id, message_id, rec_id, user_id)
+        return None
+
+    draft = context.user_data.get(CONVERSATION_DATA_KEY)
+    if draft and 'order_type' in draft:
+        try:
+            order_type = draft['order_type']
+            parts = (update.message.text or "").strip().replace(',', ' ').split()
+            if order_type == 'MARKET':
+                if len(parts) < 2: raise ValueError("At least Stop Loss and one Target are required.")
+                draft["entry"] = 0
+                draft["stop_loss"] = parse_number(parts[0])
+                draft["targets"] = parse_targets_list(parts[1:])
+            else:
+                if len(parts) < 3: raise ValueError("Entry, Stop, and at least one Target are required.")
+                draft["entry"] = parse_number(parts[0])
+                draft["stop_loss"] = parse_number(parts[1])
+                draft["targets"] = parse_targets_list(parts[2:])
+            if not draft["targets"]: raise ValueError("No valid targets were parsed.")
+            await show_review_card(update, context)
+            return I_REVIEW
+        except (ValueError, IndexError) as e:
+            await update.message.reply_text(f"❌ Invalid price format: {e}. Please try again.")
+            return I_PRICES
+    return None
 
 async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -462,4 +507,4 @@ def register_management_handlers(application: Application):
     application.add_handler(partial_profit_conv)
     
     application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler), group=1)
-# --- END OF FINAL, FULLY RE-ARCHITECTED AND ROBUST FILE ---
+# --- END OF FINAL, FULLY RE-DESIGNED AND COMPLETE FILE ---
