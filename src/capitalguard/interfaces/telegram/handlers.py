@@ -1,4 +1,6 @@
-# --- START OF FULL, RE-ARCHITECTED, AND FINAL FILE ---
+# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 8.0.4) ---
+# src/capitalguard/interfaces/telegram/handlers.py
+
 from telegram.ext import Application
 from .commands import register_commands
 from .management_handlers import register_management_handlers
@@ -13,20 +15,20 @@ def register_all_handlers(application: Application):
     
     # 1. Register specific, non-conversation commands first.
     # This ensures that commands like /stats, /open, /help are caught by their
-    # dedicated handlers before the more general ConversationHandler can
-    # intercept them as unexpected input.
+    # dedicated handlers.
     register_commands(application)
 
-    # 2. Register callback query handlers for button interactions.
-    # These are also highly specific and should be checked before the conversation
-    # fallbacks. The `block=False` parameter inside these handlers is also
-    # crucial to prevent them from stopping updates from reaching the conversation.
-    register_management_handlers(application)
-
-    # 3. Register the ConversationHandler last.
+    # 2. Register the ConversationHandler next.
     # Since its fallbacks can catch any command or message, it should be
-    # given a chance to process an update only after all more specific handlers
-    # have been checked.
+    # given a chance to process an update only after the most specific command
+    # handlers have been checked. This is the new, corrected order.
     register_conversation_handlers(application)
 
-# --- END OF FULL, RE-ARCHITECTED, AND FINAL FILE ---
+    # 3. Register general callback query handlers for button interactions last.
+    # These are less specific than conversation states and should only be checked
+    # if the update is not part of an active conversation. The `block=False`
+    # parameter inside these handlers is crucial to prevent them from stopping
+    # updates from reaching other handlers in different groups.
+    register_management_handlers(application)
+
+# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 8.0.4) ---
