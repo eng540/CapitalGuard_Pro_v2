@@ -38,19 +38,18 @@ async def on_startup():
     """
     
     # --- PTB App Bootstrapping ---
-    # Create and configure the bot application instance here to ensure it shares
-    # the same lifecycle as the FastAPI application.
+    # Create and configure the bot application instance HERE.
     ptb_app = bootstrap_app()
 
     if not ptb_app:
         logging.warning("Telegram Bot Token not provided. Bot features will be disabled.")
         app.state.ptb_app = None
-        # Build services without bot context if the bot is disabled
+        # Build services without bot context if bot is disabled
         app.state.services = build_services()
         return
 
     # Store the fully configured bot instance in the FastAPI app state.
-    # This is now the single, reliable source of truth for the bot application instance.
+    # This is the single, reliable source of truth for the bot application instance.
     app.state.ptb_app = ptb_app
     app.state.services = ptb_app.bot_data["services"]
 
@@ -63,16 +62,16 @@ async def on_startup():
     await ptb_app.initialize()
 
     private_commands = [
-        BotCommand("newrec", "📊 Create Recommendation (Menu)"),
-        BotCommand("new", "💬 Start Interactive Builder"),
-        BotCommand("rec", "⚡️ Use Quick Command"),
-        BotCommand("editor", "📋 Use Text Editor"),
-        BotCommand("open", "📂 View Open Trades"),
-        BotCommand("stats", "📈 View Performance Stats"),
-        BotCommand("channels", "📡 Manage Channels"),
-        BotCommand("link_channel", "🔗 Link a New Channel"),
-        BotCommand("cancel", "❌ Cancel Current Operation"),
-        BotCommand("help", "ℹ️ Show Help"),
+        BotCommand("newrec", "📊 بدء إنشاء توصية جديدة (القائمة)"),
+        BotCommand("new", "💬 بدء المنشئ التفاعلي مباشرة"),
+        BotCommand("rec", "⚡️ استخدام وضع الأمر السريع"),
+        BotCommand("editor", "📋 استخدام المحرر النصي"),
+        BotCommand("open", "📂 عرض التوصيات المفتوحة"),
+        BotCommand("stats", "📈 عرض ملخص الأداء"),
+        BotCommand("channels", "📡 إدارة قنوات النشر"),
+        BotCommand("link_channel", "🔗 ربط قناة جديدة"),
+        BotCommand("cancel", "❌ إلغاء العملية الحالية"),
+        BotCommand("help", "ℹ️ عرض المساعدة"),
     ]
     
     if ptb_app.bot and ptb_app.bot.username:
@@ -96,7 +95,7 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    """Handles graceful shutdown of the application and bot."""
+    """Handles graceful shutdown."""
     if app.state.ptb_app:
         await app.state.ptb_app.stop()
         await app.state.ptb_app.shutdown()
