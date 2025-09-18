@@ -1,4 +1,4 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.3) ---
+# --- START OF FINAL, FULLY CORRECTED AND ROBUST FILE (Version 8.1.3) ---
 # src/capitalguard/application/services/alert_service.py
 
 import logging
@@ -8,8 +8,8 @@ from typing import Optional, List, Dict, Set
 
 from sqlalchemy.orm import Session
 
-from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
-from capitalguard.domain.value_objects import Target  # ✅ CRITICAL FIX: Import Target from value_objects
+from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy, Target
+from capitalguard.domain.value_objects import Side
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.infrastructure.db.repository import RecommendationRepository
@@ -55,13 +55,20 @@ class AlertService:
             log.exception("An unhandled exception occurred in the alert job callback: %s", e)
 
     def check_once(self) -> None:
+        """
+        Performs a single, comprehensive check of all active recommendations.
+        This method is synchronous and designed to be run in a background thread.
+        It uses `asyncio.run()` safely to call the async methods of the TradeService.
+        """
         try:
             with SessionLocal() as db_session:
                 active_recs = self.repo.list_open(db_session)
-                if not active_recs: return
+                if not active_recs:
+                    return
 
                 symbols_to_check = {rec.asset.value for rec in active_recs if rec.status == RecommendationStatus.ACTIVE}
-                if not symbols_to_check: return
+                if not symbols_to_check:
+                    return
 
                 price_map = BinancePricing.get_all_prices(spot=False)
                 if not price_map:
@@ -69,9 +76,12 @@ class AlertService:
                     return
 
                 for rec in active_recs:
-                    if rec.status != RecommendationStatus.ACTIVE: continue
+                    if rec.status != RecommendationStatus.ACTIVE:
+                        continue
+
                     price = price_map.get(rec.asset.value)
-                    if price is None: continue
+                    if price is None:
+                        continue
 
                     try:
                         self.trade_service.update_price_tracking(rec.id, price)
@@ -80,32 +90,35 @@ class AlertService:
                             continue
                         
                         asyncio.run(self._process_single_recommendation(fresh_rec, price))
+
                     except Exception as e:
                         log.exception("Inner alert check loop failed for recommendation ID #%s: %s", rec.id, e)
         except Exception as e:
             log.exception("Outer alert check loop failed: %s", e)
 
     async def _process_single_recommendation(self, rec: Recommendation, price: float):
+        """Async helper to process closing and notification logic for one recommendation."""
         side = rec.side.value.upper()
         user_id = rec.user_id
+
         if not user_id:
             log.warning(f"Recommendation #{rec.id} has no user_id, skipping.")
             return
 
-        # Stop Loss Check
+        # 1. Stop Loss Check (Highest Priority)
         if (side == "LONG" and price <= rec.stop_loss.value) or (side == "SHORT" and price >= rec.stop_loss.value):
             log.warning(f"Auto-closing rec #{rec.id} due to SL hit at price {price}.")
             await self.trade_service.close_recommendation_for_user_async(rec.id, user_id, price, reason="SL_HIT")
             return
 
-        # Profit Stop Check
+        # 2. Profit Stop Check
         if rec.profit_stop_price is not None:
             if (side == "LONG" and price <= rec.profit_stop_price) or (side == "SHORT" and price >= rec.profit_stop_price):
                 log.info(f"Auto-closing rec #{rec.id} due to Profit Stop hit at price {price}.")
                 await self.trade_service.close_recommendation_for_user_async(rec.id, user_id, price, reason="PROFIT_STOP_HIT")
                 return
 
-        # Final Target Auto-Close Check
+        # 3. Final Target Auto-Close Check
         auto_close_enabled = _env_bool("AUTO_CLOSE_ENABLED", False)
         if auto_close_enabled and rec.exit_strategy == ExitStrategy.CLOSE_AT_FINAL_TP and rec.targets.values:
             last_tp_price = rec.targets.values[-1].price
@@ -114,7 +127,7 @@ class AlertService:
                 await self.trade_service.close_recommendation_for_user_async(rec.id, user_id, price, reason="FINAL_TP_HIT")
                 return
         
-        # Intermediate Target Hit & Partial Profit Check
+        # 4. Intermediate Target Hit & Partial Profit Check
         if rec.targets.values:
             with SessionLocal() as session:
                 rec_events = self.repo.get_events_for_recommendations(session, [rec.id]).get(rec.id, set())
@@ -127,4 +140,4 @@ class AlertService:
                         await self.trade_service.process_target_hit_async(rec.id, user_id, i + 1, price)
                         break
 
-# --- END OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.3) ---
+# --- END OF FINAL, FULLY CORRECTED AND ROBUST FILE (Version 8.1.3) ---
