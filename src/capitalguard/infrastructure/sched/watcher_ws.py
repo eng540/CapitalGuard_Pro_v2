@@ -1,20 +1,23 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.2) ---
+# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 9.0.0) ---
 # src/capitalguard/infrastructure/sched/watcher_ws.py
 
 import asyncio
 import logging
 import os
 from dotenv import load_dotenv
-import websockets
 
-# Load environment variables at the very beginning
+# Load environment variables at the very beginning, critical for standalone script execution
 load_dotenv()
 
-from capitalguard.boot import bootstrap_app
+# ✅ FIX: Import build_services directly, NOT the full bootstrap_app.
+# The watcher is a separate process and does not need a PTB application instance.
+# It only needs access to the application's services (like TradeService).
+from capitalguard.boot import build_services
 from capitalguard.infrastructure.market.ws_client import BinanceWS
 from capitalguard.domain.entities import OrderType, RecommendationStatus
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.infrastructure.db.base import SessionLocal
+from capitalguard.logging_conf import setup_logging
 
 # Setup logging for this specific module
 log = logging.getLogger("capitalguard.watcher")
@@ -32,13 +35,15 @@ async def main():
         log.warning(f"Watcher is disabled. Reason: ENABLE_WATCHER={enable_watcher}, PROVIDER={provider}. Exiting gracefully.")
         return
 
-    log.info("Bootstrapping application for the watcher...")
-    ptb_app = bootstrap_app()
-    if not ptb_app:
-        log.error("Failed to bootstrap application for watcher. Check TELEGRAM_BOT_TOKEN setting.")
+    log.info("Building services for the watcher...")
+    
+    # ✅ FIX: Build services without creating a full PTB application.
+    # This prevents conflicts and unnecessary overhead.
+    services = build_services()
+    if not services:
+        log.error("Failed to build services for watcher. Check configuration.")
         return
         
-    services = ptb_app.bot_data["services"]
     trade_service: TradeService = services["trade_service"]
     ws_client = BinanceWS()
     log.info("Watcher services built and configured successfully.")
@@ -52,6 +57,7 @@ async def main():
         log.debug(f"[WS] Price Update: {symbol} -> {price}")
         
         try:
+            # Use a new session for this check to ensure data is fresh
             with SessionLocal() as session:
                 open_recs_for_symbol = trade_service.repo.list_open_by_symbol(session, symbol)
 
@@ -72,6 +78,7 @@ async def main():
                 
                 if is_triggered:
                     log.info(f"ACTIVATING pending recommendation #{rec.id} for {symbol} at price {price}.")
+                    # This call is async and will manage its own DB session and transaction
                     await trade_service.activate_recommendation_async(rec.id)
 
             # --- Process Active Recommendations ---
@@ -79,6 +86,7 @@ async def main():
                 sl, side = rec.stop_loss.value, rec.side.value
                 if (side == "LONG" and price <= sl) or (side == "SHORT" and price >= sl):
                     log.warning(f"STOP LOSS HIT DETECTED for REC #{rec.id} ({symbol}) at price {price}. Closing...")
+                    # This call is async and will manage its own DB session and transaction
                     await trade_service.close_recommendation_for_user_async(rec.id, rec.user_id, price, reason="SL_HIT_WATCHER")
         
         except Exception as e:
@@ -99,10 +107,7 @@ async def main():
 
             await ws_client.combined_stream(symbols_to_watch, on_price_update)
 
-        except (websockets.ConnectionClosedError, websockets.ConnectionClosedOK):
-            log.warning("WebSocket connection closed. Reconnecting in 10 seconds...")
-            await asyncio.sleep(10)
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, KeyboardInterrupt):
             log.info("Watcher task has been cancelled. Shutting down gracefully.")
             break
         except Exception as e:
@@ -110,11 +115,11 @@ async def main():
             await asyncio.sleep(30)
 
 if __name__ == "__main__":
-    from capitalguard.logging_conf import setup_logging
+    # Ensure logging is configured when running this script directly
     setup_logging()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         log.info("Watcher stopped manually by user.")
 
-# --- END OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.2) ---
+# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 9.0.0) ---
