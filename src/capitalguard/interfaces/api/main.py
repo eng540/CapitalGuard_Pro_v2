@@ -1,4 +1,4 @@
-# --- START OF UPDATED FILE WITH GLOBAL ERROR HANDLER (Version 8.2.0) ---
+# --- START OF FINAL, PRODUCTION-READY FILE WITH ROBUST ERROR HANDLING (Version 8.2.1) ---
 # src/capitalguard/interfaces/api/main.py
 
 import logging
@@ -27,92 +27,92 @@ log = logging.getLogger(__name__)
 
 # --- Application Setup ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="8.2.0-stable")
-app.state.ptb_app = None  # Will hold the Telegram bot application
-app.state.services = None  # Will hold built services
+app = FastAPI(title="CapitalGuard Pro API", version="8.2.1-stable")
+app.state.ptb_app = None
+app.state.services = None
 
 # --- Global Telegram Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Logs errors and notifies the user/admin via Telegram when exceptions occur in handlers.
-    """
+    """Logs all uncaught exceptions from handlers and notifies the admin."""
     log.error("Exception while handling an update:", exc_info=context.error)
 
+    # Format the traceback for logging and notification.
     tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
     tb_string = "".join(tb_list)
 
+    # Prepare a detailed message for the admin.
     update_str = update.to_dict() if isinstance(update, Update) else str(update)
-    message = (
-        f"An exception was raised while handling an update\n"
-        f"<pre>update = {html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))}</pre>\n\n"
-        f"<pre>context.chat_data = {html.escape(str(context.chat_data))}</pre>\n\n"
-        f"<pre>context.user_data = {html.escape(str(context.user_data))}</pre>\n\n"
-        f"<pre>{html.escape(tb_string)}</pre>"
+    # Truncate long messages to avoid hitting Telegram's message length limit.
+    detailed_message = (
+        f"An exception was raised while handling an update\n\n"
+        f"<b>Update:</b>\n<pre>{html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))[:3500]}</pre>\n\n"
+        f"<b>Error:</b>\n<pre>{html.escape(tb_string)}</pre>"
     )
 
-    # Send a friendly message to the user if possible
+    # ✅ FIX: Send the detailed error message to the admin chat ID from settings.
+    if settings.TELEGRAM_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=settings.TELEGRAM_CHAT_ID, text=detailed_message, parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            log.error(f"CRITICAL: Failed to send detailed error report to admin: {e}")
+
+    # Send a generic, friendly message to the user who caused the error.
     if update and getattr(update, "effective_user", None):
         try:
             await context.bot.send_message(
                 chat_id=update.effective_user.id,
-                text="⚠️ Sorry, an internal error occurred. The admin has been notified.",
-                parse_mode=ParseMode.HTML
+                text="⚠️ Sorry, an internal error occurred. The development team has been notified.",
             )
         except Exception as e:
-            log.error(f"Failed to send error notification to user: {e}")
+            log.error(f"Failed to send error notification to user {update.effective_user.id}: {e}")
 
 
 # --- Startup / Shutdown Events ---
 @app.on_event("startup")
 async def on_startup():
-    """
-    Handles application startup logic for FastAPI and Telegram Bot.
-    Initializes services, schedules tasks, sets bot commands, and registers the error handler.
-    """
+    """Handles application startup logic for FastAPI and Telegram Bot."""
     ptb_app = bootstrap_app()
 
     if not ptb_app:
-        logging.warning("Telegram Bot Token not provided. Bot features will be disabled.")
+        logging.critical("Telegram Bot Token not provided. Bot features will be disabled.")
         app.state.ptb_app = None
-        app.state.services = build_services()  # Build services without bot context
+        app.state.services = build_services()
         return
 
-    # Save bot instance and services
     app.state.ptb_app = ptb_app
     app.state.services = ptb_app.bot_data["services"]
 
-    # Register global error handler
+    # Register the global error handler. This is a critical step.
     ptb_app.add_error_handler(error_handler)
 
-    # Schedule market data cache refresh if service exists
     market_data_service = app.state.services.get("market_data_service")
     if market_data_service:
         asyncio.create_task(market_data_service.refresh_symbols_cache())
-        logging.info("Market data cache refresh task has been scheduled on startup.")
+        logging.info("Market data cache refresh task scheduled.")
 
     await ptb_app.initialize()
 
-    # Set custom bot commands
     private_commands = [
-        BotCommand("newrec", "📊 بدء إنشاء توصية جديدة (القائمة)"),
-        BotCommand("new", "💬 بدء المنشئ التفاعلي مباشرة"),
-        BotCommand("rec", "⚡️ استخدام وضع الأمر السريع"),
-        BotCommand("editor", "📋 استخدام المحرر النصي"),
-        BotCommand("open", "📂 عرض التوصيات المفتوحة"),
-        BotCommand("stats", "📈 عرض ملخص الأداء"),
-        BotCommand("channels", "📡 إدارة قنوات النشر"),
-        BotCommand("link_channel", "🔗 ربط قناة جديدة"),
-        BotCommand("cancel", "❌ إلغاء العملية الحالية"),
-        BotCommand("help", "ℹ️ عرض المساعدة"),
+        BotCommand("newrec", "📊 New Recommendation (Menu)"),
+        BotCommand("new", "💬 Interactive Builder"),
+        BotCommand("rec", "⚡️ Quick Command Mode"),
+        BotCommand("editor", "📋 Text Editor Mode"),
+        BotCommand("open", "📂 View Open Trades"),
+        BotCommand("stats", "📈 View Performance"),
+        BotCommand("channels", "📡 Manage Channels"),
+        BotCommand("link_channel", "🔗 Link New Channel"),
+        BotCommand("cancel", "❌ Cancel Current Operation"),
+        BotCommand("help", "ℹ️ Show Help"),
     ]
 
     if ptb_app.bot and ptb_app.bot.username:
         logging.info(f"Bot started with username: @{ptb_app.bot.username}")
 
     await ptb_app.bot.set_my_commands(private_commands)
-    logging.info("Custom bot commands have been set for private chats.")
+    logging.info("Custom bot commands have been set.")
 
-    # Schedule alert jobs
     alert_service = app.state.services.get("alert_service")
     if alert_service:
         alert_service.schedule_job(ptb_app, interval_sec=5)
@@ -138,15 +138,15 @@ async def on_shutdown():
 # --- Webhook Endpoint ---
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
-    """The single endpoint for receiving all updates from the Telegram webhook."""
+    """Single endpoint for receiving all updates from the Telegram webhook."""
     ptb_app = request.app.state.ptb_app
     if ptb_app:
         try:
             data = await request.json()
             update = Update.de_json(data, ptb_app.bot)
             await ptb_app.process_update(update)
-        except Exception as e:
-            log.exception("Error processing Telegram update: %s", e)
+        except Exception:
+            log.exception("Error processing Telegram update in webhook.")
     return {"status": "ok"}
 
 
@@ -195,7 +195,7 @@ def dashboard(
     symbol: str = Query(None),
     status: str = Query(None)
 ):
-    items = analytics_service.get_all_for_user(user_id, symbol=symbol, status=status)
+    items = analytics_service.repo.list_all_for_user(user_id, symbol=symbol, status=status)
     rows = "".join(f"<tr><td>{r.id}</td><td>{r.asset.value}</td><td>{r.side.value}</td><td>{r.status.value}</td></tr>" for r in items)
     html_content = f"<html><body><h1>Dashboard</h1><table><thead><tr><th>ID</th><th>Asset</th><th>Side</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></body></html>"
     return HTMLResponse(content=html_content)
@@ -205,4 +205,4 @@ def dashboard(
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
 
-# --- END OF UPDATED FILE WITH GLOBAL ERROR HANDLER (Version 8.2.0) ---
+# --- END OF FINAL, PRODUCTION-READY FILE WITH ROBUST ERROR HANDLING (Version 8.2.1) ---
