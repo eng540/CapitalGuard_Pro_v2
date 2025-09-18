@@ -1,4 +1,4 @@
-# --- START OF FINAL, RE-ARCHITECTED AND PRODUCTION-READY FILE (Version 8.0.3) ---
+# --- START OF FINAL, FULLY CORRECTED AND PRODUCTION-READY FILE (Version 8.1.0) ---
 # src/capitalguard/infrastructure/sched/watcher_ws.py
 
 import asyncio
@@ -35,7 +35,7 @@ async def main():
     log.info("Bootstrapping application for the watcher...")
     ptb_app = bootstrap_app()
     if not ptb_app:
-        log.error("Failed to bootstrap application. Check TELEGRAM_BOT_TOKEN setting.")
+        log.error("Failed to bootstrap application for watcher. Check TELEGRAM_BOT_TOKEN setting.")
         return
         
     services = ptb_app.bot_data["services"]
@@ -45,40 +45,46 @@ async def main():
 
     async def on_price_update(symbol: str, price: float, _raw_data: dict):
         """
-        Core handler for every price tick received from the WebSocket stream.
-        This function contains the critical logic for reacting to price changes.
+        Core handler for every price tick. It finds relevant recommendations and
+        triggers the appropriate async service methods.
         """
-        # This function's logic remains the same, but it now runs with correctly configured services.
-        with SessionLocal() as session:
-            try:
+        log.debug(f"[WS] Price Update: {symbol} -> {price}")
+        
+        # Each price update is a discrete unit of work. The service methods will manage their own sessions.
+        try:
+            with SessionLocal() as session:
                 open_recs_for_symbol = trade_service.repo.list_open_by_symbol(session, symbol)
 
-                if not open_recs_for_symbol:
-                    return
+            if not open_recs_for_symbol:
+                return
 
-                for rec in open_recs_for_symbol:
-                    if rec.status == RecommendationStatus.PENDING:
-                        entry, side, order_type = rec.entry.value, rec.side.value, rec.order_type.value
-                        is_triggered = False
-                        if order_type == OrderType.LIMIT.value and ((side == "LONG" and price <= entry) or (side == "SHORT" and price >= entry)):
-                            is_triggered = True
-                        elif order_type == OrderType.STOP_MARKET.value and ((side == "LONG" and price >= entry) or (side == "SHORT" and price <= entry)):
-                            is_triggered = True
-                        
-                        if is_triggered:
-                            log.info(f"ACTIVATING pending recommendation #{rec.id} for {symbol} at price {price}.")
-                            trade_service.activate_recommendation(rec.id)
+            pending_recs = [r for r in open_recs_for_symbol if r.status == RecommendationStatus.PENDING]
+            active_recs = [r for r in open_recs_for_symbol if r.status == RecommendationStatus.ACTIVE]
 
-                    elif rec.status == RecommendationStatus.ACTIVE:
-                        sl, side = rec.stop_loss.value, rec.side.value
-                        if (side == "LONG" and price <= sl) or (side == "SHORT" and price >= sl):
-                            log.warning(f"STOP LOSS HIT DETECTED for REC #{rec.id} ({symbol}) at price {price}. Closing...")
-                            # The service method needs the user context to close securely
-                            trade_service.close_recommendation_for_user(rec.id, rec.user_id, price, reason="SL_HIT_WATCHER")
-            except Exception as e:
-                log.error(f"Error during on_price_update for {symbol}: {e}", exc_info=True)
+            # --- Process Pending Recommendations ---
+            for rec in pending_recs:
+                entry, side, order_type = rec.entry.value, rec.side.value, rec.order_type.value
+                is_triggered = False
+                if order_type == OrderType.LIMIT.value and ((side == "LONG" and price <= entry) or (side == "SHORT" and price >= entry)):
+                    is_triggered = True
+                elif order_type == OrderType.STOP_MARKET.value and ((side == "LONG" and price >= entry) or (side == "SHORT" and price <= entry)):
+                    is_triggered = True
+                
+                if is_triggered:
+                    log.info(f"ACTIVATING pending recommendation #{rec.id} for {symbol} at price {price}.")
+                    await trade_service.activate_recommendation_async(rec.id)
 
-    # Main Loop
+            # --- Process Active Recommendations ---
+            for rec in active_recs:
+                sl, side = rec.stop_loss.value, rec.side.value
+                if (side == "LONG" and price <= sl) or (side == "SHORT" and price >= sl):
+                    log.warning(f"STOP LOSS HIT DETECTED for REC #{rec.id} ({symbol}) at price {price}. Closing...")
+                    await trade_service.close_recommendation_for_user_async(rec.id, rec.user_id, price, reason="SL_HIT_WATCHER")
+        
+        except Exception as e:
+            log.error(f"Error during on_price_update for {symbol}: {e}", exc_info=True)
+
+    # --- Main Loop ---
     while True:
         try:
             symbols_to_watch = []
@@ -91,7 +97,6 @@ async def main():
                 await asyncio.sleep(60)
                 continue
 
-            log.info(f"Connecting to combined WebSocket stream for {len(symbols_to_watch)} symbols.")
             await ws_client.combined_stream(symbols_to_watch, on_price_update)
 
         except (websockets.ConnectionClosedError, websockets.ConnectionClosedOK):
@@ -112,4 +117,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         log.info("Watcher stopped manually by user.")
 
-# --- END OF FINAL, RE-ARCHITECTED AND PRODUCTION-READY FILE (Version 8.0.3) ---
+# --- END OF FINAL, FULLY CORRECTED AND PRODUCTION-READY FILE (Version 8.1.0) ---
