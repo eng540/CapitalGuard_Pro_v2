@@ -10,7 +10,8 @@ from typing import List
 
 from fastapi import FastAPI, HTTPException, Depends, Request, Query
 from fastapi.responses import HTMLResponse
-from telegram import Update, BotCommand, ParseMode
+from telegram import Update, BotCommand
+from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 from capitalguard.config import settings
