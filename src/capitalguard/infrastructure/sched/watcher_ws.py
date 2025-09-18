@@ -1,4 +1,4 @@
-# --- START OF FINAL, FULLY CORRECTED AND PRODUCTION-READY FILE (Version 8.1.0) ---
+# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.2) ---
 # src/capitalguard/infrastructure/sched/watcher_ws.py
 
 import asyncio
@@ -45,12 +45,12 @@ async def main():
 
     async def on_price_update(symbol: str, price: float, _raw_data: dict):
         """
-        Core handler for every price tick. It finds relevant recommendations and
-        triggers the appropriate async service methods.
+        Core handler for every price tick received from the WebSocket stream.
+        This function contains the critical logic for reacting to price changes.
+        Each action (activate, close) is handled by the TradeService, which manages its own atomic transaction.
         """
         log.debug(f"[WS] Price Update: {symbol} -> {price}")
         
-        # Each price update is a discrete unit of work. The service methods will manage their own sessions.
         try:
             with SessionLocal() as session:
                 open_recs_for_symbol = trade_service.repo.list_open_by_symbol(session, symbol)
@@ -117,4 +117,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         log.info("Watcher stopped manually by user.")
 
-# --- END OF FINAL, FULLY CORRECTED AND PRODUCTION-READY FILE (Version 8.1.0) ---
+# --- END OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.2) ---
