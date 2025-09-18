@@ -3,6 +3,7 @@
 
 import logging
 import asyncio
+from typing import List
 from fastapi import FastAPI, HTTPException, Depends, Request, Query
 from fastapi.responses import HTMLResponse
 from telegram import Update, BotCommand
