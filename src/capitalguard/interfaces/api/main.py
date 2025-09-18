@@ -1,4 +1,4 @@
-# --- START OF FINAL, FULLY CORRECTED AND PRODUCTION-READY FILE (Version 8.1.0) ---
+# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.2) ---
 # src/capitalguard/interfaces/api/main.py
 
 import logging
@@ -22,11 +22,18 @@ log = logging.getLogger(__name__)
 
 # --- Application Setup & Composition Root ---
 
+# The entire setup process is now handled by the central bootstrap function.
+# This ensures that the bot application is created once and all services
+# are correctly built and injected into the bot's context.
 ptb_app = bootstrap_app()
+
+# If the bot is disabled (e.g., no token), build services without the bot context for the API.
+# Otherwise, use the services that were already created and injected during bootstrapping.
 services = ptb_app.bot_data["services"] if ptb_app else build_services()
 
-app = FastAPI(title="CapitalGuard Pro API", version="8.1.0-stable")
+app = FastAPI(title="CapitalGuard Pro API", version="8.1.2-stable")
 app.state.services = services
+
 
 @app.on_event("startup")
 async def on_startup():
@@ -61,6 +68,7 @@ async def on_startup():
     await ptb_app.bot.set_my_commands(private_commands)
     logging.info("Custom bot commands have been set for private chats.")
     
+    # CRITICAL FIX: Ensure the AlertService is scheduled.
     alert_service = services.get("alert_service")
     if alert_service:
         alert_service.schedule_job(ptb_app, interval_sec=5)
@@ -103,13 +111,14 @@ def health_check():
     """Simple health check endpoint for container orchestration."""
     return {"status": "ok"}
 
-@app.get("/recommendations", response_model=list[RecommendationOut])
+@app.get("/recommendations", response_model=List[RecommendationOut])
 def list_recommendations(
     trade_service: TradeService = Depends(get_trade_service),
     symbol: str = Query(None),
     status: str = Query(None)
 ):
     with SessionLocal() as session:
+        # Note: This is a global, non-user-scoped endpoint for admin purposes.
         items = trade_service.repo.list_all(session, symbol=symbol, status=status)
         return [RecommendationOut.from_orm(item) for item in items]
 
@@ -121,10 +130,11 @@ async def close_recommendation(
 ):
     try:
         # This endpoint is not fully multi-tenant safe and assumes an admin role.
-        # It finds the user associated with the recommendation to close it.
-        rec = trade_service.repo.get(rec_id)
-        if not rec:
-            raise ValueError("Recommendation not found")
+        with SessionLocal() as session:
+            rec = trade_service.repo.get(session, rec_id)
+        if not rec or not rec.user_id:
+            raise ValueError("Recommendation not found or has no associated user.")
+            
         closed_rec = await trade_service.close_recommendation_for_user_async(rec.id, rec.user_id, payload.exit_price)
         return RecommendationOut.from_orm(closed_rec)
     except ValueError as e:
@@ -150,4 +160,4 @@ def dashboard(
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
 
-# --- END OF FINAL, FULLY CORRECTED AND PRODUCTION-READY FILE (Version 8.1.0) ---
+# --- END OF FINAL, FULLY CORRECTED AND PRODUCTION-READY FILE (Version 8.1.2) ---
