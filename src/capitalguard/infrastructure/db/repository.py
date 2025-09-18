@@ -1,4 +1,4 @@
-# --- START OF FINAL, FULLY CORRECTED AND ROBUST FILE (Version 8.1.0) ---
+# --- START OF FINAL, FULLY CORRECTED AND COMPLETE FILE (Version 8.1.0) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
@@ -154,6 +154,24 @@ class RecommendationRepository:
         session.flush()
         session.refresh(row, attribute_names=["user"])
         return self._to_entity(row)
+    
+    def update_price_tracking(self, session: Session, rec_id: int, current_price: float):
+        row = session.query(RecommendationORM).filter(
+            RecommendationORM.id == rec_id,
+            RecommendationORM.status == RecommendationStatus.ACTIVE
+        ).first()
+        if not row: return
+
+        updated = False
+        if row.highest_price_reached is None or current_price > row.highest_price_reached:
+            row.highest_price_reached = current_price
+            updated = True
+        if row.lowest_price_reached is None or current_price < row.lowest_price_reached:
+            row.lowest_price_reached = current_price
+            updated = True
+        
+        if updated:
+            session.flush()
 
     def get(self, session: Session, rec_id: int) -> Optional[Recommendation]:
         row = session.query(RecommendationORM).options(
@@ -225,12 +243,12 @@ class RecommendationRepository:
         if symbol: q = q.filter(RecommendationORM.asset.ilike(f'%{symbol.upper()}%'))
         if status: q = q.filter(RecommendationORM.status == RecommendationStatus[status.upper()])
         return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
-
-    def publish_recommendation(self, session: Session, rec_id: int, user_id: str) -> Tuple[Recommendation, Dict]:
+        
+    def publish_recommendation(self, session: Session, notifier: Any, rec_id: int, user_id: str) -> Tuple[Recommendation, Dict]:
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
         rec = self.get(session, rec_id)
-        uid_int = _parse_int_user_id(user_id)
-        
+        uid_int = int(user_id)
+
         user = UserRepository(session).find_by_telegram_id(uid_int)
         if not user:
             report["failed"].append({"reason": "User not found"})
@@ -241,10 +259,22 @@ class RecommendationRepository:
             report["failed"].append({"reason": "No active channels linked"})
             return rec, report
         
-        # This part requires notifier, which is in the service layer. 
-        # This function should be in the service layer.
-        # For now, let's assume a simplified logic.
+        from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
+        keyboard = public_channel_keyboard(rec.id, notifier.bot_username)
         
+        for ch in channels:
+            try:
+                res = notifier.post_to_channel(ch.telegram_channel_id, rec, keyboard)
+                if res:
+                    publication_data = [{"recommendation_id": rec.id, "telegram_channel_id": res[0], "telegram_message_id": res[1]}]
+                    session.bulk_insert_mappings(PublishedMessage, publication_data)
+                    report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res[1]})
+                else:
+                    report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": "Notifier failed to post."})
+            except Exception as e:
+                log.error(f"Failed to publish to channel {ch.telegram_channel_id}: {e}", exc_info=True)
+                report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": str(e)})
+
         return rec, report
 
-# --- END OF FINAL, FULLY CORRECTED AND COMPLETE FILE ---```
+# --- END OF FINAL, FULLY CORRECTED AND COMPLETE FILE (Version 8.1.0) ---
