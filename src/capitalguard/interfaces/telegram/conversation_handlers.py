@@ -28,7 +28,7 @@ from capitalguard.application.services.trade_service import TradeService
 log = logging.getLogger(__name__)
 
 # --- State Definitions for the Conversation ---
-(SELECT_METHOD, AWAIT_TEXT_INPUT, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_NOTES, I_REVIEW) = range(8)
+(SELECT_METHOD, AWAIT_TEXT_INPUT, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_NOTES, I_REVIEW, I_CHANNEL_PICKER) = range(9)
 CONVERSATION_DATA_KEY = "new_rec_draft"
 REV_TOKENS_MAP = "review_tokens_map"
 REV_TOKENS_REVERSE = "review_tokens_rev"
@@ -36,7 +36,7 @@ REV_TOKENS_REVERSE = "review_tokens_rev"
 # --- Helper Functions for State Management ---
 
 def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
-    """A centralized function to clean up all conversation-related data."""
+    """A centralized function to clean up all conversation-related data from user_data and bot_data."""
     context.user_data.pop(CONVERSATION_DATA_KEY, None)
     review_key = context.user_data.pop('current_review_key', None)
     if review_key: context.bot_data.pop(review_key, None)
@@ -72,7 +72,7 @@ def _load_user_active_channels(user_tg_id: int) -> List[Dict[str, Any]]:
         channels = ChannelRepository(s).list_by_user(user.id, only_active=True)
         return [{"id": ch.id, "telegram_channel_id": int(ch.telegram_channel_id), "username": ch.username, "title": ch.title} for ch in channels]
 
-# --- Entry Point Handlers ---
+# --- Entry Point and State Handlers ---
 
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
@@ -89,7 +89,9 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
     trade_service: TradeService = get_service(context, "trade_service")
     user_id = str(update.effective_user.id)
     recent_assets = trade_service.get_recent_assets_for_user(user_id, limit=5)
-    await update.message.reply_text(
+    
+    message_obj = update.message or update.callback_query.message
+    await message_obj.reply_text(
         "🚀 Interactive Builder\n\n1️⃣ Select a recent asset or type a new symbol:",
         reply_markup=asset_choice_keyboard(recent_assets)
     )
@@ -108,21 +110,17 @@ async def start_text_input_entrypoint(update: Update, context: ContextTypes.DEFA
         
     return AWAIT_TEXT_INPUT
 
-# --- State Handlers ---
-
 async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    message = query.message
     choice = query.data.split('_')[1]
 
     if choice == "interactive":
-        dummy_update = types.SimpleNamespace(message=message, effective_user=query.from_user)
-        return await start_interactive_entrypoint(dummy_update, context)
+        return await start_interactive_entrypoint(query, context)
     
     context.user_data['input_mode'] = 'rec' if choice == "quick" else 'editor'
     prompt = "⚡️ Quick Command Mode\n\nEnter your full recommendation in a single message starting with /rec" if choice == "quick" else "📋 Text Editor Mode\n\nPaste your recommendation using field names."
-    await message.edit_text(prompt)
+    await query.message.edit_text(prompt)
     return AWAIT_TEXT_INPUT
 
 async def received_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -200,6 +198,7 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
     draft['order_type'] = order_type
     context.user_data[CONVERSATION_DATA_KEY] = draft
+
     prompt = ( "4️⃣ Enter prices in a single line:\n<code>STOP  TARGETS...</code>\nE.g., <code>58000 60k@30 62k@50</code>" if order_type == 'MARKET' else "4️⃣ Enter prices in a single line:\n<code>ENTRY  STOP  TARGETS...</code>\nE.g., <code>59k 58k 60k@30 62k@50</code>" )
     await query.message.edit_text(f"✅ Order Type: {order_type}\n\n{prompt}", parse_mode="HTML")
     return I_PRICES
@@ -288,6 +287,7 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     draft = context.bot_data.get(review_key) if review_key else None
     if not draft:
         await query.edit_message_text("❌ This card has expired. Please start over with /newrec.")
+        _clean_conversation_state(context)
         return ConversationHandler.END
         
     trade_service: TradeService = get_service(context, "trade_service")
@@ -298,7 +298,15 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if report.get("success"):
             await query.edit_message_text(f"✅ Recommendation #{saved_rec.id} was created and published successfully to {len(report['success'])} channel(s).")
         else:
-            await query.edit_message_text(f"⚠️ Recommendation #{saved_rec.id} was saved, but publishing failed: {report['failed'][0]['reason']}.")
+            fail_reason = "No active channels found or failed to post."
+            if report.get("failed"):
+                fail_reason = report["failed"][0].get("reason", fail_reason)
+            await query.edit_message_text(
+                f"⚠️ Recommendation #{saved_rec.id} was saved, but publishing failed.\n"
+                f"<b>Reason:</b> {fail_reason}\n\n"
+                "<i>Please check that the bot is an admin in your channel with posting rights.</i>",
+                parse_mode='HTML'
+            )
     except Exception as e:
         log.exception("Handler failed to save/publish recommendation.")
         await query.edit_message_text(f"❌ A critical error occurred: {e}")
