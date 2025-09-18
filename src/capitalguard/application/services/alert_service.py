@@ -8,8 +8,10 @@ from typing import Optional, List, Dict, Set
 
 from sqlalchemy.orm import Session
 
-from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy, Target
-from capitalguard.domain.value_objects import Side
+from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
+# ✅ FIX: Import Value Objects (including Target) from value_objects.py
+from capitalguard.domain.value_objects import Side, Target
+
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.infrastructure.db.repository import RecommendationRepository
