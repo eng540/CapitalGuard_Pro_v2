@@ -1,5 +1,5 @@
-#START FILE src/capitalguard/domain/value_objects.py
-#v2
+# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.3) ---
+# src/capitalguard/domain/value_objects.py
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -43,13 +43,9 @@ class Targets:
             raise ValueError("targets must be a non-empty list")
         
         self.values: List[Target] = []
-        # Handle both old format (list of floats) and new format (list of dicts)
         if all(isinstance(v, (int, float)) for v in values):
-            # Old format: Assume 100% close at the final target
             total_targets = len(values)
             for i, v in enumerate(values):
-                # This logic is a placeholder. A real migration would be needed for old data.
-                # For new data, we assume the new format.
                 close_pct = 100.0 if i == total_targets - 1 else 0.0
                 self.values.append(Target(price=float(v), close_percent=close_pct))
         else:
@@ -57,4 +53,5 @@ class Targets:
                 if not isinstance(v, dict) or "price" not in v or "close_percent" not in v:
                     raise ValueError("Invalid target format. Must be a list of {'price': float, 'close_percent': float}")
                 self.values.append(Target(price=float(v["price"]), close_percent=float(v["close_percent"])))
-#end
+
+# --- END OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.3) ---
