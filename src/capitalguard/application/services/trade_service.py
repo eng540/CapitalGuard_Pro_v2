@@ -1,4 +1,4 @@
-# --- START OF FINAL, FULLY CORRECTED AND PRODUCTION-READY FILE (Version 8.1.1) ---
+# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.2) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
@@ -16,6 +16,7 @@ from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.infrastructure.db.models import PublishedMessage
+from capitalguard.interfaces.telegram.ui_texts import _pct
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
 class TradeService:
     """
     Core application service for managing the lifecycle of trade recommendations.
+    This service encapsulates all business logic, ensuring that the interface layer
+    (e.g., Telegram handlers) remains thin and focused on user interaction.
     """
     def __init__(
         self,
@@ -95,6 +98,41 @@ class TradeService:
                (side_upper == 'SHORT' and target.price >= entry):
                 raise ValueError(f"Target price {target.price} is not valid for a {side} trade with entry {entry}.")
 
+    def _publish_recommendation(self, session: Session, rec_id: int, user_id: str) -> Tuple[Recommendation, Dict]:
+        """Private helper to handle the logic of publishing a recommendation to all linked channels."""
+        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
+        rec = self.repo.get(session, rec_id)
+        uid_int = _parse_int_user_id(user_id)
+        
+        user = UserRepository(session).find_by_telegram_id(uid_int)
+        if not user:
+            report["failed"].append({"reason": "User not found"})
+            return rec, report
+        
+        channels = ChannelRepository(session).list_by_user(user.id, only_active=True)
+        if not channels:
+            report["failed"].append({"reason": "No active channels linked"})
+            return rec, report
+        
+        from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
+        keyboard = public_channel_keyboard(rec.id, self.notifier.bot_username)
+        
+        for ch in channels:
+            try:
+                res = self.notifier.post_to_channel(ch.telegram_channel_id, rec, keyboard)
+                if res:
+                    publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res[0], telegram_message_id=res[1])
+                    session.add(publication)
+                    report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res[1]})
+                else:
+                    report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": "Notifier failed to post message."})
+            except Exception as e:
+                log.error(f"Failed to publish to channel {ch.telegram_channel_id}: {e}", exc_info=True)
+                report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": str(e)})
+        
+        session.flush()
+        return self.repo.get(session, rec_id), report
+
     # --- Public Service Methods ---
     
     def get_recommendation_for_user(self, rec_id: int, user_telegram_id: str) -> Optional[Recommendation]:
@@ -141,7 +179,8 @@ class TradeService:
                     rec_entity.highest_price_reached = rec_entity.lowest_price_reached = rec_entity.entry.value
 
                 created_rec = self.repo.add_with_event(session, rec_entity)
-                final_rec, report = self.publish_recommendation(session, created_rec.id, str(uid_int))
+                final_rec, report = self._publish_recommendation(session, created_rec.id, str(uid_int))
+                
                 session.commit()
                 return final_rec, report
             except Exception as e:
@@ -149,48 +188,18 @@ class TradeService:
                 log.exception("Error during create_and_publish_recommendation.")
                 raise e
 
-    def publish_recommendation(self, session: Session, rec_id: int, user_id: str) -> Tuple[Recommendation, Dict]:
-        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
-        rec = self.repo.get(session, rec_id)
-        uid_int = _parse_int_user_id(user_id)
-        
-        user = UserRepository(session).find_by_telegram_id(uid_int)
-        if not user:
-            report["failed"].append({"reason": "User not found"})
-            return rec, report
-        
-        channels = ChannelRepository(session).list_by_user(user.id, only_active=True)
-        if not channels:
-            report["failed"].append({"reason": "No active channels linked"})
-            return rec, report
-        
-        from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
-        keyboard = public_channel_keyboard(rec.id, self.notifier.bot_username)
-        
-        for ch in channels:
-            try:
-                res = self.notifier.post_to_channel(ch.telegram_channel_id, rec, keyboard)
-                if res:
-                    publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res[0], telegram_message_id=res[1])
-                    session.add(publication)
-                    report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res[1]})
-                else:
-                    report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": "Notifier failed to post message."})
-            except Exception as e:
-                log.error(f"Failed to publish to channel {ch.telegram_channel_id}: {e}", exc_info=True)
-                report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": str(e)})
-        
-        session.flush() # Ensure publications are persisted before returning
-        return self.repo.get(session, rec_id), report
-
     async def close_recommendation_for_user_async(self, rec_id: int, user_telegram_id: str, exit_price: float, reason: str = "MANUAL_CLOSE") -> Recommendation:
         uid_int = _parse_int_user_id(user_telegram_id)
         if not uid_int: raise ValueError("Invalid User ID.")
 
         with SessionLocal() as session:
             try:
-                rec = self.repo.get_by_id_for_user(session, rec_id, uid_int)
-                if not rec or rec.status == RecommendationStatus.CLOSED:
+                rec_orm = self.repo.get_for_update(session, rec_id)
+                rec = self.repo._to_entity(rec_orm)
+
+                if not rec or rec.user_id != str(uid_int):
+                    raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
+                if rec.status == RecommendationStatus.CLOSED:
                     return rec
                 
                 rec.open_size_percent = 0.0
@@ -221,10 +230,11 @@ class TradeService:
         with SessionLocal() as session:
             try:
                 rec_orm = self.repo.get_for_update(session, rec_id)
-                if not rec_orm or rec_orm.status != 'PENDING':
-                    return self.repo._to_entity(rec_orm)
-                
                 rec = self.repo._to_entity(rec_orm)
+                
+                if not rec or rec.status != RecommendationStatus.PENDING:
+                    return rec
+                
                 rec.activate()
                 rec.highest_price_reached = rec.lowest_price_reached = rec.entry.value
                 updated_rec = self.repo.update_with_event(session, rec, "ACTIVATED", {})
@@ -254,4 +264,4 @@ class TradeService:
         with SessionLocal() as session:
             return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, FULLY CORRECTED AND PRODUCTION-READY FILE (Version 8.1.1) ---
+# --- END OF FINAL, FULLY CORRECTED AND PRODUCTION-READY FILE (Version 8.1.2) ---```
