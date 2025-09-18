@@ -1,4 +1,4 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.2) ---
+# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.3) ---
 # src/capitalguard/application/services/alert_service.py
 
 import logging
@@ -8,7 +8,8 @@ from typing import Optional, List, Dict, Set
 
 from sqlalchemy.orm import Session
 
-from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy, Target
+from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
+from capitalguard.domain.value_objects import Target  # ✅ CRITICAL FIX: Import Target from value_objects
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.infrastructure.db.repository import RecommendationRepository
