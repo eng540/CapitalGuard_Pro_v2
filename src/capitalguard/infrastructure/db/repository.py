@@ -1,9 +1,9 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.2) ---
+# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.3) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Any, Union, Dict, Set
+from typing import List, Optional, Any, Union, Dict, Set, Tuple
 
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.exc import IntegrityError
@@ -49,7 +49,7 @@ class ChannelRepository:
     """Manages database operations for Channel entities within a given session."""
     def __init__(self, session: Session):
         self.session = session
-
+        
     def get_by_telegram_channel_id(self, telegram_channel_id: int) -> Optional[Channel]:
         """Finds a channel by its unique Telegram channel ID."""
         return self.session.query(Channel).filter(Channel.telegram_channel_id == telegram_channel_id).first()
@@ -113,7 +113,6 @@ class RecommendationRepository:
         if not row: return None
         user_telegram_id = str(row.user.telegram_user_id) if getattr(row, "user", None) else None
         
-        # Eagerly loaded events are passed directly to the entity
         events = getattr(row, 'events', None)
 
         return Recommendation(
@@ -171,11 +170,9 @@ class RecommendationRepository:
         new_event = RecommendationEvent(recommendation_id=row.id, event_type=event_type, event_data=event_data)
         session.add(new_event)
         session.flush()
-        session.refresh(row)
-        # Manually load the user relationship as get_for_update does not eager load.
         session.refresh(row, attribute_names=["user", "events"])
         return self._to_entity(row)
-    
+
     def update_price_tracking(self, session: Session, rec_id: int, current_price: float):
         """A specialized, fast update for price tracking fields only."""
         row = session.query(RecommendationORM).filter(
@@ -191,21 +188,22 @@ class RecommendationRepository:
         
         session.flush()
 
-    def get_for_update(self, session: Session, rec_id: int) -> Optional[RecommendationORM]:
-        """
-        Gets a recommendation object and locks the row for the duration of the transaction.
-        CRITICAL FIX: This query does NOT use eager loading (`joinedload`/`selectinload`)
-        because PostgreSQL does not support `FOR UPDATE` on `LEFT OUTER JOIN` queries.
-        """
-        return session.query(RecommendationORM).filter(RecommendationORM.id == rec_id).with_for_update().first()
-
     def get(self, session: Session, rec_id: int) -> Optional[Recommendation]:
+        """Gets a single recommendation by its ID, eagerly loading user and events."""
         row = session.query(RecommendationORM).options(
             joinedload(RecommendationORM.user), selectinload(RecommendationORM.events)
         ).filter(RecommendationORM.id == rec_id).first()
         return self._to_entity(row)
 
+    def get_for_update(self, session: Session, rec_id: int) -> Optional[RecommendationORM]:
+        """
+        Gets a recommendation ORM object and locks its row for the duration of the transaction.
+        This is critical for preventing race conditions during concurrent updates.
+        """
+        return session.query(RecommendationORM).filter(RecommendationORM.id == rec_id).with_for_update().first()
+
     def get_by_id_for_user(self, session: Session, rec_id: int, user_telegram_id: Union[int, str]) -> Optional[Recommendation]:
+        """Gets a single recommendation, ensuring it belongs to the specified user."""
         user = UserRepository(session).find_by_telegram_id(int(user_telegram_id))
         if not user: return None
         row = session.query(RecommendationORM).options(
@@ -214,18 +212,21 @@ class RecommendationRepository:
         return self._to_entity(row)
 
     def list_open(self, session: Session) -> List[Recommendation]:
+        """Lists all open (PENDING or ACTIVE) recommendations."""
         rows = session.query(RecommendationORM).options(
             joinedload(RecommendationORM.user), selectinload(RecommendationORM.events)
         ).filter(RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])).order_by(RecommendationORM.created_at.desc()).all()
         return [self._to_entity(r) for r in rows]
 
     def list_open_by_symbol(self, session: Session, symbol: str) -> List[Recommendation]:
+        """Lists all open recommendations for a specific symbol."""
         rows = session.query(RecommendationORM).options(
             joinedload(RecommendationORM.user)
         ).filter(RecommendationORM.asset == symbol.upper(), RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])).all()
         return [self._to_entity(r) for r in rows]
 
     def get_events_for_recommendations(self, session: Session, rec_ids: List[int]) -> Dict[int, Set[str]]:
+        """Efficiently fetches all event types for a list of recommendation IDs."""
         if not rec_ids: return {}
         results = session.query(
             RecommendationEvent.recommendation_id, RecommendationEvent.event_type
@@ -236,9 +237,11 @@ class RecommendationRepository:
         return event_map
 
     def get_published_messages(self, session: Session, rec_id: int) -> List[PublishedMessage]:
+        """Fetches all publication records for a specific recommendation."""
         return session.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
 
     def list_open_for_user(self, session: Session, user_telegram_id: Union[int, str], **filters) -> List[Recommendation]:
+        """Lists open recommendations for a specific user, with optional filters."""
         user = UserRepository(session).find_by_telegram_id(int(user_telegram_id))
         if not user: return []
         q = session.query(RecommendationORM).options(
@@ -250,6 +253,7 @@ class RecommendationRepository:
         return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
     def get_recent_assets_for_user(self, session: Session, user_telegram_id: Union[int, str], limit: int = 5) -> List[str]:
+        """Gets the most recently used asset symbols for a user."""
         user = UserRepository(session).find_by_telegram_id(int(user_telegram_id))
         if not user: return []
         subq = session.query(RecommendationORM.asset, sa.func.max(RecommendationORM.created_at).label("max_created_at")).filter(RecommendationORM.user_id == user.id).group_by(RecommendationORM.asset).subquery()
@@ -257,6 +261,7 @@ class RecommendationRepository:
         return [r[0] for r in results]
 
     def list_all_for_user(self, session: Session, user_telegram_id: Union[int, str], symbol: Optional[str] = None, status: Optional[str] = None) -> List[Recommendation]:
+        """Lists all recommendations for a specific user, with optional filters."""
         user = UserRepository(session).find_by_telegram_id(int(user_telegram_id))
         if not user: return []
         q = session.query(RecommendationORM).options(
@@ -266,4 +271,4 @@ class RecommendationRepository:
         if status: q = q.filter(RecommendationORM.status == RecommendationStatus[status.upper()])
         return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
-# --- END OF FINAL, FULLY CORRECTED AND ROBUST FILE (Version 8.1.2) ---
+# --- END OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.3) ---
