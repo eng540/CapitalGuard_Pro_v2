@@ -1,4 +1,4 @@
-# --- START OF FINAL, PRODUCTION-READY FILE WITH ROBUST ERROR HANDLING (Version 8.2.1) ---
+# --- START OF FINAL, PRODUCTION-READY FILE WITH CONTEXT FLAG (Version 9.1.1) ---
 # src/capitalguard/interfaces/api/main.py
 
 import logging
@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 # --- Application Setup ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="8.2.1-stable")
+app = FastAPI(title="CapitalGuard Pro API", version="9.1.1-stable")
 app.state.ptb_app = None
 app.state.services = None
 
@@ -37,20 +37,16 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     """Logs all uncaught exceptions from handlers and notifies the admin."""
     log.error("Exception while handling an update:", exc_info=context.error)
 
-    # Format the traceback for logging and notification.
     tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
     tb_string = "".join(tb_list)
 
-    # Prepare a detailed message for the admin.
     update_str = update.to_dict() if isinstance(update, Update) else str(update)
-    # Truncate long messages to avoid hitting Telegram's message length limit.
     detailed_message = (
         f"An exception was raised while handling an update\n\n"
         f"<b>Update:</b>\n<pre>{html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))[:3500]}</pre>\n\n"
         f"<b>Error:</b>\n<pre>{html.escape(tb_string)}</pre>"
     )
 
-    # ✅ FIX: Send the detailed error message to the admin chat ID from settings.
     if settings.TELEGRAM_CHAT_ID:
         try:
             await context.bot.send_message(
@@ -59,7 +55,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             log.error(f"CRITICAL: Failed to send detailed error report to admin: {e}")
 
-    # Send a generic, friendly message to the user who caused the error.
     if update and getattr(update, "effective_user", None):
         try:
             await context.bot.send_message(
@@ -85,7 +80,9 @@ async def on_startup():
     app.state.ptb_app = ptb_app
     app.state.services = ptb_app.bot_data["services"]
 
-    # Register the global error handler. This is a critical step.
+    # ✅ BEST PRACTICE: Add a flag to indicate the context for other runners.
+    setattr(ptb_app, '_is_running_via_fastapi', True)
+
     ptb_app.add_error_handler(error_handler)
 
     market_data_service = app.state.services.get("market_data_service")
@@ -196,9 +193,17 @@ def dashboard(
     symbol: str = Query(None),
     status: str = Query(None)
 ):
-    items = analytics_service.repo.list_all_for_user(user_id, symbol=symbol, status=status)
+    # Note: This is a very basic dashboard. A real UI would be separate.
+    with SessionLocal() as session:
+        user_repo = analytics_service.repo.UserRepository(session)
+        user = user_repo.find_by_telegram_id(int(user_id))
+        if not user:
+            return HTMLResponse(content="<h1>User not found</h1>")
+        
+        items = analytics_service.repo.list_all_for_user(session, user.telegram_user_id)
+    
     rows = "".join(f"<tr><td>{r.id}</td><td>{r.asset.value}</td><td>{r.side.value}</td><td>{r.status.value}</td></tr>" for r in items)
-    html_content = f"<html><body><h1>Dashboard</h1><table><thead><tr><th>ID</th><th>Asset</th><th>Side</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></body></html>"
+    html_content = f"<html><body><h1>Dashboard for User {user_id}</h1><table><thead><tr><th>ID</th><th>Asset</th><th>Side</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></body></html>"
     return HTMLResponse(content=html_content)
 
 
@@ -206,4 +211,4 @@ def dashboard(
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
 
-# --- END OF FINAL, PRODUCTION-READY FILE WITH ROBUST ERROR HANDLING (Version 8.2.1) ---
+# --- END OF FINAL, PRODUCTION-READY FILE WITH CONTEXT FLAG (Version 9.1.1) ---
