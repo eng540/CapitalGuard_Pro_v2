@@ -1,4 +1,4 @@
-# --- START OF FINAL, RE-ARCHITECTED AND PRODUCTION-READY FILE (Version 8.0.3) ---
+# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.0) ---
 # src/capitalguard/boot.py
 
 import os
@@ -19,10 +19,13 @@ from capitalguard.interfaces.telegram.handlers import register_all_handlers
 def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     """
     Composition Root: Builds all services once and returns them in a dictionary.
+    This is where all dependencies are wired together.
     """
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
     if ptb_app:
+        # Inject the application context into the notifier so it can access
+        # bot information like the username.
         notifier.set_ptb_app(ptb_app)
 
     spot_creds = BinanceCreds(os.getenv("BINANCE_API_KEY", ""), os.getenv("BINANCE_API_SECRET", ""))
@@ -51,14 +54,13 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         "alert_service": alert_service,
         "notifier": notifier,
         "market_data_service": market_data_service,
-        # Add other services here if needed in the future
     }
 
 def bootstrap_app() -> Optional[Application]:
     """
     Centralized application bootstrapping function.
     This creates the bot, builds the services, and injects them correctly.
-    This is now the single source of truth for creating a fully configured bot application.
+    This is now the SINGLE SOURCE OF TRUTH for creating a fully configured bot application.
     """
     if not settings.TELEGRAM_BOT_TOKEN:
         return None
@@ -72,9 +74,9 @@ def bootstrap_app() -> Optional[Application]:
     # Inject the fully built services into the bot's shared context data
     ptb_app.bot_data["services"] = services
     
-    # Register all handlers that will use these services
+    # Register all handlers that will use these services. The order is critical.
     register_all_handlers(ptb_app)
     
     return ptb_app
 
-# --- END OF FINAL, RE-ARCHITECTED AND PRODUCTION-READY FILE (Version 8.0.3) ---
+# --- END OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.0) ---
