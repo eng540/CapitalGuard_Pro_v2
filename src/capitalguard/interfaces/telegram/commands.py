@@ -1,4 +1,4 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.4) ---
+#--- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.4) ---
 # src/capitalguard/interfaces/telegram/commands.py
 
 import io
@@ -18,6 +18,8 @@ from .keyboards import build_open_recs_keyboard
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
+from capitalguard.infrastructure.db.base import SessionLocal
+from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 
 log = logging.getLogger(__name__)
 
@@ -63,9 +65,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/link_channel</code> — Link a new channel via forward.\n"
         "• <code>/channels</code> — View your linked channels.\n"
         "• <code>/toggle_channel &lt;id&gt;</code> — Activate/deactivate a channel.\n\n"
-        "<b>--- General ---</b>\n"
-        "• <code>/settings</code> — (Future placeholder for account settings).\n"
-        "• <code>/cancel</code> — Cancel the current operation."
+        "<b>--- Settings ---</b>\n"
+        "• <code>/settings</code> — (Future placeholder for account settings)."
     )
 
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -120,10 +121,11 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Preparing your export file...")
-    analytics_service: AnalyticsService = get_service(context, "analytics_service")
     user_telegram_id = str(update.effective_user.id)
-
-    all_recs = analytics_service.get_all_for_user(user_telegram_id)
+    
+    with SessionLocal() as session:
+        repo: RecommendationRepository = get_service(context, "trade_service").repo
+        all_recs = repo.list_all_for_user(session, user_telegram_id)
     
     if not all_recs:
         await update.message.reply_text("You have no data to export.")
@@ -167,7 +169,7 @@ async def link_channel_forward_handler(update: Update, context: ContextTypes.DEF
     if not context.user_data.pop(AWAITING_FORWARD_KEY, False):
         return
 
-    user_tg_id = str(update.effective_user.id)
+    user_tg_id = update.effective_user.id
     chat_id, title, username = _extract_forwarded_channel(msg)
     if not chat_id:
         return
@@ -178,18 +180,32 @@ async def link_channel_forward_handler(update: Update, context: ContextTypes.DEF
         await msg.reply_text("❌ Could not post in the channel. Please ensure the bot is an administrator with posting rights.")
         return
 
-    trade_service: TradeService = get_service(context, "trade_service")
     try:
-        trade_service.link_channel_for_user(user_tg_id, chat_id, title, username)
-        uname_disp = f"@{username}" if username else "a private channel"
-        await msg.reply_text(f"✅ Channel successfully linked: {title or '-'} ({uname_disp})\nID: <code>{chat_id}</code>", parse_mode="HTML")
+        with SessionLocal() as session:
+            user = UserRepository(session).find_or_create(user_tg_id)
+            ChannelRepository(session).add(
+                owner_user_id=user.id,
+                telegram_channel_id=chat_id,
+                username=username,
+                title=title,
+            )
+            session.commit()
     except Exception as e:
-        await msg.reply_text(f"❌ An error occurred while linking the channel: {e}")
+        err = str(e).lower()
+        if "unique" in err or "integrity" in err or "already" in err:
+            await msg.reply_text("ℹ️ This channel is already linked and its details have been updated.")
+        else:
+            await msg.reply_text(f"❌ An error occurred while linking the channel: {e}")
+        return
+
+    uname_disp = f"@{username}" if username else "a private channel"
+    await msg.reply_text(f"✅ Channel successfully linked: {title or '-'} ({uname_disp})\nID: <code>{chat_id}</code>", parse_mode="HTML")
 
 async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    trade_service: TradeService = get_service(context, "trade_service")
-    user_tg_id = str(update.effective_user.id)
-    channels = trade_service.get_channels_for_user(user_tg_id)
+    user_tg_id = update.effective_user.id
+    with SessionLocal() as session:
+        user = UserRepository(session).find_by_telegram_id(user_tg_id)
+        channels = ChannelRepository(session).list_by_user(user.id, only_active=False) if user else []
 
     if not channels:
         await update.message.reply_text("📭 You have no channels linked yet. Use /link_channel to add one.")
@@ -215,16 +231,30 @@ async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("Invalid ID. Please use the numeric channel ID from /channels.")
         return
 
-    trade_service: TradeService = get_service(context, "trade_service")
-    user_tg_id = str(update.effective_user.id)
-    try:
-        trade_service.toggle_channel_for_user(user_tg_id, chat_id)
-        await update.message.reply_text("✅ Channel status has been updated.")
-    except Exception as e:
-        log.error(f"Error toggling channel: {e}")
-        await update.message.reply_text(f"An error occurred: {e}")
+    user_tg_id = update.effective_user.id
+    with SessionLocal() as session:
+        try:
+            user = UserRepository(session).find_by_telegram_id(user_tg_id)
+            if not user:
+                await update.message.reply_text("Could not find your user account.")
+                return
 
-# --- Registration ---
+            repo = ChannelRepository(session)
+            channels = repo.list_by_user(user.id, only_active=False)
+            target = next((c for c in channels if c.telegram_channel_id == chat_id), None)
+            
+            if not target:
+                await update.message.reply_text("Channel not found for your account.")
+                return
+            
+            repo.set_active(user.id, chat_id, not target.is_active)
+            session.commit()
+            await update.message.reply_text("✅ Channel status has been updated.")
+        except Exception as e:
+            session.rollback()
+            log.error(f"Error toggling channel: {e}")
+            await update.message.reply_text("An error occurred while updating the channel.")
+
 def register_commands(app: Application):
     """Registers all basic, non-conversational commands for the bot."""
     app.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_USER_FILTER))
