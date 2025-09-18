@@ -1,11 +1,10 @@
-# --- START OF FINAL, PRODUCTION-READY FILE WITH CENTRALIZED LOGGING (Version 8.5.0) ---
+# --- START OF UPDATED FILE (Version 8.6.1) ---
 # src/capitalguard/boot.py
 
 import os
 import logging
 import sys
 from typing import Dict, Any, Optional
-
 from telegram.ext import Application, PicklePersistence
 
 from capitalguard.config import settings
@@ -19,7 +18,7 @@ from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.infrastructure.execution.binance_exec import BinanceExec, BinanceCreds
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
 
-# ✅ BEST PRACTICE: Custom log handler for sending critical logs to Telegram.
+# ✅ UPDATED: Custom log handler to send critical messages via Telegram to admin
 class TelegramLogHandler(logging.Handler):
     """A custom logging handler that sends critical messages to a Telegram chat."""
     def __init__(self, notifier: TelegramNotifier, level=logging.ERROR):
@@ -27,46 +26,45 @@ class TelegramLogHandler(logging.Handler):
         self.notifier = notifier
 
     def emit(self, record: logging.LogRecord):
-        if not self.notifier:
+        if not self.notifier or not settings.TELEGRAM_CHAT_ID:
             return
-        log_entry = self.format(record)
-        # Use a simplified message for Telegram to avoid spamming with long tracebacks.
+        
         simple_message = f"⚠️ CRITICAL ERROR: {record.getMessage()}"
-        self.notifier.send_admin_alert(simple_message)
+        
+        # ✅ CRITICAL FIX: Call the correct method 'send_private_text' and provide the admin chat_id.
+        try:
+            admin_chat_id = int(settings.TELEGRAM_CHAT_ID)
+            self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Failed to send log to Telegram: {e}", exc_info=False)
 
-# ✅ BEST PRACTICE: Centralized function to set up all logging.
 def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
-    """Configures the root logger for the entire application."""
-    # Get the root logger
+    """Configures root logger and optional Telegram alerts."""
     root_logger = logging.getLogger()
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
 
-    # Configure basic stream handler
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
         stream=sys.stdout,
     )
 
-    # Add the custom Telegram handler for critical errors if a notifier is provided
     if notifier:
-        telegram_handler = TelegramLogHandler(notifier=notifier)
-        telegram_handler.setLevel(logging.ERROR) # Only send ERROR and CRITICAL messages
+        telegram_handler = TelegramLogHandler(notifier)
+        telegram_handler.setLevel(logging.ERROR)
         root_logger.addHandler(telegram_handler)
 
-    logging.getLogger("httpx").setLevel(logging.WARNING) # Quieten noisy libraries
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.info("Logging configured successfully.")
 
-
 def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
-    """Builds all application services."""
+    """Builds all services and wires dependencies."""
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
     if ptb_app:
         notifier.set_ptb_app(ptb_app)
 
-    # Setup logging, which may include the notifier for error alerts.
     setup_logging(notifier)
 
     spot_creds = BinanceCreds(os.getenv("BINANCE_API_KEY", ""), os.getenv("BINANCE_API_SECRET", ""))
@@ -76,7 +74,6 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
 
     market_data_service = MarketDataService()
     price_service = PriceService()
-    # Note: Services no longer need the 'logger' argument as we use the standard logging module.
     trade_service = TradeService(repo=repo, notifier=notifier, market_data_service=market_data_service, price_service=price_service)
     analytics_service = AnalyticsService(repo=repo)
     alert_service = AlertService(price_service=price_service, notifier=notifier, repo=repo, trade_service=trade_service)
@@ -88,8 +85,9 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         "alert_service": alert_service,
         "notifier": notifier,
         "market_data_service": market_data_service,
+        "exec_spot": exec_spot,
+        "exec_futu": exec_futu,
     }
-
 
 def bootstrap_app() -> Optional[Application]:
     """Bootstraps the Telegram bot application."""
@@ -113,4 +111,4 @@ def bootstrap_app() -> Optional[Application]:
         logging.exception(f"CRITICAL: Failed to bootstrap bot: {e}")
         return None
 
-# --- END OF FINAL, PRODUCTION-READY FILE WITH CENTRALIZED LOGGING (Version 8.5.0) ---
+# --- END OF UPDATED FILE (Version 8.6.1) ---
