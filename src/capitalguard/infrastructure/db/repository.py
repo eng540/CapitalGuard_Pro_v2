@@ -5,7 +5,6 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict, Set
 
-import sqlalchemy as sa
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.exc import IntegrityError
 
@@ -16,13 +15,19 @@ from .models import RecommendationORM, User, Channel, PublishedMessage, Recommen
 log = logging.getLogger(__name__)
 
 class UserRepository:
+    """Manages database operations for User entities within a given session."""
     def __init__(self, session: Session):
         self.session = session
 
     def find_by_telegram_id(self, telegram_id: int) -> Optional[User]:
+        """Finds a user by their unique Telegram ID."""
         return self.session.query(User).filter(User.telegram_user_id == telegram_id).first()
 
     def find_or_create(self, telegram_id: int, **kwargs) -> User:
+        """
+        Finds a user by Telegram ID, or creates a new one if not found.
+        This ensures a user record exists before creating dependent records like recommendations.
+        """
         user = self.find_by_telegram_id(telegram_id)
         if user:
             return user
@@ -41,19 +46,23 @@ class UserRepository:
         return new_user
 
 class ChannelRepository:
+    """Manages database operations for Channel entities within a given session."""
     def __init__(self, session: Session):
         self.session = session
 
     def get_by_telegram_channel_id(self, telegram_channel_id: int) -> Optional[Channel]:
+        """Finds a channel by its unique Telegram channel ID."""
         return self.session.query(Channel).filter(Channel.telegram_channel_id == telegram_channel_id).first()
 
     def list_by_user(self, user_id: int, only_active: bool = False) -> List[Channel]:
+        """Lists all channels linked to a specific internal user ID."""
         q = self.session.query(Channel).filter(Channel.user_id == user_id)
         if only_active:
             q = q.filter(Channel.is_active.is_(True))
         return q.order_by(Channel.created_at.desc()).all()
 
     def add(self, owner_user_id: int, telegram_channel_id: int, **kwargs) -> Channel:
+        """Adds a new channel or updates it if it already exists."""
         ch = self.get_by_telegram_channel_id(telegram_channel_id)
         now = datetime.now(timezone.utc)
         if ch:
@@ -83,6 +92,7 @@ class ChannelRepository:
             raise ValueError("Username is already in use by another channel.") from e
 
     def set_active(self, owner_user_id: int, telegram_channel_id: int, active: bool) -> None:
+        """Sets the active status of a channel for a specific user."""
         ch = self.session.query(Channel).filter(
             Channel.user_id == owner_user_id, 
             Channel.telegram_channel_id == telegram_channel_id
@@ -95,10 +105,17 @@ class ChannelRepository:
         ch.last_verified_at = datetime.now(timezone.utc)
 
 class RecommendationRepository:
+    """Manages all database operations for Recommendation entities."""
+
     @staticmethod
     def _to_entity(row: RecommendationORM) -> Optional[Recommendation]:
+        """Maps a SQLAlchemy ORM object to a domain entity."""
         if not row: return None
         user_telegram_id = str(row.user.telegram_user_id) if getattr(row, "user", None) else None
+        
+        # Eagerly loaded events are passed directly to the entity
+        events = getattr(row, 'events', None)
+
         return Recommendation(
             id=row.id, asset=Symbol(row.asset), side=Side(row.side), entry=Price(row.entry),
             stop_loss=Price(row.stop_loss), targets=Targets(list(row.targets or [])),
@@ -108,10 +125,11 @@ class RecommendationRepository:
             closed_at=row.closed_at, alert_meta=dict(row.alert_meta or {}),
             highest_price_reached=row.highest_price_reached, lowest_price_reached=row.lowest_price_reached,
             exit_strategy=ExitStrategy(row.exit_strategy), profit_stop_price=row.profit_stop_price,
-            open_size_percent=row.open_size_percent, events=row.events,
+            open_size_percent=row.open_size_percent, events=events,
         )
 
     def add_with_event(self, session: Session, rec: Recommendation) -> Recommendation:
+        """Adds a new recommendation and its initial 'CREATE' event in a single transaction."""
         user = UserRepository(session).find_or_create(int(rec.user_id))
         targets_for_db = [v.__dict__ for v in rec.targets.values]
         row = RecommendationORM(
@@ -133,6 +151,7 @@ class RecommendationRepository:
         return self._to_entity(row)
 
     def update_with_event(self, session: Session, rec: Recommendation, event_type: str, event_data: Dict[str, Any]) -> Recommendation:
+        """Updates a recommendation and logs an event for the change in a single transaction."""
         row = self.get_for_update(session, rec.id)
         if not row: raise ValueError(f"Recommendation #{rec.id} not found for update.")
         
@@ -152,10 +171,13 @@ class RecommendationRepository:
         new_event = RecommendationEvent(recommendation_id=row.id, event_type=event_type, event_data=event_data)
         session.add(new_event)
         session.flush()
+        session.refresh(row)
+        # Manually load the user relationship as get_for_update does not eager load.
         session.refresh(row, attribute_names=["user", "events"])
         return self._to_entity(row)
     
     def update_price_tracking(self, session: Session, rec_id: int, current_price: float):
+        """A specialized, fast update for price tracking fields only."""
         row = session.query(RecommendationORM).filter(
             RecommendationORM.id == rec_id,
             RecommendationORM.status == RecommendationStatus.ACTIVE
@@ -169,17 +191,19 @@ class RecommendationRepository:
         
         session.flush()
 
+    def get_for_update(self, session: Session, rec_id: int) -> Optional[RecommendationORM]:
+        """
+        Gets a recommendation object and locks the row for the duration of the transaction.
+        CRITICAL FIX: This query does NOT use eager loading (`joinedload`/`selectinload`)
+        because PostgreSQL does not support `FOR UPDATE` on `LEFT OUTER JOIN` queries.
+        """
+        return session.query(RecommendationORM).filter(RecommendationORM.id == rec_id).with_for_update().first()
+
     def get(self, session: Session, rec_id: int) -> Optional[Recommendation]:
         row = session.query(RecommendationORM).options(
             joinedload(RecommendationORM.user), selectinload(RecommendationORM.events)
         ).filter(RecommendationORM.id == rec_id).first()
         return self._to_entity(row)
-
-    def get_for_update(self, session: Session, rec_id: int) -> Optional[RecommendationORM]:
-        """Gets a recommendation object and locks the row for the duration of the transaction."""
-        return session.query(RecommendationORM).options(
-            joinedload(RecommendationORM.user), selectinload(RecommendationORM.events)
-        ).filter(RecommendationORM.id == rec_id).with_for_update().first()
 
     def get_by_id_for_user(self, session: Session, rec_id: int, user_telegram_id: Union[int, str]) -> Optional[Recommendation]:
         user = UserRepository(session).find_by_telegram_id(int(user_telegram_id))
@@ -225,7 +249,7 @@ class RecommendationRepository:
         if filters.get("status"): q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
         return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
-    def get_recent_assets_for_user(self, session: Session, user_telegram_id: Union[str, int], limit: int = 5) -> List[str]:
+    def get_recent_assets_for_user(self, session: Session, user_telegram_id: Union[int, str], limit: int = 5) -> List[str]:
         user = UserRepository(session).find_by_telegram_id(int(user_telegram_id))
         if not user: return []
         subq = session.query(RecommendationORM.asset, sa.func.max(RecommendationORM.created_at).label("max_created_at")).filter(RecommendationORM.user_id == user.id).group_by(RecommendationORM.asset).subquery()
