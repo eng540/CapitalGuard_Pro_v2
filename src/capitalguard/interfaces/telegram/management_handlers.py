@@ -375,7 +375,7 @@ def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(start_profit_stop_handler, pattern=r"^rec:set_profit_stop:", block=False))
     application.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:", block=False))
     application.add_handler(CallbackQueryHandler(update_private_card, pattern=r"^rec:update_private:", block=False))
-    application.add_handler(CallbackQueryHandler(update_public_card, pattern=r"^rec:update_public:", block=False))
+    #application.add_handler(CallbackQueryHandler(update_public_card, pattern=r"^rec:update_public:", block=False))
     
     application.add_handler(CallbackQueryHandler(show_close_menu_handler, pattern=r"^rec:close_menu:", block=False))
     application.add_handler(CallbackQueryHandler(close_at_market_handler, pattern=r"^rec:close_market:", block=False))
