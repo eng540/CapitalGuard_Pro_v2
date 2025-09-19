@@ -1,19 +1,18 @@
-# --- START OF FINAL, REBUILT, AND ARCHITECTURALLY-CORRECT FILE (Version 10.1.0) ---
+# --- START OF FINAL, REBUILT, AND MORE ROBUST FILE (Version 10.2.0) ---
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
 
 import logging
 import uuid
 import types
-from typing import Dict, Any
+from typing import Dict, Any, Tuple, Optional
 
-from telegram import Update, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardRemove, User, Message
 from telegram.error import BadRequest
 from telegram.ext import (
     Application, ContextTypes, ConversationHandler, CommandHandler,
     CallbackQueryHandler, MessageHandler, filters
 )
 
-# ✅ ARCHITECTURAL FIX: Import the unit_of_work decorator to manage DB transactions.
 from .helpers import get_service, unit_of_work
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
@@ -23,7 +22,6 @@ from .keyboards import (
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
 from .auth import ALLOWED_USER_FILTER
 
-# Import service types for type-safe access
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
@@ -36,10 +34,9 @@ CONVERSATION_DATA_KEY = "new_rec_draft"
 REV_TOKENS_MAP = "review_tokens_map"
 REV_TOKENS_REVERSE = "review_tokens_rev"
 
-# --- Helper Functions for State Management ---
+# --- Helper Functions ---
 
 def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
-    """A centralized function to clean up all conversation-related data."""
     context.user_data.pop(CONVERSATION_DATA_KEY, None)
     review_key = context.user_data.pop('current_review_key', None)
     if review_key: context.bot_data.pop(review_key, None)
@@ -47,6 +44,20 @@ def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('original_query_message', None)
     context.user_data.pop('input_mode', None)
 
+# ✅ NEW HELPER: A robust way to get user and message from any update type.
+def _get_user_and_message_from_update(update: Update) -> Tuple[Optional[User], Optional[Message]]:
+    """Safely extracts the effective user and message from an Update object."""
+    user = None
+    message = None
+    if update.callback_query:
+        user = update.callback_query.from_user
+        message = update.callback_query.message
+    elif update.message:
+        user = update.message.from_user
+        message = update.message
+    return user, message
+
+# ... (other helper functions like _ensure_token_maps remain the same)
 def _ensure_token_maps(context: ContextTypes.DEFAULT_TYPE) -> None:
     if REV_TOKENS_MAP not in context.bot_data: context.bot_data[REV_TOKENS_MAP] = {}
     if REV_TOKENS_REVERSE not in context.bot_data: context.bot_data[REV_TOKENS_REVERSE] = {}
@@ -66,7 +77,7 @@ def _resolve_review_key_from_token(context: ContextTypes.DEFAULT_TYPE, token: st
     _ensure_token_maps(context)
     return context.bot_data[REV_TOKENS_MAP].get(token)
 
-# --- Entry Point and State Handlers ---
+# --- Entry Point and State Handlers (Now using the new helper) ---
 
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
@@ -81,14 +92,20 @@ async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_T
 async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
-    trade_service = get_service(context, "trade_service", TradeService)
-    user_id = str(update.effective_user.id)
     
-    # The db_session is now passed to the service layer.
+    # ✅ FIX: Use the robust helper to get user and message.
+    user, message_obj = _get_user_and_message_from_update(update)
+    if not user or not message_obj:
+        return ConversationHandler.END
+
+    trade_service = get_service(context, "trade_service", TradeService)
+    user_id = str(user.id)
+    
     recent_assets = trade_service.get_recent_assets_for_user(db_session, user_id, limit=5)
     
-    message_obj = update.message or update.callback_query.message
-    await message_obj.reply_text(
+    # ✅ UX FIX: Edit the message if it's a callback, otherwise reply.
+    reply_method = message_obj.edit_text if update.callback_query else message_obj.reply_text
+    await reply_method(
         "🚀 Interactive Builder\n\n1️⃣ Select a recent asset or type a new symbol:",
         reply_markup=asset_choice_keyboard(recent_assets)
     )
@@ -101,9 +118,9 @@ async def start_text_input_entrypoint(update: Update, context: ContextTypes.DEFA
     context.user_data['input_mode'] = command
     
     if command == 'rec':
-        await update.message.reply_text("⚡️ Quick Command Mode\n\nEnter your full recommendation in a single message (e.g., `/rec BTCUSDT LONG 60k 59k 62k 64k`).")
+        await update.message.reply_text("⚡️ Quick Command Mode\n\nEnter your full recommendation in a single message.")
     elif command == 'editor':
-        await update.message.reply_text("📋 Text Editor Mode\n\nPaste your recommendation using field names (e.g., `asset: BTCUSDT`).")
+        await update.message.reply_text("📋 Text Editor Mode\n\nPaste your recommendation using field names.")
         
     return AWAIT_TEXT_INPUT
 
@@ -113,13 +130,16 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     choice = query.data.split('_')[1]
 
     if choice == "interactive":
-        # We need to call the decorated function to ensure the UoW is handled.
-        return await start_interactive_entrypoint(query, context)
+        # ✅ FIX: Pass the original 'update' object, not the 'query' object.
+        return await start_interactive_entrypoint(update, context)
     
     context.user_data['input_mode'] = 'rec' if choice == "quick" else 'editor'
-    prompt = "⚡️ Quick Command Mode\n\nEnter your full recommendation in a single message." if choice == "quick" else "📋 Text Editor Mode\n\nPaste your recommendation using field names."
+    prompt = "⚡️ Quick Command Mode\n\nEnter your full recommendation." if choice == "quick" else "📋 Text Editor Mode\n\nPaste your recommendation."
     await query.message.edit_text(prompt)
     return AWAIT_TEXT_INPUT
+
+# ... (The rest of the file remains largely the same, as the core logic was sound)
+# Minor changes are made to ensure consistency with the new helper.
 
 async def received_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     mode = context.user_data.get('input_mode')
@@ -138,7 +158,8 @@ async def received_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
     asset = ""
-    message_obj = update.message or update.callback_query.message
+    user, message_obj = _get_user_and_message_from_update(update)
+    if not user or not message_obj: return ConversationHandler.END
     
     if update.callback_query:
         await update.callback_query.answer()
@@ -151,18 +172,13 @@ async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     market_data_service = get_service(context, "market_data_service", MarketDataService)
     if not market_data_service.is_valid_symbol(asset, "Futures"):
-        # ✅ UX FIX: Use edit_text if it's a callback, reply_text otherwise.
-        if update.callback_query:
-            await message_obj.edit_text(f"❌ Symbol '{asset}' is not valid. Please select a valid one or type a new one.")
-        else:
-            await message_obj.reply_text(f"❌ Symbol '{asset}' is not valid. Please try again.")
+        reply_method = message_obj.edit_text if update.callback_query else message_obj.reply_text
+        await reply_method(f"❌ Symbol '{asset}' is not valid. Please try again.")
         return I_ASSET
 
     draft['asset'] = asset
     draft['market'] = draft.get('market', 'Futures')
     context.user_data[CONVERSATION_DATA_KEY] = draft
-    
-    # ✅ UX FIX: Edit the message instead of replying to create a smooth flow.
     await message_obj.edit_text(f"✅ Asset: {asset}\n\n2️⃣ Choose the trade side:", reply_markup=side_market_keyboard(draft['market']))
     return I_SIDE_MARKET
 
@@ -214,7 +230,7 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         if order_type == 'MARKET':
             if len(tokens) < 2: raise ValueError("MARKET format requires: STOP then TARGETS...")
-            draft["entry"] = 0 # Placeholder, will be replaced by live price on creation.
+            draft["entry"] = 0
             draft["stop_loss"] = parse_number(tokens[0])
             draft["targets"] = parse_targets_list(tokens[1:])
         else:
@@ -224,12 +240,10 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             draft["targets"] = parse_targets_list(tokens[2:])
         if not draft["targets"]: raise ValueError("No valid targets were parsed.")
         
-        # Perform business logic validation early.
         trade_service = get_service(context, "trade_service", TradeService)
         trade_service._validate_recommendation_data(
             draft["side"], draft["entry"], draft["stop_loss"], draft["targets"]
         )
-
     except ValueError as e:
         await update.message.reply_text(f"❌ Invalid format or logic: {e}\nPlease try again.")
         return I_PRICES
@@ -238,7 +252,7 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return await show_review_card(update, context)
 
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, is_edit: bool = False) -> int:
-    message = update.message or (update.callback_query.message if update.callback_query else None)
+    user, message = _get_user_and_message_from_update(update)
     if not message: return ConversationHandler.END
     
     review_key = context.user_data.get('current_review_key')
@@ -265,7 +279,6 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
         if is_edit:
             await message.edit_text(text=review_text, reply_markup=keyboard, parse_mode='HTML', disable_web_page_preview=True)
         else:
-            # Delete the user's last message (e.g., the prices they sent) to keep the chat clean.
             if update.message: await update.message.delete()
             await message.reply_html(text=review_text, reply_markup=keyboard, disable_web_page_preview=True)
     except BadRequest as e:
@@ -297,7 +310,8 @@ async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         draft['notes'] = notes if notes.lower() not in ['skip', 'none'] else None
         try: await update.message.delete()
         except Exception: pass
-        dummy_update = Update(update.update_id, callback_query=types.SimpleNamespace(message=original_message, data=''))
+        # Create a dummy update to pass to the review card function
+        dummy_update = Update(update.update_id, callback_query=types.SimpleNamespace(message=original_message, data='', from_user=update.message.from_user))
         return await show_review_card(dummy_update, context, is_edit=True)
     await update.message.reply_text("An error occurred. Please start over with /newrec.")
     _clean_conversation_state(context)
@@ -317,18 +331,16 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
         
     trade_service = get_service(context, "trade_service", TradeService)
     try:
-        # ✅ ARCHITECTURAL FIX: The db_session is now passed to the service method,
-        # ensuring the entire operation is a single atomic transaction.
         saved_rec, report = await trade_service.create_and_publish_recommendation_async(
-            db_session, user_id=str(update.effective_user.id), **draft
+            db_session, user_id=str(query.from_user.id), **draft
         )
         if report.get("success"):
-            await query.edit_message_text(f"✅ Recommendation #{saved_rec.id} was created and published successfully to {len(report['success'])} channel(s).")
+            await query.message.edit_text(f"✅ Recommendation #{saved_rec.id} was created and published successfully to {len(report['success'])} channel(s).")
         else:
             fail_reason = "No active channels found or failed to post."
             if report.get("failed"):
                 fail_reason = report["failed"][0].get("reason", fail_reason)
-            await query.edit_message_text(
+            await query.message.edit_text(
                 f"⚠️ Recommendation #{saved_rec.id} was saved, but publishing failed.\n"
                 f"<b>Reason:</b> {fail_reason}\n\n"
                 "<i>Please check that the bot is an admin in your channel with posting rights.</i>",
@@ -336,15 +348,14 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
             )
     except Exception as e:
         log.exception("Handler failed to save/publish recommendation.")
-        # The decorator will automatically roll back the transaction.
-        await query.edit_message_text(f"❌ A critical error occurred: {e}. The operation was safely rolled back.")
+        await query.message.edit_text(f"❌ A critical error occurred: {e}. The operation was safely rolled back.")
     finally:
         _clean_conversation_state(context)
     return ConversationHandler.END
 
 async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
-    message = update.message or (update.callback_query and update.callback_query.message)
+    user, message = _get_user_and_message_from_update(update)
     if not message: return ConversationHandler.END
     
     if update.callback_query:
@@ -399,4 +410,4 @@ def register_conversation_handlers(app: Application):
     )
     app.add_handler(conv_handler)
 
-# --- END OF FINAL, REBUILT, AND ARCHITECTURALLY-CORRECT FILE ---
+# --- END OF FINAL, REBUILT, AND MORE ROBUST FILE ---
