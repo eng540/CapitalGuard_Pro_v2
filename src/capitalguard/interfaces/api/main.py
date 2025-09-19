@@ -1,4 +1,4 @@
-# --- START OF FINAL, PRODUCTION-READY FILE WITH CONTEXT FLAG (Version 9.1.1) ---
+# --- START OF FINAL, PRODUCTION-READY, AND POLISHED FILE (Version 9.2.0) ---
 # src/capitalguard/interfaces/api/main.py
 
 import logging
@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 # --- Application Setup ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="9.1.1-stable")
+app = FastAPI(title="CapitalGuard Pro API", version="9.2.0-stable")
 app.state.ptb_app = None
 app.state.services = None
 
@@ -80,9 +80,7 @@ async def on_startup():
     app.state.ptb_app = ptb_app
     app.state.services = ptb_app.bot_data["services"]
 
-    # ✅ BEST PRACTICE: Add a flag to indicate the context for other runners.
     setattr(ptb_app, '_is_running_via_fastapi', True)
-
     ptb_app.add_error_handler(error_handler)
 
     market_data_service = app.state.services.get("market_data_service")
@@ -189,21 +187,28 @@ async def close_recommendation(
 @app.get("/dashboard", response_class=HTMLResponse, dependencies=[Depends(require_api_key)])
 def dashboard(
     analytics_service: AnalyticsService = Depends(get_analytics_service),
-    user_id: str = "default_user",
-    symbol: str = Query(None),
-    status: str = Query(None)
+    user_id: str = "default_user"
 ):
-    # Note: This is a very basic dashboard. A real UI would be separate.
-    with SessionLocal() as session:
-        user_repo = analytics_service.repo.UserRepository(session)
-        user = user_repo.find_by_telegram_id(int(user_id))
-        if not user:
-            return HTMLResponse(content="<h1>User not found</h1>")
-        
-        items = analytics_service.repo.list_all_for_user(session, user.telegram_user_id)
+    # ✅ IMPROVEMENT: Call the service layer method, not the repository directly.
+    # This respects the architectural boundaries.
+    summary = analytics_service.performance_summary_for_user(user_id)
     
-    rows = "".join(f"<tr><td>{r.id}</td><td>{r.asset.value}</td><td>{r.side.value}</td><td>{r.status.value}</td></tr>" for r in items)
-    html_content = f"<html><body><h1>Dashboard for User {user_id}</h1><table><thead><tr><th>ID</th><th>Asset</th><th>Side</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></body></html>"
+    # Create a more informative HTML response
+    html_content = f"""
+    <html>
+        <head><title>Dashboard for User {user_id}</title></head>
+        <body>
+            <h1>Performance Summary for User: {user_id}</h1>
+            <ul>
+                <li>Total Recommendations: {summary.get('total_recommendations', 'N/A')}</li>
+                <li>Open Recommendations: {summary.get('open_recommendations', 'N/A')}</li>
+                <li>Closed Recommendations: {summary.get('closed_recommendations', 'N/A')}</li>
+                <li><b>Overall Win Rate: {summary.get('overall_win_rate', 'N/A')}</b></li>
+                <li><b>Total PnL (Percent): {summary.get('total_pnl_percent', 'N/A')}</b></li>
+            </ul>
+        </body>
+    </html>
+    """
     return HTMLResponse(content=html_content)
 
 
@@ -211,4 +216,4 @@ def dashboard(
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
 
-# --- END OF FINAL, PRODUCTION-READY FILE WITH CONTEXT FLAG (Version 9.1.1) ---
+# --- END OF FINAL, PRODUCTION-READY, AND POLISHED FILE (Version 9.2.0) ---
