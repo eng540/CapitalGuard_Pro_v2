@@ -1,4 +1,4 @@
-#--- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.4) ---
+# --- START OF FINAL, ROBUST FILE USING SERVICE REGISTRY (Version 9.3.0) ---
 # src/capitalguard/interfaces/telegram/commands.py
 
 import io
@@ -15,11 +15,12 @@ from .auth import ALLOWED_USER_FILTER
 from .ui_texts import build_analyst_stats_text
 from .keyboards import build_open_recs_keyboard
 
+# ✅ Import service types for type-safe access
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.infrastructure.db.base import SessionLocal
-from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository, RecommendationRepository
 
 log = logging.getLogger(__name__)
 
@@ -74,8 +75,9 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Core Feature Commands ---
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    trade_service: TradeService = get_service(context, "trade_service")
-    price_service: PriceService = get_service(context, "price_service")
+    # ✅ UPDATED: Use the new type-safe service getter
+    trade_service = get_service(context, "trade_service", TradeService)
+    price_service = get_service(context, "price_service", PriceService)
     user_telegram_id = str(update.effective_user.id)
 
     filters_map = {}
@@ -113,7 +115,8 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    analytics_service: AnalyticsService = get_service(context, "analytics_service")
+    # ✅ UPDATED: Use the new type-safe service getter
+    analytics_service = get_service(context, "analytics_service", AnalyticsService)
     user_id_str = str(update.effective_user.id)
     stats = analytics_service.performance_summary_for_user(user_id_str)
     text = build_analyst_stats_text(stats)
@@ -123,9 +126,11 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Preparing your export file...")
     user_telegram_id = str(update.effective_user.id)
     
+    # ✅ UPDATED: Use the new type-safe service getter
+    trade_service = get_service(context, "trade_service", TradeService)
+    
     with SessionLocal() as session:
-        repo: RecommendationRepository = get_service(context, "trade_service").repo
-        all_recs = repo.list_all_for_user(session, user_telegram_id)
+        all_recs = trade_service.repo.list_all_for_user(session, int(user_telegram_id))
     
     if not all_recs:
         await update.message.reply_text("You have no data to export.")
@@ -269,4 +274,4 @@ def register_commands(app: Application):
     
     app.add_handler(MessageHandler(ALLOWED_USER_FILTER & filters.FORWARDED, link_channel_forward_handler))
 
-# --- END OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.4) ---
+# --- END OF FINAL, ROBUST FILE USING SERVICE REGISTRY (Version 9.3.0) ---
