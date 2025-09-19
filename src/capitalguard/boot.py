@@ -35,7 +35,9 @@ class TelegramLogHandler(logging.Handler):
         
         try:
             admin_chat_id = int(settings.TELEGRAM_CHAT_ID)
-            self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message)
+            # Ensure the method exists before calling
+            if hasattr(self.notifier, 'send_private_text'):
+                self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message)
         except Exception as e:
             # Use the root logger to prevent recursion if notifier fails
             logging.getLogger().error(f"Failed to send log to Telegram: {e}", exc_info=False)
