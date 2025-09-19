@@ -1,4 +1,4 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.2) ---
+# --- START OF FINAL, ROBUST FILE USING SERVICE REGISTRY (Version 9.3.0) ---
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
 
 import logging
@@ -7,6 +7,7 @@ import types
 from typing import List, Dict, Any, Set
 
 from telegram import Update, ReplyKeyboardRemove
+from telegram.error import BadRequest
 from telegram.ext import (
     Application, ContextTypes, ConversationHandler, CommandHandler,
     CallbackQueryHandler, MessageHandler, filters
@@ -22,8 +23,10 @@ from .keyboards import (
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
 from .auth import ALLOWED_USER_FILTER
 
+# ✅ Import service types for type-safe access
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.trade_service import TradeService
+from capitalguard.application.services.price_service import PriceService
 
 log = logging.getLogger(__name__)
 
@@ -64,14 +67,6 @@ def _resolve_review_key_from_token(context: ContextTypes.DEFAULT_TYPE, token: st
     _ensure_token_maps(context)
     return context.bot_data[REV_TOKENS_MAP].get(token)
 
-def _load_user_active_channels(user_tg_id: int) -> List[Dict[str, Any]]:
-    from capitalguard.infrastructure.db.base import SessionLocal
-    from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
-    with SessionLocal() as s:
-        user = UserRepository(s).find_or_create(user_tg_id)
-        channels = ChannelRepository(s).list_by_user(user.id, only_active=True)
-        return [{"id": ch.id, "telegram_channel_id": int(ch.telegram_channel_id), "username": ch.username, "title": ch.title} for ch in channels]
-
 # --- Entry Point and State Handlers ---
 
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -86,7 +81,8 @@ async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_T
 async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
-    trade_service: TradeService = get_service(context, "trade_service")
+    # ✅ UPDATED: Use the new type-safe service getter
+    trade_service = get_service(context, "trade_service", TradeService)
     user_id = str(update.effective_user.id)
     recent_assets = trade_service.get_recent_assets_for_user(user_id, limit=5)
     
@@ -151,7 +147,7 @@ async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     else:
         asset = (update.message.text or "").strip().upper()
 
-    market_data_service: MarketDataService = get_service(context, "market_data_service")
+    market_data_service = get_service(context, "market_data_service", MarketDataService)
     if not market_data_service.is_valid_symbol(asset, "Futures"):
         await message_obj.reply_text(f"❌ Symbol '{asset}' is not valid. Please try again.")
         return I_ASSET
@@ -219,36 +215,55 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             draft["stop_loss"] = parse_number(tokens[1])
             draft["targets"] = parse_targets_list(tokens[2:])
         if not draft["targets"]: raise ValueError("No valid targets were parsed.")
+        
+        trade_service = get_service(context, "trade_service", TradeService)
+        try:
+            trade_service._validate_recommendation_data(
+                draft["side"], draft["entry"], draft["stop_loss"], draft["targets"]
+            )
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Invalid Logic: {e}\nPlease check your prices and try again.")
+            return I_PRICES
+
     except ValueError as e:
-        await update.message.reply_text(f"❌ Invalid format: {e}\n\nPlease try again.")
+        await update.message.reply_text(f"❌ Invalid format: {e}\nPlease try again.")
         return I_PRICES
+        
     context.user_data[CONVERSATION_DATA_KEY] = draft
     return await show_review_card(update, context)
 
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, is_edit: bool = False) -> int:
     message = update.message or (update.callback_query.message if update.callback_query else None)
     if not message: return ConversationHandler.END
+    
     review_key = context.user_data.get('current_review_key')
     data = context.bot_data.get(review_key) if review_key else context.user_data.get(CONVERSATION_DATA_KEY, {})
+    
     if not data or not data.get("asset"):
         await message.reply_text("Error, please start over with /newrec.")
         _clean_conversation_state(context)
         return ConversationHandler.END
-    price_service = get_service(context, "price_service")
+        
+    price_service = get_service(context, "price_service", PriceService)
     preview_price = await price_service.get_cached_price(data["asset"], data.get("market", "Futures"))
     review_text = build_review_text_with_price(data, preview_price)
+    
     if not review_key:
         review_key = str(uuid.uuid4())
         context.user_data['current_review_key'] = review_key
         context.bot_data[review_key] = data.copy()
+        
     review_token = _get_or_make_token_for_review(context, review_key)
     keyboard = review_final_keyboard(review_token)
+    
     try:
         if is_edit: await message.edit_text(text=review_text, reply_markup=keyboard, parse_mode='HTML', disable_web_page_preview=True)
         else: await message.reply_html(text=review_text, reply_markup=keyboard, disable_web_page_preview=True)
-    except Exception as e:
-        log.warning(f"Edit failed, sending new message. Error: {e}")
-        await message.reply_html(text=review_text, reply_markup=keyboard, disable_web_page_preview=True)
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            log.warning(f"Edit failed, sending new message. Error: {e}")
+            await message.reply_html(text=review_text, reply_markup=keyboard, disable_web_page_preview=True)
+            
     return I_REVIEW
 
 async def add_notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -290,7 +305,7 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         _clean_conversation_state(context)
         return ConversationHandler.END
         
-    trade_service: TradeService = get_service(context, "trade_service")
+    trade_service = get_service(context, "trade_service", TradeService)
     try:
         saved_rec, report = await trade_service.create_and_publish_recommendation_async(
             user_id=str(update.effective_user.id), **draft

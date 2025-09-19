@@ -1,4 +1,4 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.2) ---
+# --- START OF FINAL, ROBUST FILE USING SERVICE REGISTRY (Version 9.3.0) ---
 # src/capitalguard/interfaces/telegram/management_handlers.py
 
 import logging
@@ -31,6 +31,7 @@ from .keyboards import (
 )
 from .ui_texts import build_trade_card_text
 from .parsers import parse_number, parse_targets_list
+# ✅ Import service types for type-safe access
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 
@@ -43,13 +44,14 @@ AWAITING_INPUT_KEY = "awaiting_user_input_for"
 
 async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, rec_id: int, user_id: int):
     """A reusable function to build and send/edit the analyst control panel."""
-    trade_service: TradeService = get_service(context, "trade_service")
+    # ✅ UPDATED: Use the new type-safe service getter
+    trade_service = get_service(context, "trade_service", TradeService)
     rec = trade_service.get_recommendation_for_user(rec_id, str(user_id))
     if not rec:
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Recommendation not found or you don't have access.")
         return
 
-    price_service: PriceService = get_service(context, "price_service")
+    price_service = get_service(context, "price_service", PriceService)
     live_price = await price_service.get_cached_price(rec.asset.value, rec.market)
     if live_price: setattr(rec, "live_price", live_price)
     
@@ -67,7 +69,7 @@ async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, chat_id: i
 
 async def _send_or_edit_strategy_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, rec_id: int, user_id: int):
     """A reusable function to build and send/edit the strategy menu."""
-    trade_service: TradeService = get_service(context, "trade_service")
+    trade_service = get_service(context, "trade_service", TradeService)
     rec = trade_service.get_recommendation_for_user(rec_id, str(user_id))
     if not rec:
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Recommendation not found.")
@@ -93,22 +95,14 @@ def _parse_tail_int(data: str) -> Optional[int]:
 def _parse_cq_parts(data: str) -> list[str]:
     return data.split(":")
 
-def _recently_updated(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int) -> bool:
-    key = f"rate_limit_{chat_id}_{message_id}"
-    last_update = context.bot_data.get(key, 0)
-    now = time()
-    if (now - last_update) < 20: return True
-    context.bot_data[key] = now
-    return False
-
 # --- Main Callback Query Handlers ---
 
 async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     page = _parse_tail_int(query.data) or 1
-    trade_service: TradeService = get_service(context, "trade_service")
-    price_service: PriceService = get_service(context, "price_service")
+    trade_service = get_service(context, "trade_service", TradeService)
+    price_service = get_service(context, "price_service", PriceService)
     filters_map = context.user_data.get("last_open_filters", {}) or {}
     
     try:
@@ -152,7 +146,7 @@ async def update_private_card(update: Update, context: ContextTypes.DEFAULT_TYPE
     rec_id = _parse_tail_int(query.data)
     if not rec_id: return
 
-    trade_service: TradeService = get_service(context, "trade_service")
+    trade_service = get_service(context, "trade_service", TradeService)
     await trade_service.update_price_tracking_async(rec_id, str(query.from_user.id))
     await _send_or_edit_rec_panel(context, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
 
@@ -174,7 +168,7 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
     try: await update.message.delete()
     except Exception: pass
 
-    trade_service: TradeService = get_service(context, "trade_service")
+    trade_service = get_service(context, "trade_service", TradeService)
     
     try:
         if action == "profit_stop":
@@ -207,7 +201,7 @@ async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TY
     except (ValueError, IndexError) as e: await query.answer(f"Invalid value: {e}", show_alert=True); return
     
     await query.answer("Closing recommendation...")
-    trade_service: TradeService = get_service(context, "trade_service")
+    trade_service = get_service(context, "trade_service", TradeService)
     try:
         await trade_service.close_recommendation_for_user_async(rec_id, str(query.from_user.id), exit_price)
     except Exception as e:
@@ -253,7 +247,7 @@ async def start_profit_stop_handler(update: Update, context: ContextTypes.DEFAUL
     try: rec_id = int(parts[2])
     except Exception: await query.answer("Invalid request.", show_alert=True); return
     
-    trade_service: TradeService = get_service(context, "trade_service")
+    trade_service = get_service(context, "trade_service", TradeService)
     if len(parts) > 3 and parts[3] == "remove":
         await query.answer("Removing Profit Stop...")
         await trade_service.update_profit_stop_for_user_async(rec_id, str(query.from_user.id), None)
@@ -271,7 +265,7 @@ async def set_strategy_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     try: rec_id, strategy_value = int(parts[2]), parts[3]
     except Exception: await query.answer("Invalid request.", show_alert=True); return
     
-    trade_service: TradeService = get_service(context, "trade_service")
+    trade_service = get_service(context, "trade_service", TradeService)
     await trade_service.update_exit_strategy_for_user_async(rec_id, str(query.from_user.id), ExitStrategy(strategy_value))
     await _send_or_edit_strategy_menu(context, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
 
@@ -290,10 +284,9 @@ async def close_at_market_handler(update: Update, context: ContextTypes.DEFAULT_
     if not rec_id: await query.answer("Invalid request.", show_alert=True); return
 
     await query.answer("Fetching market price & closing...")
-    trade_service: TradeService = get_service(context, "trade_service")
+    trade_service = get_service(context, "trade_service", TradeService)
     try:
         await trade_service.close_recommendation_at_market_for_user_async(rec_id, str(query.from_user.id))
-        # Panel will be updated by the service method, so we don't need to do it here.
     except Exception as e:
         log.error(f"Error during market close for rec #{rec_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id=query.from_user.id, text=f"❌ Failed to close trade: {e}")
@@ -336,7 +329,7 @@ async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_T
     try:
         price = parse_number(update.message.text)
         percentage = context.user_data['partial_profit_percent']
-        trade_service: TradeService = get_service(context, "trade_service")
+        trade_service = get_service(context, "trade_service", TradeService)
         await trade_service.take_partial_profit_for_user_async(rec_id, str(user_id), percentage, price)
         await update.message.reply_text("✅ Partial profit was successfully registered.")
     except (ValueError, IndexError) as e:
