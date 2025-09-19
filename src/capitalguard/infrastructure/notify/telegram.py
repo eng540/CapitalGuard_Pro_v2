@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED AND ROBUST FILE (V7): src/capitalguard/infrastructure/notify/telegram.py ---
+# --- START OF FINAL, CORRECTED AND ROBUST FILE (V8): src/capitalguard/infrastructure/notify/telegram.py ---
 import logging
 from typing import Optional, Tuple, Dict, Any
 
@@ -7,7 +7,7 @@ from telegram import InlineKeyboardMarkup, Bot
 from telegram.ext import Application
 
 from capitalguard.config import settings
-from capitalguard.domain.entities import Recommendation
+from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
 from capitalguard.interfaces.telegram.ui_texts import build_trade_card_text
 
@@ -16,9 +16,6 @@ log = logging.getLogger(__name__)
 class TelegramNotifier:
     """
     Handles all outbound communication to the Telegram Bot API.
-
-    ✅ FIX: This class is now stateful. It holds a reference to the bot application
-    to access context-specific information like the bot's username.
     """
 
     def __init__(self) -> None:
@@ -28,10 +25,7 @@ class TelegramNotifier:
         self._bot_username: Optional[str] = None
 
     def set_ptb_app(self, ptb_app: Application):
-        """
-        Injects the running PTB application instance into the notifier.
-        This is called once at startup.
-        """
+        """Injects the running PTB application instance into the notifier."""
         self.ptb_app = ptb_app
     
     @property
@@ -84,10 +78,12 @@ class TelegramNotifier:
             payload["reply_markup"] = keyboard.to_dict()
         return bool(self._post("editMessageText", payload))
 
-    def post_to_channel(self, channel_id: int, rec: Recommendation) -> Optional[Tuple[int, int]]:
+    # ✅ FIX: Add the missing 'keyboard' parameter to the function signature.
+    def post_to_channel(self, channel_id: int, rec: Recommendation, keyboard: Optional[InlineKeyboardMarkup] = None) -> Optional[Tuple[int, int]]:
         text = build_trade_card_text(rec)
-        # ✅ FIX: Pass the bot_username to the keyboard builder.
-        keyboard = public_channel_keyboard(rec.id, self.bot_username)
+        # If no keyboard passed explicitly, fallback to the default public_channel_keyboard
+        if keyboard is None:
+            keyboard = public_channel_keyboard(rec.id, self.bot_username)
         return self._send_text(chat_id=channel_id, text=text, keyboard=keyboard)
 
     def post_notification_reply(self, chat_id: int, message_id: int, text: str) -> Optional[Tuple[int, int]]:
@@ -100,7 +96,6 @@ class TelegramNotifier:
     def edit_recommendation_card_by_ids(self, channel_id: int, message_id: int, rec: Recommendation) -> bool:
         """Edits a previously posted recommendation card in a channel using explicit IDs."""
         new_text = build_trade_card_text(rec)
-        # ✅ FIX: Pass the bot_username to the keyboard builder.
         keyboard = public_channel_keyboard(rec.id, self.bot_username) if rec.status != RecommendationStatus.CLOSED else None
         return self._edit_text(
             chat_id=channel_id,
@@ -108,4 +103,4 @@ class TelegramNotifier:
             text=new_text,
             keyboard=keyboard,
         )
-# --- END OF FINAL MODIFIED FILE (V7) ---
+# --- END OF FINAL MODIFIED FILE (V8) ---
