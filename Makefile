@@ -1,4 +1,5 @@
-# --- START OF FINAL, IMPROVED FILE ---
+# Makefile
+
 .PHONY: init dev api watcher bot test migrate fmt rebuild
 
 init:
@@ -32,5 +33,3 @@ fmt:
 rebuild:
 	docker compose down
 	docker compose up --build --force-recreate --no-cache
-
-# --- END OF FINAL, IMPROVED FILE ---
