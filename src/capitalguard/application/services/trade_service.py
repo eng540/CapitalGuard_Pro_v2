@@ -1,10 +1,10 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.3) ---
+# --- START OF FINAL, CORRECTED, AND OPTIMIZED FILE (Version 9.3.0) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
+import asyncio
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
-import asyncio
 
 from sqlalchemy.orm import Session
 
@@ -30,8 +30,6 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
 class TradeService:
     """
     Core application service for managing the lifecycle of trade recommendations.
-    This service encapsulates all business logic, ensuring that the interface layer
-    (e.g., Telegram handlers) remains thin and focused on user interaction.
     """
     def __init__(
         self,
@@ -55,15 +53,15 @@ class TradeService:
 
         log.info("Asynchronously updating %d cards for rec #%s...", len(published_messages), rec.id)
         
-        update_tasks = []
-        for msg_meta in published_messages:
-            task = asyncio.to_thread(
+        update_tasks = [
+            asyncio.to_thread(
                 self.notifier.edit_recommendation_card_by_ids,
                 channel_id=msg_meta.telegram_channel_id,
                 message_id=msg_meta.telegram_message_id,
                 rec=rec
             )
-            update_tasks.append(task)
+            for msg_meta in published_messages
+        ]
         
         results = await asyncio.gather(*update_tasks, return_exceptions=True)
         for i, result in enumerate(results):
@@ -98,10 +96,9 @@ class TradeService:
                (side_upper == 'SHORT' and target.price >= entry):
                 raise ValueError(f"Target price {target.price} is not valid for a {side} trade with entry {entry}.")
 
-    def _publish_recommendation(self, session: Session, rec_id: int, user_id: str) -> Tuple[Recommendation, Dict]:
+    def _publish_recommendation(self, session: Session, rec: Recommendation, user_id: str) -> Tuple[Recommendation, Dict]:
         """Private helper to handle the logic of publishing a recommendation."""
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
-        rec = self.repo.get(session, rec_id)
         uid_int = _parse_int_user_id(user_id)
         
         user = UserRepository(session).find_by_telegram_id(uid_int)
@@ -131,7 +128,7 @@ class TradeService:
                 report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": str(e)})
         
         session.flush()
-        return self.repo.get(session, rec_id), report
+        return rec, report
 
     # --- Public Service Methods ---
     
@@ -179,7 +176,7 @@ class TradeService:
                     rec_entity.highest_price_reached = rec_entity.lowest_price_reached = rec_entity.entry.value
 
                 created_rec = self.repo.add_with_event(session, rec_entity)
-                final_rec, report = self._publish_recommendation(session, created_rec.id, str(uid_int))
+                final_rec, report = self._publish_recommendation(session, created_rec, str(uid_int))
                 
                 session.commit()
                 return final_rec, report
@@ -195,8 +192,9 @@ class TradeService:
         with SessionLocal() as session:
             try:
                 rec_orm = self.repo.get_for_update(session, rec_id)
+                if not rec_orm: raise ValueError(f"Recommendation #{rec_id} not found.")
+                
                 rec = self.repo._to_entity(rec_orm)
-
                 if not rec or rec.user_id != str(uid_int):
                     raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
                 if rec.status == RecommendationStatus.CLOSED:
@@ -230,8 +228,9 @@ class TradeService:
         with SessionLocal() as session:
             try:
                 rec_orm = self.repo.get_for_update(session, rec_id)
-                rec = self.repo._to_entity(rec_orm)
+                if not rec_orm: return None
                 
+                rec = self.repo._to_entity(rec_orm)
                 if not rec or rec.status != RecommendationStatus.PENDING:
                     return rec
                 
@@ -249,7 +248,23 @@ class TradeService:
                 log.exception(f"Failed to activate recommendation #{rec_id}")
                 raise
 
+    # ✅ FIX: This is the missing async wrapper needed by management_handlers.py
+    async def update_price_tracking_async(self, rec_id: int, user_id: str):
+        """Async wrapper to run the synchronous price tracking update in a separate thread."""
+        rec = self.get_recommendation_for_user(rec_id, user_id)
+        if not rec or rec.status != RecommendationStatus.ACTIVE:
+            return
+
+        current_price = await self.price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
+        if current_price is None:
+            log.warning(f"Could not fetch live price for {rec.asset.value} during tracking update.")
+            return
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.update_price_tracking, rec_id, current_price)
+
     def update_price_tracking(self, rec_id: int, current_price: float):
+        """Synchronous method that performs the actual database update."""
         with SessionLocal() as session:
             try:
                 self.repo.update_price_tracking(session, rec_id, current_price)
@@ -299,7 +314,6 @@ class TradeService:
         """
         Processes the logic when a target is hit, including logging the event
         and triggering partial profit taking if configured.
-        This entire operation is a single atomic transaction.
         """
         with SessionLocal() as session:
             try:
