@@ -1,4 +1,4 @@
-# --- START OF FINAL, ROBUST FILE USING SERVICE REGISTRY (Version 9.3.0) ---
+# --- START OF FINAL, REBUILT, AND ARCHITECTURALLY-CORRECT FILE (Version 10.1.0) ---
 # src/capitalguard/interfaces/telegram/commands.py
 
 import io
@@ -8,19 +8,18 @@ from typing import Optional, Tuple
 
 from telegram import Update, InputFile
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
-from telegram.error import BadRequest
 
-from .helpers import get_service
+# ✅ ARCHITECTURAL FIX: Import the unit_of_work decorator and service getter.
+from .helpers import get_service, unit_of_work
 from .auth import ALLOWED_USER_FILTER
 from .ui_texts import build_analyst_stats_text
 from .keyboards import build_open_recs_keyboard
 
-# ✅ Import service types for type-safe access
+# Import service types for type-safe access
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.infrastructure.db.base import SessionLocal
-from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository, RecommendationRepository
+from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 
 log = logging.getLogger(__name__)
 
@@ -40,13 +39,14 @@ def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], O
 async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: int) -> bool:
     """Performs a lightweight post to verify the bot can publish in the channel."""
     try:
+        # Send a silent message to verify permissions without notifying users.
         await context.bot.send_message(chat_id=channel_id, text="✅ Channel successfully linked.", disable_notification=True)
         return True
     except Exception as e:
         log.warning("Bot posting rights check failed for channel %s: %s", channel_id, e)
         return False
 
-# --- Basic Commands ---
+# --- Basic Commands (No DB interaction, no decorator needed) ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html("👋 Welcome to the <b>CapitalGuard Bot</b>.\nUse /help for assistance.")
 
@@ -73,9 +73,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Settings\n\nThis area will be used for account settings in the future.")
 
-# --- Core Feature Commands ---
-async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ✅ UPDATED: Use the new type-safe service getter
+# --- Core Feature Commands (DB interaction, decorator is now used) ---
+@unit_of_work
+async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     trade_service = get_service(context, "trade_service", TradeService)
     price_service = get_service(context, "price_service", PriceService)
     user_telegram_id = str(update.effective_user.id)
@@ -97,7 +97,8 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["last_open_filters"] = filters_map
 
-    items = trade_service.get_open_recommendations_for_user(user_telegram_id, **filters_map)
+    # The db_session is now passed to the service layer.
+    items = trade_service.get_open_recommendations_for_user(db_session, user_telegram_id, **filters_map)
 
     if not items:
         await update.message.reply_text("✅ No open recommendations match the current filter.")
@@ -114,23 +115,22 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ✅ UPDATED: Use the new type-safe service getter
+@unit_of_work
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     analytics_service = get_service(context, "analytics_service", AnalyticsService)
     user_id_str = str(update.effective_user.id)
-    stats = analytics_service.performance_summary_for_user(user_id_str)
+    # The db_session is passed to the service method.
+    stats = analytics_service.performance_summary_for_user(db_session, user_id_str)
     text = build_analyst_stats_text(stats)
     await update.message.reply_html(text)
 
-async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@unit_of_work
+async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     await update.message.reply_text("Preparing your export file...")
     user_telegram_id = str(update.effective_user.id)
     
-    # ✅ UPDATED: Use the new type-safe service getter
     trade_service = get_service(context, "trade_service", TradeService)
-    
-    with SessionLocal() as session:
-        all_recs = trade_service.repo.list_all_for_user(session, int(user_telegram_id))
+    all_recs = trade_service.repo.list_all_for_user(db_session, int(user_telegram_id))
     
     if not all_recs:
         await update.message.reply_text("You have no data to export.")
@@ -169,7 +169,8 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Ensure this bot is an administrator with posting permissions in the channel."
     )
 
-async def link_channel_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@unit_of_work
+async def link_channel_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     msg = update.message
     if not context.user_data.pop(AWAITING_FORWARD_KEY, False):
         return
@@ -185,32 +186,22 @@ async def link_channel_forward_handler(update: Update, context: ContextTypes.DEF
         await msg.reply_text("❌ Could not post in the channel. Please ensure the bot is an administrator with posting rights.")
         return
 
-    try:
-        with SessionLocal() as session:
-            user = UserRepository(session).find_or_create(user_tg_id)
-            ChannelRepository(session).add(
-                owner_user_id=user.id,
-                telegram_channel_id=chat_id,
-                username=username,
-                title=title,
-            )
-            session.commit()
-    except Exception as e:
-        err = str(e).lower()
-        if "unique" in err or "integrity" in err or "already" in err:
-            await msg.reply_text("ℹ️ This channel is already linked and its details have been updated.")
-        else:
-            await msg.reply_text(f"❌ An error occurred while linking the channel: {e}")
-        return
+    user = UserRepository(db_session).find_or_create(user_tg_id)
+    ChannelRepository(db_session).add(
+        owner_user_id=user.id,
+        telegram_channel_id=chat_id,
+        username=username,
+        title=title,
+    )
 
     uname_disp = f"@{username}" if username else "a private channel"
     await msg.reply_text(f"✅ Channel successfully linked: {title or '-'} ({uname_disp})\nID: <code>{chat_id}</code>", parse_mode="HTML")
 
-async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@unit_of_work
+async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     user_tg_id = update.effective_user.id
-    with SessionLocal() as session:
-        user = UserRepository(session).find_by_telegram_id(user_tg_id)
-        channels = ChannelRepository(session).list_by_user(user.id, only_active=False) if user else []
+    user = UserRepository(db_session).find_by_telegram_id(user_tg_id)
+    channels = ChannelRepository(db_session).list_by_user(user.id, only_active=False) if user else []
 
     if not channels:
         await update.message.reply_text("📭 You have no channels linked yet. Use /link_channel to add one.")
@@ -225,7 +216,8 @@ async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("\nℹ️ To manage: <code>/toggle_channel &lt;id&gt;</code>")
     await update.message.reply_html("\n".join(lines))
 
-async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@unit_of_work
+async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     if not context.args:
         await update.message.reply_text("Usage: /toggle_channel <channel_id>")
         return
@@ -237,31 +229,28 @@ async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     user_tg_id = update.effective_user.id
-    with SessionLocal() as session:
-        try:
-            user = UserRepository(session).find_by_telegram_id(user_tg_id)
-            if not user:
-                await update.message.reply_text("Could not find your user account.")
-                return
+    user = UserRepository(db_session).find_by_telegram_id(user_tg_id)
+    if not user:
+        await update.message.reply_text("Could not find your user account.")
+        return
 
-            repo = ChannelRepository(session)
-            channels = repo.list_by_user(user.id, only_active=False)
-            target = next((c for c in channels if c.telegram_channel_id == chat_id), None)
-            
-            if not target:
-                await update.message.reply_text("Channel not found for your account.")
-                return
-            
-            repo.set_active(user.id, chat_id, not target.is_active)
-            session.commit()
-            await update.message.reply_text("✅ Channel status has been updated.")
-        except Exception as e:
-            session.rollback()
-            log.error(f"Error toggling channel: {e}")
-            await update.message.reply_text("An error occurred while updating the channel.")
+    repo = ChannelRepository(db_session)
+    channels = repo.list_by_user(user.id, only_active=False)
+    target = next((c for c in channels if c.telegram_channel_id == chat_id), None)
+    
+    if not target:
+        await update.message.reply_text("Channel not found for your account.")
+        return
+    
+    repo.set_active(user.id, chat_id, not target.is_active)
+    await update.message.reply_text("✅ Channel status has been updated.")
 
 def register_commands(app: Application):
-    """Registers all basic, non-conversational commands for the bot."""
+    """
+    Registers all basic, non-conversational commands for the bot.
+    The handlers for conversational entry points like /new, /rec, /editor have been REMOVED
+    from this function as they are now exclusively managed by ConversationHandler.
+    """
     app.add_handler(CommandHandler("start", start_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("help", help_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("open", open_cmd, filters=ALLOWED_USER_FILTER))
@@ -272,6 +261,7 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("channels", channels_cmd, filters=ALLOWED_USER_FILTER))
     app.add_handler(CommandHandler("toggle_channel", toggle_channel_cmd, filters=ALLOWED_USER_FILTER))
     
+    # This handler remains as it's for a specific, non-conversational action.
     app.add_handler(MessageHandler(ALLOWED_USER_FILTER & filters.FORWARDED, link_channel_forward_handler))
 
-# --- END OF FINAL, ROBUST FILE USING SERVICE REGISTRY (Version 9.3.0) ---
+# --- END OF FINAL, REBUILT, AND ARCHITECTURALLY-CORRECT FILE ---
