@@ -44,6 +44,7 @@ AWAITING_INPUT_KEY = "awaiting_user_input_for"
 
 async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, rec_id: int, user_id: int):
     """A reusable function to build and send/edit the analyst control panel."""
+    # ✅ UPDATED: Use the new type-safe service getter
     trade_service = get_service(context, "trade_service", TradeService)
     rec = trade_service.get_recommendation_for_user(rec_id, str(user_id))
     if not rec:
@@ -105,7 +106,7 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
     filters_map = context.user_data.get("last_open_filters", {}) or {}
     
     try:
-        items = trade_service.get_open_recommendations_for_user(str(query.from_user.id), **filters_map)
+        items = trade_service.get_open_recommendations_for_user(str(update.effective_user.id), **filters_map)
         if not items:
             await query.edit_message_text(text="✅ No open recommendations match the current filter.")
             return
