@@ -1,10 +1,11 @@
-# --- START OF FINAL, PRODUCTION-READY FILE WITH REGISTRY INTEGRATION (Version 9.3.0) ---
+# --- START OF FINAL, SYNTAX-CORRECTED, PRODUCTION-READY FILE (Version 9.4.0) ---
 # src/capitalguard/boot.py
 
 import os
 import logging
 import sys
 from typing import Dict, Any, Optional
+
 from telegram.ext import Application, PicklePersistence
 
 from capitalguard.config import settings
@@ -17,14 +18,47 @@ from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.infrastructure.execution.binance_exec import BinanceExec, BinanceCreds
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
-# ✅ Import the new registration function
 from capitalguard.service_registry import register_global_services
 
-# ... (TelegramLogHandler and setup_logging can remain the same as the approved version)
+# ✅ FIX: Ensure this class and its methods are correctly indented.
 class TelegramLogHandler(logging.Handler):
-    # ... (code from previous approved version)
+    """A custom logging handler that sends critical messages to a Telegram chat."""
+    def __init__(self, notifier: TelegramNotifier, level=logging.ERROR):
+        super().__init__(level=level)
+        self.notifier = notifier
+
+    def emit(self, record: logging.LogRecord):
+        if not self.notifier or not settings.TELEGRAM_CHAT_ID:
+            return
+        
+        simple_message = f"⚠️ CRITICAL ERROR: {record.getMessage()}"
+        
+        try:
+            admin_chat_id = int(settings.TELEGRAM_CHAT_ID)
+            self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message)
+        except Exception as e:
+            # Use the root logger to prevent recursion if notifier fails
+            logging.getLogger().error(f"Failed to send log to Telegram: {e}", exc_info=False)
+
 def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
-    # ... (code from previous approved version)
+    """Configures the root logger for the entire application."""
+    root_logger = logging.getLogger()
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+        stream=sys.stdout,
+    )
+
+    if notifier:
+        telegram_handler = TelegramLogHandler(notifier)
+        telegram_handler.setLevel(logging.ERROR)
+        root_logger.addHandler(telegram_handler)
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.info("Logging configured successfully.")
 
 def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     """Builds all services and populates the global registry."""
@@ -55,7 +89,6 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         "market_data_service": market_data_service,
     }
 
-    # ✅ Populate the global registry with the built services
     register_global_services(services)
     
     return services
@@ -69,9 +102,6 @@ def bootstrap_app() -> Optional[Application]:
         persistence = PicklePersistence(filepath="./telegram_bot_persistence")
         ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
         
-        # Build services and populate the registry.
-        # We still return services to inject into bot_data for potential direct access if needed,
-        # but the primary access method will now be the global registry.
         services = build_services(ptb_app)
         ptb_app.bot_data["services"] = services
 
@@ -82,4 +112,4 @@ def bootstrap_app() -> Optional[Application]:
         logging.exception(f"CRITICAL: Failed to bootstrap bot: {e}")
         return None
 
-# --- END OF FINAL, PRODUCTION-READY FILE WITH REGISTRY INTEGRATION (Version 9.3.0) ---
+# --- END OF FINAL, SYNTAX-CORRECTED, PRODUCTION-READY FILE (Version 9.4.0) ---
