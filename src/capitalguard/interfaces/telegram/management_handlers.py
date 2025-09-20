@@ -1,7 +1,8 @@
-# --- START OF FINAL, COMPLETE, AND CACHE-FIXED FILE (Version 11.2.0) ---
+# --- START OF FINAL, COMPLETE, AND PUBLIC-UPDATE-FIXED FILE (Version 12.1.0) ---
 # src/capitalguard/interfaces/telegram/management_handlers.py
 
 import logging
+from time import time
 from typing import Optional
 
 from telegram import Update
@@ -26,35 +27,33 @@ from .keyboards import (
     build_open_recs_keyboard,
     build_exit_strategy_keyboard,
     build_close_options_keyboard,
+    public_channel_keyboard,
 )
 from .ui_texts import build_trade_card_text
 from .parsers import parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
+from capitalguard.infrastructure.db.base import SessionLocal
 
 log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 (AWAIT_PARTIAL_PERCENT, AWAIT_PARTIAL_PRICE) = range(2)
+PUBLIC_UPDATE_COOLDOWN = 15 # Seconds to prevent spamming the update button
 
 # --- View Helper Functions ---
 
 async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, db_session, chat_id: int, message_id: int, rec_id: int, user_id: int):
-    """A reusable function to build and send/edit the analyst control panel."""
     trade_service = get_service(context, "trade_service", TradeService)
     rec = trade_service.get_recommendation_for_user(db_session, rec_id, str(user_id))
     if not rec:
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Recommendation not found or you don't have access.")
         return
-
     price_service = get_service(context, "price_service", PriceService)
-    # ✅ CACHE FIX: Added force_refresh=True to ensure the UI always displays a live price on manual refresh.
     live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
     if live_price: setattr(rec, "live_price", live_price)
-    
     text = build_trade_card_text(rec)
     keyboard = analyst_control_panel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
-    
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id, message_id=message_id, text=text,
@@ -65,7 +64,6 @@ async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, db_session
             log.warning(f"Failed to edit message for rec panel: {e}")
 
 async def _send_or_edit_strategy_menu(context: ContextTypes.DEFAULT_TYPE, db_session, chat_id: int, message_id: int, rec_id: int, user_id: int):
-    """A reusable function to build and send/edit the strategy menu."""
     trade_service = get_service(context, "trade_service", TradeService)
     rec = trade_service.get_recommendation_for_user(db_session, rec_id, str(user_id))
     if not rec:
@@ -92,6 +90,59 @@ def _parse_cq_parts(data: str) -> list[str]:
     return data.split(":")
 
 # --- Main Callback Query Handlers ---
+
+# ✅ NEW HANDLER: Handles the "Update Live Data" button in public channels.
+async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    A read-only handler to update a recommendation card in a public channel.
+    It does not require user permissions but has a cooldown to prevent spam.
+    """
+    query = update.callback_query
+    rec_id = _parse_tail_int(query.data)
+    if not rec_id:
+        await query.answer("Invalid recommendation ID.", show_alert=True)
+        return
+
+    cooldown_key = f"public_update_cooldown_{query.message.chat_id}_{query.message.message_id}"
+    last_update_time = context.bot_data.get(cooldown_key, 0)
+    if time() - last_update_time < PUBLIC_UPDATE_COOLDOWN:
+        await query.answer(f"Please wait {PUBLIC_UPDATE_COOLDOWN} seconds before updating again.", show_alert=True)
+        return
+    
+    await query.answer("Fetching live price...")
+    context.bot_data[cooldown_key] = time()
+
+    try:
+        with SessionLocal() as session:
+            trade_service = get_service(context, "trade_service", TradeService)
+            price_service = get_service(context, "price_service", PriceService)
+            
+            rec = trade_service.repo.get(session, rec_id)
+            if not rec:
+                await query.edit_message_text("This recommendation is no longer available.")
+                return
+
+            live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
+            if live_price:
+                setattr(rec, "live_price", live_price)
+
+            new_text = build_trade_card_text(rec)
+            bot_username = context.bot.username if context.bot else None
+            keyboard = public_channel_keyboard(rec.id, bot_username) if rec.status != RecommendationStatus.CLOSED else None
+            
+            await query.edit_message_text(
+                text=new_text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            log.warning(f"Failed to edit public card for rec #{rec_id}: {e}")
+            await query.answer("Could not update the card at this time.", show_alert=True)
+    except Exception as e:
+        log.error(f"Critical error in update_public_card for rec #{rec_id}: {e}", exc_info=True)
+        await query.answer("An internal error occurred.", show_alert=True)
 
 @unit_of_work
 async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
