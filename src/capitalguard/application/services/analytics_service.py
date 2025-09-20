@@ -1,21 +1,20 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.4) ---
+# --- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 11.1.0) ---
 # src/capitalguard/application/services/analytics_service.py
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any, Union
+from typing import List, Tuple, Dict, Any, Union
 from math import isfinite
 
 from sqlalchemy.orm import Session
 from capitalguard.domain.entities import RecommendationStatus
 from capitalguard.infrastructure.db.repository import RecommendationRepository
-from capitalguard.infrastructure.db.base import SessionLocal
 
 @dataclass
 class AnalyticsService:
     """
     Provides advanced, user-scoped analytics.
-    This service now operates within a session provided by the caller (e.g., an API endpoint),
+    All methods now accept a `Session` object, adhering to the Unit of Work pattern,
     ensuring consistent transaction management across the application.
     """
     repo: RecommendationRepository
@@ -80,34 +79,32 @@ class AnalyticsService:
             curve.append((day, cumulative_pnl))
         return curve
 
-    def performance_summary_for_user(self, user_id: Union[int, str]) -> Dict[str, Any]:
+    # ✅ FIX: The method now accepts a 'session' argument and no longer manages its own.
+    def performance_summary_for_user(self, session: Session, user_id: Union[int, str]) -> Dict[str, Any]:
         """
-        Provides a comprehensive performance summary for a specific user.
-        This method manages its own session as it's a primary entry point from handlers.
+        Provides a comprehensive performance summary for a specific user using the provided session.
         """
         uid = self._to_int_user_id(user_id)
-        with SessionLocal() as session:
-            all_items = self.repo.list_all_for_user(session, user_telegram_id=uid)
-            
-            closed_items = [r for r in all_items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
-            open_items = [r for r in all_items if r.status != RecommendationStatus.CLOSED]
+        all_items = self.repo.list_all_for_user(session, user_telegram_id=uid)
+        
+        closed_items = [r for r in all_items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
+        open_items = [r for r in all_items if r.status != RecommendationStatus.CLOSED]
 
-            total_pnl = sum(
-                self._pnl_percent(
-                    self._val(r.side, "value"),
-                    float(self._val(r.entry, "value", 0)),
-                    float(r.exit_price or 0),
-                )
-                for r in closed_items
+        total_pnl = sum(
+            self._pnl_percent(
+                self._val(r.side, "value"),
+                float(self._val(r.entry, "value", 0)),
+                float(r.exit_price or 0),
             )
-            
-            # Re-calculate win rate within the same session for consistency
-            win_rate = 0.0
-            if closed_items:
-                wins = sum(1 for r in closed_items if self._pnl_percent(
-                    self._val(r.side, "value"), float(self._val(r.entry, "value", 0)), float(r.exit_price or 0)
-                ) > 0)
-                win_rate = wins * 100.0 / len(closed_items)
+            for r in closed_items
+        )
+        
+        win_rate = 0.0
+        if closed_items:
+            wins = sum(1 for r in closed_items if self._pnl_percent(
+                self._val(r.side, "value"), float(self._val(r.entry, "value", 0)), float(r.exit_price or 0)
+            ) > 0)
+            win_rate = wins * 100.0 / len(closed_items)
 
         return {
             "total_recommendations": len(all_items),
@@ -117,4 +114,4 @@ class AnalyticsService:
             "total_pnl_percent": f"{total_pnl:.2f}%",
         }
 
-# --- END OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.4) ---
+# --- END OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE ---
