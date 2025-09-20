@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 10.2.0) ---
+# --- START OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE (Version 11.2.0) ---
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
 
 import logging
@@ -37,6 +37,7 @@ REV_TOKENS_REVERSE = "review_tokens_rev"
 # --- Helper Functions ---
 
 def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
+    """A centralized function to clean up all conversation-related data."""
     context.user_data.pop(CONVERSATION_DATA_KEY, None)
     review_key = context.user_data.pop('current_review_key', None)
     if review_key: context.bot_data.pop(review_key, None)
@@ -209,17 +210,25 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             draft["entry"] = 0
             draft["stop_loss"] = parse_number(tokens[0])
             draft["targets"] = parse_targets_list(tokens[1:])
-        else:
+            # ✅ LOGIC FIX: Do NOT validate entry/SL for market orders here.
+            # It will be validated in the service layer AFTER fetching the live price.
+        else: # LIMIT or STOP_MARKET
             if len(tokens) < 3: raise ValueError("LIMIT/STOP_MARKET format requires: ENTRY STOP then TARGETS...")
             draft["entry"] = parse_number(tokens[0])
             draft["stop_loss"] = parse_number(tokens[1])
             draft["targets"] = parse_targets_list(tokens[2:])
+            # For limit orders, we can and should validate immediately.
+            trade_service = get_service(context, "trade_service", TradeService)
+            trade_service._validate_recommendation_data(
+                draft["side"], draft["entry"], draft["stop_loss"], draft["targets"]
+            )
+
         if not draft["targets"]: raise ValueError("No valid targets were parsed.")
-        trade_service = get_service(context, "trade_service", TradeService)
-        trade_service._validate_recommendation_data(draft["side"], draft["entry"], draft["stop_loss"], draft["targets"])
+        
     except ValueError as e:
         await update.message.reply_text(f"❌ Invalid format or logic: {e}\nPlease try again.")
         return I_PRICES
+        
     context.user_data[CONVERSATION_DATA_KEY] = draft
     return await show_review_card(update, context)
 
@@ -371,4 +380,4 @@ def register_conversation_handlers(app: Application):
     )
     app.add_handler(conv_handler)
 
-# --- END OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE ---
+# --- END OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE ---
