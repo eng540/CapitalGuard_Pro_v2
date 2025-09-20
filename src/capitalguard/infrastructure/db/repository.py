@@ -1,15 +1,16 @@
+# --- START OF FINAL, COMPLETE, AND CORRECTED FILE (Version 11.0.0) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Any, Union, Dict, Set, Tuple
+from typing import List, Optional, Any, Union, Dict, Set
 
-from sqlalchemy import desc
+# ✅ FIX: Import 'func' from sqlalchemy to correctly use SQL functions like MAX, COUNT, etc.
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session, joinedload, selectinload
-from sqlalchemy.exc import IntegrityError
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType, ExitStrategy
-from capitalguard.domain.value_objects import Symbol, Price, Targets, Side, Target
+from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from .models import RecommendationORM, User, Channel, PublishedMessage, RecommendationEvent
 
 log = logging.getLogger(__name__)
@@ -52,10 +53,6 @@ class ChannelRepository:
         return q.order_by(Channel.created_at.desc()).all()
 
     def add(self, owner_user_id: int, telegram_channel_id: int, **kwargs) -> Channel:
-        """
-        Adds a new channel or updates an existing one (upsert logic).
-        This fixes the crash in the /link_channel command.
-        """
         existing_channel = self.session.query(Channel).filter(
             Channel.telegram_channel_id == telegram_channel_id
         ).first()
@@ -84,7 +81,6 @@ class ChannelRepository:
             return new_channel
 
     def set_active(self, owner_user_id: int, telegram_channel_id: int, is_active: bool):
-        """Activates or deactivates a channel for a user. Needed for /toggle_channel."""
         channel = self.session.query(Channel).filter(
             Channel.user_id == owner_user_id,
             Channel.telegram_channel_id == telegram_channel_id
@@ -100,7 +96,6 @@ class RecommendationRepository:
         if not row: return None
         user_telegram_id = str(row.user.telegram_user_id) if getattr(row, "user", None) else None
         
-        # Safely handle targets which might be stored as a list of floats (legacy) or dicts
         targets_data = row.targets or []
         if targets_data and isinstance(targets_data[0], (int, float)):
             targets_vo = Targets([{"price": p, "close_percent": 0} for p in targets_data])
@@ -120,7 +115,6 @@ class RecommendationRepository:
         )
 
     def get_for_update(self, session: Session, rec_id: int) -> Optional[RecommendationORM]:
-        """Gets a recommendation ORM object and locks its row for the duration of the transaction."""
         return session.query(RecommendationORM).filter(RecommendationORM.id == rec_id).with_for_update().first()
 
     def update_with_event(self, session: Session, rec: Recommendation, event_type: str, event_data: Dict[str, Any]) -> Recommendation:
@@ -205,7 +199,6 @@ class RecommendationRepository:
         return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
     def list_open_by_symbol(self, session: Session, symbol: str) -> List[Recommendation]:
-        """Efficiently fetches open recommendations for a specific symbol. Needed by the watcher."""
         rows = session.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(
             RecommendationORM.asset == symbol.upper(),
             RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])
@@ -213,7 +206,6 @@ class RecommendationRepository:
         return [self._to_entity(r) for r in rows]
 
     def list_all_for_user(self, session: Session, user_telegram_id: int) -> List[Recommendation]:
-        """Fetches all recommendations (open and closed) for a user. Needed by AnalyticsService."""
         user = UserRepository(session).find_by_telegram_id(user_telegram_id)
         if not user: return []
         rows = session.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(
@@ -222,7 +214,6 @@ class RecommendationRepository:
         return [self._to_entity(r) for r in rows]
 
     def list_all(self, session: Session, symbol: Optional[str] = None, status: Optional[str] = None) -> List[RecommendationORM]:
-        """Generic method to list all recommendations with optional filters. Needed by the API."""
         q = session.query(RecommendationORM)
         if symbol: q = q.filter(RecommendationORM.asset == symbol.upper())
         if status: q = q.filter(RecommendationORM.status == RecommendationStatus(status.upper()))
@@ -236,7 +227,8 @@ class RecommendationRepository:
         results = session.query(RecommendationORM.asset).filter(
             RecommendationORM.user_id == user.id
         ).group_by(RecommendationORM.asset).order_by(
-            desc(session.func.max(RecommendationORM.created_at))
+            # ✅ FIX: Changed 'session.func.max' to the correct 'func.max'
+            desc(func.max(RecommendationORM.created_at))
         ).limit(limit).all()
         
         return [r[0] for r in results]
@@ -268,3 +260,5 @@ class RecommendationRepository:
             result[rec_id].add(event_type)
             
         return result
+
+# --- END OF FINAL, COMPLETE, AND CORRECTED FILE ---```
