@@ -1,4 +1,4 @@
-# --- START OF FINAL, SYNTAX-CORRECTED, PRODUCTION-READY FILE (Version 9.4.0) ---
+# --- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 12.0.0) ---
 # src/capitalguard/boot.py
 
 import os
@@ -20,7 +20,6 @@ from capitalguard.infrastructure.execution.binance_exec import BinanceExec, Bina
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
 from capitalguard.service_registry import register_global_services
 
-# ✅ FIX: Ensure this class and its methods are correctly indented.
 class TelegramLogHandler(logging.Handler):
     """A custom logging handler that sends critical messages to a Telegram chat."""
     def __init__(self, notifier: TelegramNotifier, level=logging.ERROR):
@@ -35,7 +34,6 @@ class TelegramLogHandler(logging.Handler):
         
         try:
             admin_chat_id = int(settings.TELEGRAM_CHAT_ID)
-            # Ensure the method exists before calling
             if hasattr(self.notifier, 'send_private_text'):
                 self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message)
         except Exception as e:
@@ -80,7 +78,11 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     price_service = PriceService()
     trade_service = TradeService(repo=repo, notifier=notifier, market_data_service=market_data_service, price_service=price_service)
     analytics_service = AnalyticsService(repo=repo)
-    alert_service = AlertService(price_service=price_service, notifier=notifier, repo=repo, trade_service=trade_service)
+    
+    # ✅ ARCHITECTURAL FIX: The AlertService is now initialized with its new, simpler signature.
+    # It no longer needs the notifier or price_service directly, as it relies on the TradeService
+    # and its own internal components (PriceStreamer).
+    alert_service = AlertService(trade_service=trade_service, repo=repo)
 
     services = {
         "trade_service": trade_service,
@@ -114,4 +116,4 @@ def bootstrap_app() -> Optional[Application]:
         logging.exception(f"CRITICAL: Failed to bootstrap bot: {e}")
         return None
 
-# --- END OF FINAL, SYNTAX-CORRECTED, PRODUCTION-READY FILE (Version 9.4.0) ---
+# --- END OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE ---
