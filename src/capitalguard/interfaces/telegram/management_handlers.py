@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 10.2.0) ---
+# --- START OF FINAL, COMPLETE, AND CACHE-FIXED FILE (Version 11.2.0) ---
 # src/capitalguard/interfaces/telegram/management_handlers.py
 
 import logging
@@ -46,11 +46,15 @@ async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, db_session
     if not rec:
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Recommendation not found or you don't have access.")
         return
+
     price_service = get_service(context, "price_service", PriceService)
-    live_price = await price_service.get_cached_price(rec.asset.value, rec.market)
+    # ✅ CACHE FIX: Added force_refresh=True to ensure the UI always displays a live price on manual refresh.
+    live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
     if live_price: setattr(rec, "live_price", live_price)
+    
     text = build_trade_card_text(rec)
     keyboard = analyst_control_panel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
+    
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id, message_id=message_id, text=text,
@@ -97,7 +101,7 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
     trade_service = get_service(context, "trade_service", TradeService)
     price_service = get_service(context, "price_service", PriceService)
     filters_map = context.user_data.get("last_open_filters", {}) or {}
-    items = trade_service.get_open_recommendations_for_user(db_session, str(update.effective_user.id), **filters_map)
+    items = trade_service.get_open_recommendations_for_user(db_session, str(query.from_user.id), **filters_map)
     if not items:
         await query.edit_message_text(text="✅ No open recommendations match the current filter.")
         return
@@ -227,7 +231,6 @@ async def start_profit_stop_handler(update: Update, context: ContextTypes.DEFAUL
     try: rec_id = int(parts[2])
     except Exception: await query.answer("Invalid request.", show_alert=True); return
     if len(parts) > 3 and parts[3] == "remove":
-        # This needs to be a decorated function to handle the DB transaction
         await _remove_profit_stop_handler(update, context)
         return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "profit_stop", "rec_id": rec_id, "original_message": query.message}
@@ -334,8 +337,6 @@ async def cancel_partial_profit(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.pop(key, None)
     await update.message.reply_text("Partial profit operation cancelled.")
     if original_message and rec_id:
-        # This needs a DB session to fetch the recommendation for display.
-        # We'll create a temporary one for this non-critical read operation.
         from capitalguard.infrastructure.db.base import SessionLocal
         with SessionLocal() as db_session:
             await _send_or_edit_rec_panel(context, db_session, original_message.chat_id, original_message.message_id, rec_id, update.effective_user.id)
