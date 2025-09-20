@@ -1,4 +1,6 @@
-# --- START OF FILE: docker-compose.yml ---
+# --- START OF FINAL, SIMPLIFIED AND UNIFIED FILE (Version 12.0.0) ---
+# docker-compose.yml
+
 version: "3.9"
 
 services:
@@ -13,7 +15,16 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cg -d capitalguard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # The 'api' service is now the single application service.
+  # It runs the FastAPI application and the integrated AlertService.
+  # The separate 'watcher' service has been REMOVED to prevent redundant logic
+  # and potential race conditions.
   api:
     build:
       context: .
@@ -21,29 +32,15 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     env_file:
-      - .env # Pass all variables from .env file
-    environment:
-      # Ensure DATABASE_URL is set correctly for Docker Compose networking
-      - DATABASE_URL=postgresql+psycopg://cg:cgpass@db:5432/capitalguard
-    depends_on:
-      - db
-    restart: unless-stopped
-
-  watcher:
-    build:
-      context: .
-      # We can reuse the main Dockerfile but override the CMD,
-      # or use a dedicated Dockerfile.watcher. Reusing is more efficient.
-      dockerfile: Dockerfile.watcher
-    env_file:
-      - .env # Pass all variables from .env file
+      - .env
     environment:
       - DATABASE_URL=postgresql+psycopg://cg:cgpass@db:5432/capitalguard
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   pgdata:
-    # This ensures the database data persists across restarts
-# --- END OF FILE ---
+
+# --- END OF FINAL, SIMPLIFIED AND UNIFIED FILE ---
