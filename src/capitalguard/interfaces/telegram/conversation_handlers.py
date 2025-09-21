@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE (Version 11.2.0) ---
+# --- START OF FINAL, COMPLETE, AND UX-ENHANCED FILE (Version 12.2.0) ---
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
 
 import logging
@@ -28,17 +28,18 @@ from capitalguard.application.services.price_service import PriceService
 
 log = logging.getLogger(__name__)
 
-# --- State Definitions for the Conversation ---
+# --- State Definitions & Keys ---
 (SELECT_METHOD, AWAIT_TEXT_INPUT, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_NOTES, I_REVIEW) = range(8)
 CONVERSATION_DATA_KEY = "new_rec_draft"
+LAST_MSG_KEY = "last_conv_message"
 REV_TOKENS_MAP = "review_tokens_map"
 REV_TOKENS_REVERSE = "review_tokens_rev"
 
 # --- Helper Functions ---
 
 def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
-    """A centralized function to clean up all conversation-related data."""
     context.user_data.pop(CONVERSATION_DATA_KEY, None)
+    context.user_data.pop(LAST_MSG_KEY, None)
     review_key = context.user_data.pop('current_review_key', None)
     if review_key: context.bot_data.pop(review_key, None)
     context.user_data.pop('current_review_token', None)
@@ -46,7 +47,6 @@ def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('input_mode', None)
 
 def _get_user_and_message_from_update(update: Update) -> Tuple[Optional[User], Optional[Message]]:
-    """Safely extracts the effective user and message from an Update object."""
     user, message = None, None
     if update.callback_query:
         user = update.callback_query.from_user
@@ -80,10 +80,11 @@ def _resolve_review_key_from_token(context: ContextTypes.DEFAULT_TYPE, token: st
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
-    await update.message.reply_text(
+    sent_message = await update.message.reply_text(
         "🚀 Create a new recommendation.\n\nPlease choose your preferred input method:",
         reply_markup=main_creation_keyboard()
     )
+    context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)
     return SELECT_METHOD
 
 @unit_of_work
@@ -95,11 +96,17 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
     trade_service = get_service(context, "trade_service", TradeService)
     user_id = str(user.id)
     recent_assets = trade_service.get_recent_assets_for_user(db_session, user_id, limit=5)
+    
     reply_method = message_obj.edit_text if update.callback_query else message_obj.reply_text
-    await reply_method(
+    sent_message = await reply_method(
         "🚀 Interactive Builder\n\n1️⃣ Select a recent asset or type a new symbol:",
         reply_markup=asset_choice_keyboard(recent_assets)
     )
+    if isinstance(sent_message, Message):
+        context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)
+    elif update.callback_query:
+        context.user_data[LAST_MSG_KEY] = (query.message.chat_id, query.message.message_id)
+    
     return I_ASSET
 
 async def start_text_input_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -122,6 +129,7 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data['input_mode'] = 'rec' if choice == "quick" else 'editor'
     prompt = "⚡️ Quick Command Mode\n\nEnter your full recommendation." if choice == "quick" else "📋 Text Editor Mode\n\nPaste your recommendation."
     await query.message.edit_text(prompt)
+    context.user_data.pop(LAST_MSG_KEY, None)
     return AWAIT_TEXT_INPUT
 
 async def received_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -141,6 +149,7 @@ async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     asset = ""
     user, message_obj = _get_user_and_message_from_update(update)
     if not user or not message_obj: return ConversationHandler.END
+
     if update.callback_query:
         await update.callback_query.answer()
         asset = update.callback_query.data.split('_', 1)[1]
@@ -149,15 +158,33 @@ async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             return I_ASSET
     else:
         asset = (update.message.text or "").strip().upper()
+        try:
+            await update.message.delete()
+        except BadRequest:
+            pass
+
     market_data_service = get_service(context, "market_data_service", MarketDataService)
     if not market_data_service.is_valid_symbol(asset, "Futures"):
-        reply_method = message_obj.edit_text if update.callback_query else message_obj.reply_text
-        await reply_method(f"❌ Symbol '{asset}' is not valid. Please try again.")
+        if LAST_MSG_KEY in context.user_data:
+            chat_id, message_id = context.user_data[LAST_MSG_KEY]
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text=f"❌ Symbol '{asset}' is not valid. Please select a valid one or type a new one."
+            )
         return I_ASSET
+
     draft['asset'] = asset
     draft['market'] = draft.get('market', 'Futures')
     context.user_data[CONVERSATION_DATA_KEY] = draft
-    await message_obj.edit_text(f"✅ Asset: {asset}\n\n2️⃣ Choose the trade side:", reply_markup=side_market_keyboard(draft['market']))
+
+    if LAST_MSG_KEY in context.user_data:
+        chat_id, message_id = context.user_data[LAST_MSG_KEY]
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=f"✅ Asset: {asset}\n\n2️⃣ Choose the trade side:",
+            reply_markup=side_market_keyboard(draft['market'])
+        )
+    
     return I_SIDE_MARKET
 
 async def side_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -210,25 +237,17 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             draft["entry"] = 0
             draft["stop_loss"] = parse_number(tokens[0])
             draft["targets"] = parse_targets_list(tokens[1:])
-            # ✅ LOGIC FIX: Do NOT validate entry/SL for market orders here.
-            # It will be validated in the service layer AFTER fetching the live price.
-        else: # LIMIT or STOP_MARKET
+        else:
             if len(tokens) < 3: raise ValueError("LIMIT/STOP_MARKET format requires: ENTRY STOP then TARGETS...")
             draft["entry"] = parse_number(tokens[0])
             draft["stop_loss"] = parse_number(tokens[1])
             draft["targets"] = parse_targets_list(tokens[2:])
-            # For limit orders, we can and should validate immediately.
             trade_service = get_service(context, "trade_service", TradeService)
-            trade_service._validate_recommendation_data(
-                draft["side"], draft["entry"], draft["stop_loss"], draft["targets"]
-            )
-
+            trade_service._validate_recommendation_data(draft["side"], draft["entry"], draft["stop_loss"], draft["targets"])
         if not draft["targets"]: raise ValueError("No valid targets were parsed.")
-        
     except ValueError as e:
         await update.message.reply_text(f"❌ Invalid format or logic: {e}\nPlease try again.")
         return I_PRICES
-        
     context.user_data[CONVERSATION_DATA_KEY] = draft
     return await show_review_card(update, context)
 
@@ -250,16 +269,24 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
         context.bot_data[review_key] = data.copy()
     review_token = _get_or_make_token_for_review(context, review_key)
     keyboard = review_final_keyboard(review_token)
+    
+    target_chat_id, target_message_id = context.user_data.get(LAST_MSG_KEY, (None, None))
+    if not target_chat_id:
+        target_chat_id, target_message_id = (message.chat_id, message.message_id)
+
     try:
-        if is_edit:
-            await message.edit_text(text=review_text, reply_markup=keyboard, parse_mode='HTML', disable_web_page_preview=True)
-        else:
-            if update.message: await update.message.delete()
-            await message.reply_html(text=review_text, reply_markup=keyboard, disable_web_page_preview=True)
+        await context.bot.edit_message_text(
+            chat_id=target_chat_id, message_id=target_message_id,
+            text=review_text, reply_markup=keyboard,
+            parse_mode='HTML', disable_web_page_preview=True
+        )
+        if update.message: await update.message.delete()
     except BadRequest as e:
         if "Message is not modified" not in str(e):
             log.warning(f"Edit failed, sending new message. Error: {e}")
-            await message.reply_html(text=review_text, reply_markup=keyboard, disable_web_page_preview=True)
+            sent_message = await context.bot.send_message(chat_id=target_chat_id, text=review_text, reply_markup=keyboard, parse_mode='HTML')
+            context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)
+            
     return I_REVIEW
 
 async def add_notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -325,15 +352,15 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
     return ConversationHandler.END
 
 async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    _clean_conversation_state(context)
     user, message = _get_user_and_message_from_update(update)
-    if not message: return ConversationHandler.END
-    if update.callback_query:
-        await update.callback_query.answer()
-        try: await message.edit_text("Operation cancelled.")
-        except BadRequest: pass
-    else:
-        await message.reply_text("Current operation cancelled.", reply_markup=ReplyKeyboardRemove())
+    if message:
+        if update.callback_query:
+            await update.callback_query.answer()
+            try: await message.edit_text("Operation cancelled.")
+            except BadRequest: pass
+        else:
+            await message.reply_text("Current operation cancelled.", reply_markup=ReplyKeyboardRemove())
+    _clean_conversation_state(context)
     return ConversationHandler.END
 
 async def unexpected_input_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -377,7 +404,8 @@ def register_conversation_handlers(app: Application):
         ],
         name="recommendation_creation",
         persistent=False,
+        per_message=False 
     )
     app.add_handler(conv_handler)
 
-# --- END OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE ---
+# --- END OF FINAL, COMPLETE, AND UX-ENHANCED FILE ---
