@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND VISUALLY-ENHANCED FILE (Version 12.3.0) ---
+# --- START OF FINAL, COMPLETE, AND PROFESSIONALLY-DESIGNED FILE (Version 12.4.0) ---
 # src/capitalguard/interfaces/telegram/ui_texts.py
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def _rr(entry: float, sl: float, first_target: Optional[Target], side: str) -> s
     except Exception:
         return "—"
 
-# --- Card Building Logic (Completely Rebuilt for Clarity and Professional Look) ---
+# --- Card Building Logic (Rebuilt for Professional Clarity) ---
 
 def _build_header(rec: Recommendation, status_icon: str, status_text: str) -> List[str]:
     """Builds the standardized header for all card types using HTML formatting."""
@@ -38,33 +38,23 @@ def _build_header(rec: Recommendation, status_icon: str, status_text: str) -> Li
         f"Signal #{rec.id}",
     ]
 
-def _build_plan_section(rec: Recommendation) -> List[str]:
-    """Builds the 'PLAN' section for PENDING cards."""
-    lines = [
-        "─" * 20,
-        "🎯 <b>THE PLAN</b>",
-        f"💰 Entry: <code>{rec.entry.value:g}</code>",
-        f"🛑 Stop: <code>{rec.stop_loss.value:g}</code>",
-        "📈 Targets:",
+def _build_live_price_section(live_price: Optional[float], entry: float, side: str) -> List[str]:
+    """Builds a visually isolated section for the live price and PnL."""
+    if live_price is None:
+        return []
+    
+    pnl = _pct(entry, live_price, side)
+    pnl_icon = "🟢" if pnl >= 0 else "🔴"
+    
+    return [
+        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
+        f"💹 <b>Live Price:</b> <code>{live_price:g}</code> ({pnl_icon} {pnl:+.2f}%)",
+        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
     ]
-    for i, target in enumerate(rec.targets.values, start=1):
-        pct = _pct(rec.entry.value, target.price, rec.side.value)
-        close_info = f" (Close {target.close_percent:.1f}%)" if 0 < target.close_percent < 100 else ""
-        lines.append(f"  • TP{i}: <code>{target.price:g}</code> ({pct:+.2f}%){close_info}")
-    
-    tp1 = rec.targets.values[0] if rec.targets.values else None
-    lines.append(f"📊 Risk/Reward: ~<code>{_rr(rec.entry.value, rec.stop_loss.value, tp1, rec.side.value)}</code>")
-    return lines
 
-def _build_performance_section(rec: Recommendation, live_price: Optional[float]) -> List[str]:
-    """Builds the 'PERFORMANCE' section for ACTIVE cards."""
-    lines = ["─" * 20, "📈 <b>PERFORMANCE</b>"]
-    
-    if live_price is not None:
-        pnl = _pct(rec.entry.value, live_price, rec.side.value)
-        pnl_icon = "🟢" if pnl >= 0 else "🔴"
-        lines.append(f"💹 Live Price: <code>{live_price:g}</code> ({pnl_icon} {pnl:+.2f}%)")
-    
+def _build_performance_section(rec: Recommendation) -> List[str]:
+    """Builds the 'PERFORMANCE' section for active cards."""
+    lines = ["📈 <b>PERFORMANCE</b>"]
     lines.append(f"💰 Entry: <code>{rec.entry.value:g}</code>")
     
     stop_text = f"🛑 Stop: <code>{rec.stop_loss.value:g}</code>"
@@ -75,7 +65,10 @@ def _build_performance_section(rec: Recommendation, live_price: Optional[float])
     if rec.profit_stop_price is not None:
         lines.append(f"🔒 Profit Stop: <code>{rec.profit_stop_price:g}</code>")
     
-    lines.append(f"📦 Open Size: <code>{rec.open_size_percent:.2f}%</code>")
+    # ✅ DESIGN FIX: Add planned R/R to the active card for reference.
+    tp1 = rec.targets.values[0] if rec.targets.values else None
+    lines.append(f"📊 Risk/Reward (Plan): ~<code>{_rr(rec.entry.value, rec.stop_loss.value, tp1, rec.side.value)}</code>")
+    
     return lines
 
 def _build_active_exit_plan_section(rec: Recommendation) -> List[str]:
@@ -84,17 +77,17 @@ def _build_active_exit_plan_section(rec: Recommendation) -> List[str]:
     
     events = getattr(rec, "events", []) or []
     hit_targets_indices = {
-        int(e.event_type[2:-4]) - 1 # Extracts '1' from 'TP1_HIT' and converts to 0-based index
+        int(e.event_type[2:-4]) - 1
         for e in events if e.event_type.startswith("TP") and e.event_type.endswith("_HIT")
     }
 
     next_target_found = False
     for i, target in enumerate(rec.targets.values):
-        icon = "⏳" # Default: Pending
+        icon = "⏳"
         if i in hit_targets_indices:
-            icon = "✅" # Hit
+            icon = "✅"
         elif not next_target_found:
-            icon = "🚀" # Next target
+            icon = "🚀"
             next_target_found = True
         
         pct = _pct(rec.entry.value, target.price, rec.side.value)
@@ -130,13 +123,16 @@ def _build_footer(rec: Recommendation) -> List[str]:
 
 def _build_pending_card(rec: Recommendation) -> str:
     lines = _build_header(rec, "⏳", "PENDING")
+    # For pending cards, the plan is the main content.
     lines.extend(_build_plan_section(rec))
     lines.extend(_build_footer(rec))
     return "\n".join(lines)
 
 def _build_active_card(rec: Recommendation, live_price: Optional[float]) -> str:
     lines = _build_header(rec, "⚡️", "ACTIVE")
-    lines.extend(_build_performance_section(rec, live_price))
+    # ✅ DESIGN FIX: Isolate the live price for emphasis.
+    lines.extend(_build_live_price_section(live_price, rec.entry.value, rec.side.value))
+    lines.extend(_build_performance_section(rec))
     lines.extend(_build_active_exit_plan_section(rec))
     lines.extend(_build_logbook_section(rec))
     lines.extend(_build_footer(rec))
@@ -236,4 +232,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     ]
     return "\n".join(lines)
 
-# --- END OF FINAL, COMPLETE, AND VISUALLY-ENHANCED FILE ---```
+# --- END OF FINAL, COMPLETE, AND VISUALLY-ENHANCED FILE ---
