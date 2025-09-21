@@ -1,4 +1,4 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.4) ---
+# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.0.0) ---
 # src/capitalguard/interfaces/telegram/handlers.py
 
 from telegram.ext import Application
@@ -6,34 +6,35 @@ from telegram.ext import Application
 from .commands import register_commands
 from .management_handlers import register_management_handlers
 from .conversation_handlers import register_conversation_handlers
+# ✅ NEW: Import the admin command registrar
+from .admin_commands import register_admin_commands
 
 def register_all_handlers(application: Application):
     """
     The central function that collects and registers all bot handlers.
-    The order of registration is critical for correct behavior, as handlers are
-    processed sequentially based on the order they are added. An update is
-    processed by the first handler in the group that matches it.
+    The order of registration is critical for correct behavior. Handlers are
+    processed in the order they are added.
     """
     
-    # Group 0: Specific, non-conversational commands.
-    # These handlers (e.g., /start, /help, /channels) are checked first.
-    # This ensures they are always executed immediately and are not accidentally
-    # caught by the more general ConversationHandler as an unexpected command.
+    # Group 0: Admin Commands
+    # These are registered first with a strict filter. They have the highest priority
+    # to ensure admin commands are always processed and never intercepted by other handlers.
+    register_admin_commands(application)
+
+    # Group 1: Main User Commands (Non-conversational)
+    # These handlers (e.g., /start, /help, /stats) are checked next.
+    # They are protected by the main access control filter.
     register_commands(application)
 
-    # Group 0: The ConversationHandler for creating recommendations.
-    # This handler manages complex, multi-step user interactions. Its entry points
-    # (/newrec, /new, etc.) will be matched here. Any other command that is not an
-    # entry point will be ignored and passed to the next handlers.
-    # Its fallbacks will only trigger if the user is *already* in a conversation.
+    # Group 2: Conversational Handlers
+    # These handlers manage complex, multi-step user interactions like creating a new
+    # recommendation. Their entry points (/newrec, /new, etc.) will be matched here.
     register_conversation_handlers(application)
 
-    # Group 0: General callback query handlers for managing existing recommendations.
+    # Group 3: General Callback Query Handlers
     # These are for button interactions on existing trade cards (e.g., "Update Price").
-    # They are registered after the ConversationHandler to ensure that any callback query
-    # that is part of an active conversation is handled by the conversation first.
-    # The `block=False` parameter is used within these handlers' registration to prevent
-    # them from stopping other handlers in different groups from processing an update.
+    # They are registered last to ensure that any callback query that is part of an
+    # active conversation is handled by the conversation handler first.
     register_management_handlers(application)
 
-# --- END OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.4) ---
+# --- END OF FINAL, COMPLETE, AND MONETIZATION-READY FILE ---
