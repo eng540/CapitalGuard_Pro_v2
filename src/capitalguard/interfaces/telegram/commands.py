@@ -1,22 +1,21 @@
-# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.0.0) ---
+# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.1.0) ---
 # src/capitalguard/interfaces/telegram/commands.py
 
 import io
 import csv
 import logging
+import os  # ✅ FIX: Added the missing import for the 'os' module.
 from typing import Optional, Tuple
 
 from telegram import Update, InputFile
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
 
-# ✅ ARCHITECTURAL FIX: Import all necessary decorators and filters.
 from .helpers import get_service, unit_of_work
 from .auth import ALLOWED_USER_FILTER, require_channel_subscription
 from .ui_texts import build_analyst_stats_text, build_trade_card_text
 from .keyboards import build_open_recs_keyboard, build_signal_tracking_keyboard
 from capitalguard.config import settings
 
-# Import service types for type-safe access
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
@@ -25,7 +24,6 @@ from capitalguard.infrastructure.db.repository import UserRepository, ChannelRep
 log = logging.getLogger(__name__)
 
 AWAITING_FORWARD_KEY = "awaiting_forward_channel_link"
-# A simple way to define admins via environment variable for security
 ADMIN_USERNAMES = [username.strip() for username in (os.getenv("ADMIN_USERNAMES") or "").split(',') if username]
 admin_filter = filters.User(username=ADMIN_USERNAMES)
 
@@ -61,13 +59,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
     user = update.effective_user
     log.info(f"User {user.id} ({user.username}) started interaction.")
 
-    # --- Deep Link Handling for Signal Tracking ---
     if context.args and context.args[0].startswith("track_"):
         try:
             rec_id = int(context.args[0].split('_')[1])
             log.info(f"User {user.id} is trying to track signal #{rec_id}.")
 
-            # First, check if the user is subscribed to the main channel.
             is_subscribed = False
             channel_id = settings.TELEGRAM_CHAT_ID
             if channel_id:
@@ -79,7 +75,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
                 await update.message.reply_html("Please subscribe to our main channel first to track signals.")
                 return
 
-            # If subscribed, fetch and display the signal.
             trade_service = get_service(context, "trade_service", TradeService)
             rec = trade_service.repo.get(db_session, rec_id)
             if not rec:
@@ -99,7 +94,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
             await update.message.reply_html("An error occurred while trying to track the signal.")
             return
 
-    # --- Standard Welcome Message ---
     await update.message.reply_html("👋 Welcome to the <b>CapitalGuard Bot</b>.\nUse /help for assistance.")
 
 @require_channel_subscription
@@ -293,11 +287,8 @@ async def revoke_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 def register_commands(app: Application):
     """Registers all basic, non-conversational commands for the bot."""
-    # User commands are protected by both filters: must be an active user AND subscribed to the channel.
     user_filters = ALLOWED_USER_FILTER
     
-    # The /start command is special: it should be accessible to everyone.
-    # The command logic itself will handle subscription checks for deep links.
     app.add_handler(CommandHandler("start", start_cmd))
 
     app.add_handler(CommandHandler("help", help_cmd, filters=user_filters))
@@ -311,7 +302,6 @@ def register_commands(app: Application):
     
     app.add_handler(MessageHandler(user_filters & filters.FORWARDED, link_channel_forward_handler))
 
-    # Admin commands are protected by a specific username filter for extra security.
     if ADMIN_USERNAMES:
         app.add_handler(CommandHandler("grantaccess", grant_access_cmd, filters=admin_filter))
         app.add_handler(CommandHandler("revokeaccess", revoke_access_cmd, filters=admin_filter))
