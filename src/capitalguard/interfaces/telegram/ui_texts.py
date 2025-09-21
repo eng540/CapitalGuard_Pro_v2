@@ -39,7 +39,7 @@ def _build_header(rec: Recommendation, status_icon: str, status_text: str) -> Li
     ]
 
 def _build_plan_section(rec: Recommendation) -> List[str]:
-    """Builds the 'PLAN' section of the card with clear formatting."""
+    """Builds the 'PLAN' section for PENDING cards."""
     lines = [
         "─" * 20,
         "🎯 <b>THE PLAN</b>",
@@ -57,7 +57,7 @@ def _build_plan_section(rec: Recommendation) -> List[str]:
     return lines
 
 def _build_performance_section(rec: Recommendation, live_price: Optional[float]) -> List[str]:
-    """Builds the 'PERFORMANCE' section for active cards."""
+    """Builds the 'PERFORMANCE' section for ACTIVE cards."""
     lines = ["─" * 20, "📈 <b>PERFORMANCE</b>"]
     
     if live_price is not None:
@@ -78,6 +78,31 @@ def _build_performance_section(rec: Recommendation, live_price: Optional[float])
     lines.append(f"📦 Open Size: <code>{rec.open_size_percent:.2f}%</code>")
     return lines
 
+def _build_active_exit_plan_section(rec: Recommendation) -> List[str]:
+    """Builds the dynamic 'EXIT PLAN' for ACTIVE cards, showing target status."""
+    lines = ["", "🎯 <b>EXIT PLAN</b>"]
+    
+    events = getattr(rec, "events", []) or []
+    hit_targets_indices = {
+        int(e.event_type[2:-4]) - 1 # Extracts '1' from 'TP1_HIT' and converts to 0-based index
+        for e in events if e.event_type.startswith("TP") and e.event_type.endswith("_HIT")
+    }
+
+    next_target_found = False
+    for i, target in enumerate(rec.targets.values):
+        icon = "⏳" # Default: Pending
+        if i in hit_targets_indices:
+            icon = "✅" # Hit
+        elif not next_target_found:
+            icon = "🚀" # Next target
+            next_target_found = True
+        
+        pct = _pct(rec.entry.value, target.price, rec.side.value)
+        close_info = f" (Close {target.close_percent:.1f}%)" if 0 < target.close_percent < 100 else ""
+        lines.append(f"  • {icon} TP{i+1}: <code>{target.price:g}</code> ({pct:+.2f}%){close_info}")
+        
+    return lines
+
 def _build_logbook_section(rec: Recommendation) -> List[str]:
     """Builds the 'LOGBOOK' section if there are partial profit events."""
     events = getattr(rec, "events", []) or []
@@ -85,7 +110,7 @@ def _build_logbook_section(rec: Recommendation) -> List[str]:
     if not partial_profit_events:
         return []
 
-    lines = ["─" * 20, "📋 <b>LOGBOOK</b>", "💰 Profits Taken:"]
+    lines = ["", "📋 <b>LOGBOOK</b>", "💰 Profits Taken:"]
     for event in partial_profit_events:
         data = getattr(event, "event_data", {}) or {}
         closed_pct = data.get("closed_percent", 0)
@@ -112,6 +137,7 @@ def _build_pending_card(rec: Recommendation) -> str:
 def _build_active_card(rec: Recommendation, live_price: Optional[float]) -> str:
     lines = _build_header(rec, "⚡️", "ACTIVE")
     lines.extend(_build_performance_section(rec, live_price))
+    lines.extend(_build_active_exit_plan_section(rec))
     lines.extend(_build_logbook_section(rec))
     lines.extend(_build_footer(rec))
     return "\n".join(lines)
