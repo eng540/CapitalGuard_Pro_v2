@@ -1,4 +1,4 @@
-# --- START OF FINAL, SIMPLIFIED AND UNIFIED FILE (Version 12.0.0) ---
+# --- START OF FINAL, UNIFIED AND CORRECTED FILE (Version 12.2.0) ---
 # docker-compose.yml
 
 version: "3.9"
@@ -43,4 +43,4 @@ services:
 volumes:
   pgdata:
 
-# --- END OF FINAL, SIMPLIFIED AND UNIFIED FILE ---
+# --- END OF FINAL, UNIFIED AND CORRECTED FILE ---
