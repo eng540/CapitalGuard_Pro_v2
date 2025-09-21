@@ -1,5 +1,6 @@
 # --- START OF FINAL, FULLY RE-DESIGNED AND COMPLETE FILE (Version 8.1.0) ---
 # src/capitalguard/interfaces/telegram/keyboards.py
+# Quick patch: fixed page slicing bug in build_channel_picker_keyboard (end variable was missing).
 
 from typing import List, Iterable, Set
 import math
@@ -210,6 +211,7 @@ def build_channel_picker_keyboard(
     total = len(ch_list)
     page = max(page, 1)
     start = (page - 1) * per_page
+    end = start + per_page
     page_items = ch_list[start:end]
 
     rows: List[List[InlineKeyboardButton]] = []
