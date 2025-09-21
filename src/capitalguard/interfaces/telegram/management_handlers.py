@@ -44,6 +44,7 @@ PUBLIC_UPDATE_COOLDOWN = 15 # Seconds to prevent spamming the update button
 # --- View Helper Functions ---
 
 async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, db_session, chat_id: int, message_id: int, rec_id: int, user_id: int):
+    """A reusable function to build and send/edit the analyst control panel."""
     trade_service = get_service(context, "trade_service", TradeService)
     rec = trade_service.get_recommendation_for_user(db_session, rec_id, str(user_id))
     if not rec:
@@ -64,6 +65,7 @@ async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, db_session
             log.warning(f"Failed to edit message for rec panel: {e}")
 
 async def _send_or_edit_strategy_menu(context: ContextTypes.DEFAULT_TYPE, db_session, chat_id: int, message_id: int, rec_id: int, user_id: int):
+    """A reusable function to build and send/edit the strategy menu."""
     trade_service = get_service(context, "trade_service", TradeService)
     rec = trade_service.get_recommendation_for_user(db_session, rec_id, str(user_id))
     if not rec:
@@ -424,4 +426,4 @@ def register_management_handlers(application: Application):
     
     application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler), group=1)
 
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- END OF FINAL, COMPLETE, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
