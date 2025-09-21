@@ -1,9 +1,5 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
-# Quick changes:
-# 1) Registered the existing `update_public_card` handler so the public-channel "update" button works.
-# 2) NO other code, logic, ordering, or behavior was changed.
-# 3) File reviewed and verified to match the application's existing handlers and keyboard callback_data:
-#    The public update button uses callback_data: "rec:update_public:{rec_id}" which matches the added handler pattern.
+# --- START OF FINAL, COMPLETE, AND PUBLIC-UPDATE-FIXED FILE (Version 12.2.0) ---
+# src/capitalguard/interfaces/telegram/management_handlers.py
 
 import logging
 from time import time
@@ -43,7 +39,7 @@ log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 (AWAIT_PARTIAL_PERCENT, AWAIT_PARTIAL_PRICE) = range(2)
-PUBLIC_UPDATE_COOLDOWN = 15  # Seconds to prevent spamming the update button
+PUBLIC_UPDATE_COOLDOWN = 15 # Seconds to prevent spamming the update button
 
 # --- View Helper Functions ---
 
@@ -54,10 +50,8 @@ async def _send_or_edit_rec_panel(context: ContextTypes.DEFAULT_TYPE, db_session
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Recommendation not found or you don't have access.")
         return
     price_service = get_service(context, "price_service", PriceService)
-    # Ensure UI shows live price when user requests refresh
     live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
-    if live_price:
-        setattr(rec, "live_price", live_price)
+    if live_price: setattr(rec, "live_price", live_price)
     text = build_trade_card_text(rec)
     keyboard = analyst_control_panel_keyboard(rec.id) if rec.status != RecommendationStatus.CLOSED else None
     try:
@@ -89,17 +83,14 @@ async def _send_or_edit_strategy_menu(context: ContextTypes.DEFAULT_TYPE, db_ses
 # --- Helper Functions ---
 
 def _parse_tail_int(data: str) -> Optional[int]:
-    try:
-        return int(data.split(":")[-1])
-    except (ValueError, IndexError):
-        return None
+    try: return int(data.split(":")[-1])
+    except (ValueError, IndexError): return None
 
 def _parse_cq_parts(data: str) -> list[str]:
     return data.split(":")
 
 # --- Main Callback Query Handlers ---
 
-# ✅ NEW HANDLER: Handles the "Update Live Data" button in public channels.
 async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     A read-only handler to update a recommendation card in a public channel.
@@ -116,7 +107,7 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if time() - last_update_time < PUBLIC_UPDATE_COOLDOWN:
         await query.answer(f"Please wait {PUBLIC_UPDATE_COOLDOWN} seconds before updating again.", show_alert=True)
         return
-
+    
     await query.answer("Fetching live price...")
     context.bot_data[cooldown_key] = time()
 
@@ -124,8 +115,7 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
         with SessionLocal() as session:
             trade_service = get_service(context, "trade_service", TradeService)
             price_service = get_service(context, "price_service", PriceService)
-
-            # Read the recommendation directly from repository (public view)
+            
             rec = trade_service.repo.get(session, rec_id)
             if not rec:
                 await query.edit_message_text("This recommendation is no longer available.")
@@ -138,7 +128,7 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
             new_text = build_trade_card_text(rec)
             bot_username = context.bot.username if context.bot else None
             keyboard = public_channel_keyboard(rec.id, bot_username) if rec.status != RecommendationStatus.CLOSED else None
-
+            
             await query.edit_message_text(
                 text=new_text,
                 reply_markup=keyboard,
@@ -171,7 +161,7 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
         filter_text_parts = [f"{k.capitalize()}: {str(v).upper()}" for k, v in filters_map.items()]
         header_text += f"\n<i>Filtered by: {', '.join(filter_text_parts)}</i>"
     await query.edit_message_text(
-        text=f"{header_text}\nSelect a recommendation to view its control panel:",
+        text=f"{header_text}\nSelect a recommendation to view its control panel:", 
         reply_markup=keyboard, parse_mode=ParseMode.HTML
     )
 
@@ -196,19 +186,16 @@ async def update_private_card(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer("Updating price...")
     rec_id = _parse_tail_int(query.data)
-    if not rec_id:
-        return
+    if not rec_id: return
     trade_service = get_service(context, "trade_service", TradeService)
     await trade_service.update_price_tracking_async(db_session, rec_id, str(query.from_user.id))
     await _send_or_edit_rec_panel(context, db_session, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
 
 @unit_of_work
 async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    if not update.message or not context.user_data:
-        return
+    if not update.message or not context.user_data: return
     state = context.user_data.get(AWAITING_INPUT_KEY)
-    if not state:
-        return
+    if not state: return
     original_message = state.get("original_message")
     if not original_message or not update.message.reply_to_message or update.message.reply_to_message.message_id != original_message.message_id:
         return
@@ -217,10 +204,8 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
     user_input = update.message.text.strip()
     chat_id, message_id, user_id = original_message.chat_id, original_message.message_id, update.effective_user.id
     user_id_str = str(user_id)
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
+    try: await update.message.delete()
+    except Exception: pass
     trade_service = get_service(context, "trade_service", TradeService)
     try:
         if action == "profit_stop":
@@ -249,14 +234,9 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
     parts = _parse_cq_parts(query.data)
-    if len(parts) < 4:
-        await query.answer("Bad request.", show_alert=True)
-        return
-    try:
-        rec_id, exit_price = int(parts[2]), parse_number(parts[3])
-    except (ValueError, IndexError) as e:
-        await query.answer(f"Invalid value: {e}", show_alert=True)
-        return
+    if len(parts) < 4: await query.answer("Bad request.", show_alert=True); return
+    try: rec_id, exit_price = int(parts[2]), parse_number(parts[3])
+    except (ValueError, IndexError) as e: await query.answer(f"Invalid value: {e}", show_alert=True); return
     await query.answer("Closing recommendation...")
     trade_service = get_service(context, "trade_service", TradeService)
     await trade_service.close_recommendation_for_user_async(db_session, rec_id, str(query.from_user.id), exit_price)
@@ -274,8 +254,7 @@ async def cancel_close_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
-    if rec_id is None:
-        return
+    if rec_id is None: return
     keyboard = analyst_edit_menu_keyboard(rec_id)
     await query.answer()
     await query.edit_message_reply_markup(reply_markup=keyboard)
@@ -283,8 +262,7 @@ async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_T
 async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
-    if rec_id is None:
-        return
+    if rec_id is None: return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_sl", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
     await query.edit_message_text(f"{query.message.text}\n\n<b>✏️ Please <u>reply to this message ↩️</u> with the new Stop Loss value for recommendation #{rec_id}.</b>", parse_mode=ParseMode.HTML)
@@ -292,8 +270,7 @@ async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def start_edit_tp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
-    if rec_id is None:
-        return
+    if rec_id is None: return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_tp", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
     await query.edit_message_text(f"{query.message.text}\n\n<b>🎯 Please <u>reply to this message ↩️</u> with the new targets for recommendation #{rec_id} (space-separated).</b>", parse_mode=ParseMode.HTML)
@@ -301,11 +278,8 @@ async def start_edit_tp_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def start_profit_stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     parts = _parse_cq_parts(query.data)
-    try:
-        rec_id = int(parts[2])
-    except Exception:
-        await query.answer("Invalid request.", show_alert=True)
-        return
+    try: rec_id = int(parts[2])
+    except Exception: await query.answer("Invalid request.", show_alert=True); return
     if len(parts) > 3 and parts[3] == "remove":
         await _remove_profit_stop_handler(update, context)
         return
@@ -317,8 +291,7 @@ async def start_profit_stop_handler(update: Update, context: ContextTypes.DEFAUL
 async def _remove_profit_stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
-    if not rec_id:
-        return
+    if not rec_id: return
     await query.answer("Removing Profit Stop...")
     trade_service = get_service(context, "trade_service", TradeService)
     await trade_service.update_profit_stop_for_user_async(db_session, rec_id, str(query.from_user.id), None)
@@ -329,11 +302,8 @@ async def set_strategy_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer("Changing strategy...")
     parts = _parse_cq_parts(query.data)
-    try:
-        rec_id, strategy_value = int(parts[2]), parts[3]
-    except Exception:
-        await query.answer("Invalid request.", show_alert=True)
-        return
+    try: rec_id, strategy_value = int(parts[2]), parts[3]
+    except Exception: await query.answer("Invalid request.", show_alert=True); return
     trade_service = get_service(context, "trade_service", TradeService)
     await trade_service.update_exit_strategy_for_user_async(db_session, rec_id, str(query.from_user.id), ExitStrategy(strategy_value))
     await _send_or_edit_strategy_menu(context, db_session, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
@@ -342,8 +312,7 @@ async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     rec_id = _parse_tail_int(query.data)
-    if not rec_id:
-        return
+    if not rec_id: return
     text = f"{query.message.text}\n\n--- \n<b>اختر طريقة الإغلاق:</b>"
     keyboard = build_close_options_keyboard(rec_id)
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
@@ -352,9 +321,7 @@ async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_
 async def close_at_market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
-    if not rec_id:
-        await query.answer("Invalid request.", show_alert=True)
-        return
+    if not rec_id: await query.answer("Invalid request.", show_alert=True); return
     await query.answer("Fetching market price & closing...")
     trade_service = get_service(context, "trade_service", TradeService)
     await trade_service.close_recommendation_at_market_for_user_async(db_session, rec_id, str(query.from_user.id))
@@ -362,9 +329,7 @@ async def close_at_market_handler(update: Update, context: ContextTypes.DEFAULT_
 async def close_with_manual_price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
-    if rec_id is None:
-        await query.answer("Bad request.", show_alert=True)
-        return
+    if rec_id is None: await query.answer("Bad request.", show_alert=True); return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "close", "rec_id": rec_id, "original_message": query.message}
     await query.answer()
     await query.edit_message_text(f"{query.message.text}\n\n<b>✍️ يرجى <u>الرد على هذه الرسالة ↩️</u> بسعر الإغلاق المحدد للتوصية #{rec_id}.</b>", parse_mode=ParseMode.HTML)
@@ -373,8 +338,7 @@ async def close_with_manual_price_handler(update: Update, context: ContextTypes.
 async def partial_profit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     rec_id = _parse_tail_int(query.data)
-    if rec_id is None:
-        return ConversationHandler.END
+    if rec_id is None: return ConversationHandler.END
     context.user_data['partial_profit_rec_id'] = rec_id
     context.user_data['original_message'] = query.message
     await query.answer()
@@ -384,8 +348,7 @@ async def partial_profit_start(update: Update, context: ContextTypes.DEFAULT_TYP
 async def received_partial_percent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         percentage = parse_number(update.message.text)
-        if not (0 < percentage <= 100):
-            raise ValueError("Percentage must be between 1 and 100.")
+        if not (0 < percentage <= 100): raise ValueError("Percentage must be between 1 and 100.")
         context.user_data['partial_profit_percent'] = percentage
         await update.message.reply_text(f"✅ Percentage: {percentage}%. Now, please send the price at which you took profit.")
         return AWAIT_PARTIAL_PRICE
@@ -445,12 +408,7 @@ def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(show_close_menu_handler, pattern=r"^rec:close_menu:", block=False))
     application.add_handler(CallbackQueryHandler(close_at_market_handler, pattern=r"^rec:close_market:", block=False))
     application.add_handler(CallbackQueryHandler(close_with_manual_price_handler, pattern=r"^rec:close_manual:", block=False))
-
-    # === ADDED: register public update handler ===
-    # This single line enables the existing `update_public_card` function to be invoked
-    # when the public-channel "update" button (callback_data starting with "rec:update_public:") is pressed.
     application.add_handler(CallbackQueryHandler(update_public_card, pattern=r"^rec:update_public:", block=False))
-    # =================================================
 
     partial_profit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(partial_profit_start, pattern=r"^rec:close_partial:")],
@@ -463,7 +421,7 @@ def register_management_handlers(application: Application):
         per_user=True, per_chat=True,
     )
     application.add_handler(partial_profit_conv)
-
+    
     application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler), group=1)
 
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
