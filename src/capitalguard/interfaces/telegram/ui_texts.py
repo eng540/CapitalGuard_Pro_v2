@@ -210,4 +210,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     ]
     return "\n".join(lines)
 
-# --- END OF FINAL, COMPLETE, AND VISUALLY-ENHANCED FILE ---
+# --- END OF FINAL, COMPLETE, AND VISUALLY-ENHANCED FILE ---```
