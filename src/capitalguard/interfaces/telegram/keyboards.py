@@ -1,15 +1,16 @@
-# --- START OF FINAL, FULLY RE-DESIGNED AND COMPLETE FILE (Version 8.1.0) ---
+# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.0.0) ---
 # src/capitalguard/interfaces/telegram/keyboards.py
-# Quick patch: fixed page slicing bug in build_channel_picker_keyboard (end variable was missing).
 
-from typing import List, Iterable, Set
 import math
+from typing import List, Iterable, Set
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram.ext import ContextTypes
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.interfaces.telegram.ui_texts import _pct
+from capitalguard.config import settings
 
 ITEMS_PER_PAGE = 8
 
@@ -58,34 +59,34 @@ async def build_open_recs_keyboard(
         
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"rec:show_panel:{rec.id}")])
 
-    nav_buttons: List[InlineKeyboardButton] = []
+    nav_buttons: List[List[InlineKeyboardButton]] = []
+    page_nav_row: List[InlineKeyboardButton] = []
     if current_page > 1:
-        nav_buttons.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"open_nav:page:{current_page - 1}"))
+        page_nav_row.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"open_nav:page:{current_page - 1}"))
     if total_pages > 1:
-        nav_buttons.append(InlineKeyboardButton(f"صفحة {current_page}/{total_pages}", callback_data="noop"))
+        page_nav_row.append(InlineKeyboardButton(f"صفحة {current_page}/{total_pages}", callback_data="noop"))
     if current_page < total_pages:
-        nav_buttons.append(InlineKeyboardButton("التالي ➡️", callback_data=f"open_nav:page:{current_page + 1}"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
+        page_nav_row.append(InlineKeyboardButton("التالي ➡️", callback_data=f"open_nav:page:{current_page + 1}"))
+    if page_nav_row:
+        nav_buttons.append(page_nav_row)
 
+    keyboard.extend(nav_buttons)
     return InlineKeyboardMarkup(keyboard)
 
 
 def public_channel_keyboard(rec_id: int, bot_username: str) -> InlineKeyboardMarkup:
-    """Builds the keyboard for a public channel message, requiring bot_username."""
-    if not bot_username:
-        return InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}")]]
-        )
+    """
+    Builds the keyboard for a public channel message.
+    The "Track Signal" button uses a deep link to start a private interaction with the bot.
+    """
+    buttons = [
+        InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}")
+    ]
+    
+    if bot_username:
+        buttons.insert(0, InlineKeyboardButton("📊 تتبّع الإشارة", url=f"https://t.me/{bot_username}?start=track_{rec_id}"))
 
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("📊 تتبّع الإشارة", url=f"https://t.me/{bot_username}?start=track_{rec_id}"),
-                InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}"),
-            ]
-        ]
-    )
+    return InlineKeyboardMarkup([buttons])
 
 
 def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
@@ -106,7 +107,6 @@ def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
 
 
 def build_close_options_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """Builds the keyboard for choosing the closing method."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📉 إغلاق بسعر السوق الآن", callback_data=f"rec:close_market:{rec_id}")],
         [InlineKeyboardButton("✍️ إغلاق بسعر محدد", callback_data=f"rec:close_manual:{rec_id}")],
@@ -190,50 +190,43 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
 
 
 def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
+    # Simplified to remove the "Choose Channels" button which is not implemented.
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ نشر في القنوات الفعّالة", callback_data=f"rec:publish:{review_token}")],
         [
-            InlineKeyboardButton("📢 اختيار القنوات", callback_data=f"rec:choose_channels:{review_token}"),
             InlineKeyboardButton("📝 إضافة/تعديل ملاحظات", callback_data=f"rec:add_notes:{review_token}"),
         ],
         [InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{review_token}")],
     ])
 
+# --- NEW KEYBOARDS FOR MONETIZATION & TRACKING ---
 
-def build_channel_picker_keyboard(
-    review_token: str,
-    channels: Iterable[dict],
-    selected_ids: Set[int],
-    page: int = 1,
-    per_page: int = 10,
-) -> InlineKeyboardMarkup:
-    ch_list = list(channels)
-    total = len(ch_list)
-    page = max(page, 1)
-    start = (page - 1) * per_page
-    end = start + per_page
-    page_items = ch_list[start:end]
+def build_subscription_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
+    """Builds the keyboard with a link to the main channel for non-subscribed users."""
+    channel_id = settings.TELEGRAM_CHAT_ID
+    channel_link = None
+    
+    # Try to get the invite link for a better user experience
+    if channel_id and hasattr(context, '_chat_links') and channel_id in context._chat_links:
+        channel_link = context._chat_links[channel_id]
+    
+    if channel_link:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ الانضمام للقناة", url=channel_link)]])
+    
+    # Fallback if link is not available
+    return None
 
-    rows: List[List[InlineKeyboardButton]] = []
 
-    for ch in page_items:
-        tg_id = int(ch["telegram_channel_id"])
-        label = ch.get("title") or (f"@{ch['username']}" if ch.get("username") else str(tg_id))
-        mark = "✔️" if tg_id in selected_ids else "✖️"
-        rows.append([InlineKeyboardButton(f"{mark} {label}", callback_data=f"pubsel:toggle:{review_token}:{tg_id}:{page}")])
-
-    nav: List[InlineKeyboardButton] = []
-    max_page = max(1, math.ceil(total / per_page))
-    if page > 1: nav.append(InlineKeyboardButton("⬅️", callback_data=f"pubsel:nav:{review_token}:{page-1}"))
-    if max_page > 1: nav.append(InlineKeyboardButton(f"صفحة {page}/{max_page}", callback_data="noop"))
-    if page < max_page: nav.append(InlineKeyboardButton("➡️", callback_data=f"pubsel:nav:{review_token}:{page+1}"))
-    if nav: rows.append(nav)
-
-    rows.append([
-        InlineKeyboardButton("🚀 نشر المحدد", callback_data=f"pubsel:confirm:{review_token}"),
-        InlineKeyboardButton("⬅️ رجوع", callback_data=f"pubsel:back:{review_token}"),
+def build_signal_tracking_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+    """Builds the interactive keyboard for a user tracking a specific signal."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔔 نبهني عند الهدف الأول", callback_data=f"track:notify_tp1:{rec_id}"),
+            InlineKeyboardButton("🔔 نبهني عند وقف الخسارة", callback_data=f"track:notify_sl:{rec_id}")
+        ],
+        [
+            InlineKeyboardButton("➕ أضف إلى محفظتي (قريباً)", callback_data=f"track:add_portfolio:{rec_id}")
+        ]
     ])
 
-    return InlineKeyboardMarkup(rows)
-
-# --- END OF FINAL, FULLY RE-DESIGNED AND COMPLETE FILE (Version 8.1.0) ---
+# --- END OF FINAL, COMPLETE, AND MONETIZATION-READY FILE ---
