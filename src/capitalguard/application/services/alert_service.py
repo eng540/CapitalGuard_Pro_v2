@@ -1,4 +1,4 @@
-# --- START OF FINAL, HYBRID, AND ROBUST FILE (Version 12.0.0) ---
+# --- START OF FINAL, HYBRID, AND ROBUST FILE (Version 12.2.0) ---
 # src/capitalguard/application/services/alert_service.py
 
 import logging
@@ -126,7 +126,6 @@ class AlertService:
         Processes all logic for a single recommendation (activation, closing, etc.)
         using the provided session.
         """
-        # --- Step 1: Handle PENDING recommendations (Activation Logic) ---
         if rec.status == RecommendationStatus.PENDING:
             entry, side, order_type = rec.entry.value, rec.side.value, rec.order_type
             is_triggered = False
@@ -134,33 +133,24 @@ class AlertService:
                 is_triggered = True
             elif order_type == OrderType.STOP_MARKET and ((side == "LONG" and price >= entry) or (side == "SHORT" and price <= entry)):
                 is_triggered = True
-            
             if is_triggered:
                 log.info(f"ACTIVATING pending recommendation #{rec.id} for {rec.asset.value} at price {price}.")
                 await self.trade_service.activate_recommendation_async(session, rec.id)
-            return # Stop processing for this item as its state has just changed.
+            return
 
-        # --- Step 2: Handle ACTIVE recommendations (Monitoring Logic) ---
         if rec.status == RecommendationStatus.ACTIVE:
             self.repo.update_price_tracking(session, rec.id, price)
             side = rec.side.value.upper()
             user_id = rec.user_id
             if not user_id: return
-
-            # Check for Stop Loss
             if (side == "LONG" and price <= rec.stop_loss.value) or (side == "SHORT" and price >= rec.stop_loss.value):
                 log.info(f"Auto-closing rec #{rec.id} due to SL hit at price {price}.")
                 await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="SL_HIT")
                 return
-
-            # Check for Profit Stop
-            if rec.profit_stop_price is not None:
-                if (side == "LONG" and price <= rec.profit_stop_price) or (side == "SHORT" and price >= rec.profit_stop_price):
-                    log.info(f"Auto-closing rec #{rec.id} due to Profit Stop hit at price {price}.")
-                    await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="PROFIT_STOP_HIT")
-                    return
-
-            # Check for Final TP auto-close
+            if rec.profit_stop_price is not None and ((side == "LONG" and price <= rec.profit_stop_price) or (side == "SHORT" and price >= rec.profit_stop_price)):
+                log.info(f"Auto-closing rec #{rec.id} due to Profit Stop hit at price {price}.")
+                await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="PROFIT_STOP_HIT")
+                return
             auto_close_enabled = _env_bool("AUTO_CLOSE_ENABLED", False)
             if auto_close_enabled and rec.exit_strategy == ExitStrategy.CLOSE_AT_FINAL_TP and rec.targets.values:
                 last_tp_price = rec.targets.values[-1].price
@@ -168,15 +158,12 @@ class AlertService:
                     log.info(f"Auto-closing rec #{rec.id} due to final TP hit at price {price}.")
                     await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="FINAL_TP_HIT")
                     return
-            
-            # Check for individual TP hits
             if rec.targets.values:
                 for i, target in enumerate(rec.targets.values):
                     event_type_hit = f"TP{i+1}_HIT"
-                    if event_type_hit not in rec_events:
-                        if (side == "LONG" and price >= target.price) or (side == "SHORT" and price <= target.price):
-                            log.info(f"TP{i+1} hit for rec #{rec.id}. Processing.")
-                            await self.trade_service.process_target_hit_async(session, rec.id, user_id, i + 1, price)
-                            break
+                    if event_type_hit not in rec_events and ((side == "LONG" and price >= target.price) or (side == "SHORT" and price <= target.price)):
+                        log.info(f"TP{i+1} hit for rec #{rec.id}. Processing.")
+                        await self.trade_service.process_target_hit_async(session, rec.id, user_id, i + 1, price)
+                        break
 
-# --- END OF FINAL, HYBRID, AND ROBUST FILE ---```
+# --- END OF FINAL, HYBRID, AND ROBUST FILE ---
