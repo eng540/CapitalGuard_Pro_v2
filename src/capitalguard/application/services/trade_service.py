@@ -1,10 +1,9 @@
-# --- START OF FINAL, COMPLETE, AND FULLY-FUNCTIONAL FILE (Version 11.2.0) ---
+# --- START OF FINAL, COMPLETE, AND FEATURE-RICH FILE (Version 13.1.0) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
 import asyncio
-from typing import List, Optional, Tuple, Dict, Any
-from datetime import datetime, timezone
+from typing import List, Optional, Tuple, Dict, Any, Set
 
 from sqlalchemy.orm import Session
 
@@ -86,7 +85,6 @@ class TradeService:
         """Centralized validation for core recommendation business rules."""
         side_upper = side.upper()
         
-        # ✅ LOGIC FIX: This validation now ignores the entry price check if entry is 0 (a market order placeholder).
         if entry > 0:
             if side_upper == "LONG" and not (stop_loss < entry):
                 raise ValueError("For new LONG trades, Stop Loss must be < Entry Price.")
@@ -104,8 +102,12 @@ class TradeService:
                (side_upper == 'SHORT' and target.price >= stop_loss):
                 raise ValueError(f"Target price {target.price} cannot be on the same side of the trade as the stop loss {stop_loss}.")
 
-    def _publish_recommendation(self, session: Session, rec: Recommendation, user_id: str) -> Tuple[Recommendation, Dict]:
-        """Private helper to handle the logic of publishing a recommendation."""
+    def _publish_recommendation(self, session: Session, rec: Recommendation, user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[Recommendation, Dict]:
+        """
+        Private helper to handle the logic of publishing a recommendation.
+        If target_channel_ids is provided, it only publishes to those channels.
+        Otherwise, it publishes to all of the user's active channels.
+        """
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
         uid_int = _parse_int_user_id(user_id)
         
@@ -114,15 +116,21 @@ class TradeService:
             report["failed"].append({"reason": "User not found"})
             return rec, report
         
-        channels = ChannelRepository(session).list_by_user(user.id, only_active=True)
-        if not channels:
-            report["failed"].append({"reason": "No active channels linked"})
+        channels_to_publish = ChannelRepository(session).list_by_user(user.id, only_active=True)
+        
+        # If specific targets are provided, filter the list of channels.
+        if target_channel_ids is not None:
+            channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids]
+
+        if not channels_to_publish:
+            reason = "No active channels linked." if target_channel_ids is None else "No selected channels are active or linked."
+            report["failed"].append({"reason": reason})
             return rec, report
         
         from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
         keyboard = public_channel_keyboard(rec.id, self.notifier.bot_username)
         
-        for ch in channels:
+        for ch in channels_to_publish:
             try:
                 res = self.notifier.post_to_channel(ch.telegram_channel_id, rec, keyboard)
                 if res:
@@ -154,6 +162,8 @@ class TradeService:
         uid_int = _parse_int_user_id(kwargs.get('user_id'))
         if not uid_int: raise ValueError("A valid user_id is required.")
 
+        target_channel_ids = kwargs.get('target_channel_ids')
+
         asset = kwargs['asset'].strip().upper()
         market = kwargs.get('market', 'Futures')
         if not self.market_data_service.is_valid_symbol(asset, market):
@@ -180,7 +190,7 @@ class TradeService:
             rec_entity.highest_price_reached = rec_entity.lowest_price_reached = rec_entity.entry.value
 
         created_rec = self.repo.add_with_event(session, rec_entity)
-        final_rec, report = self._publish_recommendation(session, created_rec, str(uid_int))
+        final_rec, report = self._publish_recommendation(session, created_rec, str(uid_int), target_channel_ids)
         
         return final_rec, report
 
@@ -240,7 +250,6 @@ class TradeService:
         if not rec or rec.status != RecommendationStatus.ACTIVE:
             return
 
-        # ✅ CACHE FIX: Added force_refresh=True to ensure the manual update gets a live price.
         current_price = await self.price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
         if current_price is None:
             log.warning(f"Could not fetch live price for {rec.asset.value} during tracking update.")
@@ -370,4 +379,4 @@ class TradeService:
         if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE ---
+# --- END OF FINAL, COMPLETE, AND FEATURE-RICH FILE ---
