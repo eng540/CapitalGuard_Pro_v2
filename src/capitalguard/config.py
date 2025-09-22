@@ -1,3 +1,6 @@
+# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.1.0) ---
+# src/capitalguard/config.py
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,8 +19,14 @@ class Settings(BaseSettings):
     # Telegram
     TELEGRAM_BOT_TOKEN: str | None = None
     TELEGRAM_CHAT_ID: str | None = None
-    TELEGRAM_ALLOWED_USERS: str | None = None   # comma-separated Telegram user IDs
-    TELEGRAM_WEBHOOK_URL: str | None = None     # e.g. https://app.railway.app/webhook/telegram
+    TELEGRAM_WEBHOOK_URL: str | None = None     # e.g. https://your-app.up.railway.app/webhook/telegram
+
+    # ✅ NEW: Admin configuration for access control and contact.
+    ADMIN_USERNAMES: str | None = None          # Comma-separated list of admin usernames (without @)
+    ADMIN_CONTACT: str | None = None            # The public contact handle for the admin (e.g., @AdminUsername)
+
+    # ❌ REMOVED: Legacy variable, no longer used by the new DB-based access control.
+    # TELEGRAM_ALLOWED_USERS: str | None = None
 
     # API / Security
     API_KEY: str | None = None
@@ -32,3 +41,5 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# --- END OF FINAL, COMPLETE, AND MONETIZATION-READY FILE ---
