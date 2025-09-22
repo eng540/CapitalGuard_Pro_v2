@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND FEATURE-RICH FILE (Version 13.1.0) ---
+# --- START OF FINAL, COMPLETE, AND SELF-HEALING FILE (Version 13.2.2) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Dict, Any, Set
 
 from sqlalchemy.orm import Session
+from telegram.error import BadRequest
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType, ExitStrategy
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
@@ -53,21 +54,26 @@ class TradeService:
 
         log.info("Asynchronously updating %d cards for rec #%s...", len(published_messages), rec.id)
         
-        update_tasks = [
-            asyncio.to_thread(
-                self.notifier.edit_recommendation_card_by_ids,
-                channel_id=msg_meta.telegram_channel_id,
-                message_id=msg_meta.telegram_message_id,
-                rec=rec
-            )
-            for msg_meta in published_messages
-        ]
-        
-        results = await asyncio.gather(*update_tasks, return_exceptions=True)
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                msg_meta = published_messages[i]
-                log.warning(f"Failed to update card for rec #{rec.id} in channel {msg_meta.telegram_channel_id}: {result}")
+        for msg_meta in published_messages:
+            try:
+                await asyncio.to_thread(
+                    self.notifier.edit_recommendation_card_by_ids,
+                    channel_id=msg_meta.telegram_channel_id,
+                    message_id=msg_meta.telegram_message_id,
+                    rec=rec
+                )
+            except BadRequest as e:
+                if "message to edit not found" in str(e).lower():
+                    log.warning(
+                        f"Message {msg_meta.telegram_message_id} for rec #{rec.id} in channel "
+                        f"{msg_meta.telegram_channel_id} was not found (likely deleted). "
+                        f"Removing this publication record from the database."
+                    )
+                    session.delete(msg_meta)
+                else:
+                    log.error(f"A Telegram BadRequest occurred while updating card for rec #{rec.id}: {e}")
+            except Exception as e:
+                log.error(f"An unexpected error occurred while updating card for rec #{rec.id}: {e}", exc_info=True)
 
     def _notify_all_channels(self, session: Session, rec_id: int, text: str):
         """Sends a reply notification to all channels where a recommendation was published."""
@@ -380,4 +386,4 @@ class TradeService:
         if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, COMPLETE, AND FEATURE-RICH FILE ---
+# --- END OF FINAL, COMPLETE, AND SELF-HEALING FILE ---
