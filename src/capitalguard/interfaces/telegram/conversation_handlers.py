@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND CORRECTED FILE (Version 13.1.1) ---
+# --- START OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE (Version 13.1.2) ---
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
 
 import logging
@@ -13,7 +13,6 @@ from telegram.ext import (
     CallbackQueryHandler, MessageHandler, filters
 )
 
-# ✅ FIX: Import the missing helper function `parse_cq_parts`.
 from .helpers import get_service, unit_of_work, parse_cq_parts
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
@@ -326,7 +325,10 @@ async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
     query = update.callback_query
     await query.answer("Processing...")
-    token = query.data.split(":")[2]
+    
+    parts = parse_cq_parts(query.data)
+    token = parts[2]
+    
     review_key = _resolve_review_key_from_token(context, token)
     draft = context.bot_data.get(review_key) if review_key else None
     if not draft:
@@ -334,8 +336,17 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
         _clean_conversation_state(context)
         return ConversationHandler.END
         
-    selected_channels = context.user_data.get(CHANNEL_PICKER_KEY)
-    
+    # ✅ LOGIC FIX: Determine which channels to publish to based on which button was pressed.
+    selected_channels = None
+    if parts[1] == "confirm": # From channel picker
+        selected_channels = context.user_data.get(CHANNEL_PICKER_KEY)
+    else: # From main review card ("Publish to Active Channels")
+        user_repo = UserRepository(db_session)
+        user = user_repo.find_by_telegram_id(query.from_user.id)
+        if user:
+            all_channels = ChannelRepository(db_session).list_by_user(user.id, only_active=True)
+            selected_channels = {ch.telegram_channel_id for ch in all_channels}
+
     trade_service = get_service(context, "trade_service", TradeService)
     try:
         saved_rec, report = await trade_service.create_and_publish_recommendation_async(
