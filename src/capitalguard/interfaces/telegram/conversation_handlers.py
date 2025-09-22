@@ -1,6 +1,5 @@
-# --- START OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE (Version 13.1.2) ---
+# --- START OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE (Version 13.1.3) ---
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
-
 import logging
 import uuid
 import types
@@ -21,7 +20,7 @@ from .keyboards import (
     build_channel_picker_keyboard
 )
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
-from .auth import ALLOWED_USER_FILTER
+from .auth import require_active_user, require_channel_subscription
 
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.trade_service import TradeService
@@ -39,7 +38,6 @@ REV_TOKENS_MAP = "review_tokens_map"
 REV_TOKENS_REVERSE = "review_tokens_rev"
 
 # --- Helper Functions ---
-
 def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop(CONVERSATION_DATA_KEY, None)
     context.user_data.pop(LAST_MSG_KEY, None)
@@ -80,7 +78,8 @@ def _resolve_review_key_from_token(context: ContextTypes.DEFAULT_TYPE, token: st
     return context.bot_data[REV_TOKENS_MAP].get(token)
 
 # --- Entry Point and State Handlers ---
-
+@require_active_user
+@require_channel_subscription
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
@@ -91,6 +90,8 @@ async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)
     return SELECT_METHOD
 
+@require_active_user
+@require_channel_subscription
 @unit_of_work
 async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
     _clean_conversation_state(context)
@@ -100,19 +101,21 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
     trade_service = get_service(context, "trade_service", TradeService)
     user_id = str(user.id)
     recent_assets = trade_service.get_recent_assets_for_user(db_session, user_id, limit=5)
-    
-    reply_method = message_obj.edit_text if update.callback_query else message_obj.reply_text
-    sent_message = await reply_method(
-        "🚀 Interactive Builder\n\n1️⃣ Select a recent asset or type a new symbol:",
-        reply_markup=asset_choice_keyboard(recent_assets)
-    )
-    if isinstance(sent_message, Message):
-        context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)
-    elif update.callback_query:
-        context.user_data[LAST_MSG_KEY] = (update.callback_query.message.chat_id, update.callback_query.message.message_id)
+
+    reply_method = message_obj.edit_text if update.callback_query else message_obj.reply_text  
+    sent_message = await reply_method(  
+        "🚀 Interactive Builder\n\n1️⃣ Select a recent asset or type a new symbol:",  
+        reply_markup=asset_choice_keyboard(recent_assets)  
+    )  
+    if isinstance(sent_message, Message):  
+        context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)  
+    elif update.callback_query:  
+        context.user_data[LAST_MSG_KEY] = (update.callback_query.message.chat_id, update.callback_query.message.message_id)  
     
     return I_ASSET
 
+@require_active_user
+@require_channel_subscription
 async def start_text_input_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
@@ -154,40 +157,40 @@ async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     user, message_obj = _get_user_and_message_from_update(update)
     if not user or not message_obj: return ConversationHandler.END
 
-    if update.callback_query:
-        await update.callback_query.answer()
-        asset = update.callback_query.data.split('_', 1)[1]
-        if asset.lower() == "new":
-            await message_obj.edit_text("✍️ Please type the new asset symbol (e.g., BTCUSDT).")
-            return I_ASSET
-    else:
-        asset = (update.message.text or "").strip().upper()
-        try:
-            await update.message.delete()
-        except BadRequest:
-            pass
+    if update.callback_query:  
+        await update.callback_query.answer()  
+        asset = update.callback_query.data.split('_', 1)[1]  
+        if asset.lower() == "new":  
+            await message_obj.edit_text("✍️ Please type the new asset symbol (e.g., BTCUSDT).")  
+            return I_ASSET  
+    else:  
+        asset = (update.message.text or "").strip().upper()  
+        try:  
+            await update.message.delete()  
+        except BadRequest:  
+            pass  
 
-    market_data_service = get_service(context, "market_data_service", MarketDataService)
-    if not market_data_service.is_valid_symbol(asset, "Futures"):
-        if LAST_MSG_KEY in context.user_data:
-            chat_id, message_id = context.user_data[LAST_MSG_KEY]
-            await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id,
-                text=f"❌ Symbol '{asset}' is not valid. Please select a valid one or type a new one."
-            )
-        return I_ASSET
+    market_data_service = get_service(context, "market_data_service", MarketDataService)  
+    if not market_data_service.is_valid_symbol(asset, "Futures"):  
+        if LAST_MSG_KEY in context.user_data:  
+            chat_id, message_id = context.user_data[LAST_MSG_KEY]  
+            await context.bot.edit_message_text(  
+                chat_id=chat_id, message_id=message_id,  
+                text=f"❌ Symbol '{asset}' is not valid. Please select a valid one or type a new one."  
+            )  
+        return I_ASSET  
 
-    draft['asset'] = asset
-    draft['market'] = draft.get('market', 'Futures')
-    context.user_data[CONVERSATION_DATA_KEY] = draft
+    draft['asset'] = asset  
+    draft['market'] = draft.get('market', 'Futures')  
+    context.user_data[CONVERSATION_DATA_KEY] = draft  
 
-    if LAST_MSG_KEY in context.user_data:
-        chat_id, message_id = context.user_data[LAST_MSG_KEY]
-        await context.bot.edit_message_text(
-            chat_id=chat_id, message_id=message_id,
-            text=f"✅ Asset: {asset}\n\n2️⃣ Choose the trade side:",
-            reply_markup=side_market_keyboard(draft['market'])
-        )
+    if LAST_MSG_KEY in context.user_data:  
+        chat_id, message_id = context.user_data[LAST_MSG_KEY]  
+        await context.bot.edit_message_text(  
+            chat_id=chat_id, message_id=message_id,  
+            text=f"✅ Asset: {asset}\n\n2️⃣ Choose the trade side:",  
+            reply_markup=side_market_keyboard(draft['market'])  
+        )  
     
     return I_SIDE_MARKET
 
@@ -200,7 +203,7 @@ async def side_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     context.user_data[CONVERSATION_DATA_KEY] = draft
     await query.message.edit_text(f"✅ Asset: {draft.get('asset','N/A')} ({side})\n\n3️⃣ Choose the entry order type:", reply_markup=order_type_keyboard())
     return I_ORDER_TYPE
-    
+
 async def change_market_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -215,8 +218,8 @@ async def market_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     market = draft.get('market', 'Futures')
     if choice != "market_back":
         market = choice.split('_')[1]
-    draft['market'] = market
-    context.user_data[CONVERSATION_DATA_KEY] = draft
+        draft['market'] = market
+        context.user_data[CONVERSATION_DATA_KEY] = draft
     await query.message.edit_reply_markup(reply_markup=side_market_keyboard(market))
     return I_SIDE_MARKET
 
@@ -246,8 +249,8 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             draft["entry"] = parse_number(tokens[0])
             draft["stop_loss"] = parse_number(tokens[1])
             draft["targets"] = parse_targets_list(tokens[2:])
-            trade_service = get_service(context, "trade_service", TradeService)
-            trade_service._validate_recommendation_data(draft["side"], draft["entry"], draft["stop_loss"], draft["targets"])
+        trade_service = get_service(context, "trade_service", TradeService)
+        trade_service._validate_recommendation_data(draft["side"], draft["entry"], draft["stop_loss"], draft["targets"])
         if not draft["targets"]: raise ValueError("No valid targets were parsed.")
     except ValueError as e:
         await update.message.reply_text(f"❌ Invalid format or logic: {e}\nPlease try again.")
@@ -273,23 +276,23 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
         context.bot_data[review_key] = data.copy()
     review_token = _get_or_make_token_for_review(context, review_key)
     keyboard = review_final_keyboard(review_token)
-    
-    target_chat_id, target_message_id = context.user_data.get(LAST_MSG_KEY, (None, None))
-    if not target_chat_id:
-        target_chat_id, target_message_id = (message.chat_id, message.message_id)
 
-    try:
-        await context.bot.edit_message_text(
-            chat_id=target_chat_id, message_id=target_message_id,
-            text=review_text, reply_markup=keyboard,
-            parse_mode='HTML', disable_web_page_preview=True
-        )
-        if update.message: await update.message.delete()
-    except BadRequest as e:
-        if "Message is not modified" not in str(e):
-            log.warning(f"Edit failed, sending new message. Error: {e}")
-            sent_message = await context.bot.send_message(chat_id=target_chat_id, text=review_text, reply_markup=keyboard, parse_mode='HTML')
-            context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)
+    target_chat_id, target_message_id = context.user_data.get(LAST_MSG_KEY, (None, None))  
+    if not target_chat_id:  
+        target_chat_id, target_message_id = (message.chat_id, message.message_id)  
+
+    try:  
+        await context.bot.edit_message_text(  
+            chat_id=target_chat_id, message_id=target_message_id,  
+            text=review_text, reply_markup=keyboard,  
+            parse_mode='HTML', disable_web_page_preview=True  
+        )  
+        if update.message: await update.message.delete()  
+    except BadRequest as e:  
+        if "Message is not modified" not in str(e):  
+            log.warning(f"Edit failed, sending new message. Error: {e}")  
+            sent_message = await context.bot.send_message(chat_id=target_chat_id, text=review_text, reply_markup=keyboard, parse_mode='HTML')  
+            context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)  
             
     return I_REVIEW
 
@@ -325,49 +328,49 @@ async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
     query = update.callback_query
     await query.answer("Processing...")
+
+    parts = parse_cq_parts(query.data)  
+    action, token = parts[1], parts[2]  
     
-    parts = parse_cq_parts(query.data)
-    action, token = parts[1], parts[2]
-    
-    review_key = _resolve_review_key_from_token(context, token)
-    draft = context.bot_data.get(review_key) if review_key else None
-    if not draft:
-        await query.message.edit_text("❌ This card has expired. Please start over with /newrec.")
-        _clean_conversation_state(context)
-        return ConversationHandler.END
+    review_key = _resolve_review_key_from_token(context, token)  
+    draft = context.bot_data.get(review_key) if review_key else None  
+    if not draft:  
+        await query.message.edit_text("❌ This card has expired. Please start over with /newrec.")  
+        _clean_conversation_state(context)  
+        return ConversationHandler.END  
         
-    selected_channels = None
-    # If the action is 'confirm', it came from the channel picker. Use the selection.
-    if action == "confirm":
-        selected_channels = context.user_data.get(CHANNEL_PICKER_KEY)
-    # Otherwise (action is 'publish'), it came from the main review card.
-    # The desired behavior is to publish to all *active* channels. We let the service handle this by passing None.
+    selected_channels = None  
+    # If the action is 'confirm', it came from the channel picker. Use the selection.  
+    if action == "confirm":  
+        selected_channels = context.user_data.get(CHANNEL_PICKER_KEY)  
+    # Otherwise (action is 'publish'), it came from the main review card.  
+    # The desired behavior is to publish to all *active* channels. We let the service handle this by passing None.  
     
-    trade_service = get_service(context, "trade_service", TradeService)
-    try:
-        saved_rec, report = await trade_service.create_and_publish_recommendation_async(
-            db_session, 
-            user_id=str(query.from_user.id), 
-            target_channel_ids=selected_channels, 
-            **draft
-        )
-        if report.get("success"):
-            await query.message.edit_text(f"✅ Recommendation #{saved_rec.id} was created and published successfully to {len(report['success'])} channel(s).")
-        else:
-            fail_reason = "No active/selected channels found or failed to post."
-            if report.get("failed"):
-                fail_reason = report["failed"][0].get("reason", fail_reason)
-            await query.message.edit_text(
-                f"⚠️ Recommendation #{saved_rec.id} was saved, but publishing failed.\n"
-                f"<b>Reason:</b> {fail_reason}\n\n"
-                "<i>Please check that the bot is an admin in your channel with posting rights.</i>",
-                parse_mode='HTML'
-            )
-    except Exception as e:
-        log.exception("Handler failed to save/publish recommendation.")
-        await query.message.edit_text(f"❌ A critical error occurred: {e}. The operation was safely rolled back.")
-    finally:
-        _clean_conversation_state(context)
+    trade_service = get_service(context, "trade_service", TradeService)  
+    try:  
+        saved_rec, report = await trade_service.create_and_publish_recommendation_async(  
+            db_session,   
+            user_id=str(query.from_user.id),   
+            target_channel_ids=selected_channels,   
+            **draft  
+        )  
+        if report.get("success"):  
+            await query.message.edit_text(f"✅ Recommendation #{saved_rec.id} was created and published successfully to {len(report['success'])} channel(s).")  
+        else:  
+            fail_reason = "No active/selected channels found or failed to post."  
+            if report.get("failed"):  
+                fail_reason = report["failed"][0].get("reason", fail_reason)  
+            await query.message.edit_text(  
+                f"⚠️ Recommendation #{saved_rec.id} was saved, but publishing failed.\n"  
+                f"<b>Reason:</b> {fail_reason}\n\n"  
+                "<i>Please check that the bot is an admin in your channel with posting rights.</i>",  
+                parse_mode='HTML'  
+            )  
+    except Exception as e:  
+        log.exception("Handler failed to save/publish recommendation.")  
+        await query.message.edit_text(f"❌ A critical error occurred: {e}. The operation was safely rolled back.")  
+    finally:  
+        _clean_conversation_state(context)  
     return ConversationHandler.END
 
 async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -385,7 +388,7 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def unexpected_input_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if context.user_data.get(CONVERSATION_DATA_KEY) or context.user_data.get('current_review_key'):
         await update.message.reply_text("⚠️ Unexpected input. The current creation process has been cancelled.")
-    _clean_conversation_state(context)
+        _clean_conversation_state(context)
     return ConversationHandler.END
 
 @unit_of_work
@@ -397,63 +400,64 @@ async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_
     if not review_key or review_key not in context.bot_data:
         await query.message.edit_text("❌ This card has expired."); return ConversationHandler.END
 
-    context.user_data['current_review_key'] = review_key
-    context.user_data['current_review_token'] = token
+    context.user_data['current_review_key'] = review_key  
+    context.user_data['current_review_token'] = token  
 
-    user_repo = UserRepository(db_session)
-    user = user_repo.find_by_telegram_id(query.from_user.id)
-    if not user:
-        await query.message.edit_text("❌ Could not find your user profile."); return ConversationHandler.END
+    user_repo = UserRepository(db_session)  
+    user = user_repo.find_by_telegram_id(query.from_user.id)  
+    if not user:  
+        await query.message.edit_text("❌ Could not find your user profile."); return ConversationHandler.END  
 
-    channel_repo = ChannelRepository(db_session)
-    all_channels = channel_repo.list_by_user(user.id, only_active=False)
+    channel_repo = ChannelRepository(db_session)  
+    all_channels = channel_repo.list_by_user(user.id, only_active=False)  
     
-    selected_channel_ids: Set[int] = {ch.telegram_channel_id for ch in all_channels if ch.is_active}
-    context.user_data[CHANNEL_PICKER_KEY] = selected_channel_ids
+    selected_channel_ids: Set[int] = {ch.telegram_channel_id for ch in all_channels if ch.is_active}  
+    context.user_data[CHANNEL_PICKER_KEY] = selected_channel_ids  
 
-    keyboard = build_channel_picker_keyboard(token, all_channels, selected_channel_ids, page=1)
-    await query.message.edit_text(
-        "📢 **Select Channels for Publication**\n\n"
-        "Choose the channels where you want to publish this recommendation:",
-        reply_markup=keyboard
-    )
+    keyboard = build_channel_picker_keyboard(token, all_channels, selected_channel_ids, page=1)  
+    await query.message.edit_text(  
+        "📢 **Select Channels for Publication**\n\n"  
+        "Choose the channels where you want to publish this recommendation:",  
+        reply_markup=keyboard  
+    )  
     return I_CHANNEL_PICKER
 
 @unit_of_work
 async def channel_picker_logic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
     query = update.callback_query
     await query.answer()
-    
-    parts = parse_cq_parts(query.data)
-    action, token = parts[1], parts[2]
 
-    selected_channel_ids: Set[int] = context.user_data.get(CHANNEL_PICKER_KEY, set())
-    
-    if action == "toggle":
-        channel_id_to_toggle, page = int(parts[3]), int(parts[4])
-        if channel_id_to_toggle in selected_channel_ids:
-            selected_channel_ids.remove(channel_id_to_toggle)
-        else:
-            selected_channel_ids.add(channel_id_to_toggle)
-        context.user_data[CHANNEL_PICKER_KEY] = selected_channel_ids
-    
-    page = int(parts[-1]) if action in ("toggle", "nav") else 1
+    parts = parse_cq_parts(query.data)  
+    action, token = parts[1], parts[2]  
 
-    user_repo = UserRepository(db_session)
-    user = user_repo.find_by_telegram_id(query.from_user.id)
-    all_channels = ChannelRepository(db_session).list_by_user(user.id, only_active=False)
+    selected_channel_ids: Set[int] = context.user_data.get(CHANNEL_PICKER_KEY, set())  
+    
+    if action == "toggle":  
+        channel_id_to_toggle, page = int(parts[3]), int(parts[4])  
+        if channel_id_to_toggle in selected_channel_ids:  
+            selected_channel_ids.remove(channel_id_to_toggle)  
+        else:  
+            selected_channel_ids.add(channel_id_to_toggle)  
+        context.user_data[CHANNEL_PICKER_KEY] = selected_channel_ids  
+    
+    page = int(parts[-1]) if action in ("toggle", "nav") else 1  
 
-    keyboard = build_channel_picker_keyboard(token, all_channels, selected_channel_ids, page=page)
-    await query.message.edit_reply_markup(reply_markup=keyboard)
+    user_repo = UserRepository(db_session)  
+    user = user_repo.find_by_telegram_id(query.from_user.id)  
+    all_channels = ChannelRepository(db_session).list_by_user(user.id, only_active=False)  
+
+    keyboard = build_channel_picker_keyboard(token, all_channels, selected_channel_ids, page=page)  
+    await query.message.edit_reply_markup(reply_markup=keyboard)  
     return I_CHANNEL_PICKER
 
 def register_conversation_handlers(app: Application):
     conv_handler = ConversationHandler(
         entry_points=[
-            CommandHandler("newrec", newrec_menu_entrypoint, filters=ALLOWED_USER_FILTER),
-            CommandHandler("new", start_interactive_entrypoint, filters=ALLOWED_USER_FILTER),
-            CommandHandler("rec", start_text_input_entrypoint, filters=ALLOWED_USER_FILTER),
-            CommandHandler("editor", start_text_input_entrypoint, filters=ALLOWED_USER_FILTER),
+            # ✅ The filters are removed from here, as decorators handle it.
+            CommandHandler("newrec", newrec_menu_entrypoint),
+            CommandHandler("new", start_interactive_entrypoint),
+            CommandHandler("rec", start_text_input_entrypoint),
+            CommandHandler("editor", start_text_input_entrypoint),
         ],
         states={
             SELECT_METHOD: [CallbackQueryHandler(method_chosen, pattern="^method_")],
@@ -489,8 +493,6 @@ def register_conversation_handlers(app: Application):
         ],
         name="recommendation_creation",
         persistent=False,
-        per_message=False 
+        per_message=False
     )
     app.add_handler(conv_handler)
-
-# --- END OF FINAL, COMPLETE, AND FEATURE-RICH FILE ---
