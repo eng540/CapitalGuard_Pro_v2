@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND UX-FIXED FILE (Version 13.1.1) ---
+# --- START OF FINAL, COMPLETE, AND ROBUST FILE (Version 13.1.1) ---
 # src/capitalguard/interfaces/telegram/auth.py
 
 import logging
@@ -25,10 +25,6 @@ class _AccessControlFilter(BaseFilter):
         super().__init__(name="Access_Control_Filter")
 
     def filter(self, update: Update) -> bool:
-        """
-        Checks for an active user in the database. Returns True if active, False otherwise.
-        The denial message is handled by the @require_active_user decorator.
-        """
         if not update or not getattr(update, "effective_user", None):
             return False
 
@@ -112,17 +108,19 @@ def require_channel_subscription(handler_func: Callable) -> Callable:
         except Exception:
             log.info(f"User {user.id} blocked from command '{getattr(update.message, 'text', 'N/A')}' due to not being in channel {channel_id_str}.")
             
-            channel_link = None
+            # ✅ LOGIC FIX: Directly use the invite link from settings for reliability.
+            channel_link = settings.TELEGRAM_CHANNEL_INVITE_LINK
             channel_title = "our official channel"
-            try:
-                chat = await context.bot.get_chat(channel_id_str)
-                channel_title = chat.title
-                if chat.invite_link:
-                    channel_link = chat.invite_link
-                elif chat.username:
-                    channel_link = f"https://t.me/{chat.username}"
-            except Exception as e:
-                log.error(f"Could not fetch details for channel {channel_id_str}: {e}")
+            
+            if not channel_link:
+                log.critical("TELEGRAM_CHANNEL_INVITE_LINK is not set! Cannot show join button to user.")
+            else:
+                # Try to get the channel title for a better message, but don't rely on it.
+                try:
+                    chat = await context.bot.get_chat(channel_id_str)
+                    channel_title = chat.title
+                except Exception:
+                    pass
 
             message = (
                 f"⚠️ <b>Subscription Required</b>\n\n"
@@ -130,7 +128,6 @@ def require_channel_subscription(handler_func: Callable) -> Callable:
                 f"Please join and then try your command again."
             )
             
-            # ✅ UX FIX: Ensure we reply to a message if one exists.
             if update.message:
                 await update.message.reply_html(
                     text=message,
@@ -138,8 +135,6 @@ def require_channel_subscription(handler_func: Callable) -> Callable:
                     disable_web_page_preview=True
                 )
             elif update.callback_query:
-                # For button clicks, we can't send a new message with a button easily,
-                # so we show a clear alert.
                 await update.callback_query.answer(
                     "Please subscribe to our main channel first.",
                     show_alert=True
@@ -148,4 +143,4 @@ def require_channel_subscription(handler_func: Callable) -> Callable:
 
     return wrapper
 
-# --- END OF FINAL, COMPLETE, AND UX-FIXED FILE ---
+# --- END OF FINAL, COMPLETE, AND ROBUST FILE ---
