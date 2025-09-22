@@ -27,7 +27,7 @@ class TelegramLogHandler(logging.Handler):
         self.notifier = notifier
 
     def emit(self, record: logging.LogRecord):
-        if not self.notifier or not settings.TELEGRAM_CHAT_ID:
+        if not self.notifier or not settings.TELEGRAM_ADMIN_CHAT_ID:
             return
         
         simple_message = f"⚠️ CRITICAL ERROR: {record.getMessage()}"
