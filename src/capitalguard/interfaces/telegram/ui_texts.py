@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PROFESSIONALLY-DESIGNED FILE (Version 12.4.0) ---
+# --- START OF FINAL, COMPLETE, AND PROFESSIONAL-DESIGN FILE (Version 13.2.0) ---
 # src/capitalguard/interfaces/telegram/ui_texts.py
 
 from __future__ import annotations
@@ -11,205 +11,238 @@ from capitalguard.domain.value_objects import Target
 # --- Helper Functions ---
 
 def _pct(entry: float, target_price: float, side: str) -> float:
-    """Calculates the percentage difference for a trade."""
-    if not entry or entry == 0:
+    if not entry or entry == 0 or not isfinite(entry) or not isfinite(target_price):
         return 0.0
-    return ((target_price - entry) / entry * 100.0) if (side or "").upper() == "LONG" else ((entry - target_price) / entry * 100.0)
+    side_upper = (side or "").upper()
+    if side_upper == "LONG":
+        return ((target_price / entry) - 1) * 100.0
+    elif side_upper == "SHORT":
+        return ((entry / target_price) - 1) * 100.0
+    return 0.0
 
-def _rr(entry: float, sl: float, first_target: Optional[Target], side: str) -> str:
-    """Calculates the Risk/Reward ratio based on the first target."""
+def _rr(entry: float, sl: float, first_target: Optional[Target]) -> str:
     try:
-        if first_target is None: return "—"
+        if first_target is None or not isfinite(entry) or not isfinite(sl):
+            return "—"
         risk = abs(entry - sl)
-        if risk <= 0: return "—"
+        if risk <= 1e-9:  # Avoid division by zero
+            return "∞"
         reward = abs(first_target.price - entry)
         ratio = reward / risk
-        return f"{ratio:.2f}" if isfinite(ratio) else "—"
+        return f"1:{ratio:.2f}" if isfinite(ratio) else "—"
     except Exception:
         return "—"
 
-# --- Card Building Logic (Rebuilt for Professional Clarity) ---
+# --- Card Building Blocks ---
 
-def _build_header(rec: Recommendation, status_icon: str, status_text: str) -> List[str]:
-    """Builds the standardized header for all card types using HTML formatting."""
-    side_icon = "🟢" if rec.side.value == "LONG" else "🔴"
-    return [
-        f"{status_icon} <b>{status_text} | {rec.asset.value} | {rec.side.value}</b> {side_icon}",
-        f"Signal #{rec.id}",
-    ]
+def _build_header(rec: Recommendation) -> str:
+    status_map = {
+        RecommendationStatus.PENDING: "⏳ PENDING",
+        RecommendationStatus.ACTIVE: "⚡️ ACTIVE",
+        RecommendationStatus.CLOSED: "🏁 CLOSED",
+    }
+    status_text = status_map.get(rec.status, "UNKNOWN")
+    side_icon = '🟢' if getattr(rec.side, "value", "").upper() == 'LONG' else '🔴'
+    return f"<b>{status_text} | #{rec.asset.value} | {rec.side.value}</b> {side_icon} | Signal #{rec.id}"
 
-def _build_live_price_section(live_price: Optional[float], entry: float, side: str) -> List[str]:
-    """Builds a visually isolated section for the live price and PnL."""
-    if live_price is None:
-        return []
+def _build_live_price_section(rec: Recommendation, live_price: Optional[float]) -> str:
+    if rec.status != RecommendationStatus.ACTIVE or live_price is None:
+        return ""
     
-    pnl = _pct(entry, live_price, side)
-    pnl_icon = "🟢" if pnl >= 0 else "🔴"
-    
-    return [
+    pnl = _pct(rec.entry.value, live_price, rec.side.value)
+    pnl_icon = '🟢' if pnl >= 0 else '🔴'
+    lines = [
         "─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
         f"💹 <b>Live Price:</b> <code>{live_price:g}</code> ({pnl_icon} {pnl:+.2f}%)",
-        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
+        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
     ]
+    return "\n".join(lines)
 
-def _build_performance_section(rec: Recommendation) -> List[str]:
-    """Builds the 'PERFORMANCE' section for active cards."""
-    lines = ["📈 <b>PERFORMANCE</b>"]
-    lines.append(f"💰 Entry: <code>{rec.entry.value:g}</code>")
-    
-    stop_text = f"🛑 Stop: <code>{rec.stop_loss.value:g}</code>"
-    if rec.stop_loss.value == rec.entry.value:
-        stop_text += " (at Breakeven)"
-    lines.append(stop_text)
+def _build_performance_section(rec: Recommendation) -> str:
+    lines = ["📊 <b>PERFORMANCE</b>"]
+    entry_price = rec.entry.value
+    stop_loss = rec.stop_loss.value
 
-    if rec.profit_stop_price is not None:
-        lines.append(f"🔒 Profit Stop: <code>{rec.profit_stop_price:g}</code>")
-    
-    # ✅ DESIGN FIX: Add planned R/R to the active card for reference.
-    tp1 = rec.targets.values[0] if rec.targets.values else None
-    lines.append(f"📊 Risk/Reward (Plan): ~<code>{_rr(rec.entry.value, rec.stop_loss.value, tp1, rec.side.value)}</code>")
-    
-    return lines
+    lines.append(f"💰 Entry: <code>{entry_price:g}</code>")
 
-def _build_active_exit_plan_section(rec: Recommendation) -> List[str]:
-    """Builds the dynamic 'EXIT PLAN' for ACTIVE cards, showing target status."""
-    lines = ["", "🎯 <b>EXIT PLAN</b>"]
-    
+    sl_pnl = _pct(entry_price, stop_loss, rec.side.value)
+    lines.append(f"🛑 Stop: <code>{stop_loss:g}</code> ({sl_pnl:+.2f}%)")
+
+    if getattr(rec, "profit_stop_price", None) is not None:
+        if rec.profit_stop_price == entry_price:
+            lines.append(f"🔒 <b>Break-Even:</b> <code>{rec.profit_stop_price:g}</code> (Secured ✅)")
+        else:
+            lines.append(f"🔒 <b>Profit Stop:</b> <code>{rec.profit_stop_price:g}</code>")
+            
+    first_target = rec.targets.values[0] if getattr(rec.targets, "values", []) else None
+    lines.append(f"💡 Risk/Reward (Plan): ~<code>{_rr(entry_price, stop_loss, first_target)}</code>")
+
+    return "\n".join(lines)
+
+def _build_exit_plan_section(rec: Recommendation) -> str:
+    lines = ["\n🎯 <b>EXIT PLAN</b>"]
+    entry_price = rec.entry.value
+
     events = getattr(rec, "events", []) or []
-    hit_targets_indices = {
-        int(e.event_type[2:-4]) - 1
-        for e in events if e.event_type.startswith("TP") and e.event_type.endswith("_HIT")
-    }
+    hit_targets_events = set()
+    for e in events:
+        if getattr(e, "event_type", "").startswith("TP") and getattr(e, "event_type", "").endswith("_HIT"):
+            try:
+                # Extract index from event type like "TP1_HIT"
+                idx = int(e.event_type[2:-4])
+                hit_targets_events.add(idx)
+            except (ValueError, IndexError):
+                continue
 
-    next_target_found = False
-    for i, target in enumerate(rec.targets.values):
-        icon = "⏳"
-        if i in hit_targets_indices:
+    targets_list = getattr(rec.targets, "values", [])
+    if not targets_list:
+        return ""
+
+    # Find the next non-hit target index
+    next_tp_index = -1
+    for i in range(1, len(targets_list) + 1):
+        if i not in hit_targets_events:
+            next_tp_index = i
+            break
+
+    for i, target in enumerate(targets_list, start=1):
+        pct = _pct(entry_price, target.price, rec.side.value)
+        
+        if i in hit_targets_events:
             icon = "✅"
-        elif not next_target_found:
+        elif i == next_tp_index:
             icon = "🚀"
-            next_target_found = True
-        
-        pct = _pct(rec.entry.value, target.price, rec.side.value)
-        close_info = f" (Close {target.close_percent:.1f}%)" if 0 < target.close_percent < 100 else ""
-        lines.append(f"  • {icon} TP{i+1}: <code>{target.price:g}</code> ({pct:+.2f}%){close_info}")
-        
-    return lines
+        else:
+            icon = "⏳"
+            
+        line = f"  • {icon} TP{i}: <code>{target.price:g}</code> ({pct:+.2f}%)"
+        if 0 < getattr(target, "close_percent", 0) < 100:
+            line += f" | Close {target.close_percent:.0f}%"
+        lines.append(line)
 
-def _build_logbook_section(rec: Recommendation) -> List[str]:
-    """Builds the 'LOGBOOK' section if there are partial profit events."""
+    return "\n".join(lines)
+
+def _build_logbook_section(rec: Recommendation) -> str:
+    lines = []
     events = getattr(rec, "events", []) or []
-    partial_profit_events = [e for e in events if "PARTIAL_PROFIT" in getattr(e, "event_type", "")]
-    if not partial_profit_events:
-        return []
-
-    lines = ["", "📋 <b>LOGBOOK</b>", "💰 Profits Taken:"]
-    for event in partial_profit_events:
+    log_events = [e for e in events if getattr(e, "event_type", "") in ("PARTIAL_PROFIT_MANUAL", "SL_UPDATED")]
+    if not log_events:
+        return ""
+        
+    lines.append("\n📋 <b>LOGBOOK</b>")
+    for event in sorted(log_events, key=lambda e: getattr(e, "event_timestamp", datetime.min)):
+        et = getattr(event, "event_type", "")
         data = getattr(event, "event_data", {}) or {}
-        closed_pct = data.get("closed_percent", 0)
-        price = data.get("price", 0.0)
-        pnl_part = data.get("pnl_on_part", 0.0)
-        trigger = "Auto" if data.get("triggered_by") == "AUTO" else "Manual"
-        lines.append(f"  • Closed {closed_pct:.1f}% at <code>{price:g}</code> ({pnl_part:+.2f}%) [{trigger}]")
-    return lines
+        if et == "PARTIAL_PROFIT_MANUAL":
+            pnl = data.get('pnl_on_part', 0.0)
+            lines.append(f"  • 💰 Closed {data.get('closed_percent', 0):.0f}% at <code>{data.get('price', 0):g}</code> ({pnl:+.2f}%) [Manual]")
+        elif et == "SL_UPDATED" and data.get('new_sl') == rec.entry.value:
+             lines.append(f"  • 🛡️ SL moved to Breakeven.")
 
-def _build_footer(rec: Recommendation) -> List[str]:
-    """Builds the standardized footer."""
-    notes = f"\n📝 <b>Notes:</b> <i>{rec.notes}</i>" if rec.notes else ""
-    return [
-        "─" * 20,
-        f"#{rec.asset.value} #Signal{notes}"
+    return "\n".join(lines)
+
+def _build_summary_section(rec: Recommendation) -> str:
+    entry = rec.entry.value
+    exit_price = getattr(rec, "exit_price", 0.0) or 0.0
+    pnl = _pct(entry, exit_price, rec.side.value)
+    
+    if pnl > 0.001: result_text = "🏆 WIN"
+    elif pnl < -0.001: result_text = "💔 LOSS"
+    else: result_text = "🛡️ BREAKEVEN"
+
+    lines = [
+        "📊 <b>TRADE SUMMARY</b>",
+        f"💰 Entry: <code>{entry:g}</code>",
+        f"🏁 Exit: <code>{exit_price:g}</code>",
+        f"{'📈' if pnl >= 0 else '📉'} <b>Final Result: {pnl:+.2f}%</b> ({result_text})",
     ]
+    return "\n".join(lines)
+
+# --- Main Card Builders ---
 
 def _build_pending_card(rec: Recommendation) -> str:
-    lines = _build_header(rec, "⏳", "PENDING")
-    # For pending cards, the plan is the main content.
-    lines.extend(_build_plan_section(rec))
-    lines.extend(_build_footer(rec))
-    return "\n".join(lines)
+    parts = [
+        _build_header(rec),
+        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
+        _build_performance_section(rec),
+        _build_exit_plan_section(rec),
+        f"\n📝 <b>Notes:</b> <i>{rec.notes or '—'}</i>"
+    ]
+    return "\n".join(filter(None, parts))
 
 def _build_active_card(rec: Recommendation, live_price: Optional[float]) -> str:
-    lines = _build_header(rec, "⚡️", "ACTIVE")
-    # ✅ DESIGN FIX: Isolate the live price for emphasis.
-    lines.extend(_build_live_price_section(live_price, rec.entry.value, rec.side.value))
-    lines.extend(_build_performance_section(rec))
-    lines.extend(_build_active_exit_plan_section(rec))
-    lines.extend(_build_logbook_section(rec))
-    lines.extend(_build_footer(rec))
-    return "\n".join(lines)
+    parts = [
+        _build_header(rec),
+        _build_live_price_section(rec, live_price),
+        _build_performance_section(rec),
+        _build_exit_plan_section(rec),
+        _build_logbook_section(rec),
+        "────────────────────",
+        f"#{rec.asset.value} #Signal",
+        f"📝 <b>Notes:</b> <i>{rec.notes or '—'}</i>"
+    ]
+    return "\n".join(filter(None, parts))
 
 def _build_closed_card(rec: Recommendation) -> str:
-    pnl = _pct(rec.entry.value, rec.exit_price or 0.0, rec.side.value)
-    if pnl > 0.001:
-        header_icon, result_text = "🏆", "WIN"
-    elif pnl < -0.001:
-        header_icon, result_text = "💔", "LOSS"
-    else:
-        header_icon, result_text = "🛡️", "BREAKEVEN"
-        
-    lines = _build_header(rec, header_icon, "CLOSED")
-    lines.extend([
-        "─" * 20,
-        "🏁 <b>TRADE SUMMARY</b>",
-        f"💰 Entry: <code>{rec.entry.value:g}</code>",
-        f"🚪 Exit: <code>{rec.exit_price:g}</code>",
-        f"<b>Final Result: {pnl:+.2f}% ({result_text})</b>"
-    ])
-    lines.extend(_build_footer(rec))
-    return "\n".join(lines)
+    parts = [
+        _build_header(rec),
+        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
+        _build_summary_section(rec),
+        _build_logbook_section(rec),
+        "────────────────────",
+        f"#{rec.asset.value} #Signal",
+        f"📝 <b>Notes:</b> <i>{rec.notes or '—'}</i>"
+    ]
+    return "\n".join(filter(None, parts))
 
 def build_trade_card_text(rec: Recommendation) -> str:
-    """
-    The main function to build the text for a recommendation card.
-    It now delegates to specialized functions for each status, ensuring a clean and consistent look.
-    """
+    """The main function to generate the text for any recommendation card."""
     live_price = getattr(rec, "live_price", None)
     if rec.status == RecommendationStatus.PENDING:
         return _build_pending_card(rec)
-    elif rec.status == RecommendationStatus.ACTIVE:
+    if rec.status == RecommendationStatus.ACTIVE:
         return _build_active_card(rec, live_price)
-    elif rec.status == RecommendationStatus.CLOSED:
+    if rec.status == RecommendationStatus.CLOSED:
         return _build_closed_card(rec)
     return "Invalid recommendation state."
 
-# --- Other builders (for conversation handlers) ---
+# --- Other Text Builders ---
 
-def build_review_text_with_price(draft: dict, preview_price: float | None) -> str:
-    """Builds the review card text for the analyst before publishing."""
+def build_review_text_with_price(draft: dict, preview_price: Optional[float]) -> str:
     asset = (draft.get("asset", "") or "").upper()
     side = (draft.get("side", "") or "").upper()
     market = (draft.get("market", "") or "-")
     entry = float(draft.get("entry", 0) or 0)
     sl = float(draft.get("stop_loss", 0) or 0)
-    
     raw_tps = draft.get("targets", [])
-    tps = [Target(price=t['price'], close_percent=t['close_percent']) for t in raw_tps]
-    
+    tps = [Target(price=t['price'], close_percent=t.get('close_percent', 0)) for t in raw_tps]
     tp1 = tps[0] if tps else None
-    planned_rr = _rr(entry, sl, tp1, side)
+    planned_rr = _rr(entry, sl, tp1)
     notes = draft.get("notes") or "—"
-    
+
     target_lines = []
     for i, t in enumerate(tps, start=1):
         pct = _pct(entry, t.price, side)
-        close_info = f" (Close {t.close_percent:.1f}%)" if 0 < t.close_percent < 100 else ""
-        target_lines.append(f"  • TP{i}: <code>{t.price:g}</code> ({pct:+.2f}%){close_info}")
+        suffix = f" (Close {t.close_percent:.0f}%)" if 0 < t.close_percent < 100 else ""
+        target_lines.append(f"  • TP{i}: <code>{t.price:g}</code> ({pct:+.2f}%){suffix}")
 
-    price_line = f"🔎 Current Price: <b>{preview_price:g}</b>" if preview_price is not None else "🔎 Current Price: —"
-
-    return (
+    base_text = (
         f"📝 <b>REVIEW RECOMMENDATION</b>\n"
-        f"─" * 20 + "\n"
-        f"<b>{asset}</b> | {market} / {side}\n\n"
+        f"─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
+        f"<b>{asset} | {market} / {side}</b>\n\n"
         f"💰 Entry: <code>{entry:g}</code>\n"
         f"🛑 Stop: <code>{sl:g}</code>\n"
-        f"📈 Targets:\n" + "\n".join(target_lines) + "\n\n"
-        f"📊 R/R (plan): <b>{planned_rr}</b>\n"
+        f"🎯 Targets:\n" + "\n".join(target_lines) + "\n\n"
+        f"💡 R/R (plan): ~<code>{planned_rr}</code>\n"
         f"📝 Notes: <i>{notes}</i>\n"
-        f"─" * 20 + "\n"
-        f"{price_line}\n\n"
-        "Ready to publish?"
+        f"─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
     )
+
+    if preview_price is not None:
+        base_text += f"\n💹 Current Price: <code>{preview_price:g}</code>"
+    
+    base_text += "\n\nReady to publish?"
+    return base_text
 
 def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     total = stats.get('total_recommendations', 0)
@@ -217,7 +250,6 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     closed_recs = stats.get('closed_recommendations', 0)
     win_rate = stats.get('overall_win_rate', '0.00%')
     total_pnl = stats.get('total_pnl_percent', '0.00%')
-    
     lines = [
         "📊 <b>Your Performance Summary</b> 📊",
         "─" * 20,
@@ -225,11 +257,11 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
         f"Open Trades: <b>{open_recs}</b>",
         f"Closed Trades: <b>{closed_recs}</b>",
         "─" * 20,
-        f"Win Rate: <b>{win_rate}</b>",
-        f"Total PnL (Cumulative): <b>{total_pnl}</b>",
+        f"Overall Win Rate: <b>{win_rate}</b>",
+        f"Total PnL (Cumulative %): <b>{total_pnl}</b>",
         "─" * 20,
         f"<i>Report generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}</i>",
     ]
     return "\n".join(lines)
 
-# --- END OF FINAL, COMPLETE, AND VISUALLY-ENHANCED FILE ---
+# --- END OF FINAL, COMPLETE, AND PROFESSIONAL-DESIGN FILE ---```
