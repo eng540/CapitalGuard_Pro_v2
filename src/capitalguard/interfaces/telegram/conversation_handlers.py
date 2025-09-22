@@ -1,10 +1,10 @@
-# --- START OF FINAL, COMPLETE, AND UX-ENHANCED FILE (Version 12.2.0) ---
+# --- START OF FINAL, COMPLETE, AND FEATURE-RICH FILE (Version 13.1.0) ---
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
 
 import logging
 import uuid
 import types
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, Set
 
 from telegram import Update, ReplyKeyboardRemove, User, Message
 from telegram.error import BadRequest
@@ -17,7 +17,8 @@ from .helpers import get_service, unit_of_work
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
     review_final_keyboard, asset_choice_keyboard, side_market_keyboard,
-    market_choice_keyboard, order_type_keyboard, main_creation_keyboard
+    market_choice_keyboard, order_type_keyboard, main_creation_keyboard,
+    build_channel_picker_keyboard
 )
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
 from .auth import ALLOWED_USER_FILTER
@@ -25,21 +26,25 @@ from .auth import ALLOWED_USER_FILTER
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
+from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository
 
 log = logging.getLogger(__name__)
 
 # --- State Definitions & Keys ---
-(SELECT_METHOD, AWAIT_TEXT_INPUT, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_NOTES, I_REVIEW) = range(8)
+(SELECT_METHOD, AWAIT_TEXT_INPUT, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_NOTES, I_REVIEW, I_CHANNEL_PICKER) = range(9)
 CONVERSATION_DATA_KEY = "new_rec_draft"
 LAST_MSG_KEY = "last_conv_message"
+CHANNEL_PICKER_KEY = "channel_picker_selection"
 REV_TOKENS_MAP = "review_tokens_map"
 REV_TOKENS_REVERSE = "review_tokens_rev"
 
 # --- Helper Functions ---
 
 def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
+    """A centralized function to clean up all conversation-related data."""
     context.user_data.pop(CONVERSATION_DATA_KEY, None)
     context.user_data.pop(LAST_MSG_KEY, None)
+    context.user_data.pop(CHANNEL_PICKER_KEY, None)
     review_key = context.user_data.pop('current_review_key', None)
     if review_key: context.bot_data.pop(review_key, None)
     context.user_data.pop('current_review_token', None)
@@ -105,7 +110,7 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
     if isinstance(sent_message, Message):
         context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)
     elif update.callback_query:
-        context.user_data[LAST_MSG_KEY] = (query.message.chat_id, query.message.message_id)
+        context.user_data[LAST_MSG_KEY] = (update.callback_query.message.chat_id, update.callback_query.message.message_id)
     
     return I_ASSET
 
@@ -328,16 +333,23 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
         await query.message.edit_text("❌ This card has expired. Please start over with /newrec.")
         _clean_conversation_state(context)
         return ConversationHandler.END
+        
+    selected_channels = context.user_data.get(CHANNEL_PICKER_KEY)
+    
     trade_service = get_service(context, "trade_service", TradeService)
     try:
         saved_rec, report = await trade_service.create_and_publish_recommendation_async(
-            db_session, user_id=str(query.from_user.id), **draft
+            db_session, 
+            user_id=str(query.from_user.id), 
+            target_channel_ids=selected_channels, 
+            **draft
         )
         if report.get("success"):
             await query.message.edit_text(f"✅ Recommendation #{saved_rec.id} was created and published successfully to {len(report['success'])} channel(s).")
         else:
-            fail_reason = "No active channels found or failed to post."
-            if report.get("failed"): fail_reason = report["failed"][0].get("reason", fail_reason)
+            fail_reason = "No active/selected channels found or failed to post."
+            if report.get("failed"):
+                fail_reason = report["failed"][0].get("reason", fail_reason)
             await query.message.edit_text(
                 f"⚠️ Recommendation #{saved_rec.id} was saved, but publishing failed.\n"
                 f"<b>Reason:</b> {fail_reason}\n\n"
@@ -369,6 +381,65 @@ async def unexpected_input_fallback(update: Update, context: ContextTypes.DEFAUL
     _clean_conversation_state(context)
     return ConversationHandler.END
 
+@unit_of_work
+async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
+    query = update.callback_query
+    await query.answer()
+    token = query.data.split(':')[2]
+    review_key = _resolve_review_key_from_token(context, token)
+    if not review_key or review_key not in context.bot_data:
+        await query.message.edit_text("❌ This card has expired."); return ConversationHandler.END
+
+    context.user_data['current_review_key'] = review_key
+    context.user_data['current_review_token'] = token
+
+    user_repo = UserRepository(db_session)
+    user = user_repo.find_by_telegram_id(query.from_user.id)
+    if not user:
+        await query.message.edit_text("❌ Could not find your user profile."); return ConversationHandler.END
+
+    channel_repo = ChannelRepository(db_session)
+    all_channels = channel_repo.list_by_user(user.id, only_active=False)
+    
+    selected_channel_ids: Set[int] = {ch.telegram_channel_id for ch in all_channels if ch.is_active}
+    context.user_data[CHANNEL_PICKER_KEY] = selected_channel_ids
+
+    keyboard = build_channel_picker_keyboard(token, all_channels, selected_channel_ids, page=1)
+    await query.message.edit_text(
+        "📢 **Select Channels for Publication**\n\n"
+        "Choose the channels where you want to publish this recommendation:",
+        reply_markup=keyboard
+    )
+    return I_CHANNEL_PICKER
+
+@unit_of_work
+async def channel_picker_logic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    parts = _parse_cq_parts(query.data)
+    action, token = parts[1], parts[2]
+
+    selected_channel_ids: Set[int] = context.user_data.get(CHANNEL_PICKER_KEY, set())
+    
+    if action == "toggle":
+        channel_id_to_toggle, page = int(parts[3]), int(parts[4])
+        if channel_id_to_toggle in selected_channel_ids:
+            selected_channel_ids.remove(channel_id_to_toggle)
+        else:
+            selected_channel_ids.add(channel_id_to_toggle)
+        context.user_data[CHANNEL_PICKER_KEY] = selected_channel_ids
+    
+    page = int(parts[-1]) if action in ("toggle", "nav") else 1
+
+    user_repo = UserRepository(db_session)
+    user = user_repo.find_by_telegram_id(query.from_user.id)
+    all_channels = ChannelRepository(db_session).list_by_user(user.id, only_active=False)
+
+    keyboard = build_channel_picker_keyboard(token, all_channels, selected_channel_ids, page=page)
+    await query.message.edit_reply_markup(reply_markup=keyboard)
+    return I_CHANNEL_PICKER
+
 def register_conversation_handlers(app: Application):
     conv_handler = ConversationHandler(
         entry_points=[
@@ -393,10 +464,17 @@ def register_conversation_handlers(app: Application):
             I_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received)],
             I_REVIEW: [
                 CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
+                CallbackQueryHandler(choose_channels_handler, pattern=r"^rec:choose_channels:"),
                 CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
                 CallbackQueryHandler(cancel_conv_handler, pattern=r"^rec:cancel:")
             ],
             I_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)],
+            I_CHANNEL_PICKER: [
+                CallbackQueryHandler(channel_picker_logic_handler, pattern=r"^pubsel:toggle:"),
+                CallbackQueryHandler(channel_picker_logic_handler, pattern=r"^pubsel:nav:"),
+                CallbackQueryHandler(publish_handler, pattern=r"^pubsel:confirm:"),
+                CallbackQueryHandler(show_review_card, pattern=r"^pubsel:back:"),
+            ]
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conv_handler),
@@ -408,4 +486,4 @@ def register_conversation_handlers(app: Application):
     )
     app.add_handler(conv_handler)
 
-# --- END OF FINAL, COMPLETE, AND UX-ENHANCED FILE ---
+# --- END OF FINAL, COMPLETE, AND FEATURE-RICH FILE ---
