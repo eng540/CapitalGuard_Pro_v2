@@ -1,21 +1,23 @@
-# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.1.0) ---
+# --- START OF FINAL, COMPLETE, AND SECURED FILE (Version 13.1.0) ---
 # src/capitalguard/interfaces/telegram/commands.py
 
 import io
 import csv
 import logging
-import os  # ✅ FIX: Added the missing import for the 'os' module.
+import os
 from typing import Optional, Tuple
 
 from telegram import Update, InputFile
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
 
+# ✅ ARCHITECTURAL FIX: Import all necessary decorators and filters.
 from .helpers import get_service, unit_of_work
-from .auth import ALLOWED_USER_FILTER, require_channel_subscription
+from .auth import require_active_user, require_channel_subscription
 from .ui_texts import build_analyst_stats_text, build_trade_card_text
 from .keyboards import build_open_recs_keyboard, build_signal_tracking_keyboard
 from capitalguard.config import settings
 
+# Import service types for type-safe access
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
@@ -24,6 +26,7 @@ from capitalguard.infrastructure.db.repository import UserRepository, ChannelRep
 log = logging.getLogger(__name__)
 
 AWAITING_FORWARD_KEY = "awaiting_forward_channel_link"
+# A simple way to define admins via environment variable for security
 ADMIN_USERNAMES = [username.strip() for username in (os.getenv("ADMIN_USERNAMES") or "").split(',') if username]
 admin_filter = filters.User(username=ADMIN_USERNAMES)
 
@@ -41,6 +44,7 @@ def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], O
 async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: int) -> bool:
     """Performs a lightweight post to verify the bot can publish in the channel."""
     try:
+        # Send a silent message to verify permissions without notifying users.
         await context.bot.send_message(chat_id=channel_id, text="✅ Channel successfully linked.", disable_notification=True)
         return True
     except Exception as e:
@@ -49,6 +53,8 @@ async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: i
 
 # --- Main User Commands ---
 
+# The /start command is special and does NOT have decorators
+# to allow new users to interact for the first time.
 @unit_of_work
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     """
@@ -59,11 +65,13 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
     user = update.effective_user
     log.info(f"User {user.id} ({user.username}) started interaction.")
 
+    # --- Deep Link Handling for Signal Tracking ---
     if context.args and context.args[0].startswith("track_"):
         try:
             rec_id = int(context.args[0].split('_')[1])
             log.info(f"User {user.id} is trying to track signal #{rec_id}.")
 
+            # First, check if the user is subscribed to the main channel.
             is_subscribed = False
             channel_id = settings.TELEGRAM_CHAT_ID
             if channel_id:
@@ -75,6 +83,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
                 await update.message.reply_html("Please subscribe to our main channel first to track signals.")
                 return
 
+            # If subscribed, fetch and display the signal.
             trade_service = get_service(context, "trade_service", TradeService)
             rec = trade_service.repo.get(db_session, rec_id)
             if not rec:
@@ -94,8 +103,10 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
             await update.message.reply_html("An error occurred while trying to track the signal.")
             return
 
+    # --- Standard Welcome Message ---
     await update.message.reply_html("👋 Welcome to the <b>CapitalGuard Bot</b>.\nUse /help for assistance.")
 
+@require_active_user
 @require_channel_subscription
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
@@ -117,10 +128,12 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/settings</code> — (Future placeholder for account settings)."
     )
 
+@require_active_user
 @require_channel_subscription
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Settings\n\nThis area will be used for account settings in the future.")
 
+@require_active_user
 @require_channel_subscription
 @unit_of_work
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
@@ -145,6 +158,7 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessio
     if filter_text_parts: header_text += f"\n<i>Filtered by: {', '.join(filter_text_parts)}</i>"
     await update.message.reply_html(f"{header_text}\nSelect a recommendation to view its control panel:", reply_markup=keyboard)
 
+@require_active_user
 @require_channel_subscription
 @unit_of_work
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
@@ -154,6 +168,7 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
     text = build_analyst_stats_text(stats)
     await update.message.reply_html(text)
 
+@require_active_user
 @require_channel_subscription
 @unit_of_work
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
@@ -177,6 +192,7 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
     await update.message.reply_document(document=csv_file, caption="Your export has been generated.")
 
 # --- Channel Management Commands ---
+@require_active_user
 @require_channel_subscription
 async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data[AWAITING_FORWARD_KEY] = True
@@ -185,6 +201,7 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     "• This supports both <b>private</b> and <b>public</b> channels.\n"
                                     "• Ensure this bot is an administrator with posting permissions in the channel.")
 
+@require_active_user
 @require_channel_subscription
 @unit_of_work
 async def link_channel_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
@@ -202,6 +219,7 @@ async def link_channel_forward_handler(update: Update, context: ContextTypes.DEF
     uname_disp = f"@{username}" if username else "a private channel"
     await msg.reply_text(f"✅ Channel successfully linked: {title or '-'} ({uname_disp})\nID: <code>{chat_id}</code>", parse_mode="HTML")
 
+@require_active_user
 @require_channel_subscription
 @unit_of_work
 async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
@@ -220,6 +238,7 @@ async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
     lines.append("\nℹ️ To manage: <code>/toggle_channel &lt;id&gt;</code>")
     await update.message.reply_html("\n".join(lines))
 
+@require_active_user
 @require_channel_subscription
 @unit_of_work
 async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
@@ -244,66 +263,23 @@ async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE,
     repo.set_active(user.id, chat_id, not target.is_active)
     await update.message.reply_text("✅ Channel status has been updated.")
 
-# --- Admin Commands ---
-@unit_of_work
-async def grant_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    if not context.args:
-        await update.message.reply_text("Usage: /grantaccess <user_id>")
-        return
-    try:
-        target_user_id = int(context.args[0])
-        user_repo = UserRepository(db_session)
-        target_user = user_repo.find_by_telegram_id(target_user_id)
-        if not target_user:
-            await update.message.reply_text(f"User with ID {target_user_id} not found.")
-            return
-        target_user.is_active = True
-        await update.message.reply_text(f"✅ Access granted to user {target_user_id}.")
-    except ValueError:
-        await update.message.reply_text("Invalid User ID format.")
-    except Exception as e:
-        log.error(f"Error in grant_access_cmd: {e}")
-        await update.message.reply_text("An error occurred.")
-
-@unit_of_work
-async def revoke_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    if not context.args:
-        await update.message.reply_text("Usage: /revokeaccess <user_id>")
-        return
-    try:
-        target_user_id = int(context.args[0])
-        user_repo = UserRepository(db_session)
-        target_user = user_repo.find_by_telegram_id(target_user_id)
-        if not target_user:
-            await update.message.reply_text(f"User with ID {target_user_id} not found.")
-            return
-        target_user.is_active = False
-        await update.message.reply_text(f"❌ Access revoked for user {target_user_id}.")
-    except ValueError:
-        await update.message.reply_text("Invalid User ID format.")
-    except Exception as e:
-        log.error(f"Error in revoke_access_cmd: {e}")
-        await update.message.reply_text("An error occurred.")
-
 def register_commands(app: Application):
     """Registers all basic, non-conversational commands for the bot."""
-    user_filters = ALLOWED_USER_FILTER
     
+    # The /start command is registered without any filters to allow new user interaction.
     app.add_handler(CommandHandler("start", start_cmd))
 
-    app.add_handler(CommandHandler("help", help_cmd, filters=user_filters))
-    app.add_handler(CommandHandler("open", open_cmd, filters=user_filters))
-    app.add_handler(CommandHandler("stats", stats_cmd, filters=user_filters))
-    app.add_handler(CommandHandler("export", export_cmd, filters=user_filters))
-    app.add_handler(CommandHandler("settings", settings_cmd, filters=user_filters))
-    app.add_handler(CommandHandler("link_channel", link_channel_cmd, filters=user_filters))
-    app.add_handler(CommandHandler("channels", channels_cmd, filters=user_filters))
-    app.add_handler(CommandHandler("toggle_channel", toggle_channel_cmd, filters=user_filters))
+    # All other commands are registered without filters, as the decorators now handle protection.
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("open", open_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("export", export_cmd))
+    app.add_handler(CommandHandler("settings", settings_cmd))
+    app.add_handler(CommandHandler("link_channel", link_channel_cmd))
+    app.add_handler(CommandHandler("channels", channels_cmd))
+    app.add_handler(CommandHandler("toggle_channel", toggle_channel_cmd))
     
-    app.add_handler(MessageHandler(user_filters & filters.FORWARDED, link_channel_forward_handler))
+    # The forwarded message handler also needs protection.
+    app.add_handler(MessageHandler(filters.FORWARDED, link_channel_forward_handler))
 
-    if ADMIN_USERNAMES:
-        app.add_handler(CommandHandler("grantaccess", grant_access_cmd, filters=admin_filter))
-        app.add_handler(CommandHandler("revokeaccess", revoke_access_cmd, filters=admin_filter))
-
-# --- END OF FINAL, COMPLETE, AND MONETIZATION-READY FILE ---
+# --- END OF FINAL, COMPLETE, AND SECURED FILE ---```
