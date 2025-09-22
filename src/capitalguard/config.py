@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.1.0) ---
+# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.1.1) ---
 # src/capitalguard/config.py
 
 from pydantic import Field
@@ -19,14 +19,14 @@ class Settings(BaseSettings):
     # Telegram
     TELEGRAM_BOT_TOKEN: str | None = None
     TELEGRAM_CHAT_ID: str | None = None
-    TELEGRAM_WEBHOOK_URL: str | None = None     # e.g. https://your-app.up.railway.app/webhook/telegram
+    TELEGRAM_WEBHOOK_URL: str | None = None
 
-    # ✅ NEW: Admin configuration for access control and contact.
-    ADMIN_USERNAMES: str | None = None          # Comma-separated list of admin usernames (without @)
-    ADMIN_CONTACT: str | None = None            # The public contact handle for the admin (e.g., @AdminUsername)
+    # ✅ NEW: Added explicit invite link setting for reliability.
+    TELEGRAM_CHANNEL_INVITE_LINK: str | None = None
 
-    # ❌ REMOVED: Legacy variable, no longer used by the new DB-based access control.
-    # TELEGRAM_ALLOWED_USERS: str | None = None
+    # Admin configuration for access control and contact.
+    ADMIN_USERNAMES: str | None = None
+    ADMIN_CONTACT: str | None = None
 
     # API / Security
     API_KEY: str | None = None
