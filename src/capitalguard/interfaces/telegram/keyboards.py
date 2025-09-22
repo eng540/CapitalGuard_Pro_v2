@@ -1,8 +1,8 @@
-# --- START OF FINAL, COMPLETE, AND FEATURE-RICH FILE (Version 13.1.0) ---
+# --- START OF FINAL, COMPLETE, AND UX-FIXED FILE (Version 13.1.1) ---
 # src/capitalguard/interfaces/telegram/keyboards.py
 
 import math
-from typing import List, Iterable, Set
+from typing import List, Iterable, Set, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -75,10 +75,7 @@ async def build_open_recs_keyboard(
 
 
 def public_channel_keyboard(rec_id: int, bot_username: str) -> InlineKeyboardMarkup:
-    """
-    Builds the keyboard for a public channel message.
-    The "Track Signal" button uses a deep link to start a private interaction with the bot.
-    """
+    """Builds the keyboard for a public channel message."""
     buttons = [
         InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}")
     ]
@@ -190,9 +187,6 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
 
 
 def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
-    """
-    ✅ FEATURE RESTORED: The "Choose Channels" button is now back to allow selective publishing.
-    """
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ نشر في القنوات الفعّالة", callback_data=f"rec:publish:{review_token}")],
         [
@@ -210,7 +204,6 @@ def build_channel_picker_keyboard(
     page: int = 1,
     per_page: int = 5,
 ) -> InlineKeyboardMarkup:
-    """Builds a paginated keyboard for selecting channels to publish to."""
     ch_list = list(channels)
     total = len(ch_list)
     page = max(page, 1)
@@ -241,20 +234,15 @@ def build_channel_picker_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
-def build_subscription_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
-    """Builds the keyboard with a link to the main channel for non-subscribed users."""
-    channel_id = settings.TELEGRAM_CHAT_ID
-    channel_link = None
-    
-    if channel_id:
-        # This is a simplified way to get the link. A more robust solution
-        # might cache this link at startup.
-        if hasattr(context, '_chat_links') and channel_id in context._chat_links:
-            channel_link = context._chat_links[channel_id]
-    
+def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineKeyboardMarkup]:
+    """
+    Builds the keyboard with a link to the main channel for non-subscribed users.
+    ✅ LOGIC FIX: Now robustly handles cases where a link might not be available.
+    """
     if channel_link:
         return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ الانضمام للقناة", url=channel_link)]])
     
+    # Return None if no link can be generated, the handler will send the message without a button.
     return None
 
 
@@ -270,4 +258,4 @@ def build_signal_tracking_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         ]
     ])
 
-# --- END OF FINAL, COMPLETE, AND FEATURE-RICH FILE ---
+# --- END OF FINAL, COMPLETE, AND UX-FIXED FILE ---
