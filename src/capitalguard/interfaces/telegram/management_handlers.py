@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.0.0) ---
+# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.1.0) ---
 # src/capitalguard/interfaces/telegram/management_handlers.py
 
 import logging
@@ -19,7 +19,7 @@ from telegram.ext import (
 )
 
 from capitalguard.domain.entities import RecommendationStatus, ExitStrategy
-from .helpers import get_service, unit_of_work
+from .helpers import get_service, unit_of_work, parse_tail_int, parse_cq_parts
 from .keyboards import (
     analyst_control_panel_keyboard,
     analyst_edit_menu_keyboard,
@@ -122,24 +122,17 @@ async def _send_or_edit_strategy_menu(
         if "Message is not modified" not in str(e):
             log.warning(f"Failed to edit strategy menu for rec #{rec_id}: {e}")
 
-# --- Helper Functions ---
-
-def _parse_tail_int(data: str) -> Optional[int]:
-    try:
-        return int(data.split(":")[-1])
-    except (ValueError, IndexError, AttributeError):
-        return None
-
-def _parse_cq_parts(data: str) -> List[str]:
-    return data.split(":")
-
 # --- Main Callback Query Handlers ---
 
 async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Read-only handler to update a recommendation card in a public channel.
+    Uses a short cooldown to avoid spam.
+    """
     query = update.callback_query
     if not query or not query.data:
         return
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if not rec_id:
         await query.answer("Invalid recommendation ID.", show_alert=True)
         return
@@ -201,7 +194,7 @@ async def update_public_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
     await query.answer()
-    page = _parse_tail_int(query.data) or 1
+    page = parse_tail_int(query.data) or 1
     trade_service = get_service(context, "trade_service", TradeService)
     price_service = get_service(context, "price_service", PriceService)
     filters_map = context.user_data.get("last_open_filters", {}) or {}
@@ -224,7 +217,7 @@ async def navigate_open_recs_handler(update: Update, context: ContextTypes.DEFAU
 async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
     await query.answer()
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if rec_id:
         await _send_or_edit_rec_panel(context, db_session, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
 
@@ -232,7 +225,7 @@ async def show_rec_panel_handler(update: Update, context: ContextTypes.DEFAULT_T
 async def strategy_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
     await query.answer()
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if rec_id:
         await _send_or_edit_strategy_menu(context, db_session, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
 
@@ -240,7 +233,7 @@ async def strategy_menu_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def update_private_card(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
     await query.answer("Updating price...")
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if not rec_id:
         return
     trade_service = get_service(context, "trade_service", TradeService)
@@ -296,7 +289,7 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
 @unit_of_work
 async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
-    parts = _parse_cq_parts(query.data)
+    parts = parse_cq_parts(query.data)
     if len(parts) < 4:
         await query.answer("Bad request.", show_alert=True)
         return
@@ -315,13 +308,13 @@ async def cancel_close_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     context.user_data.pop(AWAITING_INPUT_KEY, None)
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if rec_id:
         await _send_or_edit_rec_panel(context, db_session, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
 
 async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if rec_id is None:
         return
     keyboard = analyst_edit_menu_keyboard(rec_id)
@@ -330,7 +323,7 @@ async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if rec_id is None:
         return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_sl", "rec_id": rec_id, "original_message": query.message}
@@ -342,7 +335,7 @@ async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def start_edit_tp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if rec_id is None:
         return
     context.user_data[AWAITING_INPUT_KEY] = {"action": "edit_tp", "rec_id": rec_id, "original_message": query.message}
@@ -354,7 +347,7 @@ async def start_edit_tp_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def start_profit_stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    parts = _parse_cq_parts(query.data)
+    parts = parse_cq_parts(query.data)
     try:
         rec_id = int(parts[2])
     except Exception:
@@ -373,7 +366,7 @@ async def start_profit_stop_handler(update: Update, context: ContextTypes.DEFAUL
 @unit_of_work
 async def _remove_profit_stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if not rec_id:
         return
     await query.answer("Removing Profit Stop...")
@@ -385,7 +378,7 @@ async def _remove_profit_stop_handler(update: Update, context: ContextTypes.DEFA
 async def set_strategy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
     await query.answer("Changing strategy...")
-    parts = _parse_cq_parts(query.data)
+    parts = parse_cq_parts(query.data)
     try:
         rec_id, strategy_value = int(parts[2]), parts[3]
     except Exception:
@@ -398,7 +391,7 @@ async def set_strategy_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if not rec_id:
         return
     text = f"{query.message.text}\n\n--- \n<b>اختر طريقة الإغلاق:</b>"
@@ -408,7 +401,7 @@ async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_
 @unit_of_work
 async def close_at_market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if not rec_id:
         await query.answer("Invalid request.", show_alert=True)
         return
@@ -418,7 +411,7 @@ async def close_at_market_handler(update: Update, context: ContextTypes.DEFAULT_
 
 async def close_with_manual_price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if rec_id is None:
         await query.answer("Bad request.", show_alert=True)
         return
@@ -432,7 +425,7 @@ async def close_with_manual_price_handler(update: Update, context: ContextTypes.
 # --- Partial Profit Conversation ---
 async def partial_profit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     if rec_id is None:
         return ConversationHandler.END
     context.user_data['partial_profit_rec_id'] = rec_id
@@ -495,56 +488,51 @@ async def cancel_partial_profit(update: Update, context: ContextTypes.DEFAULT_TY
 @unit_of_work
 async def track_notify_tp1_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
-    rec_id = _parse_tail_int(query.data)
-    # In a real implementation, you would save this user's interest in the database.
-    # For now, we just acknowledge it.
+    rec_id = parse_tail_int(query.data)
     await query.answer(f"✅ You will be notified when TP1 is hit for signal #{rec_id}.", show_alert=True)
     log.info(f"User {query.from_user.id} subscribed to TP1 alerts for recommendation #{rec_id}.")
 
 @unit_of_work
 async def track_notify_sl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     await query.answer(f"✅ You will be notified if the Stop Loss is hit for signal #{rec_id}.", show_alert=True)
     log.info(f"User {query.from_user.id} subscribed to SL alerts for recommendation #{rec_id}.")
 
 async def track_add_portfolio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    rec_id = _parse_tail_int(query.data)
+    rec_id = parse_tail_int(query.data)
     await query.answer(f"This feature is coming soon!", show_alert=True)
     log.info(f"User {query.from_user.id} attempted to use 'add to portfolio' for recommendation #{rec_id}.")
 
 
 def register_management_handlers(application: Application):
-    # All handlers are protected by the main access control filter.
     user_filters = ALLOWED_USER_FILTER
 
-    application.add_handler(CallbackQueryHandler(navigate_open_recs_handler, pattern=r"^open_nav:page:", block=False))
-    application.add_handler(CallbackQueryHandler(show_rec_panel_handler, pattern=r"^rec:show_panel:", block=False))
-    application.add_handler(CallbackQueryHandler(show_rec_panel_handler, pattern=r"^rec:back_to_main:", block=False))
-    application.add_handler(CallbackQueryHandler(strategy_menu_handler, pattern=r"^rec:strategy_menu:", block=False))
-    application.add_handler(CallbackQueryHandler(confirm_close_handler, pattern=r"^rec:confirm_close:", block=False))
-    application.add_handler(CallbackQueryHandler(cancel_close_handler, pattern=r"^rec:cancel_close:", block=False))
-    application.add_handler(CallbackQueryHandler(show_edit_menu_handler, pattern=r"^rec:edit_menu:", block=False))
-    application.add_handler(CallbackQueryHandler(start_edit_sl_handler, pattern=r"^rec:edit_sl:", block=False))
-    application.add_handler(CallbackQueryHandler(start_edit_tp_handler, pattern=r"^rec:edit_tp:", block=False))
-    application.add_handler(CallbackQueryHandler(start_profit_stop_handler, pattern=r"^rec:set_profit_stop:", block=False))
-    application.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:", block=False))
-    application.add_handler(CallbackQueryHandler(update_private_card, pattern=r"^rec:update_private:", block=False))
-    application.add_handler(CallbackQueryHandler(show_close_menu_handler, pattern=r"^rec:close_menu:", block=False))
-    application.add_handler(CallbackQueryHandler(close_at_market_handler, pattern=r"^rec:close_market:", block=False))
-    application.add_handler(CallbackQueryHandler(close_with_manual_price_handler, pattern=r"^rec:close_manual:", block=False))
+    application.add_handler(CallbackQueryHandler(navigate_open_recs_handler, pattern=r"^open_nav:page:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(show_rec_panel_handler, pattern=r"^rec:show_panel:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(show_rec_panel_handler, pattern=r"^rec:back_to_main:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(strategy_menu_handler, pattern=r"^rec:strategy_menu:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(confirm_close_handler, pattern=r"^rec:confirm_close:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(cancel_close_handler, pattern=r"^rec:cancel_close:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(show_edit_menu_handler, pattern=r"^rec:edit_menu:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(start_edit_sl_handler, pattern=r"^rec:edit_sl:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(start_edit_tp_handler, pattern=r"^rec:edit_tp:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(start_profit_stop_handler, pattern=r"^rec:set_profit_stop:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(update_private_card, pattern=r"^rec:update_private:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(show_close_menu_handler, pattern=r"^rec:close_menu:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(close_at_market_handler, pattern=r"^rec:close_market:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(close_with_manual_price_handler, pattern=r"^rec:close_manual:", block=False, filters=user_filters))
     
-    # Public card update handler does NOT use the user filter.
     application.add_handler(CallbackQueryHandler(update_public_card, pattern=r"^rec:update_public:", block=False))
 
-    # Handlers for the new signal tracking feature
-    application.add_handler(CallbackQueryHandler(track_notify_tp1_handler, pattern=r"^track:notify_tp1:", block=False))
-    application.add_handler(CallbackQueryHandler(track_notify_sl_handler, pattern=r"^track:notify_sl:", block=False))
-    application.add_handler(CallbackQueryHandler(track_add_portfolio_handler, pattern=r"^track:add_portfolio:", block=False))
+    application.add_handler(CallbackQueryHandler(track_notify_tp1_handler, pattern=r"^track:notify_tp1:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(track_notify_sl_handler, pattern=r"^track:notify_sl:", block=False, filters=user_filters))
+    application.add_handler(CallbackQueryHandler(track_add_portfolio_handler, pattern=r"^track:add_portfolio:", block=False, filters=user_filters))
 
     partial_profit_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(partial_profit_start, pattern=r"^rec:close_partial:")],
+        entry_points=[CallbackQueryHandler(partial_profit_start, pattern=r"^rec:close_partial:", filters=user_filters)],
         states={
             AWAIT_PARTIAL_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_partial_percent)],
             AWAIT_PARTIAL_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_partial_price)],
@@ -554,7 +542,6 @@ def register_management_handlers(application: Application):
         per_user=True,
         per_chat=True,
     )
-    application.add_handler(ConversationHandler(entry_points=[], states={}, fallbacks=[], per_message=False))
     application.add_handler(partial_profit_conv)
 
-    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler), group=1)
+    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & user_filters, unified_reply_handler), group=1)
