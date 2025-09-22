@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND FEATURE-RICH FILE (Version 13.1.0) ---
+# --- START OF FINAL, COMPLETE, AND CORRECTED FILE (Version 13.1.1) ---
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
 
 import logging
@@ -13,6 +13,7 @@ from telegram.ext import (
     CallbackQueryHandler, MessageHandler, filters
 )
 
+# ✅ FIX: Import the missing helper function `parse_cq_parts`.
 from .helpers import get_service, unit_of_work, parse_cq_parts
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
@@ -41,7 +42,6 @@ REV_TOKENS_REVERSE = "review_tokens_rev"
 # --- Helper Functions ---
 
 def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
-    """A centralized function to clean up all conversation-related data."""
     context.user_data.pop(CONVERSATION_DATA_KEY, None)
     context.user_data.pop(LAST_MSG_KEY, None)
     context.user_data.pop(CHANNEL_PICKER_KEY, None)
