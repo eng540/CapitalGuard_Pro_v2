@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.1.1) ---
+# --- START OF FINAL, COMPLETE, AND SECURE FILE (Version 13.1.2) ---
 # src/capitalguard/config.py
 
 from pydantic import Field
@@ -18,13 +18,14 @@ class Settings(BaseSettings):
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str | None = None
-    TELEGRAM_CHAT_ID: str | None = None
+    TELEGRAM_CHAT_ID: str | None = None # For public channel subscription check
     TELEGRAM_WEBHOOK_URL: str | None = None
-
-    # ✅ NEW: Added explicit invite link setting for reliability.
     TELEGRAM_CHANNEL_INVITE_LINK: str | None = None
 
-    # Admin configuration for access control and contact.
+    # ✅ NEW: Dedicated setting for admin/error notifications.
+    TELEGRAM_ADMIN_CHAT_ID: str | None = None
+
+    # Admin configuration
     ADMIN_USERNAMES: str | None = None
     ADMIN_CONTACT: str | None = None
 
@@ -42,4 +43,4 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# --- END OF FINAL, COMPLETE, AND MONETIZATION-READY FILE ---
+# --- END OF FINAL, COMPLETE, AND SECURE FILE ---
