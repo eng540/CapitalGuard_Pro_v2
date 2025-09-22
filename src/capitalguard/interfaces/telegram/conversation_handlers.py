@@ -327,7 +327,7 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
     await query.answer("Processing...")
     
     parts = parse_cq_parts(query.data)
-    token = parts[2]
+    action, token = parts[1], parts[2]
     
     review_key = _resolve_review_key_from_token(context, token)
     draft = context.bot_data.get(review_key) if review_key else None
@@ -336,17 +336,13 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
         _clean_conversation_state(context)
         return ConversationHandler.END
         
-    # ✅ LOGIC FIX: Determine which channels to publish to based on which button was pressed.
     selected_channels = None
-    if parts[1] == "confirm": # From channel picker
+    # If the action is 'confirm', it came from the channel picker. Use the selection.
+    if action == "confirm":
         selected_channels = context.user_data.get(CHANNEL_PICKER_KEY)
-    else: # From main review card ("Publish to Active Channels")
-        user_repo = UserRepository(db_session)
-        user = user_repo.find_by_telegram_id(query.from_user.id)
-        if user:
-            all_channels = ChannelRepository(db_session).list_by_user(user.id, only_active=True)
-            selected_channels = {ch.telegram_channel_id for ch in all_channels}
-
+    # Otherwise (action is 'publish'), it came from the main review card.
+    # The desired behavior is to publish to all *active* channels. We let the service handle this by passing None.
+    
     trade_service = get_service(context, "trade_service", TradeService)
     try:
         saved_rec, report = await trade_service.create_and_publish_recommendation_async(
