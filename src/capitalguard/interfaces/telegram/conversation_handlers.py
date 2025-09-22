@@ -13,7 +13,7 @@ from telegram.ext import (
     CallbackQueryHandler, MessageHandler, filters
 )
 
-from .helpers import get_service, unit_of_work
+from .helpers import get_service, unit_of_work, parse_cq_parts
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
     review_final_keyboard, asset_choice_keyboard, side_market_keyboard,
@@ -417,7 +417,7 @@ async def channel_picker_logic_handler(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     await query.answer()
     
-    parts = _parse_cq_parts(query.data)
+    parts = parse_cq_parts(query.data)
     action, token = parts[1], parts[2]
 
     selected_channel_ids: Set[int] = context.user_data.get(CHANNEL_PICKER_KEY, set())
