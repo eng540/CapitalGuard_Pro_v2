@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.1.0) ---
+# --- START OF FINAL, COMPLETE, AND UX-FIXED FILE (Version 13.1.1) ---
 # src/capitalguard/interfaces/telegram/auth.py
 
 import logging
@@ -19,17 +19,15 @@ log = logging.getLogger(__name__)
 class _AccessControlFilter(BaseFilter):
     """
     A DB-backed filter that checks if a user exists and is active.
-    This is the primary mechanism for controlling access for subscribers.
-    It creates a user record if one doesn't exist.
+    It creates a user record if one doesn't exist (as inactive).
     """
     def __init__(self) -> None:
         super().__init__(name="Access_Control_Filter")
 
     def filter(self, update: Update) -> bool:
         """
-        Checks for an active user in the database.
-        Note: This synchronous method should NOT send asynchronous messages.
-        It only returns True or False. The denial message is handled by decorators.
+        Checks for an active user in the database. Returns True if active, False otherwise.
+        The denial message is handled by the @require_active_user decorator.
         """
         if not update or not getattr(update, "effective_user", None):
             return False
@@ -40,21 +38,17 @@ class _AccessControlFilter(BaseFilter):
         try:
             with SessionLocal() as session:
                 user_repo = UserRepository(session)
-                # Ensure user exists, creating them as inactive if new.
                 user = user_repo.find_or_create(
                     telegram_id=tg_id,
                     first_name=getattr(u, "first_name", None),
                 )
-                # The core authorization logic: only allow active users.
                 if user and user.is_active:
                     return True
         except Exception as e:
             log.error(f"Access_Control_Filter: Database error for user {tg_id}: {e}", exc_info=True)
         
-        # If user is not active or an error occurred, block access.
         return False
 
-# A single instance of the filter for use in ConversationHandler entry_points if needed.
 ALLOWED_USER_FILTER = _AccessControlFilter()
 
 
@@ -70,8 +64,7 @@ def require_active_user(handler_func: Callable) -> Callable:
 
         user = update.effective_user
         log.warning(f"Blocked access for inactive user {user.id} ({user.username}) to a protected command.")
-
-        # ✅ DYNAMIC CONTACT INFO: Build the denial message using the admin contact from settings.
+        
         contact_info = "the administrator"
         if settings.ADMIN_CONTACT:
             contact_info = f"<b>{settings.ADMIN_CONTACT}</b>"
@@ -82,9 +75,15 @@ def require_active_user(handler_func: Callable) -> Callable:
             f"Please contact {contact_info} for access."
         )
         
-        await update.message.reply_html(message)
+        if update.message:
+            await update.message.reply_html(message)
+        elif update.callback_query:
+            await update.callback_query.answer(
+                "🚫 Access Restricted. Please contact support.",
+                show_alert=True
+            )
         return
-
+        
     return wrapper
 
 
@@ -111,7 +110,7 @@ def require_channel_subscription(handler_func: Callable) -> Callable:
             else:
                 raise ValueError("User is not a member.")
         except Exception:
-            log.info(f"User {user.id} blocked from command '{update.message.text}' due to not being in channel {channel_id_str}.")
+            log.info(f"User {user.id} blocked from command '{getattr(update.message, 'text', 'N/A')}' due to not being in channel {channel_id_str}.")
             
             channel_link = None
             channel_title = "our official channel"
@@ -130,13 +129,23 @@ def require_channel_subscription(handler_func: Callable) -> Callable:
                 f"To use this bot, you must first be a member of our channel: <b>{channel_title}</b>.\n\n"
                 f"Please join and then try your command again."
             )
-            await update.message.reply_html(
-                text=message,
-                reply_markup=build_subscription_keyboard(channel_link),
-                disable_web_page_preview=True
-            )
+            
+            # ✅ UX FIX: Ensure we reply to a message if one exists.
+            if update.message:
+                await update.message.reply_html(
+                    text=message,
+                    reply_markup=build_subscription_keyboard(channel_link),
+                    disable_web_page_preview=True
+                )
+            elif update.callback_query:
+                # For button clicks, we can't send a new message with a button easily,
+                # so we show a clear alert.
+                await update.callback_query.answer(
+                    "Please subscribe to our main channel first.",
+                    show_alert=True
+                )
             return
 
     return wrapper
 
-# --- END OF FINAL, COMPLETE, AND MONETIZATION-READY FILE ---
+# --- END OF FINAL, COMPLETE, AND UX-FIXED FILE ---
