@@ -1,13 +1,12 @@
-# --- START OF FINAL, COMPLETE, AND CORRECTED FILE (Version 11.0.0) ---
+# --- START OF FINAL, COMPLETE, AND CORRECTED FILE (Version 11.1.0) ---
 # src/capitalguard/infrastructure/db/repository.py
-
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict, Set
 
-# ✅ FIX: Import 'func' from sqlalchemy to correctly use SQL functions like MAX, COUNT, etc.
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.exc import IntegrityError
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType, ExitStrategy
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
@@ -24,22 +23,31 @@ class UserRepository:
         return self.session.query(User).filter(User.telegram_user_id == telegram_id).first()
 
     def find_or_create(self, telegram_id: int, **kwargs) -> User:
+        """
+        Finds a user by their Telegram ID, or creates a new one if not found.
+        Concurrency-safe implementation.
+        """
         user = self.find_by_telegram_id(telegram_id)
         if user:
             return user
         
-        log.info("Creating new user for telegram_id=%s", telegram_id)
-        new_user = User(
-            telegram_user_id=telegram_id,
-            email=kwargs.get("email") or f"tg{telegram_id}@telegram.local",
-            user_type=(kwargs.get("user_type") or "trader"),
-            is_active=True,
-            first_name=kwargs.get("first_name"),
-        )
-        self.session.add(new_user)
-        self.session.flush()
-        self.session.refresh(new_user)
-        return new_user
+        try:
+            log.info("Attempting to create new user for telegram_id=%s", telegram_id)
+            new_user = User(
+                telegram_user_id=telegram_id,
+                email=kwargs.get("email") or f"tg{telegram_id}@telegram.local",
+                user_type=(kwargs.get("user_type") or "trader"),
+                is_active=False,  # New users inactive by default
+                first_name=kwargs.get("first_name"),
+            )
+            self.session.add(new_user)
+            self.session.flush()
+            self.session.refresh(new_user)
+            return new_user
+        except IntegrityError:
+            log.warning(f"Race condition detected for telegram_id={telegram_id}. Rolling back and fetching existing user.")
+            self.session.rollback()
+            return self.find_by_telegram_id(telegram_id)
 
 class ChannelRepository:
     """Handles all database operations related to Channel."""
@@ -227,7 +235,6 @@ class RecommendationRepository:
         results = session.query(RecommendationORM.asset).filter(
             RecommendationORM.user_id == user.id
         ).group_by(RecommendationORM.asset).order_by(
-            # ✅ FIX: Changed 'session.func.max' to the correct 'func.max'
             desc(func.max(RecommendationORM.created_at))
         ).limit(limit).all()
         
@@ -260,5 +267,3 @@ class RecommendationRepository:
             result[rec_id].add(event_type)
             
         return result
-
-# --- END OF FINAL, COMPLETE, AND CORRECTED FILE ---```
