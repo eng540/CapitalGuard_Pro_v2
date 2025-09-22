@@ -1,10 +1,10 @@
-# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.0.0) ---
+# --- START OF FINAL, COMPLETE, AND FEATURE-RICH FILE (Version 13.1.0) ---
 # src/capitalguard/interfaces/telegram/keyboards.py
 
 import math
 from typing import List, Iterable, Set
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
@@ -190,30 +190,71 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
 
 
 def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
-    # Simplified to remove the "Choose Channels" button which is not implemented.
+    """
+    ✅ FEATURE RESTORED: The "Choose Channels" button is now back to allow selective publishing.
+    """
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ نشر في القنوات الفعّالة", callback_data=f"rec:publish:{review_token}")],
         [
+            InlineKeyboardButton("📢 اختيار القنوات", callback_data=f"rec:choose_channels:{review_token}"),
             InlineKeyboardButton("📝 إضافة/تعديل ملاحظات", callback_data=f"rec:add_notes:{review_token}"),
         ],
         [InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{review_token}")],
     ])
 
-# --- NEW KEYBOARDS FOR MONETIZATION & TRACKING ---
+
+def build_channel_picker_keyboard(
+    review_token: str,
+    channels: Iterable[dict],
+    selected_ids: Set[int],
+    page: int = 1,
+    per_page: int = 5,
+) -> InlineKeyboardMarkup:
+    """Builds a paginated keyboard for selecting channels to publish to."""
+    ch_list = list(channels)
+    total = len(ch_list)
+    page = max(page, 1)
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_items = ch_list[start:end]
+
+    rows: List[List[InlineKeyboardButton]] = []
+
+    for ch in page_items:
+        tg_chat_id = int(ch.telegram_channel_id)
+        label = ch.title or (f"@{ch.username}" if ch.username else str(tg_chat_id))
+        mark = "✅" if tg_chat_id in selected_ids else "☑️"
+        rows.append([InlineKeyboardButton(f"{mark} {label}", callback_data=f"pubsel:toggle:{review_token}:{tg_chat_id}:{page}")])
+
+    nav: List[InlineKeyboardButton] = []
+    max_page = max(1, math.ceil(total / per_page))
+    if page > 1: nav.append(InlineKeyboardButton("⬅️", callback_data=f"pubsel:nav:{review_token}:{page-1}"))
+    if max_page > 1: nav.append(InlineKeyboardButton(f"صفحة {page}/{max_page}", callback_data="noop"))
+    if page < max_page: nav.append(InlineKeyboardButton("➡️", callback_data=f"pubsel:nav:{review_token}:{page+1}"))
+    if nav: rows.append(nav)
+
+    rows.append([
+        InlineKeyboardButton("🚀 نشر المحدد", callback_data=f"pubsel:confirm:{review_token}"),
+        InlineKeyboardButton("⬅️ رجوع", callback_data=f"pubsel:back:{review_token}"),
+    ])
+
+    return InlineKeyboardMarkup(rows)
+
 
 def build_subscription_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
     """Builds the keyboard with a link to the main channel for non-subscribed users."""
     channel_id = settings.TELEGRAM_CHAT_ID
     channel_link = None
     
-    # Try to get the invite link for a better user experience
-    if channel_id and hasattr(context, '_chat_links') and channel_id in context._chat_links:
-        channel_link = context._chat_links[channel_id]
+    if channel_id:
+        # This is a simplified way to get the link. A more robust solution
+        # might cache this link at startup.
+        if hasattr(context, '_chat_links') and channel_id in context._chat_links:
+            channel_link = context._chat_links[channel_id]
     
     if channel_link:
         return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ الانضمام للقناة", url=channel_link)]])
     
-    # Fallback if link is not available
     return None
 
 
@@ -229,4 +270,4 @@ def build_signal_tracking_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         ]
     ])
 
-# --- END OF FINAL, COMPLETE, AND MONETIZATION-READY FILE ---
+# --- END OF FINAL, COMPLETE, AND FEATURE-RICH FILE ---
