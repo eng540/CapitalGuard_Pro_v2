@@ -1,5 +1,6 @@
-# --- START OF FINAL, COMPLETE, AND CORRECTED FILE (Version 11.1.0) ---
+# --- START OF FINAL, COMPLETE, AND CONCURRENCY-SAFE FILE (Version 13.2.0) ---
 # src/capitalguard/infrastructure/db/repository.py
+
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict, Set
@@ -25,28 +26,32 @@ class UserRepository:
     def find_or_create(self, telegram_id: int, **kwargs) -> User:
         """
         Finds a user by their Telegram ID, or creates a new one if not found.
-        Concurrency-safe implementation.
+        This method is now concurrency-safe to prevent race conditions.
         """
         user = self.find_by_telegram_id(telegram_id)
         if user:
             return user
         
+        # If user is not found, attempt to create a new one.
         try:
             log.info("Attempting to create new user for telegram_id=%s", telegram_id)
             new_user = User(
                 telegram_user_id=telegram_id,
                 email=kwargs.get("email") or f"tg{telegram_id}@telegram.local",
-                user_type=(kwargs.get("user_type") or "trader"),
-                is_active=False,  # New users inactive by default
+                is_active=False,  # New users are inactive by default as per new logic
                 first_name=kwargs.get("first_name"),
             )
             self.session.add(new_user)
-            self.session.flush()
+            self.session.flush() # Use flush to send the INSERT statement to the DB
             self.session.refresh(new_user)
             return new_user
         except IntegrityError:
+            # This block handles the race condition: if another process created the user
+            # between our `find` and `flush` calls, an IntegrityError will be raised
+            # due to the UNIQUE constraint on telegram_user_id.
             log.warning(f"Race condition detected for telegram_id={telegram_id}. Rolling back and fetching existing user.")
             self.session.rollback()
+            # The user is guaranteed to exist now, so we can safely fetch and return them.
             return self.find_by_telegram_id(telegram_id)
 
 class ChannelRepository:
@@ -129,7 +134,7 @@ class RecommendationRepository:
         row = self.get_for_update(session, rec.id)
         if not row: raise ValueError(f"Recommendation #{rec.id} not found for update.")
         
-        row.status = rec.status
+        row.status = rec.status.value
         row.stop_loss = rec.stop_loss.value
         row.targets = [v.__dict__ for v in rec.targets.values]
         row.exit_price = rec.exit_price
@@ -138,7 +143,7 @@ class RecommendationRepository:
         row.alert_meta = rec.alert_meta
         row.highest_price_reached = rec.highest_price_reached
         row.lowest_price_reached = rec.lowest_price_reached
-        row.exit_strategy = rec.exit_strategy
+        row.exit_strategy = rec.exit_strategy.value
         row.profit_stop_price = rec.profit_stop_price
         row.open_size_percent = rec.open_size_percent
         row.notes = rec.notes
@@ -157,15 +162,15 @@ class RecommendationRepository:
         row = RecommendationORM(
             user_id=user.id, asset=rec.asset.value, side=rec.side.value, entry=rec.entry.value,
             stop_loss=rec.stop_loss.value, targets=[v.__dict__ for v in rec.targets.values],
-            order_type=rec.order_type, status=rec.status, market=rec.market, notes=rec.notes,
-            exit_strategy=rec.exit_strategy, open_size_percent=rec.open_size_percent,
+            order_type=rec.order_type.value, status=rec.status.value, market=rec.market, notes=rec.notes,
+            exit_strategy=rec.exit_strategy.value, open_size_percent=rec.open_size_percent,
             activated_at=rec.activated_at, highest_price_reached=rec.highest_price_reached,
             lowest_price_reached=rec.lowest_price_reached
         )
         session.add(row)
         session.flush()
         
-        event_type = "CREATED_ACTIVE" if row.status == RecommendationStatus.ACTIVE else "CREATED_PENDING"
+        event_type = "CREATED_ACTIVE" if row.status == RecommendationStatus.ACTIVE.value else "CREATED_PENDING"
         new_event = RecommendationEvent(recommendation_id=row.id, event_type=event_type, event_data={})
         session.add(new_event)
         session.flush()
@@ -190,7 +195,7 @@ class RecommendationRepository:
     def list_open(self, session: Session) -> List[Recommendation]:
         rows = session.query(RecommendationORM).options(
             joinedload(RecommendationORM.user)
-        ).filter(RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])).order_by(RecommendationORM.created_at.desc()).all()
+        ).filter(RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])).order_by(RecommendationORM.created_at.desc()).all()
         return [self._to_entity(r) for r in rows]
 
     def list_open_for_user(self, session: Session, user_telegram_id: int, **filters) -> List[Recommendation]:
@@ -198,10 +203,10 @@ class RecommendationRepository:
         if not user: return []
         q = session.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(
             RecommendationORM.user_id == user.id,
-            RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])
+            RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
         )
         if "side" in filters: q = q.filter(RecommendationORM.side == filters["side"].upper())
-        if "status" in filters: q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()))
+        if "status" in filters: q = q.filter(RecommendationORM.status == RecommendationStatus(filters["status"].upper()).value)
         if "symbol" in filters: q = q.filter(RecommendationORM.asset == filters["symbol"].upper())
         
         return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
@@ -209,7 +214,7 @@ class RecommendationRepository:
     def list_open_by_symbol(self, session: Session, symbol: str) -> List[Recommendation]:
         rows = session.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(
             RecommendationORM.asset == symbol.upper(),
-            RecommendationORM.status.in_([RecommendationStatus.PENDING, RecommendationStatus.ACTIVE])
+            RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
         ).all()
         return [self._to_entity(r) for r in rows]
 
@@ -224,7 +229,7 @@ class RecommendationRepository:
     def list_all(self, session: Session, symbol: Optional[str] = None, status: Optional[str] = None) -> List[RecommendationORM]:
         q = session.query(RecommendationORM)
         if symbol: q = q.filter(RecommendationORM.asset == symbol.upper())
-        if status: q = q.filter(RecommendationORM.status == RecommendationStatus(status.upper()))
+        if status: q = q.filter(RecommendationORM.status == RecommendationStatus(status.upper()).value)
         return q.order_by(RecommendationORM.created_at.desc()).all()
 
     def get_recent_assets_for_user(self, session: Session, user_telegram_id: int, limit: int = 5) -> List[str]:
@@ -267,3 +272,5 @@ class RecommendationRepository:
             result[rec_id].add(event_type)
             
         return result
+
+# --- END OF FINAL, COMPLETE, AND CONCURRENCY-SAFE FILE ---
