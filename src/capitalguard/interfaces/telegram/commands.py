@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND SECURED FILE (Version 13.1.0) ---
+# --- START OF FINAL, COMPLETE, AND SECURED FILE (Version 13.2.0) ---
 # src/capitalguard/interfaces/telegram/commands.py
 
 import io
@@ -10,14 +10,12 @@ from typing import Optional, Tuple
 from telegram import Update, InputFile
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
 
-# ✅ ARCHITECTURAL FIX: Import all necessary decorators and filters.
 from .helpers import get_service, unit_of_work
 from .auth import require_active_user, require_channel_subscription
 from .ui_texts import build_analyst_stats_text, build_trade_card_text
 from .keyboards import build_open_recs_keyboard, build_signal_tracking_keyboard
 from capitalguard.config import settings
 
-# Import service types for type-safe access
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
@@ -26,7 +24,6 @@ from capitalguard.infrastructure.db.repository import UserRepository, ChannelRep
 log = logging.getLogger(__name__)
 
 AWAITING_FORWARD_KEY = "awaiting_forward_channel_link"
-# A simple way to define admins via environment variable for security
 ADMIN_USERNAMES = [username.strip() for username in (os.getenv("ADMIN_USERNAMES") or "").split(',') if username]
 admin_filter = filters.User(username=ADMIN_USERNAMES)
 
@@ -53,17 +50,20 @@ async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: i
 
 # --- Main User Commands ---
 
-# The /start command is special and does NOT have decorators
-# to allow new users to interact for the first time.
 @unit_of_work
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     """
-    Handles the /start command. It's now a smart gateway that can:
-    1. Welcome new users.
-    2. Handle deep links for signal tracking.
+    Handles the /start command. It now also ensures the user is created in the DB.
     """
     user = update.effective_user
     log.info(f"User {user.id} ({user.username}) started interaction.")
+
+    # ✅ CRITICAL FIX: Ensure the user is created on their very first interaction.
+    user_repo = UserRepository(db_session)
+    user_repo.find_or_create(
+        telegram_id=user.id,
+        first_name=user.first_name,
+    )
 
     # --- Deep Link Handling for Signal Tracking ---
     if context.args and context.args[0].startswith("track_"):
@@ -282,4 +282,4 @@ def register_commands(app: Application):
     # The forwarded message handler also needs protection.
     app.add_handler(MessageHandler(filters.FORWARDED, link_channel_forward_handler))
 
-# --- END OF FINAL, COMPLETE, AND SECURED FILE ---```
+# --- END OF FINAL, COMPLETE, AND SECURED FILE ---
