@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND ROBUST FILE (Version 13.1.0) ---
+# --- START OF FINAL, COMPLETE, AND MONETIZATION-READY FILE (Version 13.1.0) ---
 # src/capitalguard/interfaces/telegram/auth.py
 
 import logging
@@ -67,18 +67,24 @@ def require_active_user(handler_func: Callable) -> Callable:
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         if ALLOWED_USER_FILTER.filter(update):
             return await handler_func(update, context, *args, **kwargs)
-        
+
         user = update.effective_user
         log.warning(f"Blocked access for inactive user {user.id} ({user.username}) to a protected command.")
-        
-        # Send a clear denial message.
-        await update.message.reply_html(
+
+        # ✅ DYNAMIC CONTACT INFO: Build the denial message using the admin contact from settings.
+        contact_info = "the administrator"
+        if settings.ADMIN_CONTACT:
+            contact_info = f"<b>{settings.ADMIN_CONTACT}</b>"
+
+        message = (
             "🚫 <b>Access Restricted</b>\n\n"
             "Your account is not active. This is a premium bot for subscribers only.\n\n"
-            "Please contact the administrator for access."
+            f"Please contact {contact_info} for access."
         )
-        return
         
+        await update.message.reply_html(message)
+        return
+
     return wrapper
 
 
@@ -133,4 +139,4 @@ def require_channel_subscription(handler_func: Callable) -> Callable:
 
     return wrapper
 
-# --- END OF FINAL, COMPLETE, AND ROBUST FILE ---
+# --- END OF FINAL, COMPLETE, AND MONETIZATION-READY FILE ---
