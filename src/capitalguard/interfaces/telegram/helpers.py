@@ -1,9 +1,9 @@
-# --- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 10.2.0) ---
+# --- START OF FINAL, COMPLETE, AND REFACTORED FILE (Version 13.2.0) ---
 # src/capitalguard/interfaces/telegram/helpers.py
 
 import functools
 import logging
-from typing import TypeVar, Callable
+from typing import TypeVar, Callable, Optional, List
 
 from telegram.ext import ContextTypes
 
@@ -55,4 +55,18 @@ def unit_of_work(func: Callable) -> Callable:
                 raise e
     return wrapper
 
-# --- END OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE ---
+# ✅ NEW: Centralized helper functions for parsing callback data.
+def parse_tail_int(data: str) -> Optional[int]:
+    """Safely parses the last integer from a colon-separated string."""
+    try:
+        return int(data.split(":")[-1])
+    except (ValueError, IndexError, AttributeError):
+        return None
+
+def parse_cq_parts(data: str) -> List[str]:
+    """Safely splits a callback query data string by colons."""
+    if not isinstance(data, str):
+        return []
+    return data.split(":")
+
+# --- END OF FINAL, COMPLETE, AND REFACTORED FILE ---
