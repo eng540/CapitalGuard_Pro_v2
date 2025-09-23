@@ -200,4 +200,4 @@ class AlertService:
                             self._recently_processed_events.add(tp_event_key)  
                             log.info(f"TP{i+1} hit for rec #{rec.id}. Processing.")  
                             await self.trade_service.process_target_hit_async(session, rec.id, user_id, i + 1, price)  
-                            break
+                           
