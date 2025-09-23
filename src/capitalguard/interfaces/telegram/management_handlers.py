@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND BOOT-FIXED FILE (Version 13.3.0) ---
+# --- START OF FINAL, PRODUCTION-READY FILE (Version 15.3.0) ---
 # src/capitalguard/interfaces/telegram/management_handlers.py
 
 import logging
@@ -53,6 +53,7 @@ async def _send_or_edit_rec_panel(
     user_id: int,
 ):
     trade_service = get_service(context, "trade_service", TradeService)
+    # Read operations still use the session provided by the handler's @unit_of_work
     rec = trade_service.get_recommendation_for_user(db_session, rec_id, str(user_id))
     if not rec:
         try:
@@ -235,20 +236,6 @@ async def strategy_menu_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await _send_or_edit_strategy_menu(context, db_session, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
 
 @unit_of_work
-async def update_private_card(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    query = update.callback_query
-    if not ALLOWED_USER_FILTER.filter(update):
-        await query.answer("🚫 Access Restricted.", show_alert=True)
-        return
-    await query.answer("Updating price...")
-    rec_id = parse_tail_int(query.data)
-    if not rec_id:
-        return
-    trade_service = get_service(context, "trade_service", TradeService)
-    await trade_service.update_price_tracking_async(db_session, rec_id, str(query.from_user.id))
-    await _send_or_edit_rec_panel(context, db_session, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
-
-@unit_of_work
 async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     if not update.message or not context.user_data:
         return
@@ -271,7 +258,7 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
         trade_service = get_service(context, "trade_service", TradeService)
         if action == "profit_stop":
             price = parse_number(user_input)
-            await trade_service.update_profit_stop_for_user_async(db_session, rec_id, user_id_str, price)
+            await trade_service.update_profit_stop_for_user_async(rec_id, user_id_str, price)
             await _send_or_edit_strategy_menu(context, db_session, chat_id, message_id, rec_id, user_id)
         elif action == "close":
             exit_price = parse_number(user_input)
@@ -280,11 +267,11 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         elif action == "edit_sl":
             new_sl = parse_number(user_input)
-            await trade_service.update_sl_for_user_async(db_session, rec_id, user_id_str, new_sl)
+            await trade_service.update_sl_for_user_async(rec_id, user_id_str, new_sl)
             await _send_or_edit_rec_panel(context, db_session, chat_id, message_id, rec_id, user_id)
         elif action == "edit_tp":
             new_targets = parse_targets_list(user_input.split())
-            await trade_service.update_targets_for_user_async(db_session, rec_id, user_id_str, new_targets)
+            await trade_service.update_targets_for_user_async(rec_id, user_id_str, new_targets)
             await _send_or_edit_rec_panel(context, db_session, chat_id, message_id, rec_id, user_id)
     except Exception as e:
         log.error(f"Error processing input for action {action}, rec_id {rec_id}: {e}", exc_info=True)
@@ -311,7 +298,7 @@ async def confirm_close_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
     await query.answer("Closing recommendation...")
     trade_service = get_service(context, "trade_service", TradeService)
-    await trade_service.close_recommendation_for_user_async(db_session, rec_id, str(query.from_user.id), exit_price)
+    await trade_service.close_recommendation_for_user_async(rec_id, str(query.from_user.id), exit_price)
     context.user_data.pop(AWAITING_INPUT_KEY, None)
 
 @unit_of_work
@@ -400,7 +387,7 @@ async def _remove_profit_stop_handler(update: Update, context: ContextTypes.DEFA
         return
     await query.answer("Removing Profit Stop...")
     trade_service = get_service(context, "trade_service", TradeService)
-    await trade_service.update_profit_stop_for_user_async(db_session, rec_id, str(query.from_user.id), None)
+    await trade_service.update_profit_stop_for_user_async(rec_id, str(query.from_user.id), None)
     await _send_or_edit_strategy_menu(context, db_session, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
 
 @unit_of_work
@@ -417,7 +404,7 @@ async def set_strategy_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer("Invalid request.", show_alert=True)
         return
     trade_service = get_service(context, "trade_service", TradeService)
-    await trade_service.update_exit_strategy_for_user_async(db_session, rec_id, str(query.from_user.id), ExitStrategy(strategy_value))
+    await trade_service.update_exit_strategy_for_user_async(rec_id, str(query.from_user.id), ExitStrategy(strategy_value))
     await _send_or_edit_strategy_menu(context, db_session, query.message.chat_id, query.message.message_id, rec_id, query.from_user.id)
 
 async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -445,7 +432,7 @@ async def close_at_market_handler(update: Update, context: ContextTypes.DEFAULT_
         return
     await query.answer("Fetching market price & closing...")
     trade_service = get_service(context, "trade_service", TradeService)
-    await trade_service.close_recommendation_at_market_for_user_async(db_session, rec_id, str(query.from_user.id))
+    await trade_service.close_recommendation_at_market_for_user_async(rec_id, str(query.from_user.id))
 
 async def close_with_manual_price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -494,7 +481,7 @@ async def received_partial_percent(update: Update, context: ContextTypes.DEFAULT
         return AWAIT_PARTIAL_PERCENT
 
 @unit_of_work
-async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
+async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     original_message = context.user_data.get('original_message')
     rec_id = context.user_data.get('partial_profit_rec_id')
     user_id = update.effective_user.id
@@ -502,7 +489,7 @@ async def received_partial_price(update: Update, context: ContextTypes.DEFAULT_T
         price = parse_number(update.message.text)
         percentage = context.user_data['partial_profit_percent']
         trade_service = get_service(context, "trade_service", TradeService)
-        await trade_service.take_partial_profit_for_user_async(db_session, rec_id, str(user_id), percentage, price)
+        await trade_service.take_partial_profit_for_user_async(rec_id, str(user_id), percentage, price)
         await update.message.reply_text("✅ Partial profit was successfully registered.")
     except (ValueError, IndexError) as e:
         await update.message.reply_text(f"❌ Invalid value: {e}. Please send a valid price.")
@@ -564,7 +551,7 @@ def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(start_edit_tp_handler, pattern=r"^rec:edit_tp:", block=False))
     application.add_handler(CallbackQueryHandler(start_profit_stop_handler, pattern=r"^rec:set_profit_stop:", block=False))
     application.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:", block=False))
-    application.add_handler(CallbackQueryHandler(update_private_card, pattern=r"^rec:update_private:", block=False))
+    # ✅ FIX: The handler for 'update_private_card' is removed as the function was deleted.
     application.add_handler(CallbackQueryHandler(show_close_menu_handler, pattern=r"^rec:close_menu:", block=False))
     application.add_handler(CallbackQueryHandler(close_at_market_handler, pattern=r"^rec:close_market:", block=False))
     application.add_handler(CallbackQueryHandler(close_with_manual_price_handler, pattern=r"^rec:close_manual:", block=False))
@@ -589,3 +576,4 @@ def register_management_handlers(application: Application):
     application.add_handler(partial_profit_conv)
 
     application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler), group=1)
+# --- END OF FINAL, COMPLETE, AND BOOT-FIXED FILE ---
