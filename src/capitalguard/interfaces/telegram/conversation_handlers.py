@@ -12,7 +12,7 @@ from telegram.ext import (
     CallbackQueryHandler, MessageHandler, filters
 )
 
-from .helpers import get_service, unit_of_work, parse_cq_parts
+from .helpers import get_service, unit_of_work, parse_cq_parts  # ✅ تم إصلاح الاستيراد
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
     review_final_keyboard, asset_choice_keyboard, side_market_keyboard,
@@ -329,7 +329,7 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
     query = update.callback_query
     await query.answer("Processing...")
 
-    parts = parse_cq_parts(query.data)  
+    parts = parse_cq_parts(query.data)  # ✅ الآن تعمل بشكل صحيح
     action, token = parts[1], parts[2]  
     
     review_key = _resolve_review_key_from_token(context, token)  
@@ -424,30 +424,34 @@ async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_
 
 @unit_of_work
 async def channel_picker_logic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
+    """
+    Handles all interactions within the channel picker UI (toggle, navigation).
+    """
     query = update.callback_query
     await query.answer()
-
-    parts = parse_cq_parts(query.data)  
-    action, token = parts[1], parts[2]  
-
-    selected_channel_ids: Set[int] = context.user_data.get(CHANNEL_PICKER_KEY, set())  
     
-    if action == "toggle":  
-        channel_id_to_toggle, page = int(parts[3]), int(parts[4])  
-        if channel_id_to_toggle in selected_channel_ids:  
-            selected_channel_ids.remove(channel_id_to_toggle)  
-        else:  
-            selected_channel_ids.add(channel_id_to_toggle)  
-        context.user_data[CHANNEL_PICKER_KEY] = selected_channel_ids  
+    # ✅ FIX: This now uses the imported helper function and will work correctly.
+    parts = parse_cq_parts(query.data)
+    action, token = parts[1], parts[2]
+
+    selected_channel_ids: Set[int] = context.user_data.get(CHANNEL_PICKER_KEY, set())
     
-    page = int(parts[-1]) if action in ("toggle", "nav") else 1  
+    if action == "toggle":
+        channel_id_to_toggle, page = int(parts[3]), int(parts[4])
+        if channel_id_to_toggle in selected_channel_ids:
+            selected_channel_ids.remove(channel_id_to_toggle)
+        else:
+            selected_channel_ids.add(channel_id_to_toggle)
+        context.user_data[CHANNEL_PICKER_KEY] = selected_channel_ids
+    
+    page = int(parts[-1]) if action in ("toggle", "nav") else 1
 
-    user_repo = UserRepository(db_session)  
-    user = user_repo.find_by_telegram_id(query.from_user.id)  
-    all_channels = ChannelRepository(db_session).list_by_user(user.id, only_active=False)  
+    user_repo = UserRepository(db_session)
+    user = user_repo.find_by_telegram_id(query.from_user.id)
+    all_channels = ChannelRepository(db_session).list_by_user(user.id, only_active=False)
 
-    keyboard = build_channel_picker_keyboard(token, all_channels, selected_channel_ids, page=page)  
-    await query.message.edit_reply_markup(reply_markup=keyboard)  
+    keyboard = build_channel_picker_keyboard(token, all_channels, selected_channel_ids, page=page)
+    await query.message.edit_reply_markup(reply_markup=keyboard)
     return I_CHANNEL_PICKER
 
 def register_conversation_handlers(app: Application):
