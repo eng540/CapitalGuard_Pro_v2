@@ -1,3 +1,5 @@
+#___ src/capitalguard/application/services/alert_service.py
+# --- START OF RE-ARCHITECTED AND CORRECTED FILE (Version 14.0.0) ---
 import logging
 import os
 import asyncio
@@ -23,10 +25,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class AlertService:
     """
     The central brain for processing all price-driven events.
-    ✅ FIXED: Systematic TP/SL detection failures for both LONG and SHORT positions
-    ✅ FIXED: Removed problematic break statements for proper multi-target processing
-    ✅ ENHANCED: Robust price comparison logic with proper float precision handling
-    ✅ IMPROVED: Real-time recommendation state validation
+    ✅ RE-ARCHITECTED: Logic flow is now event-driven, prioritizing partial profits
+    before final closing conditions to prevent missed notifications.
+    ✅ ENHANCED: State is refreshed from DB after partial profits to ensure
+    subsequent checks (like SL) use the most up-to-date data.
     """
     
     def __init__(self, trade_service: TradeService, repo: RecommendationRepository):
@@ -132,11 +134,7 @@ class AlertService:
                 for rec_orm in open_recs_orm:  
                     price = price_map.get(rec_orm.asset)  
                     if price is not None:  
-                        db_session.refresh(rec_orm)
-                        
-                        rec_entity = self.repo._to_entity(rec_orm)
-                        if rec_entity:
-                            await self._process_single_recommendation(db_session, rec_entity, price, events_map.get(rec_orm.id, set()))
+                        await self._process_single_recommendation(db_session, rec_orm, price, events_map.get(rec_orm.id, set()))
                   
             except Exception as e:  
                 log.exception("Alert check loop failed internally, rolling back transaction: %s", e)  
@@ -158,15 +156,22 @@ class AlertService:
         log.warning(f"Unknown condition type: {condition_type} for side: {side}")
         return False
 
-    async def _process_single_recommendation(self, session: Session, rec: Recommendation, price: float, rec_events: Set[str]):  
+    async def _process_single_recommendation(self, session: Session, rec_orm: RecommendationORM, price: float, rec_events: Set[str]):  
+        rec = self.repo._to_entity(rec_orm)
+        if not rec: return
+
         log.debug(f"Processing rec #{rec.id} ({rec.asset.value}) - Status: {rec.status}, Price: {price}")
+        
+        # --- 1. Handle PENDING recommendations (Activation Logic) ---
         if rec.status == RecommendationStatus.PENDING:  
             event_key = f"{rec.id}:ACTIVATED"  
             if event_key in self._recently_processed_events: return
+            
             entry_price, side, order_type = rec.entry.value, rec.side.value, rec.order_type
             is_triggered = False
             if order_type == OrderType.LIMIT: is_triggered = self._is_price_condition_met(side, price, entry_price, "ENTRY_LIMIT")
             elif order_type == OrderType.STOP_MARKET: is_triggered = self._is_price_condition_met(side, price, entry_price, "ENTRY_STOP")
+            
             if is_triggered:  
                 self._recently_processed_events[event_key] = datetime.now(timezone.utc)
                 log.info(f"ACTIVATING pending recommendation #{rec.id} for {rec.asset.value} at price {price}.")  
@@ -179,10 +184,41 @@ class AlertService:
                     session.rollback()
                     self._recently_processed_events.pop(event_key, None)
             return  
+
+        # --- 2. Handle ACTIVE recommendations ---
         if rec.status == RecommendationStatus.ACTIVE:  
             self.repo.update_price_tracking(session, rec.id, price)  
             side, user_id = rec.side.value, rec.user_id  
             if not user_id: return
+
+            # ✅ STEP 1: Process all intermediate targets first (highest priority)
+            if rec.targets.values:  
+                for i, target in enumerate(rec.targets.values):  
+                    tp_event_key = f"{rec.id}:TP{i+1}_HIT"  
+                    if tp_event_key in self._recently_processed_events or f"TP{i+1}_HIT" in rec_events: 
+                        continue  
+                    
+                    if self._is_price_condition_met(side, price, target.price, "TP"):  
+                        self._recently_processed_events[tp_event_key] = datetime.now(timezone.utc)
+                        log.info(f"TP{i+1} hit for rec #{rec.id} at price {price}. Target: {target.price}")  
+                        try:
+                            await self.trade_service.process_target_hit_async(session, rec.id, user_id, i + 1, price)  
+                            session.commit() # Commit after each successful TP processing
+                            log.info(f"Successfully processed TP{i+1} for recommendation #{rec.id}")
+                        except Exception as e:
+                            log.error(f"Failed to process TP{i+1} for recommendation #{rec.id}: {e}")
+                            session.rollback()
+                            self._recently_processed_events.pop(tp_event_key, None)
+            
+            # ✅ STEP 2: Refresh state from DB to see if partial profits closed the trade
+            session.refresh(rec_orm)
+            rec = self.repo._to_entity(rec_orm)
+            if not rec or rec.status == RecommendationStatus.CLOSED:
+                log.info(f"Recommendation #{rec.id} is now closed. Ending processing cycle.")
+                return
+
+            # ✅ STEP 3: Now, check for trade-ending conditions on the remaining position
+            # 3.1 Check Stop Loss
             sl_event_key = f"{rec.id}:SL_HIT"  
             if sl_event_key not in self._recently_processed_events and self._is_price_condition_met(side, price, rec.stop_loss.value, "SL"):
                 self._recently_processed_events[sl_event_key] = datetime.now(timezone.utc)
@@ -196,6 +232,8 @@ class AlertService:
                     log.error(f"Failed to close recommendation #{rec.id} for SL: {e}")
                     session.rollback()
                     self._recently_processed_events.pop(sl_event_key, None)
+
+            # 3.2 Check Profit Stop
             ps_event_key = f"{rec.id}:PROFIT_STOP_HIT"  
             if rec.profit_stop_price is not None and ps_event_key not in self._recently_processed_events and self._is_price_condition_met(side, price, rec.profit_stop_price, "SL"):
                 self._recently_processed_events[ps_event_key] = datetime.now(timezone.utc)
@@ -209,13 +247,16 @@ class AlertService:
                     log.error(f"Failed to close recommendation #{rec.id} for Profit Stop: {e}")
                     session.rollback()
                     self._recently_processed_events.pop(ps_event_key, None)
+
+            # 3.3 Check Final TP Auto-Close Strategy
             final_tp_event_key = f"{rec.id}:FINAL_TP_HIT"  
             if (_env_bool("AUTO_CLOSE_ENABLED", False) and rec.exit_strategy == ExitStrategy.CLOSE_AT_FINAL_TP and 
                 rec.targets.values and final_tp_event_key not in self._recently_processed_events):
+                
                 last_tp_price = rec.targets.values[-1].price  
                 if self._is_price_condition_met(side, price, last_tp_price, "TP"):
                     self._recently_processed_events[final_tp_event_key] = datetime.now(timezone.utc)
-                    log.info(f"Auto-closing rec #{rec.id} due to final TP hit at price {price}.")  
+                    log.info(f"Auto-closing remaining position for rec #{rec.id} due to final TP hit at price {price}.")  
                     try:
                         await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="FINAL_TP_HIT")  
                         session.commit()
@@ -225,19 +266,5 @@ class AlertService:
                         log.error(f"Failed to close recommendation #{rec.id} for Final TP: {e}")
                         session.rollback()
                         self._recently_processed_events.pop(final_tp_event_key, None)
-            if rec.targets.values:  
-                for i, target in enumerate(rec.targets.values):  
-                    tp_event_key = f"{rec.id}:TP{i+1}_HIT"  
-                    if tp_event_key in self._recently_processed_events or f"TP{i+1}_HIT" in rec_events: 
-                        continue  
-                    if self._is_price_condition_met(side, price, target.price, "TP"):  
-                        self._recently_processed_events[tp_event_key] = datetime.now(timezone.utc)
-                        log.info(f"TP{i+1} hit for rec #{rec.id} at price {price}. Target: {target.price}")  
-                        try:
-                            await self.trade_service.process_target_hit_async(session, rec.id, user_id, i + 1, price)  
-                            session.commit()
-                            log.info(f"Successfully processed TP{i+1} for recommendation #{rec.id}")
-                        except Exception as e:
-                            log.error(f"Failed to process TP{i+1} for recommendation #{rec.id}: {e}")
-                            session.rollback()
-                            self._recently_processed_events.pop(tp_event_key, None)
+
+# --- END OF RE-ARCHITECTED AND CORRECTED FILE (Version 14.0.0) ---
