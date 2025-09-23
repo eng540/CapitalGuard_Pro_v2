@@ -1,4 +1,4 @@
-# --- START OF FINAL, PRODUCTION-READY FILE (Version 15.0.0) ---
+# --- START OF FINAL, PRODUCTION-READY FILE (Version 15.2.0) ---
 import logging
 import os
 import asyncio
@@ -108,18 +108,14 @@ class AlertService:
 
     async def check_and_process_alerts(self, specific_symbol: str = None, price_override: float = None):  
         open_recs_orm = []
-        events_map = {}
         
-        # Read-only operations are safe within a single session context
+        # Read-only operations are safe within a single session context.
+        # The repo now eagerly loads 'events' so they are available after the session closes.
         with self._get_fresh_session() as db_session:
             if specific_symbol:  
                 open_recs_orm = self.repo.list_open_by_symbol_orm(db_session, specific_symbol)
             else:  
                 open_recs_orm = self.repo.list_open_orm(db_session)
-            
-            if open_recs_orm:
-                rec_ids = [rec.id for rec in open_recs_orm]  
-                events_map = self.repo.get_events_for_recommendations(db_session, rec_ids)  
         
         if not open_recs_orm:  
             return  
@@ -140,7 +136,8 @@ class AlertService:
             if price is not None:
                 try:
                     # Each recommendation is processed independently. Failure in one won't stop others.
-                    await self._process_single_recommendation(rec_orm, price, events_map.get(rec_orm.id, set()))
+                    processed_event_types = {event.event_type for event in rec_orm.events}
+                    await self._process_single_recommendation(rec_orm, price, processed_event_types)
                 except Exception as e:
                     log.error(f"Failed to process recommendation #{rec_orm.id}: {e}", exc_info=True)
 
@@ -179,7 +176,6 @@ class AlertService:
                 self._recently_processed_events[event_key] = datetime.now(timezone.utc)
                 log.info(f"ACTIVATING pending recommendation #{rec.id} for {rec.asset.value} at price {price}.")  
                 try:
-                    # Delegate the entire activation transaction to the TradeService
                     await self.trade_service.activate_recommendation_async(rec.id)
                 except Exception as e:
                     log.error(f"Activation transaction failed for rec #{rec.id}: {e}")
@@ -190,13 +186,11 @@ class AlertService:
             side, user_id = rec.side.value, rec.user_id  
             if not user_id: return
 
-            # This is a non-transactional update, so it's safe to call the repo directly.
             with self._get_fresh_session() as session:
                 self.repo.update_price_tracking(session, rec.id, price)
                 session.commit()
 
             # --- Event Detection ---
-            # The service now only detects events and calls the appropriate transactional method in TradeService.
             
             # 1. Intermediate Targets
             if rec.targets.values:  
@@ -251,4 +245,4 @@ class AlertService:
                         log.error(f"Final TP closing transaction failed for rec #{rec.id}: {e}")
                         self._recently_processed_events.pop(final_tp_event_key, None)
 
-# --- END OF FINAL, PRODUCTION-READY FILE (Version 15.0.0) ---
+# --- END OF FINAL, PRODUCTION-READY FILE (Version 15.2.0) ---
