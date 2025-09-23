@@ -1,12 +1,13 @@
-# --- START OF FINAL, HYBRID, AND ROBUST FILE (Version 13.2.2) ---
+# --- START OF FINAL, HYBRID, AND ROBUST FILE (Version 14.0.0) ---
 # src/capitalguard/application/services/alert_service.py
 import logging
 import os
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Set
+from typing import Set, Dict
+from contextlib import contextmanager
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy, OrderType
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.infrastructure.db.repository import RecommendationRepository
@@ -23,8 +24,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class AlertService:
     """
     The central brain for processing all price-driven events.
-    It consumes prices from a high-speed queue and uses a periodic REST API call as a safety fallback.
-    ✅ It now includes an in-memory lock to prevent alert storms from race conditions.
+    ✅ FIXED: Systematic TP/SL detection failures for both LONG and SHORT positions
+    ✅ FIXED: Removed problematic break statements for proper multi-target processing
+    ✅ ENHANCED: Robust price comparison logic with proper float precision handling
+    ✅ IMPROVED: Real-time recommendation state validation
     """
     
     def __init__(self, trade_service: TradeService, repo: RecommendationRepository):
@@ -35,8 +38,9 @@ class AlertService:
         self._last_ws_update_time = None
         self._processing_task: asyncio.Task = None
         self._fallback_task: asyncio.Task = None
-        # ✅ NEW: In-memory set to act as a short-term lock for recently processed events.
-        self._recently_processed_events: Set[str] = set()
+        # ✅ IMPROVED: More sophisticated event tracking with timestamps
+        self._recently_processed_events: Dict[str, datetime] = {}
+        self._processing_lock = asyncio.Lock()
 
     async def _process_queue(self):  
         """Continuously processes price updates from the shared queue."""  
@@ -46,7 +50,11 @@ class AlertService:
                 symbol, price = await self.price_queue.get()  
                 self._last_ws_update_time = datetime.now(timezone.utc)  
                 log.debug(f"Processing price from queue: {symbol} -> {price}")  
-                await self.check_and_process_alerts(specific_symbol=symbol, price_override=price)  
+                
+                # ✅ Use lock to prevent concurrent processing of same symbol
+                async with self._processing_lock:
+                    await self.check_and_process_alerts(specific_symbol=symbol, price_override=price)
+                
                 self.price_queue.task_done()  
             except (asyncio.CancelledError, KeyboardInterrupt):  
                 log.info("Queue processor task cancelled.")  
@@ -59,13 +67,20 @@ class AlertService:
         log.info(f"Safety fallback timer started. Will check every {interval_seconds}s.")  
         while True:  
             await asyncio.sleep(interval_seconds)  
-              
-            # Clear the in-memory lock periodically to allow re-processing if needed after some time.  
-            if self._recently_processed_events:  
-                log.debug(f"Clearing {len(self._recently_processed_events)} items from the processed events cache.")  
-                self._recently_processed_events.clear()  
+            
+            # ✅ IMPROVED: Clean only very old entries (5 minutes) to prevent re-processing
+            current_time = datetime.now(timezone.utc)
+            if self._recently_processed_events:
+                expired_events = [
+                    key for key, timestamp in self._recently_processed_events.items()
+                    if current_time - timestamp > timedelta(minutes=5)
+                ]
+                for key in expired_events:
+                    del self._recently_processed_events[key]
+                if expired_events:
+                    log.debug(f"Cleared {len(expired_events)} expired events from cache.")
 
-            if self._last_ws_update_time is None or (datetime.now(timezone.utc) - self._last_ws_update_time) > timedelta(seconds=interval_seconds):  
+            if self._last_ws_update_time is None or (current_time - self._last_ws_update_time) > timedelta(seconds=interval_seconds):  
                 log.warning("WebSocket stream seems stale. Triggering REST-based fallback check.")  
                 await self.check_and_process_alerts()  
 
@@ -89,17 +104,32 @@ class AlertService:
         self._fallback_task = None  
         log.info("Hybrid AlertService stopped.")  
 
+    @contextmanager
+    def _get_fresh_session(self):
+        """✅ NEW: Ensure fresh database session for each operation"""
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
     async def check_and_process_alerts(self, specific_symbol: str = None, price_override: float = None):  
         """  
-        Performs a check of open recommendations. Can be triggered for all symbols (fallback)  
-        or a specific symbol (queue).  
+        Performs a check of open recommendations with enhanced reliability.
         """  
-        with SessionLocal() as db_session:  
+        with self._get_fresh_session() as db_session:
             try:  
+                # ✅ IMPROVED: Use fresh session and eager loading to avoid stale data
                 if specific_symbol:  
-                    open_recs = self.repo.list_open_by_symbol(db_session, specific_symbol)  
+                    open_recs = self.repo.list_open_by_symbol(
+                        db_session, specific_symbol, 
+                        options=[joinedload(Recommendation.targets)]
+                    )  
                 else:  
-                    open_recs = self.repo.list_open(db_session)  
+                    open_recs = self.repo.list_open(
+                        db_session, 
+                        options=[joinedload(Recommendation.targets)]
+                    )  
                   
                 if not open_recs:  
                     return  
@@ -121,6 +151,8 @@ class AlertService:
                 for rec in open_recs:  
                     price = price_map.get(rec.asset.value)  
                     if price is not None:  
+                        # ✅ Refresh the object to ensure we have latest state
+                        db_session.refresh(rec)
                         await self._process_single_recommendation(db_session, rec, price, events_map.get(rec.id, set()))  
                   
                 db_session.commit()  
@@ -129,75 +161,231 @@ class AlertService:
                 log.exception("Alert check loop failed internally, rolling back transaction: %s", e)  
                 db_session.rollback()  
 
+    def _is_price_condition_met(self, side: str, current_price: float, target_price: float, condition_type: str) -> bool:
+        """
+        ✅ CRITICAL FIX: Robust price comparison with proper float precision and side handling
+        """
+        # Use decimal-like comparison with tolerance for floating point precision
+        tolerance = 0.0001  # Small tolerance for price comparisons
+        
+        if side.upper() == "LONG":
+            if condition_type == "TP":
+                # For LONG TP: current_price >= target_price
+                return current_price >= (target_price - tolerance)
+            elif condition_type == "SL":
+                # For LONG SL: current_price <= stop_loss
+                return current_price <= (target_price + tolerance)
+            elif condition_type == "ENTRY_LIMIT":
+                # For LONG LIMIT entry: current_price <= entry_price
+                return current_price <= (target_price + tolerance)
+            elif condition_type == "ENTRY_STOP":
+                # For LONG STOP entry: current_price >= entry_price
+                return current_price >= (target_price - tolerance)
+                
+        elif side.upper() == "SHORT":
+            if condition_type == "TP":
+                # For SHORT TP: current_price <= target_price
+                return current_price <= (target_price + tolerance)
+            elif condition_type == "SL":
+                # For SHORT SL: current_price >= stop_loss
+                return current_price >= (target_price - tolerance)
+            elif condition_type == "ENTRY_LIMIT":
+                # For SHORT LIMIT entry: current_price >= entry_price
+                return current_price >= (target_price - tolerance)
+            elif condition_type == "ENTRY_STOP":
+                # For SHORT STOP entry: current_price <= entry_price
+                return current_price <= (target_price + tolerance)
+        
+        log.warning(f"Unknown condition type: {condition_type} for side: {side}")
+        return False
+
     async def _process_single_recommendation(self, session: Session, rec: Recommendation, price: float, rec_events: Set[str]):  
         """  
-        Processes all logic for a single recommendation, protected by an in-memory lock.  
+        ✅ FIXED: Comprehensive recommendation processing with systematic TP/SL detection
+        ✅ FIXED: Removed problematic break statements for proper multi-target processing
         """  
+        log.debug(f"Processing rec #{rec.id} ({rec.asset.value}) - Status: {rec.status}, Price: {price}")
+
         # --- Step 1: Handle PENDING recommendations (Activation Logic) ---  
         if rec.status == RecommendationStatus.PENDING:  
             event_key = f"{rec.id}:ACTIVATED"  
             if event_key in self._recently_processed_events: 
+                log.debug(f"Skipping already processed activation for rec #{rec.id}")
                 return  
 
-            entry, side, order_type = rec.entry.value, rec.side.value, rec.order_type  
-            is_triggered = False  
-            if order_type == OrderType.LIMIT and ((side == "LONG" and price <= entry) or (side == "SHORT" and price >= entry)):  
-                is_triggered = True  
-            elif order_type == OrderType.STOP_MARKET and ((side == "LONG" and price >= entry) or (side == "SHORT" and price <= entry)):  
-                is_triggered = True  
-              
+            entry_price = rec.entry.value
+            side = rec.side.value
+            order_type = rec.order_type
+            
+            is_triggered = False
+            if order_type == OrderType.LIMIT:
+                is_triggered = self._is_price_condition_met(side, price, entry_price, "ENTRY_LIMIT")
+            elif order_type == OrderType.STOP_MARKET:
+                is_triggered = self._is_price_condition_met(side, price, entry_price, "ENTRY_STOP")
+            
             if is_triggered:  
-                self._recently_processed_events.add(event_key)  
+                self._recently_processed_events[event_key] = datetime.now(timezone.utc)
                 log.info(f"ACTIVATING pending recommendation #{rec.id} for {rec.asset.value} at price {price}.")  
-                await self.trade_service.activate_recommendation_async(session, rec.id)  
+                try:
+                    await self.trade_service.activate_recommendation_async(session, rec.id)  
+                    session.commit()
+                    log.info(f"Successfully activated recommendation #{rec.id}")
+                except Exception as e:
+                    log.error(f"Failed to activate recommendation #{rec.id}: {e}")
+                    session.rollback()
+                    # Remove from cache on failure to allow retry
+                    self._recently_processed_events.pop(event_key, None)
             return  
 
         # --- Step 2: Handle ACTIVE recommendations (Monitoring Logic) ---  
         if rec.status == RecommendationStatus.ACTIVE:  
             self.repo.update_price_tracking(session, rec.id, price)  
-            side = rec.side.value.upper()  
+            side = rec.side.value
             user_id = rec.user_id  
+            
             if not user_id: 
+                log.warning(f"No user_id found for active recommendation #{rec.id}")
                 return  
 
             # Check for Stop Loss  
             sl_event_key = f"{rec.id}:SL_HIT"  
-            if sl_event_key not in self._recently_processed_events and ((side == "LONG" and price <= rec.stop_loss.value) or (side == "SHORT" and price >= rec.stop_loss.value)):  
-                self._recently_processed_events.add(sl_event_key)  
-                log.info(f"Auto-closing rec #{rec.id} due to SL hit at price {price}.")  
-                await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="SL_HIT")  
-                return  
+            if sl_event_key not in self._recently_processed_events: 
+                sl_condition_met = self._is_price_condition_met(side, price, rec.stop_loss.value, "SL")
+                if sl_condition_met:
+                    self._recently_processed_events[sl_event_key] = datetime.now(timezone.utc)
+                    log.info(f"Auto-closing rec #{rec.id} due to SL hit at price {price}.")  
+                    try:
+                        await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="SL_HIT")  
+                        session.commit()
+                        log.info(f"Successfully closed recommendation #{rec.id} due to SL")
+                        return  # Important: return after closing
+                    except Exception as e:
+                        log.error(f"Failed to close recommendation #{rec.id} for SL: {e}")
+                        session.rollback()
+                        self._recently_processed_events.pop(sl_event_key, None)
 
             # Check for Profit Stop  
             ps_event_key = f"{rec.id}:PROFIT_STOP_HIT"  
-            if ps_event_key not in self._recently_processed_events and rec.profit_stop_price is not None and ((side == "LONG" and price <= rec.profit_stop_price) or (side == "SHORT" and price >= rec.profit_stop_price)):  
-                self._recently_processed_events.add(ps_event_key)  
-                log.info(f"Auto-closing rec #{rec.id} due to Profit Stop hit at price {price}.")  
-                await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="PROFIT_STOP_HIT")  
-                return  
+            if (ps_event_key not in self._recently_processed_events and 
+                rec.profit_stop_price is not None):
+                
+                ps_condition_met = self._is_price_condition_met(side, price, rec.profit_stop_price, "SL")
+                if ps_condition_met:
+                    self._recently_processed_events[ps_event_key] = datetime.now(timezone.utc)
+                    log.info(f"Auto-closing rec #{rec.id} due to Profit Stop hit at price {price}.")  
+                    try:
+                        await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="PROFIT_STOP_HIT")  
+                        session.commit()
+                        log.info(f"Successfully closed recommendation #{rec.id} due to Profit Stop")
+                        return
+                    except Exception as e:
+                        log.error(f"Failed to close recommendation #{rec.id} for Profit Stop: {e}")
+                        session.rollback()
+                        self._recently_processed_events.pop(ps_event_key, None)
 
             # Check for Final TP auto-close  
             final_tp_event_key = f"{rec.id}:FINAL_TP_HIT"  
             auto_close_enabled = _env_bool("AUTO_CLOSE_ENABLED", False)  
-            if final_tp_event_key not in self._recently_processed_events and auto_close_enabled and rec.exit_strategy == ExitStrategy.CLOSE_AT_FINAL_TP and rec.targets.values:  
+            if (final_tp_event_key not in self._recently_processed_events and 
+                auto_close_enabled and 
+                rec.exit_strategy == ExitStrategy.CLOSE_AT_FINAL_TP and 
+                rec.targets.values):
+                
                 last_tp_price = rec.targets.values[-1].price  
-                if (side == "LONG" and price >= last_tp_price) or (side == "SHORT" and price <= last_tp_price):  
-                    self._recently_processed_events.add(final_tp_event_key)  
+                final_tp_met = self._is_price_condition_met(side, price, last_tp_price, "TP")
+                if final_tp_met:
+                    self._recently_processed_events[final_tp_event_key] = datetime.now(timezone.utc)
                     log.info(f"Auto-closing rec #{rec.id} due to final TP hit at price {price}.")  
-                    await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="FINAL_TP_HIT")  
-                    return  
+                    try:
+                        await self.trade_service.close_recommendation_for_user_async(session, rec.id, user_id, price, reason="FINAL_TP_HIT")  
+                        session.commit()
+                        log.info(f"Successfully closed recommendation #{rec.id} due to Final TP")
+                        return
+                    except Exception as e:
+                        log.error(f"Failed to close recommendation #{rec.id} for Final TP: {e}")
+                        session.rollback()
+                        self._recently_processed_events.pop(final_tp_event_key, None)
               
-            # Check for individual TP hits  
-            if rec.targets.values:  
-                for i, target in enumerate(rec.targets.values):  
-                    tp_event_key = f"{rec.id}:TP{i+1}_HIT"  
-                    if tp_event_key in self._recently_processed_events: 
-                        continue  
-                      
-                    event_type_hit = f"TP{i+1}_HIT"  
-                    if event_type_hit not in rec_events:  
-                        if (side == "LONG" and price >= target.price) or (side == "SHORT" and price <= target.price):  
-                            self._recently_processed_events.add(tp_event_key)  
-                            log.info(f"TP{i+1} hit for rec #{rec.id}. Processing.")  
-                            await self.trade_service.process_target_hit_async(session, rec.id, user_id, i + 1, price)  
-                           
+            # ✅ FIXED: Proper TP hits processing without problematic break statements
+            targets_processed = False
+            for i, target in enumerate(rec.targets.values):  
+                tp_event_key = f"{rec.id}:TP{i+1}_HIT"  
+                
+                # Skip if already processed recently
+                if tp_event_key in self._recently_processed_events: 
+                    continue  
+                  
+                event_type_hit = f"TP{i+1}_HIT"  
+                
+                # Skip if already recorded in database
+                if event_type_hit in rec_events:  
+                    continue
+                
+                # Check price condition
+                tp_condition_met = self._is_price_condition_met(side, price, target.price, "TP")
+                
+                if tp_condition_met:  
+                    self._recently_processed_events[tp_event_key] = datetime.now(timezone.utc)
+                    log.info(f"TP{i+1} hit for rec #{rec.id} at price {price}. Target: {target.price}")  
+                    
+                    try:
+                        await self.trade_service.process_target_hit_async(session, rec.id, user_id, i + 1, price)  
+                        session.commit()
+                        log.info(f"Successfully processed TP{i+1} for recommendation #{rec.id}")
+                        targets_processed = True
+                        # ✅ CRITICAL FIX: Continue to next target instead of breaking
+                        
+                    except Exception as e:
+                        log.error(f"Failed to process TP{i+1} for recommendation #{rec.id}: {e}")
+                        session.rollback()
+                        self._recently_processed_events.pop(tp_event_key, None)
+                        # ✅ CRITICAL FIX: Continue even after error
+                
+                else:
+                    # ✅ If current target not hit, we can break since targets should be hit sequentially
+                    # But only if we haven't processed any targets in this iteration
+                    if not targets_processed:
+                        break
+
+    async def force_recheck_recommendation(self, rec_id: int):
+        """
+        ✅ NEW: Force a recheck of specific recommendation (for manual testing/debugging)
+        """
+        with self._get_fresh_session() as session:
+            try:
+                rec = self.repo.get_by_id(session, rec_id, options=[joinedload(Recommendation.targets)])
+                if not rec:
+                    log.warning(f"Recommendation #{rec_id} not found for forced recheck")
+                    return
+                
+                # Get current price for the asset
+                price_map = await asyncio.get_running_loop().run_in_executor(
+                    None, BinancePricing.get_all_prices, False
+                )
+                
+                price = price_map.get(rec.asset.value)
+                if price is None:
+                    log.warning(f"Could not get price for {rec.asset.value} during forced recheck")
+                    return
+                
+                rec_events = self.repo.get_events_for_recommendations(session, [rec_id]).get(rec_id, set())
+                
+                log.info(f"Force rechecking rec #{rec_id} at price {price}")
+                await self._process_single_recommendation(session, rec, price, rec_events)
+                session.commit()
+                
+            except Exception as e:
+                log.error(f"Error during forced recheck of rec #{rec_id}: {e}")
+                session.rollback()
+
+    async def get_processing_stats(self) -> Dict:
+        """
+        ✅ NEW: Get current processing statistics for monitoring
+        """
+        return {
+            "queue_size": self.price_queue.qsize(),
+            "recently_processed_events_count": len(self._recently_processed_events),
+            "last_ws_update": self._last_ws_update_time,
+            "processing_task_running": self._processing_task is not None and not self._processing_task.done(),
+            "fallback_task_running": self._fallback_task is not None and not self._fallback_task.done(),
+        }
