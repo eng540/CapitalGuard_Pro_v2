@@ -1,4 +1,4 @@
-# --- START OF FINAL, PRODUCTION-READY FILE (Version 15.2.0) ---
+# --- START OF FINAL, PRODUCTION-READY FILE (Version 16.1.0) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
@@ -110,6 +110,10 @@ class RecommendationRepository:
         else:
             targets_vo = Targets(list(targets_data))
 
+        # ✅ FINAL FIX: Eagerly load the events into a simple list *before* creating the domain entity.
+        # This detaches the data from the session, making it safe to pass across threads.
+        events_list = list(row.events) if hasattr(row, 'events') else []
+
         return Recommendation(
             id=row.id, asset=Symbol(row.asset), side=Side(row.side), entry=Price(row.entry),
             stop_loss=Price(row.stop_loss), targets=targets_vo,
@@ -119,7 +123,8 @@ class RecommendationRepository:
             closed_at=row.closed_at, alert_meta=dict(row.alert_meta or {}),
             highest_price_reached=row.highest_price_reached, lowest_price_reached=row.lowest_price_reached,
             exit_strategy=ExitStrategy(row.exit_strategy), profit_stop_price=row.profit_stop_price,
-            open_size_percent=row.open_size_percent, events=getattr(row, 'events', None),
+            open_size_percent=row.open_size_percent, 
+            events=events_list, # Pass the eagerly loaded list
         )
 
     def get_for_update(self, session: Session, rec_id: int) -> Optional[RecommendationORM]:
@@ -201,10 +206,6 @@ class RecommendationRepository:
         return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
     def list_open_orm(self, session: Session) -> List[RecommendationORM]:
-        """
-        Returns ORM objects for internal processing, eagerly loading related 'events'
-        to prevent DetachedInstanceError when the session is closed elsewhere.
-        """
         return session.query(RecommendationORM).options(
             joinedload(RecommendationORM.user),
             selectinload(RecommendationORM.events)
@@ -213,9 +214,6 @@ class RecommendationRepository:
         ).order_by(RecommendationORM.created_at.desc()).all()
 
     def list_open_by_symbol_orm(self, session: Session, symbol: str) -> List[RecommendationORM]:
-        """
-        Returns ORM objects for a specific symbol, eagerly loading related 'events'.
-        """
         return session.query(RecommendationORM).options(
             joinedload(RecommendationORM.user),
             selectinload(RecommendationORM.events)
@@ -227,7 +225,10 @@ class RecommendationRepository:
     def list_all_for_user(self, session: Session, user_telegram_id: int) -> List[Recommendation]:
         user = UserRepository(session).find_by_telegram_id(user_telegram_id)
         if not user: return []
-        rows = session.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(
+        rows = session.query(RecommendationORM).options(
+            joinedload(RecommendationORM.user),
+            selectinload(RecommendationORM.events)
+        ).filter(
             RecommendationORM.user_id == user.id
         ).order_by(RecommendationORM.created_at.desc()).all()
         return [self._to_entity(r) for r in rows]
@@ -275,4 +276,4 @@ class RecommendationRepository:
             
         return result
 
-# --- END OF FINAL, PRODUCTION-READY FILE (Version 15.2.0) ---
+# --- END OF FINAL, PRODUCTION-READY FILE (Version 16.1.0) ---
