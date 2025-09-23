@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND CONCURRENCY-SAFE FILE (Version 13.2.0) ---
+# --- START OF FINAL, COMPLETE, AND CONCURRENCY-SAFE FILE (Version 13.3.0) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
@@ -32,26 +32,21 @@ class UserRepository:
         if user:
             return user
         
-        # If user is not found, attempt to create a new one.
         try:
             log.info("Attempting to create new user for telegram_id=%s", telegram_id)
             new_user = User(
                 telegram_user_id=telegram_id,
                 email=kwargs.get("email") or f"tg{telegram_id}@telegram.local",
-                is_active=False,  # New users are inactive by default as per new logic
+                is_active=False,
                 first_name=kwargs.get("first_name"),
             )
             self.session.add(new_user)
-            self.session.flush() # Use flush to send the INSERT statement to the DB
+            self.session.flush()
             self.session.refresh(new_user)
             return new_user
         except IntegrityError:
-            # This block handles the race condition: if another process created the user
-            # between our `find` and `flush` calls, an IntegrityError will be raised
-            # due to the UNIQUE constraint on telegram_user_id.
             log.warning(f"Race condition detected for telegram_id={telegram_id}. Rolling back and fetching existing user.")
             self.session.rollback()
-            # The user is guaranteed to exist now, so we can safely fetch and return them.
             return self.find_by_telegram_id(telegram_id)
 
 class ChannelRepository:
@@ -192,10 +187,16 @@ class RecommendationRepository:
         ).filter(RecommendationORM.id == rec_id, RecommendationORM.user_id == user.id).first()
         return self._to_entity(row)
         
-    def list_open(self, session: Session) -> List[Recommendation]:
-        rows = session.query(RecommendationORM).options(
+    # ✅ MODIFIED: Added 'options' parameter to accept query enhancements like joinedload.
+    def list_open(self, session: Session, options: Optional[List] = None) -> List[Recommendation]:
+        q = session.query(RecommendationORM).options(
             joinedload(RecommendationORM.user)
-        ).filter(RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])).order_by(RecommendationORM.created_at.desc()).all()
+        ).filter(RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value]))
+        
+        if options:
+            q = q.options(*options)
+            
+        rows = q.order_by(RecommendationORM.created_at.desc()).all()
         return [self._to_entity(r) for r in rows]
 
     def list_open_for_user(self, session: Session, user_telegram_id: int, **filters) -> List[Recommendation]:
@@ -211,11 +212,17 @@ class RecommendationRepository:
         
         return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
-    def list_open_by_symbol(self, session: Session, symbol: str) -> List[Recommendation]:
-        rows = session.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(
+    # ✅ MODIFIED: Added 'options' parameter to accept query enhancements like joinedload.
+    def list_open_by_symbol(self, session: Session, symbol: str, options: Optional[List] = None) -> List[Recommendation]:
+        q = session.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(
             RecommendationORM.asset == symbol.upper(),
             RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
-        ).all()
+        )
+
+        if options:
+            q = q.options(*options)
+
+        rows = q.all()
         return [self._to_entity(r) for r in rows]
 
     def list_all_for_user(self, session: Session, user_telegram_id: int) -> List[Recommendation]:
@@ -273,4 +280,4 @@ class RecommendationRepository:
             
         return result
 
-# --- END OF FINAL, COMPLETE, AND CONCURRENCY-SAFE FILE ---
+# --- END OF FINAL, COMPLETE, AND CONCURRENCY-SAFE FILE ---```
