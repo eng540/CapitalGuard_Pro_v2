@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND CORRECTED FILE (Version 13.3.2) ---
+# --- START OF FINAL, PRODUCTION-READY FILE (Version 15.2.0) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
@@ -187,12 +187,6 @@ class RecommendationRepository:
         ).filter(RecommendationORM.id == rec_id, RecommendationORM.user_id == user.id).first()
         return self._to_entity(row)
         
-    def list_open(self, session: Session) -> List[Recommendation]:
-        rows = session.query(RecommendationORM).options(
-            joinedload(RecommendationORM.user)
-        ).filter(RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])).order_by(RecommendationORM.created_at.desc()).all()
-        return [self._to_entity(r) for r in rows]
-
     def list_open_for_user(self, session: Session, user_telegram_id: int, **filters) -> List[Recommendation]:
         user = UserRepository(session).find_by_telegram_id(user_telegram_id)
         if not user: return []
@@ -206,25 +200,25 @@ class RecommendationRepository:
         
         return [self._to_entity(r) for r in q.order_by(RecommendationORM.created_at.desc()).all()]
 
-    def list_open_by_symbol(self, session: Session, symbol: str) -> List[Recommendation]:
-        rows = session.query(RecommendationORM).options(joinedload(RecommendationORM.user)).filter(
-            RecommendationORM.asset == symbol.upper(),
-            RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
-        ).all()
-        return [self._to_entity(r) for r in rows]
-
-    # ✅ NEW ORM-SPECIFIC METHOD: Returns ORM objects directly for internal processing like in AlertService.
     def list_open_orm(self, session: Session) -> List[RecommendationORM]:
+        """
+        Returns ORM objects for internal processing, eagerly loading related 'events'
+        to prevent DetachedInstanceError when the session is closed elsewhere.
+        """
         return session.query(RecommendationORM).options(
-            joinedload(RecommendationORM.user)
+            joinedload(RecommendationORM.user),
+            selectinload(RecommendationORM.events)
         ).filter(
             RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
         ).order_by(RecommendationORM.created_at.desc()).all()
 
-    # ✅ NEW ORM-SPECIFIC METHOD: Returns ORM objects directly for internal processing like in AlertService.
     def list_open_by_symbol_orm(self, session: Session, symbol: str) -> List[RecommendationORM]:
+        """
+        Returns ORM objects for a specific symbol, eagerly loading related 'events'.
+        """
         return session.query(RecommendationORM).options(
-            joinedload(RecommendationORM.user)
+            joinedload(RecommendationORM.user),
+            selectinload(RecommendationORM.events)
         ).filter(
             RecommendationORM.asset == symbol.upper(),
             RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
@@ -281,4 +275,4 @@ class RecommendationRepository:
             
         return result
 
-# --- END OF FINAL, COMPLETE, AND CORRECTED FILE ---
+# --- END OF FINAL, PRODUCTION-READY FILE (Version 15.2.0) ---
