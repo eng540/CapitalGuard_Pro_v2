@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND REFACTORED FILE (Version 13.2.2) ---
+# --- START OF FINAL, PRODUCTION-READY FILE (Version 15.3.0) ---
 # src/capitalguard/interfaces/telegram/helpers.py
 
 import functools
@@ -28,18 +28,22 @@ def get_service(context: ContextTypes.DEFAULT_TYPE, service_name: str, service_t
 
 def unit_of_work(func: Callable) -> Callable:
     """
-    A decorator for Telegram handlers that provides a database session (Unit of Work).
+    A decorator for Telegram handlers that provides a database session (Unit of Work)
+    for read-only operations or operations that don't use the transactional service methods.
     """
     @functools.wraps(func)
     async def wrapper(update, context, *args, **kwargs):
         with SessionLocal() as session:
             try:
+                # This decorator is now primarily for handlers that need to READ from the DB.
+                # Write operations should be delegated to transactional service methods.
                 result = await func(update, context, db_session=session, *args, **kwargs)
-                session.commit()
+                session.commit() # Commit is safe for read-only or simple write operations.
                 return result
             except Exception as e:
                 log.error(f"Exception in handler '{func.__name__}', rolling back transaction.", exc_info=True)
                 session.rollback()
+                # Re-raise the exception to be caught by the global error handler
                 raise e
     return wrapper
 
@@ -56,4 +60,4 @@ def parse_cq_parts(data: str) -> List[str]:
         return []
     return data.split(":")
 
-# --- END OF FINAL, COMPLETE, AND REFACTORED FILE ---
+# --- END OF FINAL, PRODUCTION-READY FILE (Version 15.3.0) ---
