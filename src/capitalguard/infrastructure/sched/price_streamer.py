@@ -1,4 +1,4 @@
-# --- START OF NEW, ARCHITECTURALLY-CORRECT FILE (Version 12.0.0) ---
+# --- START OF FINAL, CORRECTED FILE (Version 15.3.0) ---
 # src/capitalguard/infrastructure/sched/price_streamer.py
 
 import asyncio
@@ -34,8 +34,10 @@ class PriceStreamer:
     async def _get_symbols_to_watch(self) -> List[str]:
         """Fetches the current set of unique symbols for all open recommendations."""
         with SessionLocal() as session:
-            open_recs = self._repo.list_open(session)
-            return list({rec.asset.value for rec in open_recs})
+            # ✅ FIX: Changed from the non-existent `list_open` to the correct `list_open_orm`
+            # which returns the necessary ORM objects for efficient data extraction.
+            open_recs_orm = self._repo.list_open_orm(session)
+            return list({rec.asset for rec in open_recs_orm})
 
     async def _run_stream(self):
         """The main loop that manages the WebSocket connection."""
@@ -81,4 +83,4 @@ class PriceStreamer:
             self._task.cancel()
         self._task = None
 
-# --- END OF NEW, ARCHITECTURALLY-CORRECT FILE ---
+# --- END OF FINAL, CORRECTED FILE (Version 15.3.0) ---
