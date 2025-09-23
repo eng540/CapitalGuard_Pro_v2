@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE (Version 13.1.3) ---
+# --- START OF FINAL, PRODUCTION-READY FILE (Version 15.3.0) ---
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
 import logging
 import uuid
@@ -12,7 +12,7 @@ from telegram.ext import (
     CallbackQueryHandler, MessageHandler, filters
 )
 
-from .helpers import get_service, unit_of_work, parse_cq_parts  # ✅ تم إصلاح الاستيراد
+from .helpers import get_service, unit_of_work, parse_cq_parts
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
     review_final_keyboard, asset_choice_keyboard, side_market_keyboard,
@@ -324,12 +324,11 @@ async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     _clean_conversation_state(context)
     return ConversationHandler.END
 
-@unit_of_work
-async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
+async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer("Processing...")
 
-    parts = parse_cq_parts(query.data)  # ✅ الآن تعمل بشكل صحيح
+    parts = parse_cq_parts(query.data)
     action, token = parts[1], parts[2]  
     
     review_key = _resolve_review_key_from_token(context, token)  
@@ -340,16 +339,13 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
         return ConversationHandler.END  
         
     selected_channels = None  
-    # If the action is 'confirm', it came from the channel picker. Use the selection.  
     if action == "confirm":  
         selected_channels = context.user_data.get(CHANNEL_PICKER_KEY)  
-    # Otherwise (action is 'publish'), it came from the main review card.  
-    # The desired behavior is to publish to all *active* channels. We let the service handle this by passing None.  
     
     trade_service = get_service(context, "trade_service", TradeService)  
-    try:  
+    try:
+        # ✅ FIX: Removed the `db_session` argument. The @uow_transaction decorator in TradeService handles it.
         saved_rec, report = await trade_service.create_and_publish_recommendation_async(  
-            db_session,   
             user_id=str(query.from_user.id),   
             target_channel_ids=selected_channels,   
             **draft  
@@ -430,7 +426,6 @@ async def channel_picker_logic_handler(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     await query.answer()
     
-    # ✅ FIX: This now uses the imported helper function and will work correctly.
     parts = parse_cq_parts(query.data)
     action, token = parts[1], parts[2]
 
@@ -457,7 +452,6 @@ async def channel_picker_logic_handler(update: Update, context: ContextTypes.DEF
 def register_conversation_handlers(app: Application):
     conv_handler = ConversationHandler(
         entry_points=[
-            # ✅ The filters are removed from here, as decorators handle it.
             CommandHandler("newrec", newrec_menu_entrypoint),
             CommandHandler("new", start_interactive_entrypoint),
             CommandHandler("rec", start_text_input_entrypoint),
@@ -500,3 +494,5 @@ def register_conversation_handlers(app: Application):
         per_message=False
     )
     app.add_handler(conv_handler)
+
+# --- END OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE ---
