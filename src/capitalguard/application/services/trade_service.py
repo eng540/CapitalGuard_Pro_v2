@@ -1,4 +1,5 @@
-# --- START OF FINAL, PRODUCTION-READY FILE (Version 16.0.0) ---
+# --- src/capitalguard/application/services/trade_service.py
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 16.0.0) ---
 import logging
 import asyncio
 from datetime import datetime, timezone
@@ -36,11 +37,13 @@ def uow_transaction(func):
     """
     @wraps(func)
     async def wrapper(*args, **kwargs):
+        # Check if a session is already passed (for nested calls within a transaction)
         if 'db_session' in kwargs:
             return await func(*args, **kwargs)
         
         with SessionLocal() as session:
             try:
+                # Pass the session as a keyword argument to the decorated function
                 result = await func(*args, db_session=session, **kwargs)
                 session.commit()
                 return result
@@ -69,7 +72,7 @@ class TradeService:
         self.market_data_service = market_data_service
         self.price_service = price_service
 
-    # --- Notification Methods (now public to be called AFTER transactions) ---
+    # --- Notification Methods (public to be called AFTER transactions) ---
 
     async def notify_card_update(self, rec: Recommendation):
         """Asynchronously updates all published Telegram messages for a recommendation."""
@@ -110,7 +113,7 @@ class TradeService:
                         text=text
                     )
                 except Exception as e:
-                    log.warning(f"Failed to send reply notification for rec #{rec_id} to channel {msg_meta.telegram_channel_id}: {e}")
+                    log.warning(f"Failed to send reply notification for rec #{rec.id} to channel {msg_meta.telegram_channel_id}: {e}")
 
     # --- Private Helper Methods (Internal Logic) ---
 
@@ -178,22 +181,25 @@ class TradeService:
     
     @uow_transaction
     async def create_and_publish_recommendation_async(self, *, db_session: Session, **kwargs) -> Tuple[Recommendation, Dict]:
-        # ... (This function remains the same as it's called by a user, not the system)
         uid_int = _parse_int_user_id(kwargs.get('user_id'))
         if not uid_int: raise ValueError("A valid user_id is required.")
-        # ... (rest of the function is unchanged)
+
         target_channel_ids = kwargs.get('target_channel_ids')
+
         asset = kwargs['asset'].strip().upper()
         market = kwargs.get('market', 'Futures')
         if not self.market_data_service.is_valid_symbol(asset, market):
             raise ValueError(f"The symbol '{asset}' is not valid or available in the '{market}' market.")
+
         order_type_enum = OrderType(kwargs['order_type'].upper())
         status, final_entry = (RecommendationStatus.PENDING, kwargs['entry'])
         if order_type_enum == OrderType.MARKET:
             live_price = await self.price_service.get_cached_price(asset, market, force_refresh=True)
             if live_price is None: raise RuntimeError(f"Could not fetch live price for {asset}.")
             status, final_entry = RecommendationStatus.ACTIVE, live_price
+
         self._validate_recommendation_data(kwargs['side'], final_entry, kwargs['stop_loss'], kwargs['targets'])
+        
         rec_entity = Recommendation(
             asset=Symbol(asset), side=Side(kwargs['side']), entry=Price(final_entry),
             stop_loss=Price(kwargs['stop_loss']), targets=Targets(kwargs['targets']),
@@ -204,8 +210,10 @@ class TradeService:
         )
         if rec_entity.status == RecommendationStatus.ACTIVE:
             rec_entity.highest_price_reached = rec_entity.lowest_price_reached = rec_entity.entry.value
+
         created_rec = self.repo.add_with_event(db_session, rec_entity)
         final_rec, report = self._publish_recommendation(db_session, created_rec, str(uid_int), target_channel_ids)
+        
         return final_rec, report
 
     @uow_transaction
@@ -225,8 +233,24 @@ class TradeService:
         rec.open_size_percent = 0.0
         rec.close(exit_price)
         
-        # ✅ CHANGE: No longer sends notifications. Just updates DB and returns the result.
         updated_rec = self.repo.update_with_event(db_session, rec, "CLOSED", {"exit_price": exit_price, "reason": reason})
+        return updated_rec
+
+    async def close_recommendation_at_market_for_user_async(self, rec_id: int, user_telegram_id: str) -> Recommendation:
+        with SessionLocal() as session:
+            rec = self.repo.get_by_id_for_user(session, rec_id, user_telegram_id)
+        if not rec: raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
+        
+        live_price = await self.price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
+        if live_price is None: raise RuntimeError(f"Could not fetch live market price for {rec.asset.value}.")
+        
+        updated_rec = await self.close_recommendation_for_user_async(rec_id, user_telegram_id, live_price, reason="MANUAL_MARKET_CLOSE")
+        
+        pnl = _pct(updated_rec.entry.value, live_price, updated_rec.side.value)
+        emoji, r_text = ("🏆", "Profit") if pnl > 0.001 else ("💔", "Loss")
+        self.notify_reply(rec_id, f"<b>{emoji} Trade Closed #{updated_rec.asset.value}</b>\nClosed at {live_price:g} for a result of <b>{pnl:+.2f}%</b> ({r_text}).")
+        await self.notify_card_update(updated_rec)
+        
         return updated_rec
 
     @uow_transaction
@@ -241,7 +265,6 @@ class TradeService:
         rec.activate()
         rec.highest_price_reached = rec.lowest_price_reached = rec.entry.value
         
-        # ✅ CHANGE: No longer sends notifications. Just updates DB and returns the result.
         updated_rec = self.repo.update_with_event(db_session, rec, "ACTIVATED", {})
         return updated_rec
 
@@ -289,25 +312,89 @@ class TradeService:
         
         if target.close_percent > 0:
             log.info(f"Auto partial profit triggered for rec #{rec_id} at TP{target_index}.")
-            # Call the main method, but pass the existing session to avoid a new transaction
             updated_rec = await self.take_partial_profit_for_user_async(rec.id, user_id, target.close_percent, target.price, triggered_by="AUTO", db_session=db_session)
         
         return updated_rec
 
-    # ... (Other user-facing methods like update_sl, update_targets remain the same as they are called from handlers)
     @uow_transaction
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: float, *, db_session: Session) -> Recommendation:
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         rec = self.repo._to_entity(rec_orm)
         if not rec or rec.user_id != user_id: raise ValueError("Access Denied.")
         if rec.status == RecommendationStatus.CLOSED: raise ValueError("Cannot update SL for a closed recommendation.")
+
         old_sl = rec.stop_loss.value
         rec.stop_loss = Price(new_sl)
         updated_rec = self.repo.update_with_event(db_session, rec, "SL_UPDATED", {"old_sl": old_sl, "new_sl": new_sl})
+        
         await self.notify_card_update(updated_rec)
         self.notify_reply(rec_id, f"✏️ **Stop Loss Updated** for #{rec.asset.value} to **{new_sl:g}**.")
         return updated_rec
 
-    # ... (and so on for other user-facing handlers)
+    @uow_transaction
+    async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, float]], *, db_session: Session) -> Recommendation:
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        rec = self.repo._to_entity(rec_orm)
+        if not rec or rec.user_id != user_id: raise ValueError("Access Denied.")
+        if rec.status == RecommendationStatus.CLOSED: raise ValueError("Cannot update targets for a closed recommendation.")
 
-# --- END OF FINAL, PRODUCTION-READY FILE (Version 16.0.0) ---
+        old_targets = [t.price for t in rec.targets.values]
+        rec.targets = Targets(new_targets)
+        updated_rec = self.repo.update_with_event(db_session, rec, "TARGETS_UPDATED", {"old": old_targets, "new": [t.price for t in rec.targets.values]})
+        
+        await self.notify_card_update(updated_rec)
+        self.notify_reply(rec_id, f"🎯 **Targets Updated** for #{rec.asset.value}.")
+        return updated_rec
+
+    @uow_transaction
+    async def update_exit_strategy_for_user_async(self, rec_id: int, user_id: str, new_strategy: ExitStrategy, *, db_session: Session) -> Recommendation:
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        rec = self.repo._to_entity(rec_orm)
+        if not rec or rec.user_id != user_id: raise ValueError("Access Denied.")
+        if rec.status == RecommendationStatus.CLOSED: return rec
+
+        old_strategy = rec.exit_strategy
+        rec.exit_strategy = new_strategy
+        updated_rec = self.repo.update_with_event(db_session, rec, "STRATEGY_UPDATED", {"old": old_strategy.value, "new": new_strategy.value})
+        
+        await self.notify_card_update(updated_rec)
+        self.notify_reply(rec_id, f"📈 **Exit Strategy Updated** for #{rec.asset.value}.")
+        return updated_rec
+        
+    @uow_transaction
+    async def update_profit_stop_for_user_async(self, rec_id: int, user_id: str, new_price: Optional[float], *, db_session: Session) -> Recommendation:
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        rec = self.repo._to_entity(rec_orm)
+        if not rec or rec.user_id != user_id: raise ValueError("Access Denied.")
+        if rec.status != RecommendationStatus.ACTIVE: raise ValueError("Profit Stop can only be set on active recommendations.")
+        
+        old_price = rec.profit_stop_price
+        rec.profit_stop_price = new_price
+        updated_rec = self.repo.update_with_event(db_session, rec, "PROFIT_STOP_UPDATED", {"old": old_price, "new": new_price})
+        
+        await self.notify_card_update(updated_rec)
+        if new_price is not None:
+            note = f"🛡️ **Profit Stop Set** for #{rec.asset.value} at **{new_price:g}**."
+        else:
+            note = f"🗑️ **Profit Stop Removed** for #{rec.asset.value}."
+        self.notify_reply(rec_id, note)
+        
+        return updated_rec
+
+    # --- Read-only methods do not need the decorator ---
+    def get_recommendation_for_user(self, session: Session, rec_id: int, user_telegram_id: str) -> Optional[Recommendation]:
+        uid_int = _parse_int_user_id(user_telegram_id)
+        if not uid_int: raise ValueError("Invalid User ID format.")
+        return self.repo.get_by_id_for_user(session, rec_id, uid_int)
+            
+    def get_open_recommendations_for_user(self, session: Session, user_telegram_id: str, **filters) -> List[Recommendation]:
+        uid_int = _parse_int_user_id(user_telegram_id)
+        if not uid_int: return []
+        return self.repo.list_open_for_user(session, uid_int, **filters)
+
+    def get_recent_assets_for_user(self, session: Session, user_id: str, limit: int = 5) -> List[str]:
+        uid_int = _parse_int_user_id(user_id)
+        if not uid_int: return []
+        return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
+
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 16.0.0) ---
