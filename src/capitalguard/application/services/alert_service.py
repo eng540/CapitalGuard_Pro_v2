@@ -1,5 +1,3 @@
-# --- START OF FINAL, HYBRID, AND ROBUST FILE (Version 14.0.0) ---
-# src/capitalguard/application/services/alert_service.py
 import logging
 import os
 import asyncio
@@ -277,7 +275,6 @@ class AlertService:
                         session.rollback()
                         self._recently_processed_events.pop(final_tp_event_key, None)
               
-            targets_processed = False
             if rec.targets.values:  
                 for i, target in enumerate(rec.targets.values):  
                     tp_event_key = f"{rec.id}:TP{i+1}_HIT"  
@@ -291,13 +288,10 @@ class AlertService:
                             await self.trade_service.process_target_hit_async(session, rec.id, user_id, i + 1, price)  
                             session.commit()
                             log.info(f"Successfully processed TP{i+1} for recommendation #{rec.id}")
-                            targets_processed = True
                         except Exception as e:
                             log.error(f"Failed to process TP{i+1} for recommendation #{rec.id}: {e}")
                             session.rollback()
                             self._recently_processed_events.pop(tp_event_key, None)
-                    elif not targets_processed:
-                        break
 
     async def force_recheck_recommendation(self, rec_id: int):
         """
@@ -307,7 +301,7 @@ class AlertService:
             try:
                 rec = self.repo.get_by_id(session, rec_id, options=[joinedload(RecommendationORM.targets)])
                 if not rec:
-                    log.warning(f"Recommendation #{rec_id} not found for forced recheck")
+                    log.warning(f"Recommendation #{rec.id} not found for forced recheck")
                     return
                 
                 price_map = await asyncio.get_running_loop().run_in_executor(None, BinancePricing.get_all_prices, False)
@@ -323,7 +317,7 @@ class AlertService:
                 session.commit()
                 
             except Exception as e:
-                log.error(f"Error during forced recheck of rec #{rec_id}: {e}")
+                log.error(f"Error during forced recheck of rec #{rec.id}: {e}")
                 session.rollback()
 
     async def get_processing_stats(self) -> Dict:
