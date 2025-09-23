@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PROFESSIONAL-DESIGN FILE (Version 13.2.0) ---
+# --- START OF FINAL, PRODUCTION-READY FILE (Version 16.1.0) ---
 # src/capitalguard/interfaces/telegram/ui_texts.py
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def _build_header(rec: Recommendation) -> str:
 def _build_live_price_section(rec: Recommendation, live_price: Optional[float]) -> str:
     if rec.status != RecommendationStatus.ACTIVE or live_price is None:
         return ""
-    
+
     pnl = _pct(rec.entry.value, live_price, rec.side.value)
     pnl_icon = '🟢' if pnl >= 0 else '🔴'
     lines = [
@@ -73,7 +73,7 @@ def _build_performance_section(rec: Recommendation) -> str:
             lines.append(f"🔒 <b>Break-Even:</b> <code>{rec.profit_stop_price:g}</code> (Secured ✅)")
         else:
             lines.append(f"🔒 <b>Profit Stop:</b> <code>{rec.profit_stop_price:g}</code>")
-            
+
     first_target = rec.targets.values[0] if getattr(rec.targets, "values", []) else None
     lines.append(f"💡 Risk/Reward (Plan): ~<code>{_rr(entry_price, stop_loss, first_target)}</code>")
 
@@ -83,13 +83,15 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
     lines = ["\n🎯 <b>EXIT PLAN</b>"]
     entry_price = rec.entry.value
 
-    events = getattr(rec, "events", []) or []
+    # ✅ FINAL FIX: Directly use the pre-loaded list from the Recommendation entity.
+    # This avoids any lazy-loading issues across threads.
+    events = rec.events or []
     hit_targets_events = set()
     for e in events:
-        if getattr(e, "event_type", "").startswith("TP") and getattr(e, "event_type", "").endswith("_HIT"):
+        event_type = getattr(e, "event_type", "")
+        if event_type.startswith("TP") and event_type.endswith("_HIT"):
             try:
-                # Extract index from event type like "TP1_HIT"
-                idx = int(e.event_type[2:-4])
+                idx = int(event_type[2:-4])
                 hit_targets_events.add(idx)
             except (ValueError, IndexError):
                 continue
@@ -98,7 +100,6 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
     if not targets_list:
         return ""
 
-    # Find the next non-hit target index
     next_tp_index = -1
     for i in range(1, len(targets_list) + 1):
         if i not in hit_targets_events:
@@ -124,18 +125,20 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
 
 def _build_logbook_section(rec: Recommendation) -> str:
     lines = []
-    events = getattr(rec, "events", []) or []
-    log_events = [e for e in events if getattr(e, "event_type", "") in ("PARTIAL_PROFIT_MANUAL", "SL_UPDATED")]
+    # ✅ FINAL FIX: Directly use the pre-loaded list.
+    events = rec.events or []
+    log_events = [e for e in events if getattr(e, "event_type", "") in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO", "SL_UPDATED")]
     if not log_events:
         return ""
-        
+
     lines.append("\n📋 <b>LOGBOOK</b>")
-    for event in sorted(log_events, key=lambda e: getattr(e, "event_timestamp", datetime.min)):
+    for event in sorted(events, key=lambda e: getattr(e, "event_timestamp", datetime.min)):
         et = getattr(event, "event_type", "")
         data = getattr(event, "event_data", {}) or {}
-        if et == "PARTIAL_PROFIT_MANUAL":
+        if et in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO"):
             pnl = data.get('pnl_on_part', 0.0)
-            lines.append(f"  • 💰 Closed {data.get('closed_percent', 0):.0f}% at <code>{data.get('price', 0):g}</code> ({pnl:+.2f}%) [Manual]")
+            trigger = "Manual" if et == "PARTIAL_PROFIT_MANUAL" else "Auto"
+            lines.append(f"  • 💰 Closed {data.get('closed_percent', 0):.0f}% at <code>{data.get('price', 0):g}</code> ({pnl:+.2f}%) [{trigger}]")
         elif et == "SL_UPDATED" and data.get('new_sl') == rec.entry.value:
              lines.append(f"  • 🛡️ SL moved to Breakeven.")
 
@@ -264,4 +267,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     ]
     return "\n".join(lines)
 
-# --- END OF FINAL, COMPLETE, AND PROFESSIONAL-DESIGN FILE ---```
+# --- END OF FINAL, PRODUCTION-READY FILE (Version 16.1.0) ---
