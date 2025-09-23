@@ -1,4 +1,4 @@
-# --- START OF FINAL, PRODUCTION-READY FILE (Version 16.0.0) ---
+# --- START OF FINAL, PRODUCTION-READY FILE (Version 17.0.0) ---
 import logging
 import os
 import asyncio
@@ -25,9 +25,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class AlertService:
     """
     The central brain for processing all price-driven events.
-    ✅ FINAL ARCHITECTURE: This service detects events, calls the appropriate
-    transactional method in TradeService, and only upon successful completion
-    of the transaction, it triggers the necessary notifications.
+    ✅ FINAL ARCHITECTURE v17: Each recommendation is now fetched with its full, fresh
+    state at the beginning of its processing cycle. This guarantees that the service
+    always acts on the most current data, preventing duplicate event processing (e.g.,
+    repeated TP notifications) caused by stale state.
     """
     
     def __init__(self, trade_service: TradeService, repo: RecommendationRepository):
@@ -41,7 +42,6 @@ class AlertService:
         self._recently_processed_events: Dict[str, datetime] = {}
         self._processing_lock = asyncio.Lock()
 
-    # ... (The first part of the file: _process_queue, _run_fallback_timer, start, stop, _get_fresh_session are unchanged)
     async def _process_queue(self):  
         log.info("AlertService queue processor started.")  
         while True:  
@@ -100,6 +100,7 @@ class AlertService:
 
     @contextmanager
     def _get_fresh_session(self):
+        """Provides a temporary session for read-only operations within this service."""
         session = SessionLocal()
         try:
             yield session
@@ -107,35 +108,33 @@ class AlertService:
             session.close()
 
     async def check_and_process_alerts(self, specific_symbol: str = None, price_override: float = None):  
-        open_recs_orm = []
+        open_recs_stubs = []
         with self._get_fresh_session() as db_session:
             if specific_symbol:  
-                open_recs_orm = self.repo.list_open_by_symbol_orm(db_session, specific_symbol)
+                open_recs_stubs = self.repo.list_open_by_symbol_orm(db_session, specific_symbol)
             else:  
-                open_recs_orm = self.repo.list_open_orm(db_session)
+                open_recs_stubs = self.repo.list_open_orm(db_session)
         
-        if not open_recs_orm: return  
+        if not open_recs_stubs: return  
 
         price_map = {}  
         if price_override and specific_symbol:  
-            price_map[specific_symbol] = price_override  
+            price_map = {specific_symbol: price_override}
         else:  
             loop = asyncio.get_running_loop()  
             price_map = await loop.run_in_executor(None, BinancePricing.get_all_prices, False)  
 
         if not price_map: return  
         
-        for rec_orm in open_recs_orm:  
-            price = price_map.get(rec_orm.asset)  
+        for rec_stub in open_recs_stubs:  
+            price = price_map.get(rec_stub.asset)  
             if price is not None:
                 try:
-                    processed_event_types = {event.event_type for event in rec_orm.events}
-                    await self._process_single_recommendation(rec_orm, price, processed_event_types)
+                    await self._process_single_recommendation(rec_stub.id, price)
                 except Exception as e:
-                    log.error(f"Failed to process recommendation #{rec_orm.id}: {e}", exc_info=True)
+                    log.error(f"Failed to process recommendation #{rec_stub.id}: {e}", exc_info=True)
 
     def _is_price_condition_met(self, side: str, current_price: float, target_price: float, condition_type: str) -> bool:
-        # ... (This function is unchanged)
         tolerance = 0.0001
         side_upper = side.upper()
         if side_upper == "LONG":
@@ -151,10 +150,16 @@ class AlertService:
         log.warning(f"Unknown condition type: {condition_type} for side: {side}")
         return False
 
-    async def _process_single_recommendation(self, rec_orm: RecommendationORM, price: float, rec_events: Set[str]):  
-        rec = self.repo._to_entity(rec_orm)
-        if not rec: return
+    async def _process_single_recommendation(self, rec_id: int, price: float):
+        rec = None
+        with self._get_fresh_session() as session:
+            rec = self.repo.get(session, rec_id)
 
+        if not rec:
+            log.warning(f"Recommendation #{rec_id} not found during processing, might have been closed or deleted.")
+            return
+
+        rec_events = {event.event_type for event in (rec.events or [])}
         log.debug(f"Processing rec #{rec.id} ({rec.asset.value}) - Status: {rec.status}, Price: {price}")
         
         if rec.status == RecommendationStatus.PENDING:  
@@ -189,7 +194,6 @@ class AlertService:
 
             # --- Event Detection and Post-Transaction Notification ---
             
-            # 1. Intermediate Targets
             if rec.targets.values:  
                 for i, target in enumerate(rec.targets.values):  
                     tp_event_key = f"{rec.id}:TP{i+1}_HIT"  
@@ -201,7 +205,6 @@ class AlertService:
                         log.info(f"Detected TP{i+1} hit for rec #{rec.id}. Delegating to TradeService.")  
                         try:
                             updated_rec = await self.trade_service.process_target_hit_async(rec.id, user_id, i + 1, price)
-                            # Notifications are now sent *after* the transaction is confirmed.
                             self.trade_service.notify_reply(rec.id, f"🔥 **Target {i+1} Hit!** | **{rec.asset.value}** reached **{target.price:g}**.")
                             if target.close_percent > 0:
                                 pnl_on_part = _pct(updated_rec.entry.value, price, side)
@@ -214,10 +217,6 @@ class AlertService:
                             log.error(f"TP{i+1} processing transaction failed for rec #{rec.id}: {e}")
                             self._recently_processed_events.pop(tp_event_key, None)
 
-            # ... (The rest of the closing conditions follow the same pattern: transact first, then notify)
-            # To avoid making the file too long, I will show the SL part as an example.
-            
-            # 2. Stop Loss
             sl_event_key = f"{rec.id}:SL_HIT"  
             if sl_event_key not in self._recently_processed_events and self._is_price_condition_met(side, price, rec.stop_loss.value, "SL"):
                 self._recently_processed_events[sl_event_key] = datetime.now(timezone.utc)
@@ -232,7 +231,39 @@ class AlertService:
                 except Exception as e:
                     log.error(f"SL closing transaction failed for rec #{rec.id}: {e}")
                     self._recently_processed_events.pop(sl_event_key, None)
-            
-            # ... (Profit Stop and Final TP would follow the same logic)
 
-# --- END OF FINAL, PRODUCTION-READY FILE (Version 16.0.0) ---
+            ps_event_key = f"{rec.id}:PROFIT_STOP_HIT"  
+            if rec.profit_stop_price is not None and ps_event_key not in self._recently_processed_events and self._is_price_condition_met(side, price, rec.profit_stop_price, "SL"):
+                self._recently_processed_events[ps_event_key] = datetime.now(timezone.utc)
+                log.info(f"Detected Profit Stop hit for rec #{rec.id}. Delegating to TradeService.")  
+                try:
+                    updated_rec = await self.trade_service.close_recommendation_for_user_async(rec.id, user_id, price, reason="PROFIT_STOP_HIT")
+                    if updated_rec:
+                        pnl = _pct(updated_rec.entry.value, price, side)
+                        emoji, r_text = ("🏆", "Profit") if pnl > 0.001 else ("💔", "Loss")
+                        self.trade_service.notify_reply(rec.id, f"<b>{emoji} Trade Closed #{updated_rec.asset.value}</b>\nClosed at {price:g} for a result of <b>{pnl:+.2f}%</b> ({r_text}).")
+                        await self.trade_service.notify_card_update(updated_rec)
+                except Exception as e:
+                    log.error(f"Profit Stop closing transaction failed for rec #{rec.id}: {e}")
+                    self._recently_processed_events.pop(ps_event_key, None)
+
+            final_tp_event_key = f"{rec.id}:FINAL_TP_HIT"  
+            if (_env_bool("AUTO_CLOSE_ENABLED", False) and rec.exit_strategy == ExitStrategy.CLOSE_AT_FINAL_TP and 
+                rec.targets.values and final_tp_event_key not in self._recently_processed_events):
+                
+                last_tp_price = rec.targets.values[-1].price  
+                if self._is_price_condition_met(side, price, last_tp_price, "TP"):
+                    self._recently_processed_events[final_tp_event_key] = datetime.now(timezone.utc)
+                    log.info(f"Detected final TP auto-close for rec #{rec.id}. Delegating to TradeService.")  
+                    try:
+                        updated_rec = await self.trade_service.close_recommendation_for_user_async(rec.id, user_id, price, reason="FINAL_TP_HIT")
+                        if updated_rec:
+                            pnl = _pct(updated_rec.entry.value, price, side)
+                            emoji, r_text = ("🏆", "Profit") if pnl > 0.001 else ("💔", "Loss")
+                            self.trade_service.notify_reply(rec.id, f"<b>{emoji} Trade Closed #{updated_rec.asset.value}</b>\nClosed at {price:g} for a result of <b>{pnl:+.2f}%</b> ({r_text}).")
+                            await self.trade_service.notify_card_update(updated_rec)
+                    except Exception as e:
+                        log.error(f"Final TP closing transaction failed for rec #{rec.id}: {e}")
+                        self._recently_processed_events.pop(final_tp_event_key, None)
+
+# --- END OF FINAL, PRODUCTION-READY FILE (Version 17.0.0) ---
