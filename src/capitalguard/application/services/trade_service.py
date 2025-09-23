@@ -36,6 +36,10 @@ def uow_transaction(func):
     """
     @wraps(func)
     async def wrapper(*args, **kwargs):
+        # Check if a session is already passed (for nested calls within a transaction)
+        if 'db_session' in kwargs:
+            return await func(*args, **kwargs)
+        
         with SessionLocal() as session:
             try:
                 # Pass the session as a keyword argument to the decorated function
@@ -109,7 +113,7 @@ class TradeService:
                     text=text
                 )
             except Exception as e:
-                log.warning(f"Failed to send reply notification for rec #{rec_id} to channel {msg_meta.telegram_channel_id}: {e}")
+                log.warning(f"Failed to send reply notification for rec #{rec.id} to channel {msg_meta.telegram_channel_id}: {e}")
 
     def _validate_recommendation_data(self, side: str, entry: float, stop_loss: float, targets: List[Dict[str, float]]):
         """Centralized validation for core recommendation business rules."""
@@ -238,7 +242,6 @@ class TradeService:
         return updated_rec
 
     async def close_recommendation_at_market_for_user_async(self, rec_id: int, user_telegram_id: str) -> Recommendation:
-        # This method is a special case; it fetches data before starting the transaction.
         with SessionLocal() as session:
             rec = self.repo.get_by_id_for_user(session, rec_id, user_telegram_id)
         if not rec: raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
@@ -294,7 +297,6 @@ class TradeService:
         if updated_rec.open_size_percent <= 0.01:
             log.info(f"Recommendation #{rec_id} fully closed via partial profits. Marking as closed.")
             reason = "AUTO_PARTIAL_FULL_CLOSE" if triggered_by.upper() == "AUTO" else "MANUAL_PARTIAL_FULL_CLOSE"
-            # We are already inside a transaction, so we call the internal logic directly
             return await self.close_recommendation_for_user_async(rec_id, user_id, price, reason=reason, db_session=db_session)
 
         return updated_rec
@@ -320,7 +322,6 @@ class TradeService:
         
         if target.close_percent > 0:
             log.info(f"Auto partial profit triggered for rec #{rec_id} at TP{target_index}.")
-            # Call the main method, but pass the existing session to avoid a new transaction
             await self.take_partial_profit_for_user_async(rec.id, user_id, target.close_percent, target.price, triggered_by="AUTO", db_session=db_session)
         
         await self._update_all_cards_async(db_session, updated_rec)
@@ -338,9 +339,6 @@ class TradeService:
         await self._update_all_cards_async(db_session, updated_rec)
         self._notify_all_channels(db_session, rec_id, f"✏️ **Stop Loss Updated** for #{rec.asset.value} to **{new_sl:g}**.")
         return updated_rec
-
-    # ... (Apply the same @uow_transaction pattern to other write methods like update_targets, update_exit_strategy, etc.)
-    # For brevity, I will show the rest of the methods with the pattern applied.
 
     @uow_transaction
     async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, float]], *, db_session: Session) -> Recommendation:
