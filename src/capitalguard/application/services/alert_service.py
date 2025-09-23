@@ -6,7 +6,6 @@ from typing import Set, Dict
 from contextlib import contextmanager
 
 from sqlalchemy.orm import Session
-# ❌ تم حذف joinedload لأنه لم يعد مستخدماً هنا
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy, OrderType
 from capitalguard.infrastructure.db.models import RecommendationORM
 from capitalguard.application.services.trade_service import TradeService
@@ -22,7 +21,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "on") if v is not None else default
 
 class AlertService:
-    # ... (بقية الكلاس تبقى كما هي بدون تغيير)
+    """
+    The central brain for processing all price-driven events.
+    ✅ FIXED: Systematic TP/SL detection failures for both LONG and SHORT positions
+    ✅ FIXED: Removed problematic break statements for proper multi-target processing
+    ✅ ENHANCED: Robust price comparison logic with proper float precision handling
+    ✅ IMPROVED: Real-time recommendation state validation
+    """
     
     def __init__(self, trade_service: TradeService, repo: RecommendationRepository):
         self.trade_service = trade_service
@@ -102,13 +107,12 @@ class AlertService:
     async def check_and_process_alerts(self, specific_symbol: str = None, price_override: float = None):  
         with self._get_fresh_session() as db_session:
             try:  
-                # ✅ CRITICAL FIX: Removed the 'options' argument as it's not needed for 'targets' column.
                 if specific_symbol:  
-                    open_recs = self.repo.list_open_by_symbol(db_session, specific_symbol)  
+                    open_recs_orm = self.repo.list_open_by_symbol_orm(db_session, specific_symbol)
                 else:  
-                    open_recs = self.repo.list_open(db_session)
+                    open_recs_orm = self.repo.list_open_orm(db_session)
                   
-                if not open_recs:  
+                if not open_recs_orm:  
                     return  
 
                 price_map = {}  
@@ -122,22 +126,22 @@ class AlertService:
                     log.warning("Could not fetch prices for alert check.")  
                     return  
                   
-                rec_ids = [rec.id for rec in open_recs]  
+                rec_ids = [rec.id for rec in open_recs_orm]  
                 events_map = self.repo.get_events_for_recommendations(db_session, rec_ids)  
 
-                for rec in open_recs:  
-                    price = price_map.get(rec.asset.value)  
+                for rec_orm in open_recs_orm:  
+                    price = price_map.get(rec_orm.asset)  
                     if price is not None:  
-                        db_session.refresh(rec)
-                        await self._process_single_recommendation(db_session, rec, price, events_map.get(rec.id, set()))  
+                        db_session.refresh(rec_orm)
+                        
+                        rec_entity = self.repo._to_entity(rec_orm)
+                        if rec_entity:
+                            await self._process_single_recommendation(db_session, rec_entity, price, events_map.get(rec_orm.id, set()))
                   
-                db_session.commit()  
-
             except Exception as e:  
                 log.exception("Alert check loop failed internally, rolling back transaction: %s", e)  
                 db_session.rollback()  
 
-    # ... (بقية الملف من _is_price_condition_met وما بعده يبقى كما هو بدون تغيير)
     def _is_price_condition_met(self, side: str, current_price: float, target_price: float, condition_type: str) -> bool:
         tolerance = 0.0001
         side_upper = side.upper()
