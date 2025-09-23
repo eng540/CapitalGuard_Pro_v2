@@ -58,7 +58,10 @@ class TelegramLogHandler(logging.Handler):
             # re-triggering this handler.
             # Use the root logger to prevent recursion.
             root_logger = logging.getLogger()
+            # Temporarily remove this handler to log the failure without looping
+            root_logger.removeHandler(self)
             root_logger.error(f"CRITICAL: Failed to send log to Telegram: {e}", exc_info=False)
+            root_logger.addHandler(self)
         finally:
             # Always release the lock
             self._local.is_handling = False
@@ -80,9 +83,9 @@ def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
         telegram_handler = TelegramLogHandler(notifier)
         telegram_handler.setLevel(logging.ERROR)
         root_logger.addHandler(telegram_handler)
-        log.info("TelegramLogHandler configured for admin notifications.")
+        logging.info("TelegramLogHandler configured for admin notifications.")
     else:
-        log.warning("TelegramLogHandler is not configured (TELEGRAM_ADMIN_CHAT_ID not set).")
+        logging.warning("TelegramLogHandler is not configured (TELEGRAM_ADMIN_CHAT_ID not set).")
 
 
     logging.getLogger("httpx").setLevel(logging.WARNING)
