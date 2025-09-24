@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.1) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.2) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
@@ -20,7 +20,6 @@ from capitalguard.infrastructure.db.models import PublishedMessage, Recommendati
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.interfaces.telegram.ui_texts import _pct
 
-# ✅ SOLUTION: Use a TYPE_CHECKING block to break the circular import.
 if TYPE_CHECKING:
     from capitalguard.application.services.alert_service import AlertService
 
@@ -386,4 +385,4 @@ class TradeService:
         if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.1) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.2) ---
