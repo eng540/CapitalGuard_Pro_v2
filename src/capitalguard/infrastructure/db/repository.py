@@ -1,4 +1,4 @@
-# --- START OF FINAL, PRODUCTION-READY FILE (Version 16.1.0) ---
+# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.0) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
@@ -110,7 +110,7 @@ class RecommendationRepository:
         else:
             targets_vo = Targets(list(targets_data))
 
-        # ✅ FINAL FIX: Eagerly load the events into a simple list *before* creating the domain entity.
+        # ✅ SOLUTION: Eagerly load the events into a simple list *before* creating the domain entity.
         # This detaches the data from the session, making it safe to pass across threads.
         events_list = list(row.events) if hasattr(row, 'events') else []
 
@@ -276,4 +276,4 @@ class RecommendationRepository:
             
         return result
 
-# --- END OF FINAL, PRODUCTION-READY FILE (Version 16.1.0) ---
+# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.0) ---
