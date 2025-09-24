@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.4) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.5) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
@@ -150,7 +150,6 @@ class TradeService:
     @uow_transaction
     async def process_activation_event(self, rec_id: int, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        # ✅ BUG FIX: Compare Enum object with Enum object for correctness.
         if not rec_orm or rec_orm.status != RecommendationStatus.PENDING:
             log.warning(f"Skipping activation for Rec #{rec_id}: Not found or status is not PENDING (current: {getattr(rec_orm, 'status', 'N/A')}). Forcing index sync.")
             await self.alert_service.update_triggers_for_recommendation(rec_id)
@@ -167,7 +166,6 @@ class TradeService:
         if not rec_orm: return
         rec = self.repo._to_entity(rec_orm)
         event_name = f"TP{target_index}_HIT"
-        # ✅ BUG FIX: Compare Enum object with Enum object.
         if rec.status != RecommendationStatus.ACTIVE or event_name in {e.event_type for e in rec.events}:
             log.warning(f"Skipping {event_name} for Rec #{rec_id}: Status is not ACTIVE or event already processed. Forcing index sync.")
             await self.alert_service.update_triggers_for_recommendation(rec_id)
@@ -191,7 +189,6 @@ class TradeService:
     @uow_transaction
     async def process_sl_hit_event(self, rec_id: int, user_id: str, price: float, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        # ✅ BUG FIX: Compare Enum object with Enum object.
         if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED:
             log.warning(f"Skipping SL hit for Rec #{rec_id}: Not found or already closed. Forcing index sync.")
             await self.alert_service.remove_triggers_for_recommendation(rec_id)
@@ -207,7 +204,6 @@ class TradeService:
     @uow_transaction
     async def process_profit_stop_hit_event(self, rec_id: int, user_id: str, price: float, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        # ✅ BUG FIX: Compare Enum object with Enum object.
         if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED:
             log.warning(f"Skipping Profit Stop hit for Rec #{rec_id}: Not found or already closed. Forcing index sync.")
             await self.alert_service.remove_triggers_for_recommendation(rec_id)
@@ -224,21 +220,33 @@ class TradeService:
     async def create_and_publish_recommendation_async(self, *, db_session: Session, **kwargs) -> Tuple[Recommendation, Dict]:
         uid_int = _parse_int_user_id(kwargs.get('user_id'))
         if not uid_int: raise ValueError("A valid user_id is required.")
+        
         target_channel_ids = kwargs.get('target_channel_ids')
         asset = kwargs['asset'].strip().upper()
+        side = kwargs['side'].upper()
         market = kwargs.get('market', 'Futures')
+        
         if not self.market_data_service.is_valid_symbol(asset, market):
             raise ValueError(f"The symbol '{asset}' is not valid or available in the '{market}' market.")
+        
         order_type_enum = OrderType(kwargs['order_type'].upper())
         status, final_entry = (RecommendationStatus.PENDING, kwargs['entry'])
+        
         if order_type_enum == OrderType.MARKET:
             live_price = await self.price_service.get_cached_price(asset, market, force_refresh=True)
             if live_price is None: raise RuntimeError(f"Could not fetch live price for {asset}.")
             status, final_entry = RecommendationStatus.ACTIVE, live_price
-        self._validate_recommendation_data(kwargs['side'], final_entry, kwargs['stop_loss'], kwargs['targets'])
+        
+        # ✅ SOLUTION: Sort targets based on the trade side before validation and creation.
+        targets_list = kwargs['targets']
+        is_long = side == "LONG"
+        targets_list.sort(key=lambda t: t['price'], reverse=not is_long)
+        
+        self._validate_recommendation_data(side, final_entry, kwargs['stop_loss'], targets_list)
+        
         rec_entity = Recommendation(
-            asset=Symbol(asset), side=Side(kwargs['side']), entry=Price(final_entry),
-            stop_loss=Price(kwargs['stop_loss']), targets=Targets(kwargs['targets']),
+            asset=Symbol(asset), side=Side(side), entry=Price(final_entry),
+            stop_loss=Price(kwargs['stop_loss']), targets=Targets(targets_list),
             order_type=order_type_enum, status=status, market=market, notes=kwargs.get('notes'),
             user_id=str(uid_int), exit_strategy=kwargs.get('exit_strategy', ExitStrategy.CLOSE_AT_FINAL_TP),
             open_size_percent=100.0,
@@ -246,6 +254,7 @@ class TradeService:
         )
         if rec_entity.status == RecommendationStatus.ACTIVE:
             rec_entity.highest_price_reached = rec_entity.lowest_price_reached = rec_entity.entry.value
+        
         created_rec = self.repo.add_with_event(db_session, rec_entity)
         await self.alert_service.update_triggers_for_recommendation(created_rec.id)
         final_rec, report = self._publish_recommendation(db_session, created_rec, str(uid_int), target_channel_ids)
@@ -400,4 +409,4 @@ class TradeService:
         if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.3) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.5) ---
