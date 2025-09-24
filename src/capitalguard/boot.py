@@ -94,17 +94,15 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     price_service = PriceService()
     analytics_service = AnalyticsService(repo=repo)
     
-    # ✅ SOLUTION: Create services in the correct order for dependency injection.
-    # AlertService and TradeService now depend on each other.
-    alert_service = AlertService(trade_service=None, repo=repo) # Create with a placeholder
+    alert_service = AlertService(trade_service=None, repo=repo)
     trade_service = TradeService(
         repo=repo, 
         notifier=notifier, 
         market_data_service=market_data_service, 
         price_service=price_service,
-        alert_service=alert_service # Inject the real alert_service
+        alert_service=alert_service
     )
-    alert_service.trade_service = trade_service # Complete the circular dependency
+    alert_service.trade_service = trade_service
 
     services = {
         "trade_service": trade_service,
