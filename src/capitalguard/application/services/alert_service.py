@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.1.1) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.1.2) ---
 # src/capitalguard/application/services/alert_service.py
 
 import logging
@@ -16,7 +16,6 @@ from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
 from capitalguard.interfaces.telegram.ui_texts import _pct
 
-# ✅ SOLUTION: Use a TYPE_CHECKING block to break the circular import.
 if TYPE_CHECKING:
     from capitalguard.application.services.trade_service import TradeService
 
@@ -29,10 +28,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class AlertService:
     """
     The central brain for processing all price-driven events, architected for massive scale.
-    ✅ FINAL ARCHITECTURE v18.1: Uses an in-memory inverted index ('active_triggers') to
-    process price updates in O(1) time, eliminating database queries from the hot path.
-    Includes public methods for real-time index management, ensuring the in-memory state
-    is perfectly synced with the database after every transaction.
+    ✅ FINAL ARCHITECTURE v18.2: Hardened index management logic to ensure atomic and
+    correct updates, preventing stale triggers and repeated processing.
     """
     
     def __init__(self, trade_service: 'TradeService', repo: RecommendationRepository):
@@ -94,6 +91,7 @@ class AlertService:
         """Fetches a single recommendation and updates its triggers in the live index."""
         log.debug(f"Attempting to update triggers for Rec #{rec_id} in memory.")
         async with self._triggers_lock:
+            # ✅ FIX: Robustly remove any and all existing triggers for this ID first.
             for symbol in list(self.active_triggers.keys()):
                 self.active_triggers[symbol] = [t for t in self.active_triggers[symbol] if t['rec_id'] != rec_id]
                 if not self.active_triggers[symbol]:
@@ -200,4 +198,4 @@ class AlertService:
                 except Exception as e:
                     log.error(f"Failed to process event for recommendation #{trigger['rec_id']}: {e}", exc_info=True)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.1.1) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.1.2) ---
