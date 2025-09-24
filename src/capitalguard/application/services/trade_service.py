@@ -1,4 +1,4 @@
-# src/capitalguard/application/services/trade_service.py v 17.4.1
+# src/capitalguard/application/services/trade_service.py v 17.4.2
 """
 TradeService — production-ready, compatible, non-breaking release.
 
@@ -6,7 +6,7 @@ Quick changes summary:
 - Robust uow_transaction decorator supporting sync + async callers.
 - Use session_scope() for safe session management and single-commit semantics.
 - notify_card_update: non-blocking edits, safe delete + single commit.
-- _publish_recommendation: retry logic, handles async/sync notifier implementations, canonical response handling.
+- _publish_recommendation: async, retry logic, handles async/sync notifier implementations, canonical response handling.
 - Fixed get_recent_assets_for_user param mismatch.
 - Defensive logging and minimal behavioral changes to preserve compatibility.
 - Added R/R validation, target monotonicity, total close percentage check.
@@ -48,7 +48,7 @@ def uow_transaction(func):
     If caller passes 'db_session' it is used as-is.
     Otherwise a new session_scope() is created and commit/rollback applied.
     """
-    is_coro = inspect.iscoroutinefunction(func)
+    is_coro = asyncio.iscoroutinefunction(func)
 
     if is_coro:
         @wraps(func)
@@ -122,8 +122,12 @@ class TradeService:
             for msg_meta in published_messages:
                 try:
                     # notifier.edit_recommendation_card_by_ids may be sync or async
+                    edit_fn = getattr(self.notifier, "edit_recommendation_card_by_ids", None)
+                    if edit_fn is None:
+                        log.error("Notifier missing 'edit_recommendation_card_by_ids' method.")
+                        continue
                     await self._call_notifier_maybe_async(
-                        getattr(self.notifier, "edit_recommendation_card_by_ids"),
+                        edit_fn,
                         channel_id=msg_meta.telegram_channel_id,
                         message_id=msg_meta.telegram_message_id,
                         rec=rec
@@ -131,10 +135,10 @@ class TradeService:
                 except Exception as e:
                     err_text = str(e).lower()
                     if "message to edit not found" in err_text or "message not found" in err_text:
-                        log.warning("Message %s for rec #%s not found. Scheduling removal.", msg_meta.telegram_message_id, rec.id)
+                        log.warning("Message %s for rec %s not found. Scheduling removal.", msg_meta.telegram_message_id, rec.id)
                         to_delete.append(msg_meta)
                     else:
-                        log.error("Failed to update card for rec #%s on channel %s: %s", rec.id, msg_meta.telegram_channel_id, e, exc_info=True)
+                        log.error("Failed to update card for rec %s on channel %s: %s", rec.id, msg_meta.telegram_channel_id, e, exc_info=True)
             # perform deletions + single commit (session_scope handles commit)
             for dm in to_delete:
                 try:
@@ -151,13 +155,16 @@ class TradeService:
             published_messages = self.repo.get_published_messages(session, rec_id)
             for msg_meta in published_messages:
                 try:
-                    # assume notifier.post_notification_reply is sync; if async, run in event loop
-                    if inspect.iscoroutinefunction(getattr(self.notifier, "post_notification_reply", None)):
-                        # best-effort: schedule in event loop
+                    post_fn = getattr(self.notifier, "post_notification_reply", None)
+                    if post_fn is None:
+                        log.error("Notifier missing 'post_notification_reply' method.")
+                        continue
+                    if inspect.iscoroutinefunction(post_fn):
+                        # schedule safely if there's a running loop
                         try:
                             loop = asyncio.get_running_loop()
                             asyncio.run_coroutine_threadsafe(
-                                self.notifier.post_notification_reply(
+                                post_fn(
                                     chat_id=msg_meta.telegram_channel_id,
                                     message_id=msg_meta.telegram_message_id,
                                     text=text
@@ -165,17 +172,14 @@ class TradeService:
                             )
                         except RuntimeError:
                             # no running loop; run directly
-                            import concurrent.futures
-                            with concurrent.futures.ThreadPoolExecutor() as executor:
-                                future = executor.submit(asyncio.run, self.notifier.post_notification_reply(
-                                    chat_id=msg_meta.telegram_channel_id,
-                                    message_id=msg_meta.telegram_message_id,
-                                    text=text
-                                ))
-                                future.result()
+                            asyncio.run(post_fn(
+                                chat_id=msg_meta.telegram_channel_id,
+                                message_id=msg_meta.telegram_message_id,
+                                text=text
+                            ))
                     else:
                         # sync call
-                        self.notifier.post_notification_reply(
+                        post_fn(
                             chat_id=msg_meta.telegram_channel_id,
                             message_id=msg_meta.telegram_message_id,
                             text=text
@@ -199,14 +203,28 @@ class TradeService:
 
         # --- ✅ الإضافة الجديدة: التحقق من R/R ---
         risk = abs(entry - stop_loss)
-        first_target = min(targets, key=lambda t: abs(t['price'] - entry))
+        # pick nearest target beyond entry depending on side
+        if not targets:
+            raise ValueError("At least one target is required.")
+        # determine first logical target
+        if side_upper == "LONG":
+            first_targets = [t for t in targets if t['price'] > entry]
+            if not first_targets:
+                raise ValueError("At least one target must be above entry for LONG.")
+            first_target = min(first_targets, key=lambda t: t['price'])
+        else:
+            first_targets = [t for t in targets if t['price'] < entry]
+            if not first_targets:
+                raise ValueError("At least one target must be below entry for SHORT.")
+            first_target = max(first_targets, key=lambda t: t['price'])
+
         reward = abs(first_target['price'] - entry)
-        min_acceptable_rr = 0.1  # 1:10
+        min_acceptable_rr = 0.1  # minimum reward/risk ratio (reward/risk)
         if risk > 0 and (reward / risk) < min_acceptable_rr:
             raise ValueError(f"Risk/Reward ratio too low: {(reward / risk):.3f}. Minimum allowed: {min_acceptable_rr}")
 
         # --- ✅ الإضافة الجديدة: التحقق من مجموع نسب الإغلاق ---
-        total_close = sum(t['close_percent'] for t in targets)
+        total_close = sum(float(t.get('close_percent', 0)) for t in targets)
         if total_close > 100:
             raise ValueError("Sum of close percentages exceeds 100%")
 
@@ -226,7 +244,7 @@ class TradeService:
                (side_upper == 'SHORT' and target.price >= stop_loss):
                 raise ValueError(f"Target price {target.price} cannot be on the same side of the trade as the stop loss {stop_loss}.")
 
-    def _publish_recommendation(self, session: Session, rec: Recommendation, user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[Recommendation, Dict]:
+    async def _publish_recommendation(self, session: Session, rec: Recommendation, user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[Recommendation, Dict]:
         """
         Publish recommendation to user's channels.
         Resilient to notifier sync/async implementations.
@@ -256,13 +274,11 @@ class TradeService:
             last_exc = None
             for attempt in range(3):
                 try:
-                    post_fn = getattr(self.notifier, "post_to_channel")
-                    # support async/sync notifier API
-                    if inspect.iscoroutinefunction(post_fn):
-                        res = asyncio.get_event_loop().run_until_complete(post_fn(ch.telegram_channel_id, rec, keyboard))
-                    else:
-                        # run sync post in thread to avoid blocking if called from async context
-                        res = asyncio.run(self._call_notifier_maybe_async(post_fn, ch.telegram_channel_id, rec, keyboard))
+                    post_fn = getattr(self.notifier, "post_to_channel", None)
+                    if post_fn is None:
+                        raise RuntimeError("Notifier missing 'post_to_channel' method.")
+                    # call notifier in a safe unified manner
+                    res = await self._call_notifier_maybe_async(post_fn, ch.telegram_channel_id, rec, keyboard)
                     # canonicalize response: accept tuple (channel_id, message_id) or object with attrs
                     if isinstance(res, tuple) and len(res) == 2:
                         publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res[0], telegram_message_id=res[1])
@@ -280,7 +296,6 @@ class TradeService:
                     else:
                         # some notifiers return True/False or None
                         if res is True:
-                            # best-effort: record channel id and unknown message id as None
                             publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=ch.telegram_channel_id, telegram_message_id=None)
                             session.add(publication)
                             report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": None})
@@ -290,9 +305,9 @@ class TradeService:
                 except Exception as e:
                     last_exc = e
                     log.warning("Publish attempt %d failed for channel %s: %s", attempt + 1, ch.telegram_channel_id, e)
-                    # small backoff
+                    # small async backoff
                     try:
-                        asyncio.run(asyncio.sleep(0.2 * (attempt + 1)))
+                        await asyncio.sleep(0.2 * (attempt + 1))
                     except Exception:
                         pass
             if not success:
@@ -410,8 +425,8 @@ class TradeService:
         if rec_entity.status == RecommendationStatus.ACTIVE:
             rec_entity.highest_price_reached = rec_entity.lowest_price_reached = rec_entity.entry.value
         created_rec = self.repo.add_with_event(db_session, rec_entity)
-        await self.alert_service.update_triggers_for_recommendation(created_id)
-        final_rec, report = self._publish_recommendation(db_session, created_rec, str(uid_int), target_channel_ids)
+        await self.alert_service.update_triggers_for_recommendation(created_rec.id)
+        final_rec, report = await self._publish_recommendation(db_session, created_rec, str(uid_int), target_channel_ids)
         return final_rec, report
 
     @uow_transaction
