@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 12.0.0) ---
+# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 12.1.0) ---
 # src/capitalguard/interfaces/api/main.py
 
 import logging
@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 # --- Application Setup ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="12.0.0-stable")
+app = FastAPI(title="CapitalGuard Pro API", version="12.1.0-scalable")
 app.state.ptb_app = None
 app.state.services = None
 
@@ -49,11 +49,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         f"<b>Error:</b>\n<pre>{html.escape(tb_string)}</pre>"
     )
 
-    if settings.TELEGRAM_CHAT_ID:
+    if settings.TELEGRAM_ADMIN_CHAT_ID:
         try:
-            # Use the application's bot instance to send the message
             await app.state.ptb_app.bot.send_message(
-                chat_id=settings.TELEGRAM_CHAT_ID, text=detailed_message, parse_mode=ParseMode.HTML
+                chat_id=settings.TELEGRAM_ADMIN_CHAT_ID, text=detailed_message, parse_mode=ParseMode.HTML
             )
         except Exception as e:
             log.error(f"CRITICAL: Failed to send detailed error report to admin: {e}")
@@ -90,6 +89,12 @@ async def on_startup():
         asyncio.create_task(market_data_service.refresh_symbols_cache())
         logging.info("Market data cache refresh task scheduled.")
 
+    # ✅ SOLUTION: Build the index BEFORE starting the main application components.
+    alert_service: AlertService = app.state.services.get("alert_service")
+    if alert_service:
+        await alert_service.build_triggers_index()
+        alert_service.start()
+
     await ptb_app.initialize()
 
     private_commands = [
@@ -111,12 +116,6 @@ async def on_startup():
     await ptb_app.bot.set_my_commands(private_commands)
     logging.info("Custom bot commands have been set.")
 
-    # ✅ ARCHITECTURAL FIX: Start the new hybrid AlertService.
-    # This single call now manages the WebSocket streamer, queue consumer, and safety fallback.
-    alert_service: AlertService = app.state.services.get("alert_service")
-    if alert_service:
-        alert_service.start()
-
     await ptb_app.start()
 
     if settings.TELEGRAM_WEBHOOK_URL:
@@ -130,7 +129,6 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     """Handles graceful shutdown for the Telegram bot and background services."""
-    # ✅ ARCHITECTURAL FIX: Gracefully stop the AlertService and its background tasks.
     alert_service: AlertService = app.state.services.get("alert_service")
     if alert_service:
         alert_service.stop()
@@ -171,7 +169,6 @@ def list_recommendations(
     symbol: str = Query(None),
     status: str = Query(None)
 ):
-    # ✅ UoW FIX: The session is now correctly injected and passed to the repository.
     items = trade_service.repo.list_all(db, symbol=symbol, status=status)
     return [RecommendationOut.from_orm(item) for item in items]
 
@@ -183,19 +180,15 @@ async def close_recommendation(
     trade_service: TradeService = Depends(get_trade_service)
 ):
     try:
-        # ✅ UoW FIX: The entire operation now runs within a single, managed transaction.
         rec = trade_service.repo.get(db, rec_id)
         if not rec or not rec.user_id:
             raise ValueError("Recommendation not found or has no associated user.")
         
-        closed_rec = await trade_service.close_recommendation_for_user_async(db, rec.id, rec.user_id, payload.exit_price)
-        db.commit()
+        closed_rec = await trade_service.close_recommendation_for_user_async(rec_id, rec.user_id, payload.exit_price, db_session=db)
         return RecommendationOut.from_orm(closed_rec)
     except ValueError as e:
-        db.rollback()
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        db.rollback()
         log.error(f"Failed to close recommendation via API: {e}")
         raise HTTPException(status_code=500, detail="Internal server error.")
 
@@ -205,7 +198,6 @@ def dashboard(
     analytics_service: AnalyticsService = Depends(get_analytics_service),
     user_id: str = "default_user"
 ):
-    # ✅ UoW FIX: The session is correctly passed to the analytics service.
     summary = analytics_service.performance_summary_for_user(db, user_id)
     
     html_content = f"""
@@ -230,4 +222,4 @@ def dashboard(
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
 
-# --- END OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE ---
+# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 12.1.0) ---
