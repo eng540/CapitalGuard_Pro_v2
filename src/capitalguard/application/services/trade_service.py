@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.5) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.6) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
@@ -156,7 +156,7 @@ class TradeService:
             return
         updated_rec = await self.activate_recommendation_async(rec_id, db_session=db_session)
         if updated_rec:
-            self.notify_reply(rec_id, f"▶️ **Trade Activated** | **{updated_rec.asset.value}** entry price has been reached.")
+            self.notify_reply(rec_id, f"▶️ <b>تم تفعيل الصفقة</b> | تم الوصول لسعر الدخول <b>{updated_rec.asset.value}</b>.")
             await self.notify_card_update(updated_rec)
             await self.alert_service.update_triggers_for_recommendation(rec_id)
 
@@ -173,12 +173,12 @@ class TradeService:
         updated_rec = await self.process_target_hit_async(rec_id, user_id, target_index, price, db_session=db_session)
         if updated_rec:
             target = updated_rec.targets.values[target_index - 1]
-            self.notify_reply(rec_id, f"🔥 **Target {target_index} Hit!** | **{updated_rec.asset.value}** reached **{target.price:g}**.")
+            self.notify_reply(rec_id, f"🔥 <b>تم تحقيق الهدف {target_index}!</b> | <b>{updated_rec.asset.value}</b> وصل إلى <b>{target.price:g}</b>.")
             if target.close_percent > 0:
                 pnl_on_part = _pct(updated_rec.entry.value, price, updated_rec.side.value)
-                notification_text = (f"💰 **Partial Profit Taken** | Signal #{rec_id}\n\n"
-                                   f"Closed **{target.close_percent:.2f}%** of **{updated_rec.asset.value}** at **{price:g}** for a **{pnl_on_part:+.2f}%** profit.\n\n"
-                                   f"<i>Remaining open size: {updated_rec.open_size_percent:.2f}%</i>")
+                notification_text = (f"💰 <b>جني ربح جزئي</b> | توصية #{rec_id}\n\n"
+                                   f"تم إغلاق <b>{target.close_percent:.2f}%</b> من <b>{updated_rec.asset.value}</b> عند سعر <b>{price:g}</b> بربح <b>{pnl_on_part:+.2f}%</b>.\n\n"
+                                   f"<i>الحجم المتبقي المفتوح: {updated_rec.open_size_percent:.2f}%</i>")
                 self.notify_reply(rec_id, notification_text)
             await self.notify_card_update(updated_rec)
             if updated_rec.status == RecommendationStatus.CLOSED:
@@ -196,8 +196,8 @@ class TradeService:
         updated_rec = await self.close_recommendation_for_user_async(rec_id, user_id, price, reason="SL_HIT", db_session=db_session)
         if updated_rec:
             pnl = _pct(updated_rec.entry.value, price, updated_rec.side.value)
-            emoji, r_text = ("🏆", "Profit") if pnl > 0.001 else ("💔", "Loss")
-            self.notify_reply(rec_id, f"<b>{emoji} Trade Closed #{updated_rec.asset.value}</b>\nClosed at {price:g} for a result of <b>{pnl:+.2f}%</b> ({r_text}).")
+            emoji, r_text = ("🏆", "ربح") if pnl > 0.001 else ("💔", "خسارة")
+            self.notify_reply(rec_id, f"<b>{emoji} تم إغلاق الصفقة #{updated_rec.asset.value}</b>\nأُغلقت عند {price:g} بنتيجة <b>{pnl:+.2f}%</b> ({r_text}).")
             await self.notify_card_update(updated_rec)
             await self.alert_service.remove_triggers_for_recommendation(rec_id)
 
@@ -211,8 +211,8 @@ class TradeService:
         updated_rec = await self.close_recommendation_for_user_async(rec_id, user_id, price, reason="PROFIT_STOP_HIT", db_session=db_session)
         if updated_rec:
             pnl = _pct(updated_rec.entry.value, price, updated_rec.side.value)
-            emoji, r_text = ("🏆", "Profit") if pnl > 0.001 else ("💔", "Loss")
-            self.notify_reply(rec_id, f"<b>{emoji} Trade Closed #{updated_rec.asset.value}</b>\nClosed at {price:g} for a result of <b>{pnl:+.2f}%</b> ({r_text}).")
+            emoji, r_text = ("🏆", "ربح") if pnl > 0.001 else ("💔", "خسارة")
+            self.notify_reply(rec_id, f"<b>{emoji} تم إغلاق الصفقة #{updated_rec.asset.value}</b>\nأُغلقت عند {price:g} بنتيجة <b>{pnl:+.2f}%</b> ({r_text}).")
             await self.notify_card_update(updated_rec)
             await self.alert_service.remove_triggers_for_recommendation(rec_id)
 
@@ -220,30 +220,22 @@ class TradeService:
     async def create_and_publish_recommendation_async(self, *, db_session: Session, **kwargs) -> Tuple[Recommendation, Dict]:
         uid_int = _parse_int_user_id(kwargs.get('user_id'))
         if not uid_int: raise ValueError("A valid user_id is required.")
-        
         target_channel_ids = kwargs.get('target_channel_ids')
         asset = kwargs['asset'].strip().upper()
         side = kwargs['side'].upper()
         market = kwargs.get('market', 'Futures')
-        
         if not self.market_data_service.is_valid_symbol(asset, market):
             raise ValueError(f"The symbol '{asset}' is not valid or available in the '{market}' market.")
-        
         order_type_enum = OrderType(kwargs['order_type'].upper())
         status, final_entry = (RecommendationStatus.PENDING, kwargs['entry'])
-        
         if order_type_enum == OrderType.MARKET:
             live_price = await self.price_service.get_cached_price(asset, market, force_refresh=True)
             if live_price is None: raise RuntimeError(f"Could not fetch live price for {asset}.")
             status, final_entry = RecommendationStatus.ACTIVE, live_price
-        
-        # ✅ SOLUTION: Sort targets based on the trade side before validation and creation.
         targets_list = kwargs['targets']
         is_long = side == "LONG"
         targets_list.sort(key=lambda t: t['price'], reverse=not is_long)
-        
         self._validate_recommendation_data(side, final_entry, kwargs['stop_loss'], targets_list)
-        
         rec_entity = Recommendation(
             asset=Symbol(asset), side=Side(side), entry=Price(final_entry),
             stop_loss=Price(kwargs['stop_loss']), targets=Targets(targets_list),
@@ -254,7 +246,6 @@ class TradeService:
         )
         if rec_entity.status == RecommendationStatus.ACTIVE:
             rec_entity.highest_price_reached = rec_entity.lowest_price_reached = rec_entity.entry.value
-        
         created_rec = self.repo.add_with_event(db_session, rec_entity)
         await self.alert_service.update_triggers_for_recommendation(created_rec.id)
         final_rec, report = self._publish_recommendation(db_session, created_rec, str(uid_int), target_channel_ids)
@@ -285,8 +276,8 @@ class TradeService:
         if live_price is None: raise RuntimeError(f"Could not fetch live market price for {rec.asset.value}.")
         updated_rec = await self.close_recommendation_for_user_async(rec_id, user_telegram_id, live_price, reason="MANUAL_MARKET_CLOSE")
         pnl = _pct(updated_rec.entry.value, live_price, updated_rec.side.value)
-        emoji, r_text = ("🏆", "Profit") if pnl > 0.001 else ("💔", "Loss")
-        self.notify_reply(rec_id, f"<b>{emoji} Trade Closed #{updated_rec.asset.value}</b>\nClosed at {live_price:g} for a result of <b>{pnl:+.2f}%</b> ({r_text}).")
+        emoji, r_text = ("🏆", "ربح") if pnl > 0.001 else ("💔", "خسارة")
+        self.notify_reply(rec_id, f"<b>{emoji} تم إغلاق الصفقة #{updated_rec.asset.value}</b>\nأُغلقت عند {live_price:g} بنتيجة <b>{pnl:+.2f}%</b> ({r_text}).")
         await self.notify_card_update(updated_rec)
         return updated_rec
 
@@ -344,7 +335,7 @@ class TradeService:
         rec.stop_loss = Price(new_sl)
         updated_rec = self.repo.update_with_event(db_session, rec, "SL_UPDATED", {"old_sl": old_sl, "new_sl": new_sl})
         await self.notify_card_update(updated_rec)
-        self.notify_reply(rec_id, f"✏️ **Stop Loss Updated** for #{rec.asset.value} to **{new_sl:g}**.")
+        self.notify_reply(rec_id, f"✏️ <b>تم تحديث وقف الخسارة</b> لـ #{rec.asset.value} إلى <b>{new_sl:g}</b>.")
         await self.alert_service.update_triggers_for_recommendation(rec_id)
         return updated_rec
 
@@ -358,7 +349,7 @@ class TradeService:
         rec.targets = Targets(new_targets)
         updated_rec = self.repo.update_with_event(db_session, rec, "TARGETS_UPDATED", {"old": old_targets, "new": [t.price for t in rec.targets.values]})
         await self.notify_card_update(updated_rec)
-        self.notify_reply(rec_id, f"🎯 **Targets Updated** for #{rec.asset.value}.")
+        self.notify_reply(rec_id, f"🎯 <b>تم تحديث الأهداف</b> لـ #{rec.asset.value}.")
         await self.alert_service.update_triggers_for_recommendation(rec_id)
         return updated_rec
 
@@ -372,7 +363,7 @@ class TradeService:
         rec.exit_strategy = new_strategy
         updated_rec = self.repo.update_with_event(db_session, rec, "STRATEGY_UPDATED", {"old": old_strategy.value, "new": new_strategy.value})
         await self.notify_card_update(updated_rec)
-        self.notify_reply(rec_id, f"📈 **Exit Strategy Updated** for #{rec.asset.value}.")
+        self.notify_reply(rec_id, f"📈 <b>تم تحديث استراتيجية الخروج</b> لـ #{rec.asset.value}.")
         await self.alert_service.update_triggers_for_recommendation(rec_id)
         return updated_rec
         
@@ -387,9 +378,9 @@ class TradeService:
         updated_rec = self.repo.update_with_event(db_session, rec, "PROFIT_STOP_UPDATED", {"old": old_price, "new": new_price})
         await self.notify_card_update(updated_rec)
         if new_price is not None:
-            note = f"🛡️ **Profit Stop Set** for #{rec.asset.value} at **{new_price:g}**."
+            note = f"🛡️ <b>تم تفعيل وقف الربح</b> لـ #{rec.asset.value} عند <b>{new_price:g}</b>."
         else:
-            note = f"🗑️ **Profit Stop Removed** for #{rec.asset.value}."
+            note = f"🗑️ <b>تمت إزالة وقف الربح</b> لـ #{rec.asset.value}."
         self.notify_reply(rec_id, note)
         await self.alert_service.update_triggers_for_recommendation(rec_id)
         return updated_rec
