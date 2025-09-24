@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND SECURED FILE (Version 13.2.0) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 13.3.0) ---
 # src/capitalguard/interfaces/telegram/commands.py
 
 import io
@@ -27,7 +27,6 @@ AWAITING_FORWARD_KEY = "awaiting_forward_channel_link"
 ADMIN_USERNAMES = [username.strip() for username in (os.getenv("ADMIN_USERNAMES") or "").split(',') if username]
 admin_filter = filters.User(username=ADMIN_USERNAMES)
 
-# --- Helper Functions ---
 def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], Optional[str]]:
     """Extracts channel info from a forwarded message."""
     chat_obj = getattr(message, "forward_from_chat", None)
@@ -41,14 +40,11 @@ def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], O
 async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: int) -> bool:
     """Performs a lightweight post to verify the bot can publish in the channel."""
     try:
-        # Send a silent message to verify permissions without notifying users.
         await context.bot.send_message(chat_id=channel_id, text="✅ Channel successfully linked.", disable_notification=True)
         return True
     except Exception as e:
         log.warning("Bot posting rights check failed for channel %s: %s", channel_id, e)
         return False
-
-# --- Main User Commands ---
 
 @unit_of_work
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
@@ -58,20 +54,17 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
     user = update.effective_user
     log.info(f"User {user.id} ({user.username}) started interaction.")
 
-    # ✅ CRITICAL FIX: Ensure the user is created on their very first interaction.
     user_repo = UserRepository(db_session)
     user_repo.find_or_create(
         telegram_id=user.id,
         first_name=user.first_name,
     )
 
-    # --- Deep Link Handling for Signal Tracking ---
     if context.args and context.args[0].startswith("track_"):
         try:
             rec_id = int(context.args[0].split('_')[1])
             log.info(f"User {user.id} is trying to track signal #{rec_id}.")
 
-            # First, check if the user is subscribed to the main channel.
             is_subscribed = False
             channel_id = settings.TELEGRAM_CHAT_ID
             if channel_id:
@@ -83,7 +76,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
                 await update.message.reply_html("Please subscribe to our main channel first to track signals.")
                 return
 
-            # If subscribed, fetch and display the signal.
             trade_service = get_service(context, "trade_service", TradeService)
             rec = trade_service.repo.get(db_session, rec_id)
             if not rec:
@@ -103,7 +95,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
             await update.message.reply_html("An error occurred while trying to track the signal.")
             return
 
-    # --- Standard Welcome Message ---
     await update.message.reply_html("👋 Welcome to the <b>CapitalGuard Bot</b>.\nUse /help for assistance.")
 
 @require_active_user
@@ -149,7 +140,10 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessio
             elif a in ("pending", "active"): filters_map["status"] = a; filter_text_parts.append(f"Status: {a.upper()}")
             else: filters_map["symbol"] = a; filter_text_parts.append(f"Symbol: {a.upper()}")
     context.user_data["last_open_filters"] = filters_map
-    items = trade_service.get_open_recommendations_for_user(db_session, user_telegram_id, **filters_map)
+    
+    # ✅ SOLUTION: Call the correct method on the repository, not the service.
+    items = trade_service.repo.list_open_for_user(db_session, int(user_telegram_id), **filters_map)
+    
     if not items:
         await update.message.reply_text("✅ No open recommendations match the current filter.")
         return
@@ -191,7 +185,6 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
     csv_file = InputFile(bytes_buffer, filename="capitalguard_export.csv")
     await update.message.reply_document(document=csv_file, caption="Your export has been generated.")
 
-# --- Channel Management Commands ---
 @require_active_user
 @require_channel_subscription
 async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -265,11 +258,7 @@ async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 def register_commands(app: Application):
     """Registers all basic, non-conversational commands for the bot."""
-    
-    # The /start command is registered without any filters to allow new user interaction.
     app.add_handler(CommandHandler("start", start_cmd))
-
-    # All other commands are registered without filters, as the decorators now handle protection.
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("open", open_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
@@ -278,8 +267,6 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("link_channel", link_channel_cmd))
     app.add_handler(CommandHandler("channels", channels_cmd))
     app.add_handler(CommandHandler("toggle_channel", toggle_channel_cmd))
-    
-    # The forwarded message handler also needs protection.
     app.add_handler(MessageHandler(filters.FORWARDED, link_channel_forward_handler))
 
-# --- END OF FINAL, COMPLETE, AND SECURED FILE ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 13.3.0) ---
