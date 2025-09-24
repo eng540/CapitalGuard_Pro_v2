@@ -1,4 +1,4 @@
-#--- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.2.1) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.2.1) ---
 # src/capitalguard/application/services/alert_service.py
 
 import logging
@@ -142,7 +142,6 @@ class AlertService:
         log.info("High-performance AlertService stopped.")
 
     def _is_price_condition_met(self, side: str, low_price: float, high_price: float, target_price: float, condition_type: str, order_type: Optional[OrderType] = None) -> bool:
-        # ✅ BUG FIX: Complete rewrite of the logic to correctly handle price ranges (wicks).
         side_upper = side.upper()
         if side_upper == "LONG":
             if condition_type.startswith("TP"): return high_price >= target_price
@@ -187,4 +186,4 @@ class AlertService:
                 except Exception as e:
                     log.error(f"Failed to process event for recommendation #{trigger['rec_id']}: {e}", exc_info=True)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.2.1)
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.2.1) ---
