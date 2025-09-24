@@ -1,10 +1,10 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.0) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.1) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
 import asyncio
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple, Dict, Any, Set
+from typing import List, Optional, Tuple, Dict, Any, Set, TYPE_CHECKING
 from functools import wraps
 
 from sqlalchemy.orm import Session
@@ -16,10 +16,13 @@ from capitalguard.domain.ports import NotifierPort
 from capitalguard.infrastructure.db.repository import RecommendationRepository, ChannelRepository, UserRepository
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.application.services.alert_service import AlertService
 from capitalguard.infrastructure.db.models import PublishedMessage, RecommendationORM
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.interfaces.telegram.ui_texts import _pct
+
+# ✅ SOLUTION: Use a TYPE_CHECKING block to break the circular import.
+if TYPE_CHECKING:
+    from capitalguard.application.services.alert_service import AlertService
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +56,7 @@ class TradeService:
         notifier: NotifierPort,
         market_data_service: MarketDataService,
         price_service: PriceService,
-        alert_service: AlertService,
+        alert_service: 'AlertService',
     ):
         self.repo = repo
         self.notifier = notifier
@@ -383,4 +386,4 @@ class TradeService:
         if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 17.2.0) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.1) ---
