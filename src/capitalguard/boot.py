@@ -1,4 +1,4 @@
-# --- START OF FINAL, PRODUCTION-READY FILE (Version 15.1.0) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.2.0) ---
 # src/capitalguard/boot.py
 
 import os
@@ -24,18 +24,14 @@ from capitalguard.service_registry import register_global_services
 class TelegramLogHandler(logging.Handler):
     """
     A custom logging handler that sends critical messages to a Telegram chat.
-    ✅ FIX: Now includes a recursion lock to prevent infinite loops if the
-    notifier itself fails.
     """
     def __init__(self, notifier: TelegramNotifier, level=logging.ERROR):
         super().__init__(level=level)
         self.notifier = notifier
-        # Thread-local storage for the recursion lock flag
         self._local = threading.local()
         self._local.is_handling = False
 
     def emit(self, record: logging.LogRecord):
-        # If we are already in the process of handling a log, exit to prevent recursion.
         if getattr(self._local, 'is_handling', False):
             return
         
@@ -43,34 +39,23 @@ class TelegramLogHandler(logging.Handler):
             return
         
         try:
-            # Set the lock
             self._local.is_handling = True
-            
             simple_message = f"⚠️ CRITICAL ERROR: {record.getMessage()}"
-            
             admin_chat_id = int(settings.TELEGRAM_ADMIN_CHAT_ID)
             if hasattr(self.notifier, 'send_private_text'):
-                # This is a synchronous call from a potentially async context,
-                # which is acceptable for logging critical errors.
                 self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message)
         except Exception as e:
-            # If sending the log fails, log it to the standard output instead of
-            # re-triggering this handler.
-            # Use the root logger to prevent recursion.
             root_logger = logging.getLogger()
-            # Temporarily remove this handler to log the failure without looping
             root_logger.removeHandler(self)
             root_logger.error(f"CRITICAL: Failed to send log to Telegram: {e}", exc_info=False)
             root_logger.addHandler(self)
         finally:
-            # Always release the lock
             self._local.is_handling = False
 
 def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
     """Configures the root logger for the entire application."""
     root_logger = logging.getLogger()
     if root_logger.hasHandlers():
-        # Clear existing handlers to avoid duplicates, especially in dev with reloads
         root_logger.handlers.clear()
 
     logging.basicConfig(
@@ -87,7 +72,6 @@ def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
     else:
         logging.warning("TelegramLogHandler is not configured (TELEGRAM_ADMIN_CHAT_ID not set).")
 
-
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
     logging.info("Logging configured successfully.")
@@ -99,7 +83,6 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     if ptb_app:
         notifier.set_ptb_app(ptb_app)
     
-    # Setup logging early, potentially with the notifier for error reporting
     setup_logging(notifier)
 
     spot_creds = BinanceCreds(os.getenv("BINANCE_API_KEY", ""), os.getenv("BINANCE_API_SECRET", ""))
@@ -109,10 +92,19 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
 
     market_data_service = MarketDataService()
     price_service = PriceService()
-    trade_service = TradeService(repo=repo, notifier=notifier, market_data_service=market_data_service, price_service=price_service)
     analytics_service = AnalyticsService(repo=repo)
     
-    alert_service = AlertService(trade_service=trade_service, repo=repo)
+    # ✅ SOLUTION: Create services in the correct order for dependency injection.
+    # AlertService and TradeService now depend on each other.
+    alert_service = AlertService(trade_service=None, repo=repo) # Create with a placeholder
+    trade_service = TradeService(
+        repo=repo, 
+        notifier=notifier, 
+        market_data_service=market_data_service, 
+        price_service=price_service,
+        alert_service=alert_service # Inject the real alert_service
+    )
+    alert_service.trade_service = trade_service # Complete the circular dependency
 
     services = {
         "trade_service": trade_service,
@@ -146,4 +138,4 @@ def bootstrap_app() -> Optional[Application]:
         logging.exception(f"CRITICAL: Failed to bootstrap bot: {e}")
         return None
 
-# --- END OF FINAL, PRODUCTION-READY FILE (Version 15.1.0) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.2.0) ---

@@ -1,9 +1,10 @@
-# --- START OF FINAL, HIGH-PERFORMANCE, AND PRODUCTION-READY FILE (Version 17.0.0) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.0) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict, Set
+from types import SimpleNamespace
 
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -113,12 +114,11 @@ class RecommendationRepository:
         events_list = []
         if hasattr(row, 'events'):
             for event_orm in row.events:
-                # Create a simple, detached object for each event
-                event_dto = type('EventDTO', (), {
-                    'event_type': event_orm.event_type,
-                    'event_data': event_orm.event_data,
-                    'event_timestamp': event_orm.event_timestamp
-                })()
+                event_dto = SimpleNamespace(
+                    event_type=event_orm.event_type,
+                    event_data=event_orm.event_data,
+                    event_timestamp=event_orm.event_timestamp
+                )
                 events_list.append(event_dto)
 
         return Recommendation(
@@ -314,4 +314,36 @@ class RecommendationRepository:
             for r in results
         ]
 
-# --- END OF FINAL, HIGH-PERFORMANCE, AND PRODUCTION-READY FILE (Version 17.0.0) ---
+    def get_active_trigger_data_by_id(self, session: Session, rec_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Fetches the essential trigger data for a single recommendation.
+        Returns None if the recommendation is not PENDING or ACTIVE.
+        """
+        r = session.query(
+            RecommendationORM.id,
+            RecommendationORM.user_id,
+            User.telegram_user_id,
+            RecommendationORM.asset,
+            RecommendationORM.side,
+            RecommendationORM.entry,
+            RecommendationORM.stop_loss,
+            RecommendationORM.targets,
+            RecommendationORM.status,
+            RecommendationORM.order_type,
+            RecommendationORM.profit_stop_price
+        ).join(User, RecommendationORM.user_id == User.id).filter(
+            RecommendationORM.id == rec_id,
+            RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
+        ).first()
+
+        if not r:
+            return None
+
+        return {
+            "id": r.id, "user_id": str(r.telegram_user_id), "asset": r.asset, "side": r.side,
+            "entry": r.entry, "stop_loss": r.stop_loss, "targets": r.targets,
+            "status": RecommendationStatus(r.status), "order_type": OrderType(r.order_type),
+            "profit_stop_price": r.profit_stop_price
+        }
+
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.0) ---

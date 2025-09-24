@@ -1,4 +1,6 @@
-# src/capitalguard/application/services/alert_service.py (النسخة النهائية 18.0.0) --- START OF #FINAL, HIGH-PERFORMANCE, AND PRODUCTION-READY FILE (Version 18.0.0) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.1.0) ---
+# src/capitalguard/application/services/alert_service.py
+
 import logging
 import os
 import asyncio
@@ -24,9 +26,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class AlertService:
     """
     The central brain for processing all price-driven events, architected for massive scale.
-    ✅ FINAL ARCHITECTURE v18: Uses an in-memory inverted index ('active_triggers') to
+    ✅ FINAL ARCHITECTURE v18.1: Uses an in-memory inverted index ('active_triggers') to
     process price updates in O(1) time, eliminating database queries from the hot path.
-    This allows the system to handle tens of thousands of active recommendations efficiently.
+    Includes public methods for real-time index management, ensuring the in-memory state
+    is perfectly synced with the database after every transaction.
     """
     
     def __init__(self, trade_service: 'TradeService', repo: RecommendationRepository):
@@ -50,36 +53,70 @@ class AlertService:
             trigger_data = self.repo.list_all_active_triggers_data(session)
 
         for item in trigger_data:
-            asset = item['asset']
-            if asset not in new_triggers:
-                new_triggers[asset] = []
-            
-            if item['status'] == RecommendationStatus.PENDING:
-                new_triggers[asset].append({
-                    "rec_id": item['id'], "user_id": item['user_id'], "side": item['side'],
-                    "type": "ENTRY", "price": item['entry'], "order_type": item['order_type']
-                })
-            
-            elif item['status'] == RecommendationStatus.ACTIVE:
-                new_triggers[asset].append({
-                    "rec_id": item['id'], "user_id": item['user_id'], "side": item['side'],
-                    "type": "SL", "price": item['stop_loss']
-                })
-                if item.get('profit_stop_price'):
-                    new_triggers[asset].append({
-                        "rec_id": item['id'], "user_id": item['user_id'], "side": item['side'],
-                        "type": "PROFIT_STOP", "price": item['profit_stop_price']
-                    })
-                for i, target in enumerate(item['targets']):
-                    new_triggers[asset].append({
-                        "rec_id": item['id'], "user_id": item['user_id'], "side": item['side'],
-                        "type": f"TP{i+1}", "price": target['price']
-                    })
+            self._add_item_to_trigger_dict(new_triggers, item)
         
         async with self._triggers_lock:
             self.active_triggers = new_triggers
         
         log.info(f"Successfully built trigger index with {len(trigger_data)} recommendations across {len(new_triggers)} symbols.")
+
+    def _add_item_to_trigger_dict(self, trigger_dict: Dict[str, list], item: Dict[str, Any]):
+        """Helper to populate a trigger dictionary with triggers from a data item."""
+        asset = item['asset']
+        if asset not in trigger_dict:
+            trigger_dict[asset] = []
+        
+        if item['status'] == RecommendationStatus.PENDING:
+            trigger_dict[asset].append({
+                "rec_id": item['id'], "user_id": item['user_id'], "side": item['side'],
+                "type": "ENTRY", "price": item['entry'], "order_type": item['order_type']
+            })
+        
+        elif item['status'] == RecommendationStatus.ACTIVE:
+            trigger_dict[asset].append({
+                "rec_id": item['id'], "user_id": item['user_id'], "side": item['side'],
+                "type": "SL", "price": item['stop_loss']
+            })
+            if item.get('profit_stop_price'):
+                trigger_dict[asset].append({
+                    "rec_id": item['id'], "user_id": item['user_id'], "side": item['side'],
+                    "type": "PROFIT_STOP", "price": item['profit_stop_price']
+                })
+            for i, target in enumerate(item['targets']):
+                trigger_dict[asset].append({
+                    "rec_id": item['id'], "user_id": item['user_id'], "side": item['side'],
+                    "type": f"TP{i+1}", "price": target['price']
+                })
+
+    async def update_triggers_for_recommendation(self, rec_id: int):
+        """Fetches a single recommendation and updates its triggers in the live index."""
+        log.debug(f"Attempting to update triggers for Rec #{rec_id} in memory.")
+        async with self._triggers_lock:
+            # First, remove any existing triggers for this ID to ensure a clean update.
+            for symbol in list(self.active_triggers.keys()):
+                self.active_triggers[symbol] = [t for t in self.active_triggers[symbol] if t['rec_id'] != rec_id]
+                if not self.active_triggers[symbol]:
+                    del self.active_triggers[symbol]
+
+            # Then, fetch the fresh data and add the new triggers.
+            with SessionLocal() as session:
+                item = self.repo.get_active_trigger_data_by_id(session, rec_id)
+            
+            if item:
+                self._add_item_to_trigger_dict(self.active_triggers, item)
+                log.info(f"Successfully updated triggers for Rec #{rec_id} in memory.")
+
+    async def remove_triggers_for_recommendation(self, rec_id: int):
+        """Removes all triggers for a specific recommendation ID from the live index."""
+        async with self._triggers_lock:
+            for symbol in list(self.active_triggers.keys()):
+                original_count = len(self.active_triggers[symbol])
+                self.active_triggers[symbol] = [t for t in self.active_triggers[symbol] if t['rec_id'] != rec_id]
+                if len(self.active_triggers[symbol]) < original_count:
+                    log.info(f"Removed triggers for Rec #{rec_id} from symbol {symbol} in memory.")
+                    if not self.active_triggers[symbol]:
+                        del self.active_triggers[symbol]
+                    break
 
     async def _run_index_sync(self, interval_seconds: int = 300):
         """Periodically rebuilds the index to ensure consistency and catch any drift."""
@@ -163,4 +200,4 @@ class AlertService:
                 except Exception as e:
                     log.error(f"Failed to process event for recommendation #{trigger['rec_id']}: {e}", exc_info=True)
 
-# --- END OF FINAL, HIGH-PERFORMANCE, AND PRODUCTION-READY FILE (Version 18.0.0) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.1.0) ---
