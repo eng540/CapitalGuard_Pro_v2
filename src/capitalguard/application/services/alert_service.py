@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.2.1) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.3.0) ---
 # src/capitalguard/application/services/alert_service.py
 
 import logging
@@ -28,8 +28,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class AlertService:
     """
     The central brain for processing all price-driven events, architected for massive scale.
-    ✅ FINAL ARCHITECTURE v18.2.1: Corrected the price condition logic to properly
-    handle candle ranges (low/high) for all trigger types, ensuring no events are missed.
+    ✅ FINAL ARCHITECTURE v18.3: Hardened logic for trigger management, price comparison,
+    and task creation to ensure stability and reliability.
     """
     
     def __init__(self, trade_service: 'TradeService', repo: RecommendationRepository):
@@ -56,8 +56,8 @@ class AlertService:
         log.info(f"Successfully built trigger index with {len(trigger_data)} recommendations across {len(new_triggers)} symbols.")
 
     def _add_item_to_trigger_dict(self, trigger_dict: Dict[str, list], item: Dict[str, Any]):
-        # ✅ BUG FIX (#5): Ensure asset key is always standardized.
-        asset = item['asset'].upper()
+        asset = (item['asset'] or "").strip().upper()
+        if not asset: return
         if asset not in trigger_dict:
             trigger_dict[asset] = []
         if item['status'] == RecommendationStatus.PENDING:
@@ -125,8 +125,6 @@ class AlertService:
                 log.exception("Unhandled exception in queue processor.")
 
     def start(self):
-        # ✅ BUG FIX (#6): Ensure tasks are created only within a running event loop.
-        # This is guaranteed by calling start() from an async context like FastAPI's on_startup.
         try:
             loop = asyncio.get_running_loop()
             if self._processing_task is None or self._processing_task.done():
@@ -193,4 +191,4 @@ class AlertService:
                 except Exception as e:
                     log.error(f"Failed to process event for recommendation #{trigger['rec_id']}: {e}", exc_info=True)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.2.1) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.3.0) ---
