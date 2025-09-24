@@ -1,4 +1,4 @@
-# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 1.1.0) ---
+# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 1.2.0) ---
 # src/capitalguard/application/services/market_data_service.py
 import logging
 import asyncio
@@ -34,7 +34,7 @@ class MarketDataService:
             response = await client.get(url, timeout=15.0)
             if response.status_code == 451:
                 log.error(f"Binance GEO-BLOCK detected for {market} (HTTP 451). This is a location-based restriction from Binance.")
-                self.binance_blocked = True # Mark as potentially blocked
+                self.binance_blocked = True
                 return market, []
             response.raise_for_status()
             data = response.json()
@@ -54,7 +54,6 @@ class MarketDataService:
             tasks = [self._fetch_from_binance_endpoint(client, market, url) for market, url in BINANCE_ENDPOINTS.items()]
             results = await asyncio.gather(*tasks)
 
-        # ✅ BUG FIX (#8): Continue processing even if one endpoint fails.
         successful_fetches = 0
         for market, symbols_list in results:
             if not symbols_list: continue
@@ -70,13 +69,11 @@ class MarketDataService:
             self._symbols_cache = unified_cache
             self._cache_populated = True
             log.info(f"Successfully populated symbols cache with {len(self._symbols_cache)} unique symbols from {successful_fetches} Binance endpoints.")
-            # If at least one fetch was successful, we are not fully blocked.
             if successful_fetches > 0:
                 self.binance_blocked = False
         else:
             log.error("Failed to populate symbols cache from Binance. No symbols were fetched from any endpoint.")
             self._cache_populated = False
-            # Only consider fully blocked if no data was fetched at all.
             self.binance_blocked = True
 
     async def _refresh_coingecko_cache(self):
@@ -113,7 +110,8 @@ class MarketDataService:
             log.warning("Symbol cache is not populated. Validation may be unreliable, allowing symbol through.")
             return True
 
-        symbol_upper = symbol.strip().upper()
+        # ✅ BUG FIX (#2): Standardize symbol format before checking.
+        symbol_upper = (symbol or "").strip().upper()
         
         if symbol_upper not in self._symbols_cache:
             return False
@@ -122,11 +120,11 @@ class MarketDataService:
             return True
 
         available_markets = self._symbols_cache[symbol_upper]["markets"]
-        market_lower = market.lower()
+        market_lower = (market or "").lower()
         for available_market in available_markets:
             if market_lower in available_market.lower():
                 return True
 
         return False
 
-# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 1.1.0) ---
+# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 1.2.0) ---

@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.3.0) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.4.0) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
@@ -111,15 +111,21 @@ class TradeService:
         if len(target_prices) != len(set(target_prices)):
             raise ValueError("Target prices must be unique.")
 
+        total_close_percent = sum(t.get('close_percent', 0) for t in targets)
+        if total_close_percent > 100.01: # Use tolerance for float comparison
+            raise ValueError(f"Total close percentage across all targets cannot exceed 100% (currently {total_close_percent:.2f}%).")
+
         targets_vo = Targets(targets)
+        prev_target_price = entry
         for target in targets_vo.values:
             if entry > 0:
-                if (side_upper == 'LONG' and target.price <= entry) or \
-                   (side_upper == 'SHORT' and target.price >= entry):
-                    raise ValueError(f"Target price {target.price} is not valid for a {side} trade with entry {entry}.")
+                if (side_upper == 'LONG' and target.price <= prev_target_price) or \
+                   (side_upper == 'SHORT' and target.price >= prev_target_price):
+                    raise ValueError(f"Targets must be monotonic. Target {target.price} is not valid after {prev_target_price} for a {side} trade.")
             if (side_upper == 'LONG' and target.price <= stop_loss) or \
                (side_upper == 'SHORT' and target.price >= stop_loss):
                 raise ValueError(f"Target price {target.price} cannot be on the same side of the trade as the stop loss {stop_loss}.")
+            prev_target_price = target.price
 
     def _publish_recommendation(self, session: Session, rec: Recommendation, user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[Recommendation, Dict]:
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
@@ -226,8 +232,8 @@ class TradeService:
         uid_int = _parse_int_user_id(kwargs.get('user_id'))
         if not uid_int: raise ValueError("A valid user_id is required.")
         target_channel_ids = kwargs.get('target_channel_ids')
-        asset = kwargs['asset'].strip().upper()
-        side = kwargs['side'].upper()
+        asset = (kwargs['asset'] or "").strip().upper()
+        side = (kwargs['side'] or "").upper()
         market = kwargs.get('market', 'Futures')
         if not self.market_data_service.is_valid_symbol(asset, market):
             raise ValueError(f"The symbol '{asset}' is not valid or available in the '{market}' market.")
@@ -405,4 +411,4 @@ class TradeService:
         if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.3.0) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.4.0) ---
