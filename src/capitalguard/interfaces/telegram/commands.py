@@ -28,6 +28,7 @@ ADMIN_USERNAMES = [username.strip() for username in (os.getenv("ADMIN_USERNAMES"
 admin_filter = filters.User(username=ADMIN_USERNAMES)
 
 def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], Optional[str]]:
+    """Extracts channel info from a forwarded message."""
     chat_obj = getattr(message, "forward_from_chat", None)
     if chat_obj is None:
         fwd_origin = getattr(message, "forward_origin", None)
@@ -37,6 +38,7 @@ def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], O
     return (int(getattr(chat_obj, "id")), getattr(chat_obj, "title", None), getattr(chat_obj, "username", None))
 
 async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: int) -> bool:
+    """Performs a lightweight post to verify the bot can publish in the channel."""
     try:
         await context.bot.send_message(chat_id=channel_id, text="✅ Channel successfully linked.", disable_notification=True)
         return True
@@ -46,35 +48,45 @@ async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: i
 
 @unit_of_work
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+    """
+    Handles the /start command. It now also ensures the user is created in the DB.
+    """
     user = update.effective_user
     log.info(f"User {user.id} ({user.username}) started interaction.")
+
     user_repo = UserRepository(db_session)
     user_repo.find_or_create(
         telegram_id=user.id,
         first_name=user.first_name,
     )
+
     if context.args and context.args[0].startswith("track_"):
         try:
             rec_id = int(context.args[0].split('_')[1])
             log.info(f"User {user.id} is trying to track signal #{rec_id}.")
+
             is_subscribed = False
             channel_id = settings.TELEGRAM_CHAT_ID
             if channel_id:
                 member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user.id)
                 if member.status in ['creator', 'administrator', 'member']:
                     is_subscribed = True
+            
             if not is_subscribed:
                 await update.message.reply_html("Please subscribe to our main channel first to track signals.")
                 return
+
             trade_service = get_service(context, "trade_service", TradeService)
             rec = trade_service.repo.get(db_session, rec_id)
             if not rec:
                 await update.message.reply_html("Sorry, this signal could not be found.")
                 return
+            
             card_text = build_trade_card_text(rec)
             keyboard = build_signal_tracking_keyboard(rec_id)
             await update.message.reply_html(card_text, reply_markup=keyboard)
             return
+
         except (ValueError, IndexError):
             await update.message.reply_html("Invalid tracking link.")
             return
@@ -82,6 +94,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
             log.error(f"Error handling deep link for user {user.id}: {e}", exc_info=True)
             await update.message.reply_html("An error occurred while trying to track the signal.")
             return
+
     await update.message.reply_html("👋 Welcome to the <b>CapitalGuard Bot</b>.\nUse /help for assistance.")
 
 @require_active_user
@@ -128,7 +141,7 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessio
             else: filters_map["symbol"] = a; filter_text_parts.append(f"Symbol: {a.upper()}")
     context.user_data["last_open_filters"] = filters_map
     
-    # ✅ SOLUTION: Call the correct method on the repository via the service.
+    # ✅ SOLUTION: Call the correct method on the repository, not the service.
     items = trade_service.repo.list_open_for_user(db_session, int(user_telegram_id), **filters_map)
     
     if not items:
