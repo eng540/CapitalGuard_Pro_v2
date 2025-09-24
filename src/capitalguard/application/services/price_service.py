@@ -1,4 +1,5 @@
-# --- START OF FINAL, CORRECTED AND ENHANCED FILE: src/capitalguard/application/services/price_service.py ---
+# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.3.0) ---
+# src/capitalguard/application/services/price_service.py
 import logging
 import os
 import asyncio
@@ -33,7 +34,6 @@ class PriceService:
         provider = os.getenv("MARKET_DATA_PROVIDER", "binance").lower()
         cache_key = f"price:{provider}:{(market or 'spot').lower()}:{symbol.upper()}"
 
-        # ✅ MODIFICATION: Only check the cache if force_refresh is False.
         if not force_refresh:
             cached_price = price_cache.get(cache_key)
             if cached_price is not None:
@@ -43,6 +43,7 @@ class PriceService:
 
         if provider == "binance":
             is_spot = str(market or "Spot").lower().startswith("spot")
+            # BinancePricing.get_price is a static method, safe for run_in_executor
             loop = asyncio.get_running_loop()
             live_price = await loop.run_in_executor(None, BinancePricing.get_price, symbol, is_spot)
 
@@ -67,17 +68,18 @@ class PriceService:
         Sync (blocking): Safe to call ONLY when no event loop is running.
         """
         try:
-            asyncio.get_running_loop()
-            raise RuntimeError(
-                "get_cached_price_blocking() was called from within a running event loop. "
-                "Use: `await price_service.get_cached_price(...)` in async code."
-            )
-        except RuntimeError as e:
-            # Re-raise the specific error we created, but let other RuntimeErrors pass
-            if "get_cached_price_blocking() was called" in str(e):
-                raise e
-            # No running loop → safe to create and run one.
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                raise RuntimeError(
+                    "get_cached_price_blocking() cannot be called from within a running event loop. "
+                    "Use: `await price_service.get_cached_price(...)` in async code."
+                )
             return asyncio.run(self.get_cached_price(symbol, market, force_refresh))
+        except RuntimeError as e:
+            if "no running event loop" in str(e).lower():
+                 return asyncio.run(self.get_cached_price(symbol, market, force_refresh))
+            else:
+                raise e
 
     # Backward-compatible aliases
     async def get_preview_price(self, symbol: str, market: str, force_refresh: bool = False) -> Optional[float]:
@@ -85,4 +87,5 @@ class PriceService:
 
     def get_preview_price_blocking(self, symbol: str, market: str, force_refresh: bool = False) -> Optional[float]:
         return self.get_cached_price_blocking(symbol, market, force_refresh)
-# --- END OF FINAL, CORRECTED AND ENHANCED FILE ---```
+
+# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.3.0) ---
