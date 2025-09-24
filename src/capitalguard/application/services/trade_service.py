@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.2) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.3) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
@@ -151,6 +151,8 @@ class TradeService:
     async def process_activation_event(self, rec_id: int, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         if not rec_orm or rec_orm.status != RecommendationStatus.PENDING.value:
+            log.warning(f"Skipping activation for Rec #{rec_id}: Not found or status is not PENDING (current: {rec_orm.status if rec_orm else 'N/A'}). Forcing index sync.")
+            await self.alert_service.update_triggers_for_recommendation(rec_id)
             return
         updated_rec = await self.activate_recommendation_async(rec_id, db_session=db_session)
         if updated_rec:
@@ -163,7 +165,10 @@ class TradeService:
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         if not rec_orm: return
         rec = self.repo._to_entity(rec_orm)
-        if rec.status != RecommendationStatus.ACTIVE or f"TP{target_index}_HIT" in {e.event_type for e in rec.events}:
+        event_name = f"TP{target_index}_HIT"
+        if rec.status != RecommendationStatus.ACTIVE or event_name in {e.event_type for e in rec.events}:
+            log.warning(f"Skipping {event_name} for Rec #{rec_id}: Status is not ACTIVE or event already processed. Forcing index sync.")
+            await self.alert_service.update_triggers_for_recommendation(rec_id)
             return
         updated_rec = await self.process_target_hit_async(rec_id, user_id, target_index, price, db_session=db_session)
         if updated_rec:
@@ -184,7 +189,10 @@ class TradeService:
     @uow_transaction
     async def process_sl_hit_event(self, rec_id: int, user_id: str, price: float, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED.value: return
+        if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED.value:
+            log.warning(f"Skipping SL hit for Rec #{rec_id}: Not found or already closed. Forcing index sync.")
+            await self.alert_service.remove_triggers_for_recommendation(rec_id)
+            return
         updated_rec = await self.close_recommendation_for_user_async(rec_id, user_id, price, reason="SL_HIT", db_session=db_session)
         if updated_rec:
             pnl = _pct(updated_rec.entry.value, price, updated_rec.side.value)
@@ -196,7 +204,10 @@ class TradeService:
     @uow_transaction
     async def process_profit_stop_hit_event(self, rec_id: int, user_id: str, price: float, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED.value: return
+        if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED.value:
+            log.warning(f"Skipping Profit Stop hit for Rec #{rec_id}: Not found or already closed. Forcing index sync.")
+            await self.alert_service.remove_triggers_for_recommendation(rec_id)
+            return
         updated_rec = await self.close_recommendation_for_user_async(rec_id, user_id, price, reason="PROFIT_STOP_HIT", db_session=db_session)
         if updated_rec:
             pnl = _pct(updated_rec.entry.value, price, updated_rec.side.value)
@@ -385,4 +396,4 @@ class TradeService:
         if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.2) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.3) ---
