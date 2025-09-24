@@ -1,4 +1,5 @@
-#START src/capitalguard/application/services/market_data_service.py
+# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 1.1.0) ---
+# src/capitalguard/application/services/market_data_service.py
 import logging
 import asyncio
 import os
@@ -33,7 +34,7 @@ class MarketDataService:
             response = await client.get(url, timeout=15.0)
             if response.status_code == 451:
                 log.error(f"Binance GEO-BLOCK detected for {market} (HTTP 451). This is a location-based restriction from Binance.")
-                self.binance_blocked = True
+                self.binance_blocked = True # Mark as potentially blocked
                 return market, []
             response.raise_for_status()
             data = response.json()
@@ -53,11 +54,11 @@ class MarketDataService:
             tasks = [self._fetch_from_binance_endpoint(client, market, url) for market, url in BINANCE_ENDPOINTS.items()]
             results = await asyncio.gather(*tasks)
 
-        if self.binance_blocked:
-            return # Stop processing if a block was detected
-
+        # ✅ BUG FIX (#8): Continue processing even if one endpoint fails.
+        successful_fetches = 0
         for market, symbols_list in results:
             if not symbols_list: continue
+            successful_fetches += 1
             for symbol_data in symbols_list:
                 if symbol_data.get("status") == "TRADING":
                     symbol_name = symbol_data["symbol"].upper()
@@ -68,17 +69,21 @@ class MarketDataService:
         if unified_cache:
             self._symbols_cache = unified_cache
             self._cache_populated = True
-            log.info(f"Successfully populated symbols cache with {len(self._symbols_cache)} unique symbols from Binance.")
+            log.info(f"Successfully populated symbols cache with {len(self._symbols_cache)} unique symbols from {successful_fetches} Binance endpoints.")
+            # If at least one fetch was successful, we are not fully blocked.
+            if successful_fetches > 0:
+                self.binance_blocked = False
         else:
-            log.error("Failed to populate symbols cache from Binance. No symbols were fetched.")
+            log.error("Failed to populate symbols cache from Binance. No symbols were fetched from any endpoint.")
             self._cache_populated = False
+            # Only consider fully blocked if no data was fetched at all.
+            self.binance_blocked = True
 
     async def _refresh_coingecko_cache(self):
         """Fetches and constructs a symbol list from CoinGecko."""
         log.info("Refreshing symbols cache from CoinGecko...")
         cg_client = CoinGeckoClient()
         symbols = await cg_client.get_all_symbols()
-        # We assume CoinGecko symbols can be traded on both Spot and Futures for simplicity
         self._symbols_cache = {s: {"markets": {"Spot", "Futures-USD-M"}} for s in symbols}
         self._cache_populated = bool(self._symbols_cache)
         if self._cache_populated:
@@ -93,12 +98,11 @@ class MarketDataService:
         if self.provider == "binance":
             await self._refresh_binance_cache()
             if self.binance_blocked:
-                log.warning("Binance is blocked. Falling back to CoinGecko for symbol data.")
+                log.warning("All Binance endpoints failed or are geo-blocked. Falling back to CoinGecko for symbol data.")
                 self.provider = "coingecko"
-                # Also disable the watcher as it depends on Binance
                 os.environ["ENABLE_WATCHER"] = "0"
                 await self._refresh_coingecko_cache()
-        else: # coingecko or any other provider
+        else:
             await self._refresh_coingecko_cache()
 
     def is_valid_symbol(self, symbol: str, market: str) -> bool:
@@ -114,11 +118,9 @@ class MarketDataService:
         if symbol_upper not in self._symbols_cache:
             return False
 
-        # For CoinGecko, we are more permissive as market data is less specific
         if self.provider == "coingecko":
             return True
 
-        # For Binance, we perform a strict market check
         available_markets = self._symbols_cache[symbol_upper]["markets"]
         market_lower = market.lower()
         for available_market in available_markets:
@@ -126,4 +128,5 @@ class MarketDataService:
                 return True
 
         return False
-#END
+
+# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 1.1.0) ---
