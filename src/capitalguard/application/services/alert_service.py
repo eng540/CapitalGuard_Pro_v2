@@ -56,7 +56,8 @@ class AlertService:
         log.info(f"Successfully built trigger index with {len(trigger_data)} recommendations across {len(new_triggers)} symbols.")
 
     def _add_item_to_trigger_dict(self, trigger_dict: Dict[str, list], item: Dict[str, Any]):
-        asset = item['asset']
+        # ✅ BUG FIX (#5): Ensure asset key is always standardized.
+        asset = item['asset'].upper()
         if asset not in trigger_dict:
             trigger_dict[asset] = []
         if item['status'] == RecommendationStatus.PENDING:
@@ -124,12 +125,18 @@ class AlertService:
                 log.exception("Unhandled exception in queue processor.")
 
     def start(self):
-        self.streamer.start()
-        if self._processing_task is None or self._processing_task.done():
-            self._processing_task = asyncio.create_task(self._process_queue())
-            self._index_sync_task = asyncio.create_task(self._run_index_sync())
-        else:
-            log.warning("AlertService processing tasks are already running.")
+        # ✅ BUG FIX (#6): Ensure tasks are created only within a running event loop.
+        # This is guaranteed by calling start() from an async context like FastAPI's on_startup.
+        try:
+            loop = asyncio.get_running_loop()
+            if self._processing_task is None or self._processing_task.done():
+                self._processing_task = loop.create_task(self._process_queue())
+                self._index_sync_task = loop.create_task(self._run_index_sync())
+            else:
+                log.warning("AlertService processing tasks are already running.")
+            self.streamer.start()
+        except RuntimeError:
+            log.error("AlertService.start() called without a running event loop.")
 
     def stop(self):
         self.streamer.stop()
@@ -159,7 +166,7 @@ class AlertService:
 
     async def check_and_process_alerts(self, symbol: str, low_price: float, high_price: float):
         async with self._triggers_lock:
-            triggers_for_symbol = self.active_triggers.get(symbol, [])
+            triggers_for_symbol = self.active_triggers.get(symbol.upper(), [])
         
         if not triggers_for_symbol:
             return

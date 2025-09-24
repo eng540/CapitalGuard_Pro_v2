@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.6) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.3.0) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
@@ -97,7 +97,7 @@ class TradeService:
                         text=text
                     )
                 except Exception as e:
-                    log.warning(f"Failed to send reply notification for rec #{rec.id} to channel {msg_meta.telegram_channel_id}: {e}")
+                    log.warning(f"Failed to send reply notification for rec #{rec_id} to channel {msg_meta.telegram_channel_id}: {e}")
 
     def _validate_recommendation_data(self, side: str, entry: float, stop_loss: float, targets: List[Dict[str, float]]):
         side_upper = side.upper()
@@ -140,12 +140,12 @@ class TradeService:
         for ch in channels_to_publish:
             try:
                 res = self.notifier.post_to_channel(ch.telegram_channel_id, rec, keyboard)
-                if res:
+                if res and isinstance(res, tuple) and len(res) == 2:
                     publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res[0], telegram_message_id=res[1])
                     session.add(publication)
                     report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res[1]})
                 else:
-                    report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": "Notifier failed to post message."})
+                    report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": "Notifier failed to post message or returned invalid response."})
             except Exception as e:
                 log.error(f"Failed to publish to channel {ch.telegram_channel_id}: {e}", exc_info=True)
                 report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": str(e)})
@@ -405,4 +405,4 @@ class TradeService:
         if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.6) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.3.0) ---

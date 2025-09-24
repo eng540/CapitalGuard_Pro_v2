@@ -1,4 +1,4 @@
-# --- START OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.4) ---
+# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 8.1.5) ---
 # src/capitalguard/application/services/risk_service.py
 
 from __future__ import annotations
@@ -35,7 +35,6 @@ class RiskService:
     def _round_tick(self, value: float, tick: float) -> float:
         """Rounds a price to the nearest multiple of tick size."""
         if tick <= 0: return value
-        # A simple round is sufficient for tick size.
         precision = abs(int(math.log10(tick))) if tick > 0 else 8
         return round(value, precision)
 
@@ -46,7 +45,8 @@ class RiskService:
             t = f.get("filterType")
             if t == "LOT_SIZE":
                 step = float(f.get("stepSize", 0))
-            elif t in ("PRICE_FILTER", "PRICE_FILTER "):
+            # ✅ BUG FIX (#7): Removed trailing space from "PRICE_FILTER ".
+            elif t == "PRICE_FILTER":
                 tick = float(f.get("tickSize", 0))
             elif t in ("MIN_NOTIONAL", "NOTIONAL"):
                 min_notional = float(f.get("minNotional", 0))
@@ -61,7 +61,6 @@ class RiskService:
         is_spot = str(market or "Spot").lower().startswith("spot")
         bex = self.exec_spot if is_spot else self.exec_futu
         
-        # Asynchronously fetch exchange info
         info = await bex.exchange_info(symbol) or {}
         step, tick, min_notional = self._filters(info)
 
@@ -72,9 +71,8 @@ class RiskService:
             
         raw_qty = risk_usdt / price_diff
         
-        # Ensure quantity respects the minimum notional value if specified
         if min_notional > 0 and (raw_qty * entry) < min_notional:
-            raw_qty = (min_notional / entry) * 1.001 # Add a small buffer to ensure it passes the filter
+            raw_qty = (min_notional / entry) * 1.001
 
         qty = self._round_step(raw_qty, step or 0.000001)
         notional = qty * entry
@@ -93,4 +91,4 @@ class RiskService:
             tick_size=tick or 0.0
         )
 
-# --- END OF FINAL, CONFIRMED AND PRODUCTION-READY FILE (Version 8.1.4) ---
+# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 8.1.5) ---
