@@ -106,6 +106,11 @@ class TradeService:
                 raise ValueError("For new LONG trades, Stop Loss must be < Entry Price.")
             if side_upper == "SHORT" and not (stop_loss > entry):
                 raise ValueError("For new SHORT trades, Stop Loss must be > Entry Price.")
+        
+        target_prices = [t['price'] for t in targets]
+        if len(target_prices) != len(set(target_prices)):
+            raise ValueError("Target prices must be unique.")
+
         targets_vo = Targets(targets)
         for target in targets_vo.values:
             if entry > 0:
@@ -400,4 +405,4 @@ class TradeService:
         if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.5) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.6) ---
