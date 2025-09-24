@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.2.1) ---
+# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.2.1) ---
 # src/capitalguard/interfaces/telegram/ui_texts.py
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def _rr(entry: float, sl: float, first_target: Optional[Target]) -> str:
         if first_target is None or not isfinite(entry) or not isfinite(sl):
             return "—"
         risk = abs(entry - sl)
-        if risk <= 1e-9:  # Avoid division by zero
+        if risk <= 1e-9:
             return "∞"
         reward = abs(first_target.price - entry)
         ratio = reward / risk
@@ -33,15 +33,10 @@ def _rr(entry: float, sl: float, first_target: Optional[Target]) -> str:
     except Exception:
         return "—"
 
-# ✅ SOLUTION: New function to accurately calculate PnL for trades with partial closures.
 def _calculate_weighted_pnl(rec: Recommendation) -> float:
-    """
-    Calculates the final weighted PnL by analyzing all partial profit events.
-    """
     total_pnl = 0.0
     percent_closed = 0.0
     
-    # Sum up the PnL from all partial profit events
     for event in (rec.events or []):
         event_type = getattr(event, "event_type", "")
         if event_type in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO"):
@@ -53,15 +48,12 @@ def _calculate_weighted_pnl(rec: Recommendation) -> float:
                 total_pnl += (closed_pct / 100.0) * pnl_on_part
                 percent_closed += closed_pct
 
-    # Calculate PnL for the remaining part of the trade closed at the final exit price
     remaining_percent = 100.0 - percent_closed
     if remaining_percent > 0.01 and rec.exit_price is not None:
         pnl_on_remaining = _pct(rec.entry.value, rec.exit_price, rec.side.value)
         total_pnl += (remaining_percent / 100.0) * pnl_on_remaining
-    # If the entire position was closed via partial profits, the last partial exit is the final exit.
     elif abs(remaining_percent) < 0.01 and total_pnl != 0:
-        pass # The total_pnl is already complete from the loop.
-    # Fallback for simple trades without partial profit events
+        pass
     elif percent_closed == 0 and rec.exit_price is not None:
         return _pct(rec.entry.value, rec.exit_price, rec.side.value)
 
@@ -82,19 +74,15 @@ def _build_header(rec: Recommendation) -> str:
 def _build_live_price_section(rec: Recommendation, live_price: Optional[float]) -> str:
     if rec.status not in (RecommendationStatus.ACTIVE, RecommendationStatus.PENDING) or live_price is None:
         return ""
-
     lines = ["─ ─ ─ ─ ─ ─ ─ ─ ─ ─"]
-    
     if rec.status == RecommendationStatus.ACTIVE:
         pnl = _pct(rec.entry.value, live_price, rec.side.value)
         pnl_icon = '🟢' if pnl >= 0 else '🔴'
         lines.append(f"💹 <b>Live Price:</b> <code>{live_price:g}</code> ({pnl_icon} {pnl:+.2f}%)")
-    
     elif rec.status == RecommendationStatus.PENDING:
         distance = abs(live_price - rec.entry.value)
         distance_pct = (distance / rec.entry.value) * 100.0 if rec.entry.value > 0 else 0.0
         lines.append(f"💹 <b>Live Price:</b> <code>{live_price:g}</code> (~{distance_pct:.2f}% from entry)")
-
     lines.append("─ ─ ─ ─ ─ ─ ─ ─ ─ ─")
     return "\n".join(lines)
 
@@ -102,27 +90,21 @@ def _build_performance_section(rec: Recommendation) -> str:
     lines = ["📊 <b>PERFORMANCE</b>"]
     entry_price = rec.entry.value
     stop_loss = rec.stop_loss.value
-
     lines.append(f"💰 Entry: <code>{entry_price:g}</code>")
-
     sl_pnl = _pct(entry_price, stop_loss, rec.side.value)
     lines.append(f"🛑 Stop: <code>{stop_loss:g}</code> ({sl_pnl:+.2f}%)")
-
     if getattr(rec, "profit_stop_price", None) is not None:
         if rec.profit_stop_price == entry_price:
             lines.append(f"🔒 <b>Break-Even:</b> <code>{rec.profit_stop_price:g}</code> (Secured ✅)")
         else:
             lines.append(f"🔒 <b>Profit Stop:</b> <code>{rec.profit_stop_price:g}</code>")
-
     first_target = rec.targets.values[0] if getattr(rec.targets, "values", []) else None
     lines.append(f"💡 Risk/Reward (Plan): ~<code>{_rr(entry_price, stop_loss, first_target)}</code>")
-
     return "\n".join(lines)
 
 def _build_exit_plan_section(rec: Recommendation) -> str:
     lines = ["\n🎯 <b>EXIT PLAN</b>"]
     entry_price = rec.entry.value
-
     events = rec.events or []
     hit_targets_events = set()
     for event in events:
@@ -133,32 +115,26 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
                 hit_targets_events.add(idx)
             except (ValueError, IndexError):
                 continue
-
     targets_list = getattr(rec.targets, "values", [])
     if not targets_list:
         return ""
-
     next_tp_index = -1
     for i in range(1, len(targets_list) + 1):
         if i not in hit_targets_events:
             next_tp_index = i
             break
-
     for i, target in enumerate(targets_list, start=1):
         pct = _pct(entry_price, target.price, rec.side.value)
-        
         if i in hit_targets_events:
             icon = "✅"
         elif i == next_tp_index:
             icon = "🚀"
         else:
             icon = "⏳"
-            
         line = f"  • {icon} TP{i}: <code>{target.price:g}</code> ({pct:+.2f}%)"
         if 0 < getattr(target, "close_percent", 0) < 100:
             line += f" | Close {target.close_percent:.0f}%"
         lines.append(line)
-
     return "\n".join(lines)
 
 def _build_logbook_section(rec: Recommendation) -> str:
@@ -167,7 +143,6 @@ def _build_logbook_section(rec: Recommendation) -> str:
     log_events = [event for event in events if getattr(event, "event_type", "") in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO", "SL_UPDATED")]
     if not log_events:
         return ""
-
     lines.append("\n📋 <b>LOGBOOK</b>")
     for event in sorted(log_events, key=lambda ev: getattr(ev, "event_timestamp", datetime.min)):
         et = getattr(event, "event_type", "")
@@ -178,20 +153,15 @@ def _build_logbook_section(rec: Recommendation) -> str:
             lines.append(f"  • 💰 Closed {data.get('closed_percent', 0):.0f}% at <code>{data.get('price', 0):g}</code> ({pnl:+.2f}%) [{trigger}]")
         elif et == "SL_UPDATED" and data.get('new_sl') == rec.entry.value:
              lines.append(f"  • 🛡️ SL moved to Breakeven.")
-
     return "\n".join(lines)
 
 def _build_summary_section(rec: Recommendation) -> str:
     entry = rec.entry.value
     exit_price = getattr(rec, "exit_price", 0.0) or 0.0
-    
-    # ✅ SOLUTION: Use the new weighted PnL calculation for the final result.
     pnl = _calculate_weighted_pnl(rec)
-    
     if pnl > 0.001: result_text = "🏆 WIN"
     elif pnl < -0.001: result_text = "💔 LOSS"
     else: result_text = "🛡️ BREAKEVEN"
-
     lines = [
         "📊 <b>TRADE SUMMARY</b>",
         f"💰 Entry: <code>{entry:g}</code>",
@@ -199,8 +169,6 @@ def _build_summary_section(rec: Recommendation) -> str:
         f"{'📈' if pnl >= 0 else '📉'} <b>Final Result: {pnl:+.2f}%</b> ({result_text})",
     ]
     return "\n".join(lines)
-
-# --- Main Card Builders ---
 
 def _build_pending_card(rec: Recommendation, live_price: Optional[float]) -> str:
     parts = [
@@ -248,8 +216,6 @@ def build_trade_card_text(rec: Recommendation) -> str:
         return _build_closed_card(rec)
     return "Invalid recommendation state."
 
-# --- Other Text Builders ---
-
 def build_review_text_with_price(draft: dict, preview_price: Optional[float]) -> str:
     asset = (draft.get("asset", "") or "").upper()
     side = (draft.get("side", "") or "").upper()
@@ -261,13 +227,11 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
     tp1 = tps[0] if tps else None
     planned_rr = _rr(entry, sl, tp1)
     notes = draft.get("notes") or "—"
-
     target_lines = []
     for i, t in enumerate(tps, start=1):
         pct = _pct(entry, t.price, side)
         suffix = f" (Close {t.close_percent:.0f}%)" if 0 < t.close_percent < 100 else ""
         target_lines.append(f"  • TP{i}: <code>{t.price:g}</code> ({pct:+.2f}%){suffix}")
-
     base_text = (
         f"📝 <b>REVIEW RECOMMENDATION</b>\n"
         f"─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
@@ -279,10 +243,8 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
         f"📝 Notes: <i>{notes}</i>\n"
         f"─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
     )
-
     if preview_price is not None:
         base_text += f"\n💹 Current Price: <code>{preview_price:g}</code>"
-    
     base_text += "\n\nReady to publish?"
     return base_text
 
@@ -306,4 +268,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     ]
     return "\n".join(lines)
 
-# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.2.1) ---
+# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.2.1) ---
