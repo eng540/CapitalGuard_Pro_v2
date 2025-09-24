@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.2) ---
+# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.2.1) ---
 # src/capitalguard/interfaces/telegram/ui_texts.py
 
 from __future__ import annotations
@@ -32,6 +32,40 @@ def _rr(entry: float, sl: float, first_target: Optional[Target]) -> str:
         return f"1:{ratio:.2f}" if isfinite(ratio) else "—"
     except Exception:
         return "—"
+
+# ✅ SOLUTION: New function to accurately calculate PnL for trades with partial closures.
+def _calculate_weighted_pnl(rec: Recommendation) -> float:
+    """
+    Calculates the final weighted PnL by analyzing all partial profit events.
+    """
+    total_pnl = 0.0
+    percent_closed = 0.0
+    
+    # Sum up the PnL from all partial profit events
+    for event in (rec.events or []):
+        event_type = getattr(event, "event_type", "")
+        if event_type in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO"):
+            data = getattr(event, "event_data", {}) or {}
+            closed_pct = data.get('closed_percent', 0.0)
+            pnl_on_part = data.get('pnl_on_part', 0.0)
+            
+            if closed_pct > 0:
+                total_pnl += (closed_pct / 100.0) * pnl_on_part
+                percent_closed += closed_pct
+
+    # Calculate PnL for the remaining part of the trade closed at the final exit price
+    remaining_percent = 100.0 - percent_closed
+    if remaining_percent > 0.01 and rec.exit_price is not None:
+        pnl_on_remaining = _pct(rec.entry.value, rec.exit_price, rec.side.value)
+        total_pnl += (remaining_percent / 100.0) * pnl_on_remaining
+    # If the entire position was closed via partial profits, the last partial exit is the final exit.
+    elif abs(remaining_percent) < 0.01 and total_pnl != 0:
+        pass # The total_pnl is already complete from the loop.
+    # Fallback for simple trades without partial profit events
+    elif percent_closed == 0 and rec.exit_price is not None:
+        return _pct(rec.entry.value, rec.exit_price, rec.side.value)
+
+    return total_pnl
 
 # --- Card Building Blocks ---
 
@@ -91,7 +125,6 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
 
     events = rec.events or []
     hit_targets_events = set()
-    # ✅ BUG FIX: The loop variable is 'event', not 'e'.
     for event in events:
         event_type = getattr(event, "event_type", "")
         if event_type.startswith("TP") and event_type.endswith("_HIT"):
@@ -131,7 +164,6 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
 def _build_logbook_section(rec: Recommendation) -> str:
     lines = []
     events = rec.events or []
-    # ✅ BUG FIX: The loop variable is 'event', not 'e'.
     log_events = [event for event in events if getattr(event, "event_type", "") in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO", "SL_UPDATED")]
     if not log_events:
         return ""
@@ -152,7 +184,9 @@ def _build_logbook_section(rec: Recommendation) -> str:
 def _build_summary_section(rec: Recommendation) -> str:
     entry = rec.entry.value
     exit_price = getattr(rec, "exit_price", 0.0) or 0.0
-    pnl = _pct(entry, exit_price, rec.side.value)
+    
+    # ✅ SOLUTION: Use the new weighted PnL calculation for the final result.
+    pnl = _calculate_weighted_pnl(rec)
     
     if pnl > 0.001: result_text = "🏆 WIN"
     elif pnl < -0.001: result_text = "💔 LOSS"
@@ -272,4 +306,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     ]
     return "\n".join(lines)
 
-# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.2) ---
+# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.2.1) ---
