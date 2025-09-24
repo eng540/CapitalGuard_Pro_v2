@@ -1,4 +1,4 @@
-# --- START OF FINAL, PRODUCTION-READY FILE (Version 16.1.0) ---
+# --- START OF FINAL, MODIFIED, AND PRODUCTION-READY FILE (Version 16.2.0) ---
 # src/capitalguard/interfaces/telegram/ui_texts.py
 
 from __future__ import annotations
@@ -46,16 +46,24 @@ def _build_header(rec: Recommendation) -> str:
     return f"<b>{status_text} | #{rec.asset.value} | {rec.side.value}</b> {side_icon} | Signal #{rec.id}"
 
 def _build_live_price_section(rec: Recommendation, live_price: Optional[float]) -> str:
-    if rec.status != RecommendationStatus.ACTIVE or live_price is None:
+    # ✅ SOLUTION: Modified condition to allow both ACTIVE and PENDING states.
+    if rec.status not in (RecommendationStatus.ACTIVE, RecommendationStatus.PENDING) or live_price is None:
         return ""
 
-    pnl = _pct(rec.entry.value, live_price, rec.side.value)
-    pnl_icon = '🟢' if pnl >= 0 else '🔴'
-    lines = [
-        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
-        f"💹 <b>Live Price:</b> <code>{live_price:g}</code> ({pnl_icon} {pnl:+.2f}%)",
-        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
-    ]
+    lines = ["─ ─ ─ ─ ─ ─ ─ ─ ─ ─"]
+    
+    if rec.status == RecommendationStatus.ACTIVE:
+        pnl = _pct(rec.entry.value, live_price, rec.side.value)
+        pnl_icon = '🟢' if pnl >= 0 else '🔴'
+        lines.append(f"💹 <b>Live Price:</b> <code>{live_price:g}</code> ({pnl_icon} {pnl:+.2f}%)")
+    
+    # ✅ SOLUTION: Added logic for PENDING state to show distance to entry.
+    elif rec.status == RecommendationStatus.PENDING:
+        distance = abs(live_price - rec.entry.value)
+        distance_pct = (distance / rec.entry.value) * 100.0 if rec.entry.value > 0 else 0.0
+        lines.append(f"💹 <b>Live Price:</b> <code>{live_price:g}</code> (~{distance_pct:.2f}% from entry)")
+
+    lines.append("─ ─ ─ ─ ─ ─ ─ ─ ─ ─")
     return "\n".join(lines)
 
 def _build_performance_section(rec: Recommendation) -> str:
@@ -83,8 +91,6 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
     lines = ["\n🎯 <b>EXIT PLAN</b>"]
     entry_price = rec.entry.value
 
-    # ✅ FINAL FIX: Directly use the pre-loaded list from the Recommendation entity.
-    # This avoids any lazy-loading issues across threads.
     events = rec.events or []
     hit_targets_events = set()
     for e in events:
@@ -116,7 +122,7 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
         else:
             icon = "⏳"
             
-        line = f"  • {icon} TP{i}: <code>{target.price:g}</code> ({pct:+.2f}%)"
+        line = f"  • {icon} TP{i}: <code>{target.price:g}</code> ({pct:+.2f}%){suffix}"
         if 0 < getattr(target, "close_percent", 0) < 100:
             line += f" | Close {target.close_percent:.0f}%"
         lines.append(line)
@@ -125,7 +131,6 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
 
 def _build_logbook_section(rec: Recommendation) -> str:
     lines = []
-    # ✅ FINAL FIX: Directly use the pre-loaded list.
     events = rec.events or []
     log_events = [e for e in events if getattr(e, "event_type", "") in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO", "SL_UPDATED")]
     if not log_events:
@@ -133,7 +138,7 @@ def _build_logbook_section(rec: Recommendation) -> str:
 
     lines.append("\n📋 <b>LOGBOOK</b>")
     for event in sorted(events, key=lambda e: getattr(e, "event_timestamp", datetime.min)):
-        et = getattr(event, "event_type", "")
+        et = getattr(e, "event_type", "")
         data = getattr(event, "event_data", {}) or {}
         if et in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO"):
             pnl = data.get('pnl_on_part', 0.0)
@@ -163,10 +168,11 @@ def _build_summary_section(rec: Recommendation) -> str:
 
 # --- Main Card Builders ---
 
-def _build_pending_card(rec: Recommendation) -> str:
+# ✅ SOLUTION: Modified function to accept live_price and call the live price section.
+def _build_pending_card(rec: Recommendation, live_price: Optional[float]) -> str:
     parts = [
         _build_header(rec),
-        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
+        _build_live_price_section(rec, live_price),
         _build_performance_section(rec),
         _build_exit_plan_section(rec),
         f"\n📝 <b>Notes:</b> <i>{rec.notes or '—'}</i>"
@@ -202,7 +208,8 @@ def build_trade_card_text(rec: Recommendation) -> str:
     """The main function to generate the text for any recommendation card."""
     live_price = getattr(rec, "live_price", None)
     if rec.status == RecommendationStatus.PENDING:
-        return _build_pending_card(rec)
+        # ✅ SOLUTION: Pass the live_price to the pending card builder.
+        return _build_pending_card(rec, live_price)
     if rec.status == RecommendationStatus.ACTIVE:
         return _build_active_card(rec, live_price)
     if rec.status == RecommendationStatus.CLOSED:
@@ -267,4 +274,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     ]
     return "\n".join(lines)
 
-# --- END OF FINAL, PRODUCTION-READY FILE (Version 16.1.0) ---
+# --- END OF FINAL, MODIFIED, AND PRODUCTION-READY FILE (Version 16.2.0) ---
