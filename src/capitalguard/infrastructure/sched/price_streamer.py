@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED FILE (Version 15.3.0) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.4.0) ---
 # src/capitalguard/infrastructure/sched/price_streamer.py
 
 import asyncio
@@ -24,18 +24,16 @@ class PriceStreamer:
         self._active_symbols: Set[str] = set()
         self._task: asyncio.Task = None
 
-    async def _price_handler(self, symbol: str, price: float, _raw_data: dict):
-        """Callback function for the WebSocket client. Puts price data into the queue."""
+    async def _price_handler(self, symbol: str, low_price: float, high_price: float):
+        """Callback function for the WebSocket client. Puts the price range into the queue."""
         try:
-            await self._queue.put((symbol, price))
+            await self._queue.put((symbol, low_price, high_price))
         except Exception:
             log.exception("Failed to put price update into the queue.")
 
     async def _get_symbols_to_watch(self) -> List[str]:
         """Fetches the current set of unique symbols for all open recommendations."""
         with SessionLocal() as session:
-            # ✅ FIX: Changed from the non-existent `list_open` to the correct `list_open_orm`
-            # which returns the necessary ORM objects for efficient data extraction.
             open_recs_orm = self._repo.list_open_orm(session)
             return list({rec.asset for rec in open_recs_orm})
 
@@ -49,15 +47,11 @@ class PriceStreamer:
                     await asyncio.sleep(60)
                     continue
 
-                # Only reconnect if the set of symbols has changed.
                 if set(symbols) != self._active_symbols:
                     self._active_symbols = set(symbols)
                     log.info(f"Symbol list changed. Connecting to stream for {len(self._active_symbols)} symbols.")
-                    # The combined_stream function will run indefinitely until it disconnects.
-                    await self._ws_client.combined_stream(symbols, self._price_handler)
+                    await self._ws_client.combined_stream(list(self._active_symbols), self._price_handler)
                 else:
-                    # If symbols are the same, just wait before checking again.
-                    # This prevents constant DB queries if the stream is stable.
                     await asyncio.sleep(60)
 
             except (asyncio.CancelledError, KeyboardInterrupt):
@@ -65,7 +59,7 @@ class PriceStreamer:
                 break
             except Exception:
                 log.exception("WebSocket stream failed. Reconnecting in 15 seconds...")
-                self._active_symbols = set() # Force reconnect on next iteration
+                self._active_symbols = set()
                 await asyncio.sleep(15)
 
     def start(self):
@@ -83,4 +77,4 @@ class PriceStreamer:
             self._task.cancel()
         self._task = None
 
-# --- END OF FINAL, CORRECTED FILE (Version 15.3.0) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.4.0) ---
