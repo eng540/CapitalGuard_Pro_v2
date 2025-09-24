@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.3) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.2.4) ---
 # src/capitalguard/application/services/trade_service.py
 
 import logging
@@ -150,8 +150,9 @@ class TradeService:
     @uow_transaction
     async def process_activation_event(self, rec_id: int, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm or rec_orm.status != RecommendationStatus.PENDING.value:
-            log.warning(f"Skipping activation for Rec #{rec_id}: Not found or status is not PENDING (current: {rec_orm.status if rec_orm else 'N/A'}). Forcing index sync.")
+        # ✅ BUG FIX: Compare Enum object with Enum object for correctness.
+        if not rec_orm or rec_orm.status != RecommendationStatus.PENDING:
+            log.warning(f"Skipping activation for Rec #{rec_id}: Not found or status is not PENDING (current: {getattr(rec_orm, 'status', 'N/A')}). Forcing index sync.")
             await self.alert_service.update_triggers_for_recommendation(rec_id)
             return
         updated_rec = await self.activate_recommendation_async(rec_id, db_session=db_session)
@@ -166,6 +167,7 @@ class TradeService:
         if not rec_orm: return
         rec = self.repo._to_entity(rec_orm)
         event_name = f"TP{target_index}_HIT"
+        # ✅ BUG FIX: Compare Enum object with Enum object.
         if rec.status != RecommendationStatus.ACTIVE or event_name in {e.event_type for e in rec.events}:
             log.warning(f"Skipping {event_name} for Rec #{rec_id}: Status is not ACTIVE or event already processed. Forcing index sync.")
             await self.alert_service.update_triggers_for_recommendation(rec_id)
@@ -189,7 +191,8 @@ class TradeService:
     @uow_transaction
     async def process_sl_hit_event(self, rec_id: int, user_id: str, price: float, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED.value:
+        # ✅ BUG FIX: Compare Enum object with Enum object.
+        if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED:
             log.warning(f"Skipping SL hit for Rec #{rec_id}: Not found or already closed. Forcing index sync.")
             await self.alert_service.remove_triggers_for_recommendation(rec_id)
             return
@@ -204,7 +207,8 @@ class TradeService:
     @uow_transaction
     async def process_profit_stop_hit_event(self, rec_id: int, user_id: str, price: float, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED.value:
+        # ✅ BUG FIX: Compare Enum object with Enum object.
+        if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED:
             log.warning(f"Skipping Profit Stop hit for Rec #{rec_id}: Not found or already closed. Forcing index sync.")
             await self.alert_service.remove_triggers_for_recommendation(rec_id)
             return
