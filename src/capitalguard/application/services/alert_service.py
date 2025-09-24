@@ -1,21 +1,24 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.1.0) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.1.1) ---
 # src/capitalguard/application/services/alert_service.py
 
 import logging
 import os
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from contextlib import contextmanager
 
 from sqlalchemy.orm import Session
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy, OrderType
-from capitalguard.application.services.trade_service import TradeService
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.pricing.binance import BinancePricing
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
 from capitalguard.interfaces.telegram.ui_texts import _pct
+
+# ✅ SOLUTION: Use a TYPE_CHECKING block to break the circular import.
+if TYPE_CHECKING:
+    from capitalguard.application.services.trade_service import TradeService
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +41,6 @@ class AlertService:
         self.price_queue = asyncio.Queue()
         self.streamer = PriceStreamer(self.price_queue, self.repo)
         
-        # The core of the high-performance design: { "BTCUSDT": [trigger, ...], ... }
         self.active_triggers: Dict[str, List[Dict[str, Any]]] = {}
         self._triggers_lock = asyncio.Lock()
 
@@ -92,13 +94,11 @@ class AlertService:
         """Fetches a single recommendation and updates its triggers in the live index."""
         log.debug(f"Attempting to update triggers for Rec #{rec_id} in memory.")
         async with self._triggers_lock:
-            # First, remove any existing triggers for this ID to ensure a clean update.
             for symbol in list(self.active_triggers.keys()):
                 self.active_triggers[symbol] = [t for t in self.active_triggers[symbol] if t['rec_id'] != rec_id]
                 if not self.active_triggers[symbol]:
                     del self.active_triggers[symbol]
 
-            # Then, fetch the fresh data and add the new triggers.
             with SessionLocal() as session:
                 item = self.repo.get_active_trigger_data_by_id(session, rec_id)
             
@@ -200,4 +200,4 @@ class AlertService:
                 except Exception as e:
                     log.error(f"Failed to process event for recommendation #{trigger['rec_id']}: {e}", exc_info=True)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.1.0) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 18.1.1) ---
