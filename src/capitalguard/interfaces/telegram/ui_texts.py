@@ -1,4 +1,4 @@
-# --- START OF FINAL, MODIFIED, AND PRODUCTION-READY FILE (Version 16.2.0) ---
+# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.1) ---
 # src/capitalguard/interfaces/telegram/ui_texts.py
 
 from __future__ import annotations
@@ -46,7 +46,6 @@ def _build_header(rec: Recommendation) -> str:
     return f"<b>{status_text} | #{rec.asset.value} | {rec.side.value}</b> {side_icon} | Signal #{rec.id}"
 
 def _build_live_price_section(rec: Recommendation, live_price: Optional[float]) -> str:
-    # ✅ SOLUTION: Modified condition to allow both ACTIVE and PENDING states.
     if rec.status not in (RecommendationStatus.ACTIVE, RecommendationStatus.PENDING) or live_price is None:
         return ""
 
@@ -57,7 +56,6 @@ def _build_live_price_section(rec: Recommendation, live_price: Optional[float]) 
         pnl_icon = '🟢' if pnl >= 0 else '🔴'
         lines.append(f"💹 <b>Live Price:</b> <code>{live_price:g}</code> ({pnl_icon} {pnl:+.2f}%)")
     
-    # ✅ SOLUTION: Added logic for PENDING state to show distance to entry.
     elif rec.status == RecommendationStatus.PENDING:
         distance = abs(live_price - rec.entry.value)
         distance_pct = (distance / rec.entry.value) * 100.0 if rec.entry.value > 0 else 0.0
@@ -122,7 +120,9 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
         else:
             icon = "⏳"
             
-        line = f"  • {icon} TP{i}: <code>{target.price:g}</code> ({pct:+.2f}%){suffix}"
+        # ✅ SOLUTION: Removed the undefined 'suffix' variable. The logic for the suffix
+        # is now self-contained within this f-string.
+        line = f"  • {icon} TP{i}: <code>{target.price:g}</code> ({pct:+.2f}%)"
         if 0 < getattr(target, "close_percent", 0) < 100:
             line += f" | Close {target.close_percent:.0f}%"
         lines.append(line)
@@ -139,7 +139,7 @@ def _build_logbook_section(rec: Recommendation) -> str:
     lines.append("\n📋 <b>LOGBOOK</b>")
     for event in sorted(events, key=lambda e: getattr(e, "event_timestamp", datetime.min)):
         et = getattr(e, "event_type", "")
-        data = getattr(event, "event_data", {}) or {}
+        data = getattr(e, "event_data", {}) or {}
         if et in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO"):
             pnl = data.get('pnl_on_part', 0.0)
             trigger = "Manual" if et == "PARTIAL_PROFIT_MANUAL" else "Auto"
@@ -168,7 +168,6 @@ def _build_summary_section(rec: Recommendation) -> str:
 
 # --- Main Card Builders ---
 
-# ✅ SOLUTION: Modified function to accept live_price and call the live price section.
 def _build_pending_card(rec: Recommendation, live_price: Optional[float]) -> str:
     parts = [
         _build_header(rec),
@@ -208,7 +207,6 @@ def build_trade_card_text(rec: Recommendation) -> str:
     """The main function to generate the text for any recommendation card."""
     live_price = getattr(rec, "live_price", None)
     if rec.status == RecommendationStatus.PENDING:
-        # ✅ SOLUTION: Pass the live_price to the pending card builder.
         return _build_pending_card(rec, live_price)
     if rec.status == RecommendationStatus.ACTIVE:
         return _build_active_card(rec, live_price)
@@ -274,4 +272,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     ]
     return "\n".join(lines)
 
-# --- END OF FINAL, MODIFIED, AND PRODUCTION-READY FILE (Version 16.2.0) ---
+# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.1) ---
