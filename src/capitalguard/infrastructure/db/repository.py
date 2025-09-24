@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.0) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.1) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
@@ -307,9 +307,12 @@ class RecommendationRepository:
         return [
             {
                 "id": r.id, "user_id": str(r.telegram_user_id), "asset": r.asset, "side": r.side,
-                "entry": r.entry, "stop_loss": r.stop_loss, "targets": r.targets,
-                "status": RecommendationStatus(r.status), "order_type": OrderType(r.order_type),
-                "profit_stop_price": r.profit_stop_price
+                "entry": float(r.entry), 
+                "stop_loss": float(r.stop_loss), 
+                "targets": [{"price": float(t['price']), "close_percent": t['close_percent']} for t in r.targets],
+                "status": RecommendationStatus(r.status), 
+                "order_type": OrderType(r.order_type),
+                "profit_stop_price": float(r.profit_stop_price) if r.profit_stop_price is not None else None
             }
             for r in results
         ]
@@ -332,18 +335,20 @@ class RecommendationRepository:
             RecommendationORM.order_type,
             RecommendationORM.profit_stop_price
         ).join(User, RecommendationORM.user_id == User.id).filter(
-            RecommendationORM.id == rec_id,
-            RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
+            RecommendationORM.id == rec_id
         ).first()
 
-        if not r:
+        if not r or r.status.value not in ("PENDING", "ACTIVE"):
             return None
 
         return {
             "id": r.id, "user_id": str(r.telegram_user_id), "asset": r.asset, "side": r.side,
-            "entry": r.entry, "stop_loss": r.stop_loss, "targets": r.targets,
-            "status": RecommendationStatus(r.status), "order_type": OrderType(r.order_type),
-            "profit_stop_price": r.profit_stop_price
+            "entry": float(r.entry), 
+            "stop_loss": float(r.stop_loss), 
+            "targets": [{"price": float(t['price']), "close_percent": t['close_percent']} for t in r.targets],
+            "status": RecommendationStatus(r.status), 
+            "order_type": OrderType(r.order_type),
+            "profit_stop_price": float(r.profit_stop_price) if r.profit_stop_price is not None else None
         }
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.0) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.1) ---
