@@ -284,10 +284,6 @@ class RecommendationRepository:
         return result
 
     def list_all_active_triggers_data(self, session: Session) -> List[Dict[str, Any]]:
-        """
-        Fetches a flat list of essential data for all PENDING and ACTIVE
-        recommendations, optimized for building the AlertService index.
-        """
         results = session.query(
             RecommendationORM.id,
             RecommendationORM.user_id,
@@ -318,10 +314,6 @@ class RecommendationRepository:
         ]
 
     def get_active_trigger_data_by_id(self, session: Session, rec_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Fetches the essential trigger data for a single recommendation.
-        Returns None if the recommendation is not PENDING or ACTIVE.
-        """
         r = session.query(
             RecommendationORM.id,
             RecommendationORM.user_id,
