@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.0) ---
+# --- START OF FINAL, HIGH-PERFORMANCE, AND PRODUCTION-READY FILE (Version 17.0.0) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
@@ -110,9 +110,16 @@ class RecommendationRepository:
         else:
             targets_vo = Targets(list(targets_data))
 
-        # ✅ SOLUTION: Eagerly load the events into a simple list *before* creating the domain entity.
-        # This detaches the data from the session, making it safe to pass across threads.
-        events_list = list(row.events) if hasattr(row, 'events') else []
+        events_list = []
+        if hasattr(row, 'events'):
+            for event_orm in row.events:
+                # Create a simple, detached object for each event
+                event_dto = type('EventDTO', (), {
+                    'event_type': event_orm.event_type,
+                    'event_data': event_orm.event_data,
+                    'event_timestamp': event_orm.event_timestamp
+                })()
+                events_list.append(event_dto)
 
         return Recommendation(
             id=row.id, asset=Symbol(row.asset), side=Side(row.side), entry=Price(row.entry),
@@ -124,7 +131,7 @@ class RecommendationRepository:
             highest_price_reached=row.highest_price_reached, lowest_price_reached=row.lowest_price_reached,
             exit_strategy=ExitStrategy(row.exit_strategy), profit_stop_price=row.profit_stop_price,
             open_size_percent=row.open_size_percent, 
-            events=events_list, # Pass the eagerly loaded list
+            events=events_list,
         )
 
     def get_for_update(self, session: Session, rec_id: int) -> Optional[RecommendationORM]:
@@ -276,4 +283,35 @@ class RecommendationRepository:
             
         return result
 
-# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.0) ---
+    def list_all_active_triggers_data(self, session: Session) -> List[Dict[str, Any]]:
+        """
+        Fetches a flat list of essential data for all PENDING and ACTIVE
+        recommendations, optimized for building the AlertService index.
+        """
+        results = session.query(
+            RecommendationORM.id,
+            RecommendationORM.user_id,
+            User.telegram_user_id,
+            RecommendationORM.asset,
+            RecommendationORM.side,
+            RecommendationORM.entry,
+            RecommendationORM.stop_loss,
+            RecommendationORM.targets,
+            RecommendationORM.status,
+            RecommendationORM.order_type,
+            RecommendationORM.profit_stop_price
+        ).join(User, RecommendationORM.user_id == User.id).filter(
+            RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
+        ).all()
+
+        return [
+            {
+                "id": r.id, "user_id": str(r.telegram_user_id), "asset": r.asset, "side": r.side,
+                "entry": r.entry, "stop_loss": r.stop_loss, "targets": r.targets,
+                "status": RecommendationStatus(r.status), "order_type": OrderType(r.order_type),
+                "profit_stop_price": r.profit_stop_price
+            }
+            for r in results
+        ]
+
+# --- END OF FINAL, HIGH-PERFORMANCE, AND PRODUCTION-READY FILE (Version 17.0.0) ---
