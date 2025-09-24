@@ -28,8 +28,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class AlertService:
     """
     The central brain for processing all price-driven events, architected for massive scale.
-    ✅ FINAL ARCHITECTURE v18.2: Hardened index management logic to ensure atomic and
-    correct updates, preventing stale triggers and repeated processing.
+    ✅ FINAL ARCHITECTURE v18.2: Re-introduced floating-point tolerance in price comparisons
+    to ensure robust and accurate trigger detection.
     """
     
     def __init__(self, trade_service: 'TradeService', repo: RecommendationRepository):
@@ -45,32 +45,25 @@ class AlertService:
         self._index_sync_task: asyncio.Task = None
 
     async def build_triggers_index(self):
-        """Builds or rebuilds the entire in-memory trigger index from the database."""
         log.info("Building in-memory trigger index for all active recommendations...")
         new_triggers: Dict[str, List[Dict[str, Any]]] = {}
         with SessionLocal() as session:
             trigger_data = self.repo.list_all_active_triggers_data(session)
-
         for item in trigger_data:
             self._add_item_to_trigger_dict(new_triggers, item)
-        
         async with self._triggers_lock:
             self.active_triggers = new_triggers
-        
         log.info(f"Successfully built trigger index with {len(trigger_data)} recommendations across {len(new_triggers)} symbols.")
 
     def _add_item_to_trigger_dict(self, trigger_dict: Dict[str, list], item: Dict[str, Any]):
-        """Helper to populate a trigger dictionary with triggers from a data item."""
         asset = item['asset']
         if asset not in trigger_dict:
             trigger_dict[asset] = []
-        
         if item['status'] == RecommendationStatus.PENDING:
             trigger_dict[asset].append({
                 "rec_id": item['id'], "user_id": item['user_id'], "side": item['side'],
                 "type": "ENTRY", "price": item['entry'], "order_type": item['order_type']
             })
-        
         elif item['status'] == RecommendationStatus.ACTIVE:
             trigger_dict[asset].append({
                 "rec_id": item['id'], "user_id": item['user_id'], "side": item['side'],
@@ -88,24 +81,19 @@ class AlertService:
                 })
 
     async def update_triggers_for_recommendation(self, rec_id: int):
-        """Fetches a single recommendation and updates its triggers in the live index."""
         log.debug(f"Attempting to update triggers for Rec #{rec_id} in memory.")
         async with self._triggers_lock:
-            # ✅ FIX: Robustly remove any and all existing triggers for this ID first.
             for symbol in list(self.active_triggers.keys()):
                 self.active_triggers[symbol] = [t for t in self.active_triggers[symbol] if t['rec_id'] != rec_id]
                 if not self.active_triggers[symbol]:
                     del self.active_triggers[symbol]
-
             with SessionLocal() as session:
                 item = self.repo.get_active_trigger_data_by_id(session, rec_id)
-            
             if item:
                 self._add_item_to_trigger_dict(self.active_triggers, item)
                 log.info(f"Successfully updated triggers for Rec #{rec_id} in memory.")
 
     async def remove_triggers_for_recommendation(self, rec_id: int):
-        """Removes all triggers for a specific recommendation ID from the live index."""
         async with self._triggers_lock:
             for symbol in list(self.active_triggers.keys()):
                 original_count = len(self.active_triggers[symbol])
@@ -117,7 +105,6 @@ class AlertService:
                     break
 
     async def _run_index_sync(self, interval_seconds: int = 300):
-        """Periodically rebuilds the index to ensure consistency and catch any drift."""
         log.info(f"Index background synchronization task started. Syncing every {interval_seconds}s.")
         while True:
             await asyncio.sleep(interval_seconds)
@@ -155,19 +142,21 @@ class AlertService:
         log.info("High-performance AlertService stopped.")
 
     def _is_price_condition_met(self, side: str, current_price: float, target_price: float, condition_type: str, order_type: Optional[OrderType] = None) -> bool:
+        # ✅ SOLUTION: Re-introduce a small tolerance to handle floating-point inaccuracies.
+        tolerance = target_price * 0.00001  # 0.001% tolerance
         side_upper = side.upper()
         if side_upper == "LONG":
-            if condition_type.startswith("TP"): return current_price >= target_price
-            if condition_type in ("SL", "PROFIT_STOP"): return current_price <= target_price
+            if condition_type.startswith("TP"): return current_price >= (target_price - tolerance)
+            if condition_type in ("SL", "PROFIT_STOP"): return current_price <= (target_price + tolerance)
             if condition_type == "ENTRY":
-                return (order_type == OrderType.LIMIT and current_price <= target_price) or \
-                       (order_type == OrderType.STOP_MARKET and current_price >= target_price)
+                return (order_type == OrderType.LIMIT and current_price <= (target_price + tolerance)) or \
+                       (order_type == OrderType.STOP_MARKET and current_price >= (target_price - tolerance))
         elif side_upper == "SHORT":
-            if condition_type.startswith("TP"): return current_price <= target_price
-            if condition_type in ("SL", "PROFIT_STOP"): return current_price >= target_price
+            if condition_type.startswith("TP"): return current_price <= (target_price + tolerance)
+            if condition_type in ("SL", "PROFIT_STOP"): return current_price >= (target_price - tolerance)
             if condition_type == "ENTRY":
-                return (order_type == OrderType.LIMIT and current_price >= target_price) or \
-                       (order_type == OrderType.STOP_MARKET and current_price <= target_price)
+                return (order_type == OrderType.LIMIT and current_price >= (target_price - tolerance)) or \
+                       (order_type == OrderType.STOP_MARKET and current_price <= (target_price + tolerance))
         return False
 
     async def check_and_process_alerts(self, symbol: str, price: float):
