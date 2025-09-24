@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.1) ---
+# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.2) ---
 # src/capitalguard/interfaces/telegram/ui_texts.py
 
 from __future__ import annotations
@@ -91,8 +91,9 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
 
     events = rec.events or []
     hit_targets_events = set()
-    for e in events:
-        event_type = getattr(e, "event_type", "")
+    # ✅ BUG FIX: The loop variable is 'event', not 'e'.
+    for event in events:
+        event_type = getattr(event, "event_type", "")
         if event_type.startswith("TP") and event_type.endswith("_HIT"):
             try:
                 idx = int(event_type[2:-4])
@@ -120,8 +121,6 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
         else:
             icon = "⏳"
             
-        # ✅ SOLUTION: Removed the undefined 'suffix' variable. The logic for the suffix
-        # is now self-contained within this f-string.
         line = f"  • {icon} TP{i}: <code>{target.price:g}</code> ({pct:+.2f}%)"
         if 0 < getattr(target, "close_percent", 0) < 100:
             line += f" | Close {target.close_percent:.0f}%"
@@ -132,14 +131,15 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
 def _build_logbook_section(rec: Recommendation) -> str:
     lines = []
     events = rec.events or []
-    log_events = [e for e in events if getattr(e, "event_type", "") in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO", "SL_UPDATED")]
+    # ✅ BUG FIX: The loop variable is 'event', not 'e'.
+    log_events = [event for event in events if getattr(event, "event_type", "") in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO", "SL_UPDATED")]
     if not log_events:
         return ""
 
     lines.append("\n📋 <b>LOGBOOK</b>")
-    for event in sorted(events, key=lambda e: getattr(e, "event_timestamp", datetime.min)):
-        et = getattr(e, "event_type", "")
-        data = getattr(e, "event_data", {}) or {}
+    for event in sorted(log_events, key=lambda ev: getattr(ev, "event_timestamp", datetime.min)):
+        et = getattr(event, "event_type", "")
+        data = getattr(event, "event_data", {}) or {}
         if et in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO"):
             pnl = data.get('pnl_on_part', 0.0)
             trigger = "Manual" if et == "PARTIAL_PROFIT_MANUAL" else "Auto"
@@ -272,4 +272,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     ]
     return "\n".join(lines)
 
-# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.1) ---
+# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.2) ---
