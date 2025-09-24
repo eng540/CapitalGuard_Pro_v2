@@ -1,5 +1,5 @@
 # --- src/capitalguard/application/services/trade_service.py
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 16.0.0) ---
+# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.0) ---
 import logging
 import asyncio
 from datetime import datetime, timezone
@@ -15,7 +15,7 @@ from capitalguard.domain.ports import NotifierPort
 from capitalguard.infrastructure.db.repository import RecommendationRepository, ChannelRepository, UserRepository
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.infrastructure.db.models import PublishedMessage
+from capitalguard.infrastructure.db.models import PublishedMessage, RecommendationORM
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.interfaces.telegram.ui_texts import _pct
 
@@ -37,13 +37,11 @@ def uow_transaction(func):
     """
     @wraps(func)
     async def wrapper(*args, **kwargs):
-        # Check if a session is already passed (for nested calls within a transaction)
-        if 'db_session' in kwargs:
+        if 'db_session' in kwargs and isinstance(kwargs['db_session'], Session):
             return await func(*args, **kwargs)
         
         with SessionLocal() as session:
             try:
-                # Pass the session as a keyword argument to the decorated function
                 result = await func(*args, db_session=session, **kwargs)
                 session.commit()
                 return result
@@ -268,12 +266,9 @@ class TradeService:
         updated_rec = self.repo.update_with_event(db_session, rec, "ACTIVATED", {})
         return updated_rec
 
-    @uow_transaction
-    async def take_partial_profit_for_user_async(self, rec_id: int, user_id: str, close_percent: float, price: float, triggered_by: str = "MANUAL", *, db_session: Session) -> Recommendation:
-        uid_int = _parse_int_user_id(user_id)
-        if not uid_int: raise ValueError("Invalid User ID.")
-
-        rec_orm = self.repo.get_for_update(db_session, rec_id)
+    # ✅ SOLUTION: This function no longer manages its own transaction.
+    # It now expects to receive a locked ORM object and the active session.
+    async def _take_partial_profit_atomic(self, rec_orm: RecommendationORM, user_id: str, close_percent: float, price: float, triggered_by: str, *, db_session: Session) -> Recommendation:
         rec = self.repo._to_entity(rec_orm)
 
         if not rec or rec.user_id != user_id: raise ValueError("Access denied.")
@@ -288,18 +283,20 @@ class TradeService:
         updated_rec = self.repo.update_with_event(db_session, rec, event_type, event_data)
         
         if updated_rec.open_size_percent <= 0.01:
-            log.info(f"Recommendation #{rec_id} fully closed via partial profits. Marking as closed.")
+            log.info(f"Recommendation #{rec.id} fully closed via partial profits. Marking as closed.")
             reason = "AUTO_PARTIAL_FULL_CLOSE" if triggered_by.upper() == "AUTO" else "MANUAL_PARTIAL_FULL_CLOSE"
-            return await self.close_recommendation_for_user_async(rec_id, user_id, price, reason=reason, db_session=db_session)
+            # Re-use the existing session for the final close operation
+            return await self.close_recommendation_for_user_async(rec.id, user_id, price, reason=reason, db_session=db_session)
 
         return updated_rec
 
     @uow_transaction
     async def process_target_hit_async(self, rec_id: int, user_id: str, target_index: int, hit_price: float, *, db_session: Session) -> Recommendation:
+        # ✅ SOLUTION: Lock the record at the beginning of the transaction.
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         rec = self.repo._to_entity(rec_orm)
 
-        if not rec_orm or rec_orm.status != 'ACTIVE' or not rec:
+        if not rec_orm or rec.status != RecommendationStatus.ACTIVE:
             return rec
         
         if not rec.targets.values or len(rec.targets.values) < target_index:
@@ -308,11 +305,16 @@ class TradeService:
         target = rec.targets.values[target_index - 1]
         
         event_type = f"TP{target_index}_HIT"
+        # This first update registers the TP hit event.
         updated_rec = self.repo.update_with_event(db_session, rec, event_type, {"price": hit_price, "target": target.price})
         
         if target.close_percent > 0:
             log.info(f"Auto partial profit triggered for rec #{rec_id} at TP{target_index}.")
-            updated_rec = await self.take_partial_profit_for_user_async(rec.id, user_id, target.close_percent, target.price, triggered_by="AUTO", db_session=db_session)
+            # ✅ SOLUTION: Pass the locked ORM object and session to the internal function.
+            # This ensures the percentage update happens within the SAME transaction.
+            updated_rec = await self._take_partial_profit_atomic(
+                rec_orm, user_id, target.close_percent, target.price, triggered_by="AUTO", db_session=db_session
+            )
         
         return updated_rec
 
@@ -397,4 +399,4 @@ class TradeService:
         if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 16.0.0) ---
+# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 16.1.0) ---
