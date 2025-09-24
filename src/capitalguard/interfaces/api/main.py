@@ -1,4 +1,4 @@
-# --- START OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 12.1.0) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 12.1.0) ---
 # src/capitalguard/interfaces/api/main.py
 
 import logging
@@ -89,7 +89,6 @@ async def on_startup():
         asyncio.create_task(market_data_service.refresh_symbols_cache())
         logging.info("Market data cache refresh task scheduled.")
 
-    # ✅ SOLUTION: Build the index BEFORE starting the main application components.
     alert_service: AlertService = app.state.services.get("alert_service")
     if alert_service:
         await alert_service.build_triggers_index()
@@ -222,4 +221,4 @@ def dashboard(
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
 
-# --- END OF FINAL, CORRECTED, AND PRODUCTION-READY FILE (Version 12.1.0) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 12.1.0) ---
