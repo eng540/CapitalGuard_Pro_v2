@@ -1,11 +1,12 @@
-# src/capitalguard/application/services/alert_service.py (v19.0.3 - Production Ready)
+# src/capitalguard/application/services/alert_service.py (v19.0.4 - Production Ready)
 """
-AlertService v19.0.3 - The definitive, production-ready version.
+AlertService v19.0.4 - The definitive, production-ready version.
 
 This version incorporates a full suite of architectural improvements to address reliability,
 stability, and security, transforming the service into a robust, fault-tolerant engine.
 
 Key Enhancements:
+- **FIXED**: Corrected sync/async call to the notifier in the health monitor.
 - **FIXED**: Resolved a critical `RuntimeError: no running event loop` by correctly setting the event loop within the background thread before starting sub-tasks.
 - **FIXED**: Corrected a key mismatch ('id' vs 'rec_id') during trigger validation.
 - **Health Monitoring:** Actively monitors the price queue for stale data and triggers alerts.
@@ -50,13 +51,15 @@ class ServiceHealthMonitor:
         self.last_processed_time = time.time()
         self.alert_sent = False
 
-    async def check_health(self):
+    # ✅ --- CRITICAL FIX: Made the health check a sync function ---
+    def check_health(self):
         """Checks if the service is stale and sends a critical alert if needed."""
         if time.time() - self.last_processed_time > self.stale_threshold:
             if not self.alert_sent and self.admin_chat_id:
                 log.critical("HEALTH ALERT: No price processing detected for %d seconds!", self.stale_threshold)
                 try:
-                    await self.notifier.send_private_text(
+                    # Call the notifier synchronously as it's not an async function
+                    self.notifier.send_private_text(
                         chat_id=self.admin_chat_id,
                         text=f"🚨 CRITICAL ALERT: Price watcher appears to be stalled. No prices processed for over {self.stale_threshold} seconds. Please investigate immediately."
                     )
@@ -270,7 +273,7 @@ class AlertService:
         log.info("Health monitor task started (interval=%ss).", interval_seconds)
         while True:
             await asyncio.sleep(interval_seconds)
-            await self.health_monitor.check_health()
+            self.health_monitor.check_health()
 
     async def _run_index_sync(self, interval_seconds: int = 300):
         log.info("Index sync task started (interval=%ss).", interval_seconds)
@@ -287,7 +290,7 @@ class AlertService:
                 self.health_monitor.record_processing()
                 await self.check_and_process_alerts(symbol, low_price, high_price)
             except asyncio.TimeoutError:
-                await self.health_monitor.check_health()
+                self.health_monitor.check_health()
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -300,47 +303,28 @@ class AlertService:
         if self._bg_thread and self._bg_thread.is_alive():
             log.warning("AlertService background thread already running.")
             return
-        
         def _bg_runner():
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 self._bg_loop = loop
-                
-                # إنشاء دالة async لبدء كل شيء بالترتيب الصحيح
-                async def startup():
-                    # بدء الـ streamer أولاً (يوفر الأسعار للـ queue)
-                    self.streamer.start()
-                    
-                    # ثم بدء مهام المعالجة
-                    self._processing_task = asyncio.create_task(self._process_queue())
-                    self._index_sync_task = asyncio.create_task(self._run_index_sync())
-                    self._health_monitor_task = asyncio.create_task(self._run_health_monitor())
-                    log.info("All AlertService tasks started successfully.")
-                
-                # تشغيل دالة البداية
-                loop.run_until_complete(startup())
-                
-                # الآن تشغيل الـ loop الرئيسي
-                log.info("AlertService background loop starting...")
+                self._processing_task = loop.create_task(self._process_queue())
+                self._index_sync_task = loop.create_task(self._run_index_sync())
+                self._health_monitor_task = loop.create_task(self._run_health_monitor())
+                self.streamer.start()
                 loop.run_forever()
-                
             except Exception:
                 log.exception("AlertService background runner crashed.")
             finally:
-                if self._bg_loop and self._bg_loop.is_running():
-                    tasks = asyncio.all_tasks(loop=self._bg_loop)
-                    for task in tasks: 
-                        task.cancel()
-                    async def gather_cancelled(): 
-                        await asyncio.gather(*tasks, return_exceptions=True)
-                    self._bg_loop.run_until_complete(gather_cancelled())
-                    self._bg_loop.close()
+                tasks = asyncio.all_tasks(loop=loop)
+                for task in tasks: task.cancel()
+                async def gather_cancelled(): await asyncio.gather(*tasks, return_exceptions=True)
+                loop.run_until_complete(gather_cancelled())
+                loop.close()
                 log.info("AlertService background loop stopped.")
-        
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
-        log.info("AlertService v19.0.3 started in background thread.")
+        log.info("AlertService v19.0.4 started in background thread.")
 
     def stop(self):
         if self._bg_loop and self._bg_loop.is_running():
@@ -350,4 +334,4 @@ class AlertService:
         self.streamer.stop()
         self._bg_thread = None
         self._bg_loop = None
-        log.info("AlertService v19.0.3 stopped.")
+        log.info("AlertService v19.0.4 stopped.")
