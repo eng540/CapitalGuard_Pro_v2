@@ -1,6 +1,6 @@
-# src/capitalguard/infrastructure/sched/price_streamer.py (v19.0.5 - الإصلاح النهائي)
+# src/capitalguard/infrastructure/sched/price_streamer.py (v19.0.6 - الإصلاح النهائي)
 """
-PriceStreamer with enhanced logging and error handling.
+PriceStreamer with enhanced event loop synchronization.
 """
 
 import asyncio
@@ -8,7 +8,7 @@ import logging
 from typing import Set, Dict, Any, Optional
 from datetime import datetime
 
-from capitalguard.infrastructure.db.uow import session_scope  # ✅ الاستيراد الصحيح
+from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.market.ws_client import BinanceWebSocketClient
 
@@ -25,14 +25,13 @@ class PriceStreamer:
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._message_count = 0
-        self._symbol_update_interval = 30  # تحديث الرموز كل 30 ثانية
+        self._symbol_update_interval = 30
         self._last_symbol_update = 0
 
     async def _get_active_symbols(self) -> Set[str]:
         """Fetches active symbols from the repository."""
         try:
             symbols = set()
-            # ✅ استخدام session_scope الصحيح من uow
             with session_scope() as session:
                 active_recs = self.repo.list_all_active_triggers_data(session)
                 for rec in active_recs:
@@ -49,7 +48,6 @@ class PriceStreamer:
         """Updates the list of symbols to monitor."""
         current_time = datetime.now().timestamp()
         
-        # ✅ تحديث الرموز فقط إذا مر وقت كافٍ منذ آخر تحديث
         if current_time - self._last_symbol_update < self._symbol_update_interval:
             return False
             
@@ -104,16 +102,24 @@ class PriceStreamer:
                         low = float(kline['l'])
                         high = float(kline['h'])
                         
+                        # ✅ تسجيل قبل الإرسال إلى الـ queue
+                        log.debug("📤 Sending price to queue: %s (L:%.6f H:%.6f) - Queue size before: %d", 
+                                 symbol, low, high, self.price_queue.qsize())
+                        
                         # ✅ إرسال البيانات إلى الـ queue
                         await self.price_queue.put((symbol, low, high))
                         
+                        # ✅ تسجيل بعد الإرسال إلى الـ queue
+                        log.debug("✅ Price sent to queue: %s - Queue size after: %d", 
+                                 symbol, self.price_queue.qsize())
+                        
                         # ✅ تسجيل تفصيلي للأسعار
-                        if self._message_count % 50 == 0:  # تسجيل كل 50 رسالة
+                        if self._message_count <= 5:  # تسجيل أول 5 أسعار
+                            log.info("📍 First price %d: %s (L:%.6f H:%.6f)", 
+                                     self._message_count, symbol, low, high)
+                        elif self._message_count % 50 == 0:  # تسجيل كل 50 رسالة
                             log.info("📊 Streamed %d prices. Latest: %s (L:%.6f H:%.6f)", 
                                     self._message_count, symbol, low, high)
-                        elif self._message_count <= 10:  # تسجيل أول 10 أسعار
-                            log.debug("📍 Price %d: %s (L:%.6f H:%.6f)", 
-                                     self._message_count, symbol, low, high)
                     
                 # ✅ فحص صحة الاتصال بشكل دوري
                 if self._message_count % 100 == 0:
@@ -127,7 +133,7 @@ class PriceStreamer:
                 break
             except Exception as e:
                 log.error("💥 Error in price streamer: %s", e)
-                await asyncio.sleep(1)  # انتظار قبل إعادة المحاولة
+                await asyncio.sleep(1)
 
     def start(self):
         """Starts the price streaming service."""
@@ -136,14 +142,22 @@ class PriceStreamer:
             return
             
         self._running = True
+        
         try:
-            self._task = asyncio.create_task(self._run_stream())
-            log.info("✅ PriceStreamer background task started successfully")
-        except RuntimeError as e:
-            log.error("❌ Failed to create PriceStreamer task: %s", e)
-            self._running = False
+            # ✅ محاولة استخدام الـ event loop الحالي أولاً
+            try:
+                loop = asyncio.get_running_loop()
+                log.info("🔍 Using existing event loop ID: %s", id(loop))
+                self._task = loop.create_task(self._run_stream())
+                log.info("✅ PriceStreamer started in existing event loop")
+            except RuntimeError:
+                # ✅ إذا لم يكن هناك event loop نشط، إنشاء واحد جديد
+                log.info("🔍 No running event loop, creating new task")
+                self._task = asyncio.create_task(self._run_stream())
+                log.info("✅ PriceStreamer started with new task")
+                
         except Exception as e:
-            log.error("❌ Unexpected error starting PriceStreamer: %s", e)
+            log.error("❌ Failed to start PriceStreamer: %s", e)
             self._running = False
 
     def stop(self):
