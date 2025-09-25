@@ -1,4 +1,4 @@
-# src/capitalguard/boot.py (v19.0.3 - Production Ready)
+# src/capitalguard/boot.py (v19.0.5 - Production Ready)
 """
 The central bootstrapping module for the application.
 It correctly initializes and wires up all services in the correct order,
@@ -91,13 +91,16 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     price_service = PriceService()
     analytics_service = AnalyticsService(repo=repo)
     
-    # The order of initialization is crucial to resolve circular dependencies.
+    # ✅ التأكد من أن الـ notifier مهيأ قبل تمريره إلى AlertService
+    logging.info("Initializing AlertService with notifier...")
     alert_service = AlertService(
-        trade_service=None,
+        trade_service=None,  # سيتم تعيينه لاحقاً
         repo=repo,
-        notifier=notifier,
+        notifier=notifier,  # ✅ استخدام الـ notifier الفعلي
         admin_chat_id=settings.TELEGRAM_ADMIN_CHAT_ID
     )
+    
+    logging.info("Initializing TradeService...")
     trade_service = TradeService(
         repo=repo, 
         notifier=notifier, 
@@ -105,6 +108,9 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         price_service=price_service,
         alert_service=alert_service
     )
+    
+    # ✅ تحديث الـ trade_service في الـ AlertService
+    logging.info("Linking TradeService to AlertService...")
     alert_service.trade_service = trade_service
     
     services = {
@@ -118,13 +124,17 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
 
     register_global_services(services)
     
+    logging.info("✅ All services built and registered successfully")
     return services
 
 def bootstrap_app() -> Optional[Application]:
     """Bootstraps the Telegram bot application."""
     if not settings.TELEGRAM_BOT_TOKEN:
+        logging.error("TELEGRAM_BOT_TOKEN not set - skipping bot initialization")
         return None
+    
     try:
+        logging.info("Starting Telegram bot bootstrap...")
         persistence = PicklePersistence(filepath="./telegram_bot_persistence")
         ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
         
@@ -132,8 +142,8 @@ def bootstrap_app() -> Optional[Application]:
         ptb_app.bot_data["services"] = services
 
         register_all_handlers(ptb_app)
-        logging.info("Telegram bot bootstrapped successfully.")
+        logging.info("✅ Telegram bot bootstrapped successfully.")
         return ptb_app
     except Exception as e:
-        logging.exception(f"CRITICAL: Failed to bootstrap bot: {e}")
+        logging.exception(f"❌ CRITICAL: Failed to bootstrap bot: {e}")
         return None
