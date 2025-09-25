@@ -318,7 +318,7 @@ class AlertService:
                 log.info("AlertService background loop stopped.")
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
-        log.info("AlertService v19.0.6 started in background thread.")
+        log.info("AlertService v19.0.7 started in background thread.")
 
     def stop(self):
         if self._bg_loop and self._bg_loop.is_running():
@@ -328,4 +328,4 @@ class AlertService:
         self.streamer.stop()
         self._bg_thread = None
         self._bg_loop = None
-        log.info("AlertService v19.0.6 stopped.")
+        log.info("AlertService v19.0.7 stopped.")
