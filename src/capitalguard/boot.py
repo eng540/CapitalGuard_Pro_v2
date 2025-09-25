@@ -1,4 +1,4 @@
-# src/capitalguard/boot.py (v19.0.5 - Production Ready)
+# src/capitalguard/boot.py (v19.0.6 - Production Ready)
 """
 The central bootstrapping module for the application.
 It correctly initializes and wires up all services in the correct order,
@@ -47,12 +47,9 @@ class TelegramLogHandler(logging.Handler):
             simple_message = f"⚠️ CRITICAL ERROR: {record.getMessage()}"
             admin_chat_id = int(settings.TELEGRAM_ADMIN_CHAT_ID)
             if hasattr(self.notifier, 'send_private_text'):
-                # Use run_coroutine_threadsafe for calls from other threads
-                future = asyncio.run_coroutine_threadsafe(
-                    self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message),
-                    self.main_loop
-                )
-                future.result(timeout=10) # Wait for the result with a timeout
+                coro = self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message)
+                if asyncio.iscoroutine(coro):
+                    asyncio.run_coroutine_threadsafe(coro, self.main_loop)
         except Exception as e:
             root_logger = logging.getLogger()
             root_logger.removeHandler(self)
@@ -99,6 +96,7 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     price_service = PriceService()
     analytics_service = AnalyticsService(repo=repo)
     
+    # ✅ --- CRITICAL FIX: Pass the main_loop to the AlertService constructor ---
     alert_service = AlertService(
         trade_service=None,
         repo=repo,
