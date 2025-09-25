@@ -1,23 +1,7 @@
 # src/capitalguard/application/services/alert_service.py (v19.0.4 - Production Ready)
 """
-AlertService v19.0.4 - The definitive, production-ready version.
-
-This version incorporates a full suite of architectural improvements to address reliability,
-stability, and security, transforming the service into a robust, fault-tolerant engine.
-
-Key Enhancements:
-- **FIXED**: Corrected sync/async call to the notifier in the health monitor.
-- **FIXED**: Resolved a critical `RuntimeError: no running event loop` by correctly setting the event loop within the background thread before starting sub-tasks.
-- **FIXED**: Corrected a key mismatch ('id' vs 'rec_id') during trigger validation.
-- **Health Monitoring:** Actively monitors the price queue for stale data and triggers alerts.
-- **Memory Leak Fix:** Implements a smart debounce manager with automatic cleanup.
-- **Intelligent Retries:** Failed event processing is automatically retried with exponential backoff.
-- **Concurrency Safety:** Uses deep copies of trigger data to prevent race conditions.
-- **Data Validation:** Incoming trigger data is validated before being added to the index.
-- **Atomic Updates:** Trigger index updates are now atomic, eliminating synchronization gaps.
-- **Precision Price Logic:** Price condition checks include a safety margin.
-- **Audit Trail:** Logs every critical decision for full traceability.
-- **Resilient Queue Processing:** The price queue now has a timeout to prevent silent stalls.
+AlertService v19.0.4 - الإصدار النهائي المحسّن.
+تم إصلاح مشكلة notifier وتحديث آلية المراقبة الصحية.
 """
 
 import logging
@@ -38,7 +22,7 @@ log = logging.getLogger(__name__)
 audit_log = logging.getLogger('capitalguard.audit')
 
 class ServiceHealthMonitor:
-    """Monitors the health of the AlertService processing loop."""
+    """يراقب صحة حلقة معالجة AlertService."""
     def __init__(self, notifier: Any, admin_chat_id: Optional[str], stale_threshold_sec: int = 90):
         self.last_processed_time = time.time()
         self.stale_threshold = stale_threshold_sec
@@ -47,28 +31,31 @@ class ServiceHealthMonitor:
         self.alert_sent = False
 
     def record_processing(self):
-        """Records a successful processing event."""
+        """يسجل حدث معالجة ناجح."""
         self.last_processed_time = time.time()
         self.alert_sent = False
 
-    # ✅ --- CRITICAL FIX: Made the health check a sync function ---
-    def check_health(self):
-        """Checks if the service is stale and sends a critical alert if needed."""
+    async def check_health(self):
+        """يفحص إذا كانت الخدمة متوقفة ويرسل تنبيهاً حرجاً إذا لزم الأمر."""
         if time.time() - self.last_processed_time > self.stale_threshold:
-            if not self.alert_sent and self.admin_chat_id:
+            # ✅ التحقق من وجود notifier قبل الاستخدام
+            if not self.alert_sent and self.admin_chat_id and self.notifier:
                 log.critical("HEALTH ALERT: No price processing detected for %d seconds!", self.stale_threshold)
                 try:
-                    # Call the notifier synchronously as it's not an async function
-                    self.notifier.send_private_text(
+                    await self.notifier.send_private_text(
                         chat_id=self.admin_chat_id,
                         text=f"🚨 CRITICAL ALERT: Price watcher appears to be stalled. No prices processed for over {self.stale_threshold} seconds. Please investigate immediately."
                     )
                     self.alert_sent = True
-                except Exception:
-                    log.exception("Failed to send critical health alert to admin.")
+                except Exception as e:
+                    log.error("Failed to send critical health alert to admin: %s", e)
+            elif not self.notifier:
+                log.warning("Health monitor: Notifier is not available")
+            elif not self.admin_chat_id:
+                log.warning("Health monitor: Admin chat ID is not set")
 
 class SmartDebounceManager:
-    """Manages event debouncing with automatic memory cleanup to prevent leaks."""
+    """يدير منع التكرار التلقائي للأحداث مع تنظيف ذاكرة تلقائي."""
     def __init__(self, debounce_seconds: float = 1.0, max_age_seconds: float = 3600.0):
         self._events: Dict[int, Dict[str, float]] = {}
         self._debounce_seconds = debounce_seconds
@@ -94,7 +81,7 @@ class SmartDebounceManager:
                 if not self._events[rec_id]:
                     del self._events[rec_id]
             if cleaned_count > 0:
-                log.info("DebounceManager cleaned up %d old entries.", cleaned_count)
+                log.debug("DebounceManager cleaned up %d old entries.", cleaned_count)
 
     def is_debounced(self, rec_id: int, event_type: str) -> bool:
         now = time.time()
@@ -273,7 +260,7 @@ class AlertService:
         log.info("Health monitor task started (interval=%ss).", interval_seconds)
         while True:
             await asyncio.sleep(interval_seconds)
-            self.health_monitor.check_health()
+            await self.health_monitor.check_health()
 
     async def _run_index_sync(self, interval_seconds: int = 300):
         log.info("Index sync task started (interval=%ss).", interval_seconds)
@@ -290,7 +277,8 @@ class AlertService:
                 self.health_monitor.record_processing()
                 await self.check_and_process_alerts(symbol, low_price, high_price)
             except asyncio.TimeoutError:
-                self.health_monitor.check_health()
+                log.warning("Price queue timeout - checking service health...")
+                await self.health_monitor.check_health()
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -303,25 +291,37 @@ class AlertService:
         if self._bg_thread and self._bg_thread.is_alive():
             log.warning("AlertService background thread already running.")
             return
+        
         def _bg_runner():
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 self._bg_loop = loop
-                self._processing_task = loop.create_task(self._process_queue())
-                self._index_sync_task = loop.create_task(self._run_index_sync())
-                self._health_monitor_task = loop.create_task(self._run_health_monitor())
-                self.streamer.start()
+                
+                async def startup():
+                    self.streamer.start()
+                    self._processing_task = asyncio.create_task(self._process_queue())
+                    self._index_sync_task = asyncio.create_task(self._run_index_sync())
+                    self._health_monitor_task = asyncio.create_task(self._run_health_monitor())
+                    log.info("All AlertService tasks started successfully.")
+                
+                loop.run_until_complete(startup())
+                log.info("AlertService background loop starting...")
                 loop.run_forever()
+                
             except Exception:
                 log.exception("AlertService background runner crashed.")
             finally:
-                tasks = asyncio.all_tasks(loop=loop)
-                for task in tasks: task.cancel()
-                async def gather_cancelled(): await asyncio.gather(*tasks, return_exceptions=True)
-                loop.run_until_complete(gather_cancelled())
-                loop.close()
+                if self._bg_loop and self._bg_loop.is_running():
+                    tasks = asyncio.all_tasks(loop=self._bg_loop)
+                    for task in tasks: 
+                        task.cancel()
+                    async def gather_cancelled(): 
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                    self._bg_loop.run_until_complete(gather_cancelled())
+                    self._bg_loop.close()
                 log.info("AlertService background loop stopped.")
+        
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
         log.info("AlertService v19.0.4 started in background thread.")
