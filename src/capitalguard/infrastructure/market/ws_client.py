@@ -1,4 +1,4 @@
-# src/capitalguard/infrastructure/market/ws_client.py (v20.0.0 - Production Ready)
+# src/capitalguard/infrastructure/market/ws_client.py (v19.0.8 - Production Ready)
 """
 Binance WebSocket client with enhanced logging and reliability features.
 """
@@ -6,11 +6,12 @@ Binance WebSocket client with enhanced logging and reliability features.
 import asyncio
 import json
 import logging
-from typing import List
+from typing import List, Optional, Dict, Any
 import websockets
 
 log = logging.getLogger(__name__)
 
+# ✅ --- CRITICAL FIX: Renamed class for consistency and to fix ImportError ---
 class BinanceWS:
     """A robust WebSocket client for Binance, optimized for reliability."""
     BASE = "wss://stream.binance.com:9443"
