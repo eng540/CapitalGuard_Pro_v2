@@ -27,7 +27,6 @@ import re
 import copy
 from typing import List, Dict, Any, Optional
 from contextlib import suppress
-from dataclasses import dataclass
 
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
@@ -37,35 +36,22 @@ from capitalguard.application.services.trade_service import TradeService
 log = logging.getLogger(__name__)
 audit_log = logging.getLogger('capitalguard.audit')
 
-# --- Helper Classes (No changes needed here) ---
-
-@dataclass
-class HealthMetrics:
-    last_processed_time: float
-    processed_count: int = 0
-    error_count: int = 0
-    last_health_check: float = 0
-    startup_time: float = 0
-
 class ServiceHealthMonitor:
+    """Monitors the health of the AlertService processing loop."""
     def __init__(self, notifier: Any, admin_chat_id: Optional[str], stale_threshold_sec: int = 90):
         self.last_processed_time = time.time()
-        self.processed_count = 0
-        self.error_count = 0
         self.stale_threshold = stale_threshold_sec
         self.notifier = notifier
         self.admin_chat_id = admin_chat_id
         self.alert_sent = False
 
     def record_processing(self):
+        """Records a successful processing event."""
         self.last_processed_time = time.time()
-        self.processed_count += 1
         self.alert_sent = False
 
-    def record_error(self):
-        self.error_count += 1
-
     async def check_health(self):
+        """Checks if the service is stale and sends a critical alert if needed."""
         if time.time() - self.last_processed_time > self.stale_threshold:
             if not self.alert_sent and self.admin_chat_id:
                 log.critical("HEALTH ALERT: No price processing detected for %d seconds!", self.stale_threshold)
@@ -79,6 +65,7 @@ class ServiceHealthMonitor:
                     log.exception("Failed to send critical health alert to admin.")
 
 class SmartDebounceManager:
+    """Manages event debouncing with automatic memory cleanup to prevent leaks."""
     def __init__(self, debounce_seconds: float = 1.0, max_age_seconds: float = 3600.0):
         self._events: Dict[int, Dict[str, float]] = {}
         self._debounce_seconds = debounce_seconds
@@ -120,8 +107,6 @@ class AuditLogger:
     def log_trigger_event(rec_id: int, event_type: str, symbol: str, trigger_price: float, actual_low: float, actual_high: float, decision: str = "EXECUTED"):
         audit_log.info("TRIGGER_EVENT: rec_id=%d, type=%s, symbol=%s, trigger=%.6f, low=%.6f, high=%.6f, decision=%s", rec_id, event_type, symbol, trigger_price, actual_low, actual_high, decision)
 
-# --- Main AlertService Class ---
-
 class AlertService:
     def __init__(self, trade_service: TradeService, repo: RecommendationRepository, notifier: Any, admin_chat_id: Optional[str], streamer: Optional[PriceStreamer] = None):
         self.trade_service = trade_service
@@ -139,17 +124,6 @@ class AlertService:
         self.health_monitor = ServiceHealthMonitor(notifier, admin_chat_id)
         self.audit_logger = AuditLogger()
         self._tp_re = re.compile(r"^TP(\d+)$", flags=re.IGNORECASE)
-        self.health_monitor.set_emergency_callback(self._emergency_restart)
-
-    async def _emergency_restart(self):
-        log.critical("Initiating emergency restart of AlertService...")
-        try:
-            self.stop()
-            await asyncio.sleep(2)
-            self.start()
-            log.info("Emergency restart completed")
-        except Exception as e:
-            log.error("Emergency restart failed: %s", e)
 
     def _validate_trigger_data(self, trigger: Dict[str, Any]) -> bool:
         required_fields = ['rec_id', 'type', 'price', 'side']
@@ -286,10 +260,11 @@ class AlertService:
         for trigger in triggers_for_symbol:
             rec_id = trigger.get("rec_id")
             ttype = trigger.get("type")
-            if self.debounce_manager.should_process(rec_id, ttype):
-                if self._is_price_condition_met(trigger.get("side"), low_price, high_price, trigger.get("price"), ttype, trigger.get("order_type")):
-                    success = await self._process_event_with_retry(ttype, rec_id, trigger.get("user_id"), trigger.get("price"))
-                    self.audit_logger.log_trigger_event(rec_id, ttype, symbol_upper, trigger.get("price"), low_price, high_price, "SUCCESS" if success else "FAILED")
+            if self.debounce_manager.is_debounced(rec_id, ttype):
+                continue
+            if self._is_price_condition_met(trigger.get("side"), low_price, high_price, trigger.get("price"), ttype, trigger.get("order_type")):
+                success = await self._process_event_with_retry(ttype, rec_id, trigger.get("user_id"), trigger.get("price"))
+                self.audit_logger.log_trigger_event(rec_id, ttype, symbol_upper, trigger.get("price"), low_price, high_price, "SUCCESS" if success else "FAILED")
 
     async def _run_health_monitor(self, interval_seconds: int = 30):
         log.info("Health monitor task started (interval=%ss).", interval_seconds)
@@ -317,7 +292,6 @@ class AlertService:
                 break
             except Exception:
                 log.exception("Unexpected error in queue processor.")
-                self.health_monitor.record_error()
             finally:
                 with suppress(Exception):
                     self.price_queue.task_done()
@@ -326,23 +300,15 @@ class AlertService:
         if self._bg_thread and self._bg_thread.is_alive():
             log.warning("AlertService background thread already running.")
             return
-        
-        # ✅ --- START OF CRITICAL FIX ---
         def _bg_runner():
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 self._bg_loop = loop
-                
-                # Create tasks but don't run the loop yet
                 self._processing_task = loop.create_task(self._process_queue())
                 self._index_sync_task = loop.create_task(self._run_index_sync())
                 self._health_monitor_task = loop.create_task(self._run_health_monitor())
-                
-                # Now that the loop is set for the current thread, start the streamer
                 self.streamer.start()
-                
-                # Finally, run the loop forever
                 loop.run_forever()
             except Exception:
                 log.exception("AlertService background runner crashed.")
@@ -353,8 +319,6 @@ class AlertService:
                 loop.run_until_complete(gather_cancelled())
                 loop.close()
                 log.info("AlertService background loop stopped.")
-        # ✅ --- END OF CRITICAL FIX ---
-
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
         log.info("AlertService v19.0.3 started in background thread.")
