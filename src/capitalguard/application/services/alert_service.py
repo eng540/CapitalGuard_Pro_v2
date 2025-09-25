@@ -1,14 +1,13 @@
-# src/capitalguard/application/services/alert_service.py
+# src/capitalguard/application/services/alert_service.py V 18.3.1
 """
-AlertService — hardened, production-ready.
+AlertService — fixes for missed TP/close events.
 
-Fixes applied vs provided v18.3.0:
-- Use session_scope() for DB safety instead of direct SessionLocal context.
-- start() safe from sync or async context: creates background thread+loop if no running loop.
-- Guarded streamer.start()/stop() to avoid double-start/blocking.
-- Defensive parsing/normalization of trigger items.
-- Robust cancellation and cleanup on stop().
-- Inclusive comparisons and safe order_type handling.
+Key fixes:
+- Ensure trigger prices are numeric.
+- Robust TP index parsing.
+- Inclusive comparisons for edge prices.
+- In-memory debounce (per rec_id+event_type) to avoid missing or double-processing.
+- Defensive logging for every decision point to help audits.
 """
 
 import logging
@@ -16,6 +15,8 @@ import asyncio
 import threading
 from typing import List, Dict, Any, Optional
 from contextlib import suppress
+import time
+import re
 
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
@@ -25,7 +26,7 @@ log = logging.getLogger(__name__)
 
 
 class AlertService:
-    def __init__(self, trade_service, repo: RecommendationRepository, streamer: Optional[PriceStreamer] = None):
+    def __init__(self, trade_service, repo: RecommendationRepository, streamer: Optional[PriceStreamer] = None, debounce_seconds: float = 1.0):
         self.trade_service = trade_service
         self.repo = repo
         self.price_queue: asyncio.Queue = asyncio.Queue()
@@ -40,6 +41,13 @@ class AlertService:
         # background runner for sync start()
         self._bg_thread: Optional[threading.Thread] = None
         self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
+
+        # debounce store: { rec_id: { event_key: last_ts } }
+        self._last_processed: Dict[int, Dict[str, float]] = {}
+        self._debounce_seconds = float(debounce_seconds)
+
+        # TP regex
+        self._tp_re = re.compile(r"^TP(\d+)$", flags=re.IGNORECASE)
 
     # ---------- Trigger index ----------
 
@@ -65,6 +73,17 @@ class AlertService:
                 log.exception("Failed processing trigger item: %s", item)
 
         async with self._triggers_lock:
+            # remove duplicates by (rec_id, type, price) to avoid duplicate triggers preventing TP execution
+            for sym, triggers in new_triggers.items():
+                seen = set()
+                unique = []
+                for t in triggers:
+                    key = (t.get("rec_id"), t.get("type"), float(t.get("price") or 0.0))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    unique.append(t)
+                new_triggers[sym] = unique
             self.active_triggers = new_triggers
 
         total_recs = len(trigger_data) if trigger_data is not None else 0
@@ -83,18 +102,14 @@ class AlertService:
         rec_id = item.get("id")
         user_id = item.get("user_id")
 
-        # normalize numeric/string statuses
-        status_norm = status
+        # normalize status (accept enum or primitive)
         try:
-            if isinstance(status, str):
-                status_norm = status.upper()
-            elif isinstance(status, (int, float)):
-                status_norm = int(status)
+            status_norm = status.name if hasattr(status, "name") else str(status).upper()
         except Exception:
-            status_norm = status
+            status_norm = str(status).upper()
 
-        # Pending
-        if status_norm == 0 or status_norm == "PENDING":
+        # ENTRY for pending
+        if status_norm in ("0", "PENDING"):
             try:
                 price = float(item.get("entry") or 0.0)
             except Exception:
@@ -105,8 +120,8 @@ class AlertService:
             })
             return
 
-        # Active
-        if status_norm == 1 or status_norm == "ACTIVE":
+        # ACTIVE -> SL, PROFIT_STOP, TPs
+        if status_norm in ("1", "ACTIVE"):
             sl = item.get("stop_loss")
             if sl is not None:
                 try:
@@ -215,18 +230,12 @@ class AlertService:
     # ---------- Start / Stop ----------
 
     def start(self):
-        """
-        Safe start from async or sync context.
-        If no running loop in current thread, spin a background thread + loop.
-        """
         try:
             loop = asyncio.get_running_loop()
-            # create tasks in existing loop
             if self._processing_task is None or self._processing_task.done():
                 self._processing_task = loop.create_task(self._process_queue())
             if self._index_sync_task is None or self._index_sync_task.done():
                 self._index_sync_task = loop.create_task(self._run_index_sync())
-            # start streamer if present
             try:
                 if hasattr(self.streamer, "start"):
                     self.streamer.start()
@@ -235,7 +244,6 @@ class AlertService:
             log.info("AlertService started in existing event loop.")
             return
         except RuntimeError:
-            # no running loop -> background thread
             if self._bg_thread and self._bg_thread.is_alive():
                 log.warning("AlertService background thread already running.")
                 return
@@ -272,14 +280,12 @@ class AlertService:
             log.info("AlertService started in background thread.")
 
     def stop(self):
-        # stop streamer
         try:
             if hasattr(self.streamer, "stop"):
                 self.streamer.stop()
         except Exception:
             log.exception("Error stopping streamer.")
 
-        # cancel tasks in active loop
         try:
             if self._processing_task and not self._processing_task.done():
                 self._processing_task.cancel()
@@ -288,7 +294,6 @@ class AlertService:
         except Exception:
             log.exception("Error cancelling tasks in main loop.")
 
-        # stop background loop/thread if any
         if self._bg_loop and self._bg_thread:
             try:
                 self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
@@ -310,13 +315,13 @@ class AlertService:
         side_upper = (side or "").upper()
         cond = (condition_type or "").upper()
 
+        # inclusive comparisons to capture edge hits
         if side_upper == "LONG":
             if cond.startswith("TP"):
                 return high_price >= target_price
             if cond in ("SL", "PROFIT_STOP"):
                 return low_price <= target_price
             if cond == "ENTRY":
-                # accept enum or string order_type
                 ot = str(order_type).upper() if order_type is not None else ""
                 if ot.endswith("LIMIT"):
                     return low_price <= target_price
@@ -347,6 +352,7 @@ class AlertService:
             return
 
         triggered_ids = set()
+        now_ts = time.time()
         for trigger in triggers_for_symbol:
             try:
                 execution_price = float(trigger.get("price") or 0.0)
@@ -361,27 +367,39 @@ class AlertService:
                 log.exception("Error evaluating trigger condition: %s", trigger)
                 continue
 
-            rec_id = trigger.get("rec_id")
-            if rec_id in triggered_ids:
+            rec_id = int(trigger.get("rec_id") or 0)
+            ttype_raw = (trigger.get("type") or "").upper()
+            # debounce check
+            last_map = self._last_processed.setdefault(rec_id, {})
+            last_ts = last_map.get(ttype_raw)
+            if last_ts and (now_ts - last_ts) < self._debounce_seconds:
+                log.debug("Debounced duplicate event for rec %s type %s (%.3fs since last).", rec_id, ttype_raw, now_ts - last_ts)
                 continue
+            # mark now to avoid races
+            last_map[ttype_raw] = now_ts
+
+            if rec_id in triggered_ids:
+                # allow multiple different types per rec in same candle but not same type twice
+                if ttype_raw in triggered_ids:
+                    continue
             triggered_ids.add(rec_id)
 
-            log.info("Trigger HIT for Rec #%s: Type=%s, Symbol=%s, Range=[%s,%s], Target=%s", rec_id, trigger.get("type"), symbol, low_price, high_price, execution_price)
-            ttype = (trigger.get("type") or "").upper()
+            log.info("Trigger HIT for Rec #%s: Type=%s, Symbol=%s, Range=[%s,%s], Target=%s", rec_id, ttype_raw, symbol, low_price, high_price, execution_price)
             try:
-                if ttype == "ENTRY":
+                if ttype_raw == "ENTRY":
                     await self.trade_service.process_activation_event(rec_id)
-                elif ttype.startswith("TP"):
+                elif self._tp_re.match(ttype_raw):
+                    m = self._tp_re.match(ttype_raw)
                     try:
-                        idx = int(ttype[2:])
+                        idx = int(m.group(1))
                     except Exception:
                         idx = 1
                     await self.trade_service.process_tp_hit_event(rec_id, trigger.get("user_id"), idx, execution_price)
-                elif ttype == "SL":
+                elif ttype_raw == "SL":
                     await self.trade_service.process_sl_hit_event(rec_id, trigger.get("user_id"), execution_price)
-                elif ttype == "PROFIT_STOP":
+                elif ttype_raw == "PROFIT_STOP":
                     await self.trade_service.process_profit_stop_hit_event(rec_id, trigger.get("user_id"), execution_price)
                 else:
-                    log.debug("Unhandled trigger type: %s", ttype)
+                    log.debug("Unhandled trigger type: %s", ttype_raw)
             except Exception:
                 log.exception("Failed processing hit event for rec %s", rec_id)
