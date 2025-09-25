@@ -1,15 +1,16 @@
-# src/capitalguard/boot.py (Fixed Import)
+# src/capitalguard/boot.py (Fixed - Version 3.1.0)
 """
-Bootstrap - إصلاح مشاكل الاستيراد
+Bootstrap - إصلاح مشكلة running_loop
 """
 
 import logging
+import asyncio
 from telegram.ext import Application
 
 from capitalguard.config import settings
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 
-# ✅ الإصلاح: استيراد مباشر من الملفات بدلاً من الحزمة
+# استيراد مباشر من الملفات
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
@@ -22,7 +23,7 @@ from capitalguard.interfaces.telegram.handlers import register_all_handlers
 logger = logging.getLogger(__name__)
 
 def bootstrap_app() -> Application:
-    """إعداد التطبيق مع إصلاح الاستيراد"""
+    """إعداد التطبيق مع إصلاح running_loop"""
     
     if not settings.TELEGRAM_BOT_TOKEN:
         logger.error("❌ TELEGRAM_BOT_TOKEN not configured")
@@ -55,13 +56,16 @@ def bootstrap_app() -> Application:
         
         analytics_service = AnalyticsService(repo=repo)
         
+        # ✅ الإصلاح: استخدام asyncio.get_event_loop() بدلاً من running_loop
+        main_loop = asyncio.get_event_loop()
+        
         # إنشاء AlertService
         alert_service = AlertService(
             trade_service=trade_service,
             repo=repo,
             notifier=notifier,
             admin_chat_id=settings.TELEGRAM_ADMIN_CHAT_ID,
-            main_loop=ptb_app.running_loop,
+            main_loop=main_loop,  # ✅ تم التصحيح
         )
         
         # ربط الخدمات ببعضها
