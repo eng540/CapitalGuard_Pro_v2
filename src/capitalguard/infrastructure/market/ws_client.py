@@ -6,12 +6,11 @@ Binance WebSocket client with enhanced logging and reliability features.
 import asyncio
 import json
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List
 import websockets
 
 log = logging.getLogger(__name__)
 
-# ✅ --- FIX: Renamed class to BinanceWS for consistency with PriceStreamer ---
 class BinanceWS:
     """A robust WebSocket client for Binance, optimized for reliability."""
     BASE = "wss://stream.binance.com:9443"
@@ -29,12 +28,12 @@ class BinanceWS:
 
         streams = [f"{s.lower()}@kline_1s" for s in symbols]
         stream_path = "/stream?streams=" + "/".join(streams)
-        full_uri = f"{self.BASE}{stream_path}" # ✅ Use full_uri here
-
+        url = f"{self.BASE}{stream_path}"
+        
         log.info(f"Connecting to combined 1s K-line WebSocket stream for {len(symbols)} symbols.")
 
         try:
-            async with websockets.connect(full_uri, ping_interval=20, ping_timeout=10) as ws:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
                 log.info("✅ Successfully connected to Binance combined K-line stream")
                 async for msg in ws:
                     try:
