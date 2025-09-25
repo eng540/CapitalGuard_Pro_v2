@@ -1,80 +1,176 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.4.0) ---
-# src/capitalguard/infrastructure/sched/price_streamer.py
+# src/capitalguard/infrastructure/sched/price_streamer.py (v19.0.5 - الإصلاح النهائي)
+"""
+PriceStreamer with enhanced logging and error handling.
+"""
 
 import asyncio
 import logging
-from typing import List, Set
+from typing import Set, Dict, Any, Optional
+from datetime import datetime
 
-from capitalguard.infrastructure.market.ws_client import BinanceWS
-from capitalguard.infrastructure.db.base import SessionLocal
+from capitalguard.infrastructure.db.uow import session_scope  # ✅ الاستيراد الصحيح
 from capitalguard.infrastructure.db.repository import RecommendationRepository
+from capitalguard.infrastructure.market.ws_client import BinanceWebSocketClient
 
-log = logging.getLogger("capitalguard.streamer")
+log = logging.getLogger(__name__)
 
 class PriceStreamer:
-    """
-    A dedicated, high-performance component responsible for one thing only:
-    streaming live prices from Binance WebSocket and putting them into a shared queue.
-    It does NOT contain any business logic.
-    """
-    def __init__(self, queue: asyncio.Queue, repo: RecommendationRepository):
-        self._queue = queue
-        self._repo = repo
-        self._ws_client = BinanceWS()
-        self._active_symbols: Set[str] = set()
-        self._task: asyncio.Task = None
+    """Streams real-time price data from Binance WebSocket."""
+    
+    def __init__(self, price_queue: asyncio.Queue, repo: RecommendationRepository):
+        self.price_queue = price_queue
+        self.repo = repo
+        self.symbols: Set[str] = set()
+        self.ws_client = BinanceWebSocketClient()
+        self._task: Optional[asyncio.Task] = None
+        self._running = False
+        self._message_count = 0
+        self._symbol_update_interval = 30  # تحديث الرموز كل 30 ثانية
+        self._last_symbol_update = 0
 
-    async def _price_handler(self, symbol: str, low_price: float, high_price: float):
-        """Callback function for the WebSocket client. Puts the price range into the queue."""
+    async def _get_active_symbols(self) -> Set[str]:
+        """Fetches active symbols from the repository."""
         try:
-            await self._queue.put((symbol, low_price, high_price))
-        except Exception:
-            log.exception("Failed to put price update into the queue.")
+            symbols = set()
+            # ✅ استخدام session_scope الصحيح من uow
+            with session_scope() as session:
+                active_recs = self.repo.list_all_active_triggers_data(session)
+                for rec in active_recs:
+                    asset = (rec.get("asset") or "").strip().upper()
+                    if asset:
+                        symbols.add(asset)
+            log.info("✅ Successfully fetched %d active symbols: %s", len(symbols), list(symbols))
+            return symbols
+        except Exception as e:
+            log.error("❌ Error fetching active symbols: %s", e)
+            return set()
 
-    async def _get_symbols_to_watch(self) -> List[str]:
-        """Fetches the current set of unique symbols for all open recommendations."""
-        with SessionLocal() as session:
-            open_recs_orm = self._repo.list_open_orm(session)
-            return list({rec.asset for rec in open_recs_orm})
+    async def _update_symbols(self):
+        """Updates the list of symbols to monitor."""
+        current_time = datetime.now().timestamp()
+        
+        # ✅ تحديث الرموز فقط إذا مر وقت كافٍ منذ آخر تحديث
+        if current_time - self._last_symbol_update < self._symbol_update_interval:
+            return False
+            
+        try:
+            new_symbols = await self._get_active_symbols()
+            if new_symbols != self.symbols:
+                old_count = len(self.symbols)
+                self.symbols = new_symbols
+                self._last_symbol_update = current_time
+                log.info("🔄 Symbol list changed. Now monitoring %d symbols. (Was: %d)", 
+                        len(self.symbols), old_count)
+                return True
+            return False
+        except Exception as e:
+            log.error("Error updating symbols: %s", e)
+            return False
 
     async def _run_stream(self):
-        """The main loop that manages the WebSocket connection."""
-        while True:
+        """Main streaming loop."""
+        log.info("🎯 PriceStreamer started with initial symbols: %s", list(self.symbols))
+        
+        # ✅ الحصول على الرموز الأولية مباشرة عند البدء
+        await self._update_symbols()
+        
+        while self._running:
             try:
-                symbols = await self._get_symbols_to_watch()
-                if not symbols:
-                    log.info("No open recommendations to watch. Checking again in 60 seconds.")
-                    await asyncio.sleep(60)
+                # ✅ تحديث قائمة الرموز بشكل دوري
+                symbols_updated = await self._update_symbols()
+                
+                if not self.symbols:
+                    log.warning("⏸️ No active symbols to monitor. Waiting...")
+                    await asyncio.sleep(10)
                     continue
 
-                if set(symbols) != self._active_symbols:
-                    self._active_symbols = set(symbols)
-                    log.info(f"Symbol list changed. Connecting to stream for {len(self._active_symbols)} symbols.")
-                    await self._ws_client.combined_stream(list(self._active_symbols), self._price_handler)
-                else:
-                    await asyncio.sleep(60)
+                # ✅ الاتصال بـ WebSocket إذا لم يكن متصلاً أو تغيرت الرموز
+                if not self.ws_client.connected or symbols_updated:
+                    if self.symbols:
+                        await self.ws_client.connect(list(self.symbols))
+                    else:
+                        await asyncio.sleep(5)
+                        continue
 
-            except (asyncio.CancelledError, KeyboardInterrupt):
-                log.info("Price streamer task cancelled.")
+                # ✅ استقبال الرسائل من WebSocket
+                message = await self.ws_client.receive_message()
+                if message:
+                    self._message_count += 1
+                    
+                    symbol = message.get('s')
+                    kline = message.get('k')
+                    
+                    if kline and kline.get('x'):  # إذا كانت الشمعة مغلقة
+                        low = float(kline['l'])
+                        high = float(kline['h'])
+                        
+                        # ✅ إرسال البيانات إلى الـ queue
+                        await self.price_queue.put((symbol, low, high))
+                        
+                        # ✅ تسجيل تفصيلي للأسعار
+                        if self._message_count % 50 == 0:  # تسجيل كل 50 رسالة
+                            log.info("📊 Streamed %d prices. Latest: %s (L:%.6f H:%.6f)", 
+                                    self._message_count, symbol, low, high)
+                        elif self._message_count <= 10:  # تسجيل أول 10 أسعار
+                            log.debug("📍 Price %d: %s (L:%.6f H:%.6f)", 
+                                     self._message_count, symbol, low, high)
+                    
+                # ✅ فحص صحة الاتصال بشكل دوري
+                if self._message_count % 100 == 0:
+                    is_healthy = await self.ws_client.health_check()
+                    if not is_healthy:
+                        log.warning("🔌 WebSocket connection unhealthy, reconnecting...")
+                        self.ws_client.disconnect()
+                        
+            except asyncio.CancelledError:
+                log.info("🛑 PriceStreamer cancelled")
                 break
-            except Exception:
-                log.exception("WebSocket stream failed. Reconnecting in 15 seconds...")
-                self._active_symbols = set()
-                await asyncio.sleep(15)
+            except Exception as e:
+                log.error("💥 Error in price streamer: %s", e)
+                await asyncio.sleep(1)  # انتظار قبل إعادة المحاولة
 
     def start(self):
-        """Starts the streamer as a background asyncio task."""
-        if self._task is None or self._task.done():
-            log.info("Starting Price Streamer background task.")
+        """Starts the price streaming service."""
+        if self._running:
+            log.warning("⚠️ PriceStreamer already running")
+            return
+            
+        self._running = True
+        try:
             self._task = asyncio.create_task(self._run_stream())
-        else:
-            log.warning("Price Streamer task is already running.")
+            log.info("✅ PriceStreamer background task started successfully")
+        except RuntimeError as e:
+            log.error("❌ Failed to create PriceStreamer task: %s", e)
+            self._running = False
+        except Exception as e:
+            log.error("❌ Unexpected error starting PriceStreamer: %s", e)
+            self._running = False
 
     def stop(self):
-        """Stops the streamer background task."""
-        if self._task and not self._task.done():
-            log.info("Stopping Price Streamer background task.")
+        """Stops the price streaming service."""
+        if not self._running:
+            return
+            
+        self._running = False
+        if self._task:
             self._task.cancel()
-        self._task = None
+        self.ws_client.disconnect()
+        log.info("🛑 PriceStreamer stopped. Total messages processed: %d", self._message_count)
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.4.0) ---
+    async def get_status(self) -> Dict[str, Any]:
+        """Returns the current status of the streamer."""
+        return {
+            "running": self._running,
+            "symbols_monitored": list(self.symbols),
+            "symbols_count": len(self.symbols),
+            "messages_processed": self._message_count,
+            "websocket_connected": self.ws_client.connected,
+            "queue_size": self.price_queue.qsize(),
+        }
+
+    def is_healthy(self) -> bool:
+        """Checks if the streamer is healthy."""
+        return (self._running and 
+                self.ws_client.connected and 
+                len(self.symbols) > 0 and 
+                self._message_count > 0)
