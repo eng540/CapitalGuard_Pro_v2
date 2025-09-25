@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.1) ---
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.1-patched) ---
 # src/capitalguard/infrastructure/db/repository.py
 
 import logging
@@ -305,7 +305,7 @@ class RecommendationRepository:
                 "id": r.id, "user_id": str(r.telegram_user_id), "asset": r.asset, "side": r.side,
                 "entry": float(r.entry), 
                 "stop_loss": float(r.stop_loss), 
-                "targets": [{"price": float(t['price']), "close_percent": t['close_percent']} for t in r.targets],
+                "targets": [{"price": float(t['price']), "close_percent": t.get('close_percent', 0)} for t in r.targets],
                 "status": RecommendationStatus(r.status), 
                 "order_type": OrderType(r.order_type),
                 "profit_stop_price": float(r.profit_stop_price) if r.profit_stop_price is not None else None
@@ -330,17 +330,27 @@ class RecommendationRepository:
             RecommendationORM.id == rec_id
         ).first()
 
-        if not r or r.status.value not in ("PENDING", "ACTIVE"):
+        if not r:
+            return None
+
+        # Normalize status into RecommendationStatus enum safely
+        try:
+            status_enum = RecommendationStatus(r.status)
+        except Exception:
+            # If status cannot be mapped, treat as not active
+            return None
+
+        if status_enum not in (RecommendationStatus.PENDING, RecommendationStatus.ACTIVE):
             return None
 
         return {
             "id": r.id, "user_id": str(r.telegram_user_id), "asset": r.asset, "side": r.side,
             "entry": float(r.entry), 
             "stop_loss": float(r.stop_loss), 
-            "targets": [{"price": float(t['price']), "close_percent": t['close_percent']} for t in r.targets],
-            "status": RecommendationStatus(r.status), 
+            "targets": [{"price": float(t['price']), "close_percent": t.get('close_percent', 0)} for t in r.targets],
+            "status": status_enum, 
             "order_type": OrderType(r.order_type),
             "profit_stop_price": float(r.profit_stop_price) if r.profit_stop_price is not None else None
         }
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.1) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.1-patched) ---
