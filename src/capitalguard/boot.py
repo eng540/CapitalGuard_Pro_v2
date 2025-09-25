@@ -47,10 +47,12 @@ class TelegramLogHandler(logging.Handler):
             simple_message = f"⚠️ CRITICAL ERROR: {record.getMessage()}"
             admin_chat_id = int(settings.TELEGRAM_ADMIN_CHAT_ID)
             if hasattr(self.notifier, 'send_private_text'):
-                asyncio.run_coroutine_threadsafe(
+                # Use run_coroutine_threadsafe for calls from other threads
+                future = asyncio.run_coroutine_threadsafe(
                     self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message),
                     self.main_loop
                 )
+                future.result(timeout=10) # Wait for the result with a timeout
         except Exception as e:
             root_logger = logging.getLogger()
             root_logger.removeHandler(self)
@@ -90,7 +92,6 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     if ptb_app:
         notifier.set_ptb_app(ptb_app)
     
-    # ✅ --- CRITICAL FIX: Get the main event loop for thread-safe calls ---
     main_loop = asyncio.get_event_loop()
     setup_logging(notifier, main_loop)
 
@@ -103,7 +104,7 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         repo=repo,
         notifier=notifier,
         admin_chat_id=settings.TELEGRAM_ADMIN_CHAT_ID,
-        main_loop=main_loop # Pass the main loop to the service
+        main_loop=main_loop
     )
     trade_service = TradeService(
         repo=repo, 
