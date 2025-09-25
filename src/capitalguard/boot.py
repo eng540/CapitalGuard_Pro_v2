@@ -1,145 +1,146 @@
-# src/capitalguard/boot.py (v19.0.7 - Production Ready)
+# src/capitalguard/boot.py (Version 3.0.0 - Enhanced Monitoring)
 """
-The central bootstrapping module for the application.
-It correctly initializes and wires up all services in the correct order,
-resolving dependency mismatches and ensuring a stable startup sequence.
+Bootstrap - إعداد النظام مع المراقبة المحسنة وإصلاح الفشل الصامت
 """
 
-import os
 import logging
-import sys
-import threading
 import asyncio
-from typing import Dict, Any, Optional
-
-from telegram.ext import Application, PicklePersistence
+from telegram.ext import Application
 
 from capitalguard.config import settings
-from capitalguard.application.services.trade_service import TradeService
-from capitalguard.application.services.analytics_service import AnalyticsService
-from capitalguard.application.services.price_service import PriceService
-from capitalguard.application.services.alert_service import AlertService
-from capitalguard.application.services.market_data_service import MarketDataService
-from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
-from capitalguard.infrastructure.execution.binance_exec import BinanceExec, BinanceCreds
+from capitalguard.application.services import (
+    TradeService, AnalyticsService, PriceService, 
+    AlertService, MarketDataService
+)
+from capitalguard.infrastructure.db.repository import RecommendationRepository
+from capitalguard.infrastructure.monitoring.system_monitor import SystemMonitor
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
-from capitalguard.service_registry import register_global_services
+from capitalguard.service_registry import ServiceRegistry
 
-class TelegramLogHandler(logging.Handler):
-    """A custom logging handler that sends critical messages to a Telegram chat."""
-    def __init__(self, notifier: TelegramNotifier, main_loop: asyncio.AbstractEventLoop, level=logging.ERROR):
-        super().__init__(level=level)
-        self.notifier = notifier
-        self.main_loop = main_loop
-        self._local = threading.local()
-        self._local.is_handling = False
+logger = logging.getLogger(__name__)
 
-    def emit(self, record: logging.LogRecord):
-        if getattr(self._local, 'is_handling', False):
-            return
-        
-        if not self.notifier or not settings.TELEGRAM_ADMIN_CHAT_ID:
-            return
-        
-        try:
-            self._local.is_handling = True
-            simple_message = f"⚠️ CRITICAL ERROR: {record.getMessage()}"
-            admin_chat_id = int(settings.TELEGRAM_ADMIN_CHAT_ID)
-            if hasattr(self.notifier, 'send_private_text'):
-                coro = self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message)
-                if asyncio.iscoroutine(coro):
-                    asyncio.run_coroutine_threadsafe(coro, self.main_loop)
-        except Exception as e:
-            root_logger = logging.getLogger()
-            root_logger.removeHandler(self)
-            root_logger.error(f"CRITICAL: Failed to send log to Telegram: {e}", exc_info=False)
-            root_logger.addHandler(self)
-        finally:
-            self._local.is_handling = False
-
-def setup_logging(notifier: Optional[TelegramNotifier] = None, main_loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
-    """Configures the root logger for the entire application."""
-    root_logger = logging.getLogger()
-    if root_logger.hasHandlers():
-        root_logger.handlers.clear()
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-        stream=sys.stdout,
-    )
-
-    if notifier and settings.TELEGRAM_ADMIN_CHAT_ID and main_loop:
-        telegram_handler = TelegramLogHandler(notifier, main_loop)
-        telegram_handler.setLevel(logging.ERROR)
-        root_logger.addHandler(telegram_handler)
-        logging.info("TelegramLogHandler configured for admin notifications.")
-    else:
-        logging.warning("TelegramLogHandler is not configured (TELEGRAM_ADMIN_CHAT_ID or main_loop not set).")
-
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("apscheduler").setLevel(logging.WARNING)
-    logging.info("Logging configured successfully.")
-
-def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
-    """Builds all services and populates the global registry in the correct dependency order."""
-    repo = RecommendationRepository()
-    notifier = TelegramNotifier()
-    if ptb_app:
-        notifier.set_ptb_app(ptb_app)
+def bootstrap_app() -> Application:
+    """إعداد التطبيق مع التحسينات الشاملة"""
     
-    main_loop = asyncio.get_event_loop()
-    setup_logging(notifier, main_loop)
-
-    market_data_service = MarketDataService()
-    price_service = PriceService()
-    analytics_service = AnalyticsService(repo=repo)
-    
-    # ✅ --- CRITICAL FIX: Pass the main_loop to the AlertService constructor ---
-    alert_service = AlertService(
-        trade_service=None,
-        repo=repo,
-        notifier=notifier,
-        admin_chat_id=settings.TELEGRAM_ADMIN_CHAT_ID,
-        main_loop=main_loop
-    )
-    trade_service = TradeService(
-        repo=repo, 
-        notifier=notifier, 
-        market_data_service=market_data_service, 
-        price_service=price_service,
-        alert_service=alert_service
-    )
-    alert_service.trade_service = trade_service
-    
-    services = {
-        "trade_service": trade_service,
-        "analytics_service": analytics_service,
-        "price_service": price_service,
-        "alert_service": alert_service,
-        "notifier": notifier,
-        "market_data_service": market_data_service,
-    }
-
-    register_global_services(services)
-    
-    return services
-
-def bootstrap_app() -> Optional[Application]:
-    """Bootstraps the Telegram bot application."""
     if not settings.TELEGRAM_BOT_TOKEN:
+        logger.error("❌ TELEGRAM_BOT_TOKEN not configured - Bot features disabled")
         return None
-    try:
-        persistence = PicklePersistence(filepath="./telegram_bot_persistence")
-        ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
-        
-        services = build_services(ptb_app)
-        ptb_app.bot_data["services"] = services
 
+    try:
+        # إنشاء تطبيق Telegram
+        ptb_app = (
+            Application.builder()
+            .token(settings.TELEGRAM_BOT_TOKEN)
+            .build()
+        )
+
+        logger.info("🔄 Initializing services...")
+
+        # إعداد الخدمات الأساسية
+        notifier = TelegramNotifier()
+        notifier.set_ptb_app(ptb_app)
+        
+        repo = RecommendationRepository()
+        market_data_service = MarketDataService()
+        price_service = PriceService()
+        
+        # إنشاء TradeService أولاً (بدون alert_service مؤقتاً)
+        trade_service = TradeService(
+            repo=repo,
+            notifier=notifier,
+            market_data_service=market_data_service,
+            price_service=price_service,
+            alert_service=None  # سيتم تعيينه بعد الإنشاء
+        )
+        
+        analytics_service = AnalyticsService(repo=repo)
+        
+        # إنشاء AlertService مع تحسينات الموثوقية
+        alert_service = AlertService(
+            trade_service=trade_service,
+            repo=repo,
+            notifier=notifier,
+            admin_chat_id=settings.TELEGRAM_ADMIN_CHAT_ID,
+            main_loop=ptb_app.running_loop,
+        )
+        
+        # ربط الخدمات ببعضها
+        trade_service.alert_service = alert_service
+
+        # إنشاء System Monitor
+        system_monitor = SystemMonitor(alert_service=alert_service)
+
+        # تخزين الخدمات في bot_data للوصول السريع
+        services_dict = {
+            "trade_service": trade_service,
+            "analytics_service": analytics_service,
+            "price_service": price_service,
+            "alert_service": alert_service,
+            "notifier": notifier,
+            "market_data_service": market_data_service,
+            "system_monitor": system_monitor,
+        }
+        
+        ptb_app.bot_data.update(services_dict)
+
+        # تسجيل الخدمات في السجل العالمي
+        registry = ServiceRegistry()
+        for name, service in services_dict.items():
+            registry.register(name, service)
+        
+        # تسجيل handlers
         register_all_handlers(ptb_app)
-        logging.info("Telegram bot bootstrapped successfully.")
+
+        logger.info("✅ Application bootstrapped successfully with %d services", len(services_dict))
         return ptb_app
+
     except Exception as e:
-        logging.exception(f"CRITICAL: Failed to bootstrap bot: {e}")
+        logger.error("💥 CRITICAL: Failed to bootstrap application: %s", e, exc_info=True)
         return None
+
+async def initialize_services(ptb_app: Application):
+    """تهيئة الخدمات بشكل غير متزامن بعد بدء التطبيق"""
+    if not ptb_app:
+        return
+        
+    try:
+        services = ptb_app.bot_data
+        alert_service = services.get("alert_service")
+        market_data_service = services.get("market_data_service")
+        system_monitor = services.get("system_monitor")
+        
+        logger.info("🔄 Starting async service initialization...")
+        
+        # 1. تحديث Market Data Cache
+        if market_data_service:
+            logger.info("📊 Refreshing market data cache...")
+            try:
+                await market_data_service.refresh_symbols_cache()
+                logger.info("✅ Market data cache refreshed successfully")
+            except Exception as e:
+                logger.error("❌ Market data cache refresh failed: %s", e)
+        
+        # 2. بناء فهرس المحفزات
+        if alert_service:
+            logger.info("🔍 Building triggers index...")
+            try:
+                await alert_service.build_triggers_index()
+                logger.info("✅ Triggers index built successfully")
+            except Exception as e:
+                logger.error("❌ Triggers index build failed: %s", e)
+        
+        # 3. بدء System Monitor
+        if system_monitor:
+            system_monitor.start()
+            logger.info("✅ System monitor started")
+        
+        # 4. بدء AlertService
+        if alert_service:
+            alert_service.start()
+            logger.info("✅ AlertService started")
+            
+        logger.info("🎉 All services initialized successfully")
+        
+    except Exception as e:
+        logger.error("💥 Service initialization failed: %s", e, exc_info=True)
