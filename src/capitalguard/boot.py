@@ -1,4 +1,4 @@
-# src/capitalguard/boot.py (v20.0.0 - Production Ready)
+# src/capitalguard/boot.py (v19.0.7 - Production Ready)
 """
 The central bootstrapping module for the application.
 It correctly initializes and wires up all services in the correct order,
@@ -96,11 +96,13 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     price_service = PriceService()
     analytics_service = AnalyticsService(repo=repo)
     
+    # ✅ --- CRITICAL FIX: Pass the main_loop to the AlertService constructor ---
     alert_service = AlertService(
         trade_service=None,
         repo=repo,
         notifier=notifier,
-        admin_chat_id=settings.TELEGRAM_ADMIN_CHAT_ID
+        admin_chat_id=settings.TELEGRAM_ADMIN_CHAT_ID,
+        main_loop=main_loop
     )
     trade_service = TradeService(
         repo=repo, 
