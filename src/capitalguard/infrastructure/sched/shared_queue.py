@@ -8,7 +8,7 @@ import threading
 from typing import Any, Tuple, Optional
 
 class ThreadSafeQueue:
-    """Queue آمنة للاستخدام بين الـ threads."""
+    """Thread-safe queue for inter-thread communication."""
     
     def __init__(self, maxsize: int = 0):
         self._queue = asyncio.Queue(maxsize=maxsize)
@@ -16,16 +16,16 @@ class ThreadSafeQueue:
         self._put_event = asyncio.Event()
         
     async def put(self, item: Tuple[str, float, float]):
-        """وضع عنصر في الـ queue."""
+        """Put an item into the queue."""
         with self._lock:
             await self._queue.put(item)
-            self._put_event.set()  # إشعار بوجود بيانات جديدة
+            self._put_event.set()  # Notify that there's new data
             
     async def get(self, timeout: Optional[float] = None):
-        """أخذ عنصر من الـ queue مع timeout اختياري."""
+        """Get an item from the queue with optional timeout."""
         try:
             if timeout:
-                # انتظار حتى تكون هناك بيانات أو انتهاء الوقت
+                # Wait for data or timeout
                 await asyncio.wait_for(self._put_event.wait(), timeout=timeout)
             else:
                 await self._put_event.wait()
@@ -34,7 +34,7 @@ class ThreadSafeQueue:
                 if not self._queue.empty():
                     item = self._queue.get_nowait()
                     if self._queue.empty():
-                        self._put_event.clear()  reset الإشعار إذا كانت الـ queue فارغة
+                        self._put_event.clear()  # Reset event if queue is empty
                     return item
                 else:
                     self._put_event.clear()
@@ -45,7 +45,7 @@ class ThreadSafeQueue:
             return None
             
     def get_nowait(self):
-        """محاولة أخذ عنصر بدون انتظار."""
+        """Try to get an item without waiting."""
         with self._lock:
             try:
                 item = self._queue.get_nowait()
@@ -57,19 +57,19 @@ class ThreadSafeQueue:
                 return None
             
     def qsize(self):
-        """حجم الـ queue."""
+        """Get the queue size."""
         with self._lock:
             return self._queue.qsize()
             
     def empty(self):
-        """هل الـ queue فارغة؟"""
+        """Check if the queue is empty."""
         with self._lock:
             return self._queue.empty()
             
     def task_done(self):
-        """إعلام بانتهاء المهمة."""
+        """Mark task as done."""
         with self._lock:
             try:
                 self._queue.task_done()
             except ValueError:
-                pass  # تجاهل الخطأ إذا لم تكن هناك مهام منتظرة
+                pass  # Ignore error if no tasks are waiting
