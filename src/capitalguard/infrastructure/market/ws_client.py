@@ -1,70 +1,90 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 1.1.0) ---
-# src/capitalguard/infrastructure/market/ws_client.py
+# src/capitalguard/infrastructure/market/ws_client.py (v19.0.5)
+"""
+Binance WebSocket client with enhanced logging.
+"""
 
 import asyncio
 import json
-import websockets
 import logging
-from typing import List, Dict, Any
+from typing import List, Optional, Dict, Any
+import websockets
 
 log = logging.getLogger(__name__)
 
-class BinanceWS:
-    """
-    A robust WebSocket client for Binance, optimized for reliability.
-    ✅ FINAL ARCHITECTURE v1.1: Switched to 1-second K-line streams (@kline_1s)
-    to capture the high and low price of every second. This prevents missing
-    triggers during high-volatility wicks, ensuring maximum reliability.
-    """
-    BASE = "wss://stream.binance.com:9443"
+class BinanceWebSocketClient:
+    """Client for Binance WebSocket API."""
+    
+    def __init__(self):
+        self.websocket = None
+        self.connected = False
+        self.uri = "wss://stream.binance.com:9443/ws"
+        self._message_count = 0
 
-    async def combined_stream(self, symbols: List[str], handler):
-        """
-        Connects to a single combined stream for multiple symbols using 1s k-lines.
-
-        Args:
-            symbols (List[str]): A list of symbols to subscribe to.
-            handler: An async function to be called with (symbol, low_price, high_price) on each update.
-        """
+    async def connect(self, symbols: List[str]):
+        """Connects to Binance WebSocket for the given symbols."""
         if not symbols:
-            log.warning("No symbols provided to combined_stream, returning.")
+            log.warning("No symbols provided for WebSocket connection")
             return
-
-        streams = [f"{s.lower()}@kline_1s" for s in symbols]
-        stream_path = "/stream?streams=" + "/".join(streams)
-        url = f"{self.BASE}{stream_path}"
-        
-        log.info(f"Connecting to combined 1s K-line WebSocket stream for {len(symbols)} symbols.")
-
+            
         try:
-            async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-                log.info("Successfully connected to Binance combined K-line stream.")
-                async for msg in ws:
-                    try:
-                        payload = json.loads(msg)
-                        
-                        data = payload.get("data")
-                        if not data or data.get('e') != 'kline':
-                            continue
-
-                        kline_data = data.get('k')
-                        symbol = kline_data.get("s", "").upper()
-                        low_price = float(kline_data.get("l", 0.0))
-                        high_price = float(kline_data.get("h", 0.0))
-                        
-                        if symbol and low_price > 0 and high_price > 0:
-                            await handler(symbol, low_price, high_price)
-
-                    except (json.JSONDecodeError, KeyError, ValueError):
-                        log.warning("Failed to parse WebSocket K-line message: %s", msg[:200])
-                    except Exception:
-                        log.exception("An error occurred in the WebSocket message handler.")
-        
-        except websockets.exceptions.ConnectionClosed as e:
-            log.warning(f"WebSocket connection closed unexpectedly: {e}. Will be reconnected by the streamer.")
-            raise
-        except Exception:
-            log.exception("A critical error occurred in the WebSocket client.")
+            # إنشاء stream name للرموز
+            streams = [f"{symbol.lower()}@kline_1s" for symbol in symbols]
+            stream_param = "/".join(streams)
+            full_uri = f"{self.uri}/{stream_param}"
+            
+            log.info("Connecting to combined 1s K-line WebSocket stream for %d symbols: %s", 
+                    len(symbols), symbols)
+            
+            self.websocket = await websockets.connect(full_uri, ping_interval=20, ping_timeout=10)
+            self.connected = True
+            log.info("✅ Successfully connected to Binance combined K-line stream")
+            
+        except Exception as e:
+            log.error("Failed to connect to Binance WebSocket: %s", e)
+            self.connected = False
             raise
 
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 1.1.0) ---
+    async def receive_message(self) -> Optional[Dict[str, Any]]:
+        """Receives a message from the WebSocket."""
+        if not self.connected or not self.websocket:
+            log.warning("WebSocket not connected")
+            return None
+            
+        try:
+            message = await asyncio.wait_for(self.websocket.recv(), timeout=30.0)
+            self._message_count += 1
+            
+            if self._message_count % 100 == 0:  # تسجيل كل 100 رسالة
+                log.debug("WebSocket message %d received: %s...", self._message_count, message[:100])
+            
+            return json.loads(message)
+            
+        except asyncio.TimeoutError:
+            log.warning("WebSocket receive timeout")
+            return None
+        except websockets.exceptions.ConnectionClosed:
+            log.error("WebSocket connection closed")
+            self.connected = False
+            return None
+        except Exception as e:
+            log.error("Error receiving WebSocket message: %s", e)
+            return None
+
+    def disconnect(self):
+        """Disconnects from the WebSocket."""
+        if self.websocket:
+            asyncio.create_task(self.websocket.close())
+        self.connected = False
+        log.info("WebSocket disconnected. Total messages received: %d", self._message_count)
+
+    async def health_check(self) -> bool:
+        """Performs a health check on the WebSocket connection."""
+        if not self.connected or not self.websocket:
+            return False
+        try:
+            # محاولة إرسال ping للتحقق من الاتصال
+            pong = await asyncio.wait_for(self.websocket.ping(), timeout=5.0)
+            return pong is not None
+        except:
+            self.connected = False
+            return False
