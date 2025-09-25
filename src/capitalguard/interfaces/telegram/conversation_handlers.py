@@ -1,5 +1,4 @@
-# --- START OF FINAL, PRODUCTION-READY FILE (Version 15.3.0) ---
-# src/capitalguard/interfaces/telegram/conversation_handlers.py
+# src/capitalguard/interfaces/telegram/conversation_handlers.py v 15.3.0 (Corrected)
 import logging
 import uuid
 import types
@@ -98,9 +97,12 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
     context.user_data[CONVERSATION_DATA_KEY] = {}
     user, message_obj = _get_user_and_message_from_update(update)
     if not user or not message_obj: return ConversationHandler.END
+    
     trade_service = get_service(context, "trade_service", TradeService)
-    user_id = str(user.id)
-    recent_assets = trade_service.get_recent_assets_for_user(db_session, user_id, limit=5)
+    user_id_str = str(user.id)
+    
+    # ✅ --- الإصلاح: استخدام اسم المعلمة الصريح 'user_telegram_id' عند استدعاء الخدمة ---
+    recent_assets = trade_service.get_recent_assets_for_user(db_session, user_telegram_id=user_id_str, limit=5)
 
     reply_method = message_obj.edit_text if update.callback_query else message_obj.reply_text  
     sent_message = await reply_method(  
@@ -494,5 +496,3 @@ def register_conversation_handlers(app: Application):
         per_message=False
     )
     app.add_handler(conv_handler)
-
-# --- END OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE ---
