@@ -1,7 +1,5 @@
-# src/capitalguard/interfaces/api/main.py (Minimal Fixes Only)
-"""
-الإصدار الأصلي مع إصلاحات طفيفة فقط
-"""
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 12.1.0) ---
+# src/capitalguard/interfaces/api/main.py
 
 import logging
 import asyncio
@@ -18,7 +16,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 from capitalguard.config import settings
-from capitalguard.boot import bootstrap_app, build_services, initialize_services
+from capitalguard.boot import bootstrap_app, build_services
 from capitalguard.interfaces.api.deps import get_trade_service, get_analytics_service, require_api_key
 from capitalguard.interfaces.api.schemas import RecommendationOut, CloseIn
 from capitalguard.interfaces.api.routers import auth as auth_router
@@ -32,7 +30,7 @@ log = logging.getLogger(__name__)
 
 # --- Application Setup ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="12.1.0-stable")
+app = FastAPI(title="CapitalGuard Pro API", version="12.1.0-scalable")
 app.state.ptb_app = None
 app.state.services = None
 
@@ -51,13 +49,13 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         f"<b>Error:</b>\n<pre>{html.escape(tb_string)}</pre>"
     )
 
-    if settings.TELEGRAM_ADMIN_CHAT_ID and app.state.ptb_app:
+    if settings.TELEGRAM_ADMIN_CHAT_ID:
         try:
             await app.state.ptb_app.bot.send_message(
                 chat_id=settings.TELEGRAM_ADMIN_CHAT_ID, text=detailed_message, parse_mode=ParseMode.HTML
             )
         except Exception as e:
-            log.error(f"Failed to send detailed error report to admin: {e}")
+            log.error(f"CRITICAL: Failed to send detailed error report to admin: {e}")
 
     if update and getattr(update, "effective_user", None):
         try:
@@ -72,33 +70,29 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # --- Startup / Shutdown Events ---
 @app.on_event("startup")
 async def on_startup():
-    """بدء التطبيق مع الحد الأدنى من التغييرات"""
-    log.info("🚀 Starting CapitalGuard Pro API...")
-    
+    """Handles application startup logic for FastAPI, Telegram Bot, and background services."""
     ptb_app = bootstrap_app()
 
     if not ptb_app:
-        log.error("Telegram Bot Token not provided. Bot features will be disabled.")
+        logging.critical("Telegram Bot Token not provided. Bot features will be disabled.")
         app.state.ptb_app = None
-        app.state.services = build_services(ptb_app)  # ✅ تصحيح: تمرير ptb_app
+        app.state.services = build_services()
         return
 
     app.state.ptb_app = ptb_app
-    
-    # ✅ الإصلاح البسيط: التحقق من وجود المفتاح
-    if "services" in ptb_app.bot_data:
-        app.state.services = ptb_app.bot_data["services"]
-        log.info("✅ Services loaded from bot_data")
-    else:
-        log.error("❌ Key 'services' not found in bot_data")
-        app.state.services = build_services(ptb_app)
-        # حاول إضافة الخدمات إلى bot_data للاستخدام المستقبلي
-        ptb_app.bot_data["services"] = app.state.services
+    app.state.services = ptb_app.bot_data["services"]
 
     ptb_app.add_error_handler(error_handler)
 
-    # تهيئة الخدمات بشكل غير متزامن
-    await initialize_services(ptb_app)
+    market_data_service = app.state.services.get("market_data_service")
+    if market_data_service:
+        asyncio.create_task(market_data_service.refresh_symbols_cache())
+        logging.info("Market data cache refresh task scheduled.")
+
+    alert_service: AlertService = app.state.services.get("alert_service")
+    if alert_service:
+        await alert_service.build_triggers_index()
+        alert_service.start()
 
     await ptb_app.initialize()
 
@@ -116,10 +110,10 @@ async def on_startup():
     ]
 
     if ptb_app.bot and ptb_app.bot.username:
-        log.info(f"Bot started with username: @{ptb_app.bot.username}")
+        logging.info(f"Bot started with username: @{ptb_app.bot.username}")
 
     await ptb_app.bot.set_my_commands(private_commands)
-    log.info("Custom bot commands have been set.")
+    logging.info("Custom bot commands have been set.")
 
     await ptb_app.start()
 
@@ -128,15 +122,13 @@ async def on_startup():
             url=settings.TELEGRAM_WEBHOOK_URL,
             allowed_updates=Update.ALL_TYPES
         )
-        log.info(f"Telegram webhook set to {settings.TELEGRAM_WEBHOOK_URL}")
-
-    log.info("✅ CapitalGuard Pro API started successfully")
+        logging.info(f"Telegram webhook set to {settings.TELEGRAM_WEBHOOK_URL}")
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    """إيقاف التطبيق"""
-    alert_service: AlertService = app.state.services.get("alert_service") if app.state.services else None
+    """Handles graceful shutdown for the Telegram bot and background services."""
+    alert_service: AlertService = app.state.services.get("alert_service")
     if alert_service:
         alert_service.stop()
 
@@ -145,9 +137,10 @@ async def on_shutdown():
         await app.state.ptb_app.shutdown()
 
 
-# --- باقي الملف يبقى كما هو بدون تغيير ---
+# --- Webhook Endpoint ---
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
+    """Single endpoint for receiving all updates from the Telegram webhook."""
     ptb_app = request.app.state.ptb_app
     if ptb_app:
         try:
@@ -158,6 +151,8 @@ async def telegram_webhook(request: Request):
             log.exception("Error processing Telegram update in webhook.")
     return {"status": "ok"}
 
+
+# --- API Endpoints ---
 @app.get("/")
 def root():
     return {"message": f"🚀 CapitalGuard API v{app.version} is running"}
@@ -221,6 +216,9 @@ def dashboard(
     """
     return HTMLResponse(content=html_content)
 
+
 # --- Include Routers ---
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
+
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 12.1.0) ---
