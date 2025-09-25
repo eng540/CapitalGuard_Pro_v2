@@ -301,34 +301,43 @@ class AlertService:
             log.warning("AlertService background thread already running.")
             return
         
-        # ✅ --- START OF CRITICAL FIX ---
         def _bg_runner():
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 self._bg_loop = loop
                 
-                # Create tasks but don't run the loop yet
-                self._processing_task = loop.create_task(self._process_queue())
-                self._index_sync_task = loop.create_task(self._run_index_sync())
-                self._health_monitor_task = loop.create_task(self._run_health_monitor())
+                # إنشاء دالة async لبدء كل شيء بالترتيب الصحيح
+                async def startup():
+                    # بدء الـ streamer أولاً (يوفر الأسعار للـ queue)
+                    self.streamer.start()
+                    
+                    # ثم بدء مهام المعالجة
+                    self._processing_task = asyncio.create_task(self._process_queue())
+                    self._index_sync_task = asyncio.create_task(self._run_index_sync())
+                    self._health_monitor_task = asyncio.create_task(self._run_health_monitor())
+                    log.info("All AlertService tasks started successfully.")
                 
-                # Now that the loop is set for the current thread, start the streamer
-                self.streamer.start()
+                # تشغيل دالة البداية
+                loop.run_until_complete(startup())
                 
-                # Finally, run the loop forever
+                # الآن تشغيل الـ loop الرئيسي
+                log.info("AlertService background loop starting...")
                 loop.run_forever()
+                
             except Exception:
                 log.exception("AlertService background runner crashed.")
             finally:
-                tasks = asyncio.all_tasks(loop=loop)
-                for task in tasks: task.cancel()
-                async def gather_cancelled(): await asyncio.gather(*tasks, return_exceptions=True)
-                loop.run_until_complete(gather_cancelled())
-                loop.close()
+                if self._bg_loop and self._bg_loop.is_running():
+                    tasks = asyncio.all_tasks(loop=self._bg_loop)
+                    for task in tasks: 
+                        task.cancel()
+                    async def gather_cancelled(): 
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                    self._bg_loop.run_until_complete(gather_cancelled())
+                    self._bg_loop.close()
                 log.info("AlertService background loop stopped.")
-        # ✅ --- END OF CRITICAL FIX ---
-
+        
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
         log.info("AlertService v19.0.3 started in background thread.")
