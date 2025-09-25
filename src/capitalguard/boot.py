@@ -1,6 +1,6 @@
-# src/capitalguard/boot.py (v19.0.6 - Production Ready)
+# src/capitalguard/boot.py (v19.0.7)
 """
-The central bootstrapping module for the application.
+The central bootstrapping module - no changes needed.
 """
 
 import os
@@ -24,7 +24,6 @@ from capitalguard.interfaces.telegram.handlers import register_all_handlers
 from capitalguard.service_registry import register_global_services
 
 class TelegramLogHandler(logging.Handler):
-    """A custom logging handler that sends critical messages to a Telegram chat."""
     def __init__(self, notifier: TelegramNotifier, level=logging.ERROR):
         super().__init__(level=level)
         self.notifier = notifier
@@ -53,7 +52,6 @@ class TelegramLogHandler(logging.Handler):
             self._local.is_handling = False
 
 def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
-    """Configures the root logger for the entire application."""
     root_logger = logging.getLogger()
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
@@ -77,7 +75,6 @@ def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
     logging.info("Logging configured successfully.")
 
 def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
-    """Builds all services and populates the global registry in the correct dependency order."""
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
     if ptb_app:
@@ -124,7 +121,6 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     return services
 
 def bootstrap_app() -> Optional[Application]:
-    """Bootstraps the Telegram bot application."""
     if not settings.TELEGRAM_BOT_TOKEN:
         logging.error("TELEGRAM_BOT_TOKEN not set - skipping bot initialization")
         return None
