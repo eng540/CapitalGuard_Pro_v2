@@ -1,4 +1,4 @@
-# src/capitalguard/application/services/trade_service.py v 17.4.2
+# src/capitalguard/application/services/trade_service.py v 17.4.2 (Corrected)
 """
 TradeService — production-ready, compatible, non-breaking release.
 
@@ -590,9 +590,10 @@ class TradeService:
             return []
         return self.repo.list_open_for_user(session, uid_int, **filters)
 
-    def get_recent_assets_for_user(self, session: Session, user_id: str, limit: int = 5) -> List[str]:
-        uid_int = _parse_int_user_id(user_id)
+    # ✅ --- الإصلاح: تم تعديل توقيع الدالة ليكون أكثر وضوحًا ويتطابق مع الاستدعاءات ---
+    def get_recent_assets_for_user(self, session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
+        uid_int = _parse_int_user_id(user_telegram_id)
         if not uid_int:
             return []
-        # fixed parameter name to match repository signature
-        return self.repo.get_recent_assets_for_user(session, telegram_user_id=uid_int, limit=limit)
+        # التأكد من أن اسم المعلمة الممرر للمخزن صحيح
+        return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
