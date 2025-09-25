@@ -1,24 +1,8 @@
-# src/capitalguard/application/services/alert_service.py (v20.0.0 - Production Ready)
+# src/capitalguard/application/services/alert_service.py (v19.0.7 - Production Ready)
 """
-AlertService v20.0.0 - The definitive, production-ready version.
-
+AlertService v19.0.7 - The definitive, production-ready version.
 This version incorporates a full suite of architectural improvements to address reliability,
 stability, and security, transforming the service into a robust, fault-tolerant engine.
-
-Key Enhancements:
-- **FIXED**: Corrected thread-safe notifier calls from the health monitor to prevent TypeError.
-- **FIXED**: Resolved a critical `RuntimeError: no running event loop` by correctly setting the event loop within the background thread before starting sub-tasks.
-- **FIXED**: Corrected a key mismatch ('id' vs 'rec_id') during trigger validation.
-- **FIXED**: Simplified _process_queue logic to correctly use ThreadSafeQueue.
-- **Health Monitoring:** Actively monitors the price queue for stale data and triggers alerts.
-- **Memory Leak Fix:** Implements a smart debounce manager with automatic cleanup.
-- **Intelligent Retries:** Failed event processing is automatically retried with exponential backoff.
-- **Concurrency Safety:** Uses deep copies of trigger data to prevent race conditions.
-- **Data Validation:** Incoming trigger data is validated before being added to the index.
-- **Atomic Updates:** Trigger index updates are now atomic, eliminating synchronization gaps.
-- **Precision Price Logic:** Price condition checks include a safety margin.
-- **Audit Trail:** Logs every critical decision for full traceability.
-- **Resilient Queue Processing:** The price queue now has a timeout to prevent silent stalls.
 """
 
 import logging
@@ -33,8 +17,6 @@ from contextlib import suppress
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
-# ✅ --- FIX: Corrected import name ---
-from capitalguard.infrastructure.sched.shared_queue import ThreadSafeQueue
 from capitalguard.application.services.trade_service import TradeService
 
 log = logging.getLogger(__name__)
@@ -42,11 +24,13 @@ audit_log = logging.getLogger('capitalguard.audit')
 
 class ServiceHealthMonitor:
     """Monitors the health of the AlertService processing loop."""
-    def __init__(self, notifier: Any, admin_chat_id: Optional[str], stale_threshold_sec: int = 300): # ✅ Increased threshold
+    # ✅ TUNING: Increased stale threshold to 5 minutes (300s) to avoid false alarms in quiet markets.
+    def __init__(self, notifier: Any, admin_chat_id: Optional[str], main_loop: asyncio.AbstractEventLoop, stale_threshold_sec: int = 300):
         self.last_processed_time = time.time()
         self.stale_threshold = stale_threshold_sec
         self.notifier = notifier
         self.admin_chat_id = admin_chat_id
+        self.main_loop = main_loop
         self.alert_sent = False
 
     def record_processing(self):
@@ -55,17 +39,18 @@ class ServiceHealthMonitor:
         self.alert_sent = False
 
     def check_health(self):
-        """Checks if the service is stale and sends a critical alert."""
+        """Checks if the service is stale and sends a critical alert in a thread-safe manner."""
         if time.time() - self.last_processed_time > self.stale_threshold:
-            if not self.alert_sent and self.admin_chat_id and self.notifier:
+            if not self.alert_sent and self.admin_chat_id and self.notifier and self.main_loop:
                 log.critical("HEALTH ALERT: No price processing detected for %d seconds! Last processed: %.1fs ago", 
                             self.stale_threshold, time.time() - self.last_processed_time) # ✅ Added more info
                 try:
-                    # ✅ --- CRITICAL FIX: Call the sync function directly as it handles its own threading ---
-                    self.notifier.send_private_text(
-                        chat_id=int(self.admin_chat_id),
-                        text=f"🚨 CRITICAL ALERT: Price watcher appears to be stalled. No prices processed for over {self.stale_threshold} seconds. Please investigate immediately."
-                    )
+                    message = f"🚨 CRITICAL ALERT: Price watcher appears to be stalled. No prices processed for over {self.stale_threshold} seconds. Please investigate immediately."
+                    # ✅ --- CRITICAL FIX: Use run_coroutine_threadsafe for calling async code from a sync function in another thread ---
+                    coro = self.notifier.send_private_text(chat_id=int(self.admin_chat_id), text=message)
+                    # The notifier's method might be sync or async, handle both cases.
+                    if asyncio.iscoroutine(coro):
+                        asyncio.run_coroutine_threadsafe(coro, self.main_loop)
                     self.alert_sent = True
                 except Exception:
                     log.exception("Failed to send critical health alert to admin.")
@@ -114,12 +99,10 @@ class AuditLogger:
         audit_log.info("TRIGGER_EVENT: rec_id=%d, type=%s, symbol=%s, trigger=%.6f, low=%.6f, high=%.6f, decision=%s", rec_id, event_type, symbol, trigger_price, actual_low, actual_high, decision)
 
 class AlertService:
-    # ✅ --- FIX: Removed main_loop from constructor as it's no longer needed here ---
-    def __init__(self, trade_service: TradeService, repo: RecommendationRepository, notifier: Any, admin_chat_id: Optional[str], streamer: Optional[PriceStreamer] = None):
+    def __init__(self, trade_service: TradeService, repo: RecommendationRepository, notifier: Any, admin_chat_id: Optional[str], main_loop: asyncio.AbstractEventLoop, streamer: Optional[PriceStreamer] = None):
         self.trade_service = trade_service
         self.repo = repo
-        # ✅ --- FIX: Use ThreadSafeQueue ---
-        self.price_queue = ThreadSafeQueue() 
+        self.price_queue: asyncio.Queue = asyncio.Queue()
         self.streamer = streamer or PriceStreamer(self.price_queue, self.repo)
         self.active_triggers: Dict[str, List[Dict[str, Any]]] = {}
         self._triggers_lock = asyncio.Lock()
@@ -129,12 +112,9 @@ class AlertService:
         self._bg_thread: Optional[threading.Thread] = None
         self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
         self.debounce_manager = SmartDebounceManager(debounce_seconds=1.0)
-        # ✅ --- FIX: Pass notifier and admin_chat_id directly ---
-        self.health_monitor = ServiceHealthMonitor(notifier, admin_chat_id) 
+        self.health_monitor = ServiceHealthMonitor(notifier, admin_chat_id, main_loop)
         self.audit_logger = AuditLogger()
         self._tp_re = re.compile(r"^TP(\d+)$", flags=re.IGNORECASE)
-        self._price_count = 0
-        self._consecutive_timeouts = 0
 
     def _validate_trigger_data(self, trigger: Dict[str, Any]) -> bool:
         required_fields = ['rec_id', 'type', 'price', 'side']
@@ -290,97 +270,57 @@ class AlertService:
             await self.build_triggers_index()
 
     async def _process_queue(self):
-        log.info("🎯 AlertService queue processor started with enhanced reliability.")
-        log.info("💰 Initial queue size: %d", self.price_queue.qsize())
-        
+        log.info("AlertService queue processor started with enhanced reliability.")
         await self.debounce_manager.start_cleanup_task()
-        
         while True:
             try:
-                # ✅ --- FIX: Simplified queue get logic ---
-                # ThreadSafeQueue.get() is already async and supports timeout.
-                symbol, low_price, high_price = await self.price_queue.get(timeout=3.0)
-                
-                self._price_count += 1
+                symbol, low_price, high_price = await asyncio.wait_for(self.price_queue.get(), timeout=90.0)
                 self.health_monitor.record_processing()
-                self._consecutive_timeouts = 0
-                
-                log.info("🎯 Price %d processed: %s (L:%.6f H:%.6f) - Queue size: %d", 
-                        self._price_count, symbol, low_price, high_price, self.price_queue.qsize())
-                
                 await self.check_and_process_alerts(symbol, low_price, high_price)
-                
             except asyncio.TimeoutError:
-                # This is normal if no prices for 3 seconds, just check health.
-                self._consecutive_timeouts += 1
-                if self._consecutive_timeouts % 10 == 0:
-                    log.warning("⏰ Consecutive timeouts: %d, Queue size: %d, Total processed: %d", 
-                               self._consecutive_timeouts, self.price_queue.qsize(), self._price_count)
+                log.warning("Price queue timeout - checking service health...")
                 self.health_monitor.check_health()
-                    
             except asyncio.CancelledError:
-                log.info("🛑 Queue processor cancelled. Total prices processed: %d", self._price_count)
                 break
-            except Exception as e:
-                log.exception("💥 Unexpected error in queue processor. Total prices processed: %d", self._price_count)
-                self.health_monitor.record_error() # Record error for health monitor
-                await asyncio.sleep(1) # Small delay before retrying
+            except Exception:
+                log.exception("Unexpected error in queue processor.")
             finally:
                 with suppress(Exception):
                     self.price_queue.task_done()
 
     def start(self):
         if self._bg_thread and self._bg_thread.is_alive():
-            log.warning("⚠️ AlertService background thread already running.")
+            log.warning("AlertService background thread already running.")
             return
-        
         def _bg_runner():
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 self._bg_loop = loop
-                
-                log.info("🔍 AlertService event loop ID: %s", id(loop))
-                log.info("🔍 AlertService thread: %s", threading.current_thread().name)
-                
                 async def startup():
-                    current_loop = asyncio.get_event_loop()
-                    log.info("🔍 Streamer will run in event loop ID: %s", id(current_loop))
-                    
-                    log.info("🚀 Starting PriceStreamer...")
                     self.streamer.start()
-                    
-                    log.info("🚀 Starting AlertService processing tasks...")
                     self._processing_task = asyncio.create_task(self._process_queue())
                     self._index_sync_task = asyncio.create_task(self._run_index_sync())
                     self._health_monitor_task = asyncio.create_task(self._run_health_monitor())
-                    
-                    log.info("✅ All AlertService tasks started successfully.")
-                
+                    log.info("All AlertService tasks started successfully.")
                 loop.run_until_complete(startup())
-                log.info("🔄 AlertService background loop starting...")
+                log.info("AlertService background loop starting...")
                 loop.run_forever()
-                
-            except Exception as e:
-                log.exception("💥 AlertService background runner crashed: %s", e)
+            except Exception:
+                log.exception("AlertService background runner crashed.")
             finally:
-                log.info("🛑 AlertService background loop stopping...")
                 if self._bg_loop and self._bg_loop.is_running():
                     tasks = asyncio.all_tasks(loop=self._bg_loop)
-                    for task in tasks: 
-                        task.cancel()
-                    async def gather_cancelled(): 
-                        await asyncio.gather(*tasks, return_exceptions=True)
+                    for task in tasks: task.cancel()
+                    async def gather_cancelled(): await asyncio.gather(*tasks, return_exceptions=True)
                     self._bg_loop.run_until_complete(gather_cancelled())
                     self._bg_loop.close()
-                log.info("🛑 AlertService background loop stopped. Total prices processed: %d", self._price_count)
-        
+                log.info("AlertService background loop stopped.")
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
-        log.info("✅ AlertService v20.0.0 started in background thread.")
+        log.info("AlertService v19.0.6 started in background thread.")
 
     def stop(self):
-        log.info("🛑 Stopping AlertService v20.0.0...")
         if self._bg_loop and self._bg_loop.is_running():
             self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
         if self._bg_thread:
@@ -388,18 +328,4 @@ class AlertService:
         self.streamer.stop()
         self._bg_thread = None
         self._bg_loop = None
-        log.info("✅ AlertService v20.0.0 stopped.")
-
-    def get_status(self) -> Dict[str, Any]:
-        """إرجاع حالة الخدمة للتتبع."""
-        return {
-            "version": "20.0.0",
-            "background_thread_alive": self._bg_thread and self._bg_thread.is_alive(),
-            "event_loop_running": self._bg_loop and self._bg_loop.is_running(),
-            "prices_processed": self._price_count,
-            "active_triggers_count": sum(len(triggers) for triggers in self.active_triggers.values()),
-            "symbols_monitored": len(self.active_triggers),
-            "queue_size": self.price_queue.qsize(),
-            "consecutive_timeouts": self._consecutive_timeouts,
-            "last_processed_seconds_ago": time.time() - self.health_monitor.last_processed_time if hasattr(self.health_monitor, 'last_processed_time') else -1,
-        }
+        log.info("AlertService v19.0.6 stopped.")
