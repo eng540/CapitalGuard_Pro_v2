@@ -1,4 +1,4 @@
-# src/capitalguard/boot.py (v19.0.2 - Production Ready)
+# src/capitalguard/boot.py (v19.0.3 - Production Ready)
 """
 The central bootstrapping module for the application.
 It correctly initializes and wires up all services in the correct order,
@@ -91,19 +91,13 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     price_service = PriceService()
     analytics_service = AnalyticsService(repo=repo)
     
-    # ✅ --- START OF CRITICAL FIX ---
-    # The order of initialization is crucial. We must create services that are dependencies *before* the services that depend on them.
-
-    # 1. Initialize AlertService with its required dependencies.
-    # It needs the notifier and admin_chat_id for its health monitor.
+    # The order of initialization is crucial to resolve circular dependencies.
     alert_service = AlertService(
-        trade_service=None,  # Placeholder, will be set in the next step
+        trade_service=None,
         repo=repo,
         notifier=notifier,
         admin_chat_id=settings.TELEGRAM_ADMIN_CHAT_ID
     )
-
-    # 2. Initialize TradeService, which depends on AlertService.
     trade_service = TradeService(
         repo=repo, 
         notifier=notifier, 
@@ -111,12 +105,8 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         price_service=price_service,
         alert_service=alert_service
     )
-
-    # 3. Inject the fully initialized TradeService back into AlertService to resolve the circular dependency.
     alert_service.trade_service = trade_service
     
-    # --- END OF CRITICAL FIX ---
-
     services = {
         "trade_service": trade_service,
         "analytics_service": analytics_service,
@@ -133,7 +123,6 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
 def bootstrap_app() -> Optional[Application]:
     """Bootstraps the Telegram bot application."""
     if not settings.TELEGRAM_BOT_TOKEN:
-        # This log now happens inside build_services, which is called even if bootstrap fails
         return None
     try:
         persistence = PicklePersistence(filepath="./telegram_bot_persistence")
