@@ -1,6 +1,6 @@
-# src/capitalguard/application/services/alert_service.py (v19.0.5 - Production Ready)
+# src/capitalguard/application/services/alert_service.py (v19.0.6 - الإصلاح النهائي)
 """
-AlertService v19.0.5 - الإصدار النهائي مع إصلاحات تدفق الأسعار والمراقبة الصحية.
+AlertService v19.0.6 - الإصدار النهائي مع إصلاحات تزامن الـ event loops.
 """
 
 import logging
@@ -285,36 +285,41 @@ class AlertService:
             await self.build_triggers_index()
 
     async def _process_queue(self):
-        log.info("AlertService queue processor started with enhanced reliability.")
+        log.info("🎯 AlertService queue processor started with enhanced reliability.")
+        
+        # ✅ تسجيل حالة الـ queue عند البدء
+        initial_size = self.price_queue.qsize()
+        log.info("💰 Initial queue size: %d", initial_size)
+        
         await self.debounce_manager.start_cleanup_task()
         
         while True:
             try:
                 # ✅ وقت انتظار أقصر لتتبع المشكلة بشكل أفضل
-                symbol, low_price, high_price = await asyncio.wait_for(self.price_queue.get(), timeout=30.0)
+                symbol, low_price, high_price = await asyncio.wait_for(self.price_queue.get(), timeout=10.0)
                 self._price_count += 1
                 self.health_monitor.record_processing()
                 
-                # ✅ تسجيل استلام الأسعار لأغراض التتبع
-                if self._price_count % 10 == 0:  # تسجيل كل 10 أسعار
-                    log.info("Processed %d prices. Latest: %s (L:%.6f H:%.6f)", 
-                            self._price_count, symbol, low_price, high_price)
-                else:
-                    log.debug("Price received: %s (L:%.6f H:%.6f) - Total: %d", 
-                             symbol, low_price, high_price, self._price_count)
+                # ✅ تسجيل كل سعر يستلمه مع حجم الـ queue
+                current_queue_size = self.price_queue.qsize()
+                log.info("🎯 Price %d processed: %s (L:%.6f H:%.6f) - Queue size: %d", 
+                        self._price_count, symbol, low_price, high_price, current_queue_size)
                 
                 await self.check_and_process_alerts(symbol, low_price, high_price)
                 
             except asyncio.TimeoutError:
-                log.warning("Price queue timeout after 30 seconds - no prices received. Total processed: %d", self._price_count)
+                # ✅ تسجيل حالة الـ queue عند timeout
+                current_size = self.price_queue.qsize()
+                log.warning("⏰ Queue timeout after 10s. Queue size: %d, Total processed: %d", 
+                           current_size, self._price_count)
                 await self.health_monitor.check_health()
                 
             except asyncio.CancelledError:
-                log.info("Queue processor cancelled. Total prices processed: %d", self._price_count)
+                log.info("🛑 Queue processor cancelled. Total prices processed: %d", self._price_count)
                 break
                 
             except Exception as e:
-                log.exception("Unexpected error in queue processor. Total prices processed: %d", self._price_count)
+                log.exception("💥 Unexpected error in queue processor. Total prices processed: %d", self._price_count)
                 
             finally:
                 with suppress(Exception):
@@ -322,7 +327,7 @@ class AlertService:
 
     def start(self):
         if self._bg_thread and self._bg_thread.is_alive():
-            log.warning("AlertService background thread already running.")
+            log.warning("⚠️ AlertService background thread already running.")
             return
         
         def _bg_runner():
@@ -331,28 +336,34 @@ class AlertService:
                 asyncio.set_event_loop(loop)
                 self._bg_loop = loop
                 
+                # ✅ تسجيل معلومات الـ event loop والثريد
+                log.info("🔍 AlertService event loop ID: %s", id(loop))
+                log.info("🔍 AlertService thread: %s", threading.current_thread().name)
+                
                 async def startup():
-                    # ✅ بدء الـ streamer أولاً
-                    log.info("Starting PriceStreamer...")
+                    # ✅ تسجيل معلومات الـ event loop للـ streamer
+                    current_loop = asyncio.get_event_loop()
+                    log.info("🔍 Streamer will run in event loop ID: %s", id(current_loop))
+                    
+                    log.info("🚀 Starting PriceStreamer...")
                     self.streamer.start()
                     
-                    # ✅ ثم بدء مهام المعالجة
-                    log.info("Starting AlertService processing tasks...")
+                    log.info("🚀 Starting AlertService processing tasks...")
                     self._processing_task = asyncio.create_task(self._process_queue())
                     self._index_sync_task = asyncio.create_task(self._run_index_sync())
                     self._health_monitor_task = asyncio.create_task(self._run_health_monitor())
                     
-                    log.info("All AlertService tasks started successfully.")
+                    log.info("✅ All AlertService tasks started successfully.")
                 
                 # ✅ تشغيل دالة البداية
                 loop.run_until_complete(startup())
-                log.info("AlertService background loop starting...")
+                log.info("🔄 AlertService background loop starting...")
                 loop.run_forever()
                 
             except Exception as e:
-                log.exception("AlertService background runner crashed: %s", e)
+                log.exception("💥 AlertService background runner crashed: %s", e)
             finally:
-                log.info("AlertService background loop stopping...")
+                log.info("🛑 AlertService background loop stopping...")
                 if self._bg_loop and self._bg_loop.is_running():
                     # ✅ إلغاء جميع المهام بشكل صحيح
                     tasks = asyncio.all_tasks(loop=self._bg_loop)
@@ -362,14 +373,14 @@ class AlertService:
                         await asyncio.gather(*tasks, return_exceptions=True)
                     self._bg_loop.run_until_complete(gather_cancelled())
                     self._bg_loop.close()
-                log.info("AlertService background loop stopped. Total prices processed: %d", self._price_count)
+                log.info("🛑 AlertService background loop stopped. Total prices processed: %d", self._price_count)
         
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
-        log.info("AlertService v19.0.5 started in background thread.")
+        log.info("✅ AlertService v19.0.6 started in background thread.")
 
     def stop(self):
-        log.info("Stopping AlertService v19.0.5...")
+        log.info("🛑 Stopping AlertService v19.0.6...")
         if self._bg_loop and self._bg_loop.is_running():
             self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
         if self._bg_thread:
@@ -377,16 +388,17 @@ class AlertService:
         self.streamer.stop()
         self._bg_thread = None
         self._bg_loop = None
-        log.info("AlertService v19.0.5 stopped.")
+        log.info("✅ AlertService v19.0.6 stopped.")
 
     def get_status(self) -> Dict[str, Any]:
         """إرجاع حالة الخدمة للتتبع."""
         return {
-            "version": "19.0.5",
+            "version": "19.0.6",
             "background_thread_alive": self._bg_thread and self._bg_thread.is_alive(),
             "event_loop_running": self._bg_loop and self._bg_loop.is_running(),
             "prices_processed": self._price_count,
             "active_triggers_count": sum(len(triggers) for triggers in self.active_triggers.values()),
             "symbols_monitored": len(self.active_triggers),
             "queue_size": self.price_queue.qsize(),
+            "last_processed_seconds_ago": time.time() - self.health_monitor.last_processed_time if hasattr(self.health_monitor, 'last_processed_time') else -1,
         }
