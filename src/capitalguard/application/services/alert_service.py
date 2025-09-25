@@ -1,7 +1,6 @@
-# src/capitalguard/application/services/alert_service.py (v19.0.4 - Production Ready)
+# src/capitalguard/application/services/alert_service.py (v19.0.5 - Production Ready)
 """
-AlertService v19.0.4 - الإصدار النهائي المحسّن.
-تم إصلاح مشكلة notifier وتحديث آلية المراقبة الصحية.
+AlertService v19.0.5 - الإصدار النهائي مع إصلاحات تدفق الأسعار والمراقبة الصحية.
 """
 
 import logging
@@ -29,6 +28,7 @@ class ServiceHealthMonitor:
         self.notifier = notifier
         self.admin_chat_id = admin_chat_id
         self.alert_sent = False
+        self.total_alerts_sent = 0
 
     def record_processing(self):
         """يسجل حدث معالجة ناجح."""
@@ -37,22 +37,37 @@ class ServiceHealthMonitor:
 
     async def check_health(self):
         """يفحص إذا كانت الخدمة متوقفة ويرسل تنبيهاً حرجاً إذا لزم الأمر."""
-        if time.time() - self.last_processed_time > self.stale_threshold:
-            # ✅ التحقق من وجود notifier قبل الاستخدام
-            if not self.alert_sent and self.admin_chat_id and self.notifier:
-                log.critical("HEALTH ALERT: No price processing detected for %d seconds!", self.stale_threshold)
+        current_time = time.time()
+        time_since_last = current_time - self.last_processed_time
+        
+        if time_since_last > self.stale_threshold:
+            log.critical("HEALTH ALERT: No price processing detected for %d seconds! Last processed: %.1fs ago", 
+                        self.stale_threshold, time_since_last)
+            
+            # ✅ تحقق شامل من الـ notifier
+            if self.notifier is None:
+                log.error("Health monitor: Notifier is None - cannot send alert")
+                return
+                
+            if not self.admin_chat_id:
+                log.error("Health monitor: Admin chat ID is not set")
+                return
+                
+            if not self.alert_sent:
                 try:
-                    await self.notifier.send_private_text(
-                        chat_id=self.admin_chat_id,
-                        text=f"🚨 CRITICAL ALERT: Price watcher appears to be stalled. No prices processed for over {self.stale_threshold} seconds. Please investigate immediately."
-                    )
-                    self.alert_sent = True
+                    # ✅ تحقق إضافي من أن الـ notifier لديه طريقة send_private_text
+                    if hasattr(self.notifier, 'send_private_text'):
+                        await self.notifier.send_private_text(
+                            chat_id=self.admin_chat_id,
+                            text=f"🚨 CRITICAL ALERT: Price watcher appears to be stalled. No prices processed for over {self.stale_threshold} seconds. Please investigate immediately."
+                        )
+                        self.alert_sent = True
+                        self.total_alerts_sent += 1
+                        log.info("Health alert sent to admin (total: %d)", self.total_alerts_sent)
+                    else:
+                        log.error("Health monitor: Notifier does not have send_private_text method")
                 except Exception as e:
                     log.error("Failed to send critical health alert to admin: %s", e)
-            elif not self.notifier:
-                log.warning("Health monitor: Notifier is not available")
-            elif not self.admin_chat_id:
-                log.warning("Health monitor: Admin chat ID is not set")
 
 class SmartDebounceManager:
     """يدير منع التكرار التلقائي للأحداث مع تنظيف ذاكرة تلقائي."""
@@ -114,6 +129,7 @@ class AlertService:
         self.health_monitor = ServiceHealthMonitor(notifier, admin_chat_id)
         self.audit_logger = AuditLogger()
         self._tp_re = re.compile(r"^TP(\d+)$", flags=re.IGNORECASE)
+        self._price_count = 0  # عداد الأسعار المستلمة
 
     def _validate_trigger_data(self, trigger: Dict[str, Any]) -> bool:
         required_fields = ['rec_id', 'type', 'price', 'side']
@@ -271,18 +287,35 @@ class AlertService:
     async def _process_queue(self):
         log.info("AlertService queue processor started with enhanced reliability.")
         await self.debounce_manager.start_cleanup_task()
+        
         while True:
             try:
-                symbol, low_price, high_price = await asyncio.wait_for(self.price_queue.get(), timeout=90.0)
+                # ✅ وقت انتظار أقصر لتتبع المشكلة بشكل أفضل
+                symbol, low_price, high_price = await asyncio.wait_for(self.price_queue.get(), timeout=30.0)
+                self._price_count += 1
                 self.health_monitor.record_processing()
+                
+                # ✅ تسجيل استلام الأسعار لأغراض التتبع
+                if self._price_count % 10 == 0:  # تسجيل كل 10 أسعار
+                    log.info("Processed %d prices. Latest: %s (L:%.6f H:%.6f)", 
+                            self._price_count, symbol, low_price, high_price)
+                else:
+                    log.debug("Price received: %s (L:%.6f H:%.6f) - Total: %d", 
+                             symbol, low_price, high_price, self._price_count)
+                
                 await self.check_and_process_alerts(symbol, low_price, high_price)
+                
             except asyncio.TimeoutError:
-                log.warning("Price queue timeout - checking service health...")
+                log.warning("Price queue timeout after 30 seconds - no prices received. Total processed: %d", self._price_count)
                 await self.health_monitor.check_health()
+                
             except asyncio.CancelledError:
+                log.info("Queue processor cancelled. Total prices processed: %d", self._price_count)
                 break
-            except Exception:
-                log.exception("Unexpected error in queue processor.")
+                
+            except Exception as e:
+                log.exception("Unexpected error in queue processor. Total prices processed: %d", self._price_count)
+                
             finally:
                 with suppress(Exception):
                     self.price_queue.task_done()
@@ -299,20 +332,29 @@ class AlertService:
                 self._bg_loop = loop
                 
                 async def startup():
+                    # ✅ بدء الـ streamer أولاً
+                    log.info("Starting PriceStreamer...")
                     self.streamer.start()
+                    
+                    # ✅ ثم بدء مهام المعالجة
+                    log.info("Starting AlertService processing tasks...")
                     self._processing_task = asyncio.create_task(self._process_queue())
                     self._index_sync_task = asyncio.create_task(self._run_index_sync())
                     self._health_monitor_task = asyncio.create_task(self._run_health_monitor())
+                    
                     log.info("All AlertService tasks started successfully.")
                 
+                # ✅ تشغيل دالة البداية
                 loop.run_until_complete(startup())
                 log.info("AlertService background loop starting...")
                 loop.run_forever()
                 
-            except Exception:
-                log.exception("AlertService background runner crashed.")
+            except Exception as e:
+                log.exception("AlertService background runner crashed: %s", e)
             finally:
+                log.info("AlertService background loop stopping...")
                 if self._bg_loop and self._bg_loop.is_running():
+                    # ✅ إلغاء جميع المهام بشكل صحيح
                     tasks = asyncio.all_tasks(loop=self._bg_loop)
                     for task in tasks: 
                         task.cancel()
@@ -320,13 +362,14 @@ class AlertService:
                         await asyncio.gather(*tasks, return_exceptions=True)
                     self._bg_loop.run_until_complete(gather_cancelled())
                     self._bg_loop.close()
-                log.info("AlertService background loop stopped.")
+                log.info("AlertService background loop stopped. Total prices processed: %d", self._price_count)
         
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
-        log.info("AlertService v19.0.4 started in background thread.")
+        log.info("AlertService v19.0.5 started in background thread.")
 
     def stop(self):
+        log.info("Stopping AlertService v19.0.5...")
         if self._bg_loop and self._bg_loop.is_running():
             self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
         if self._bg_thread:
@@ -334,4 +377,16 @@ class AlertService:
         self.streamer.stop()
         self._bg_thread = None
         self._bg_loop = None
-        log.info("AlertService v19.0.4 stopped.")
+        log.info("AlertService v19.0.5 stopped.")
+
+    def get_status(self) -> Dict[str, Any]:
+        """إرجاع حالة الخدمة للتتبع."""
+        return {
+            "version": "19.0.5",
+            "background_thread_alive": self._bg_thread and self._bg_thread.is_alive(),
+            "event_loop_running": self._bg_loop and self._bg_loop.is_running(),
+            "prices_processed": self._price_count,
+            "active_triggers_count": sum(len(triggers) for triggers in self.active_triggers.values()),
+            "symbols_monitored": len(self.active_triggers),
+            "queue_size": self.price_queue.qsize(),
+        }
