@@ -1,11 +1,15 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.2.0) ---
-# src/capitalguard/boot.py
+# src/capitalguard/boot.py (v19.0.2 - Production Ready)
+"""
+The central bootstrapping module for the application.
+It correctly initializes and wires up all services in the correct order,
+resolving dependency mismatches and ensuring a stable startup sequence.
+"""
 
 import os
 import logging
 import sys
-from typing import Dict, Any, Optional
 import threading
+from typing import Dict, Any, Optional
 
 from telegram.ext import Application, PicklePersistence
 
@@ -22,9 +26,7 @@ from capitalguard.interfaces.telegram.handlers import register_all_handlers
 from capitalguard.service_registry import register_global_services
 
 class TelegramLogHandler(logging.Handler):
-    """
-    A custom logging handler that sends critical messages to a Telegram chat.
-    """
+    """A custom logging handler that sends critical messages to a Telegram chat."""
     def __init__(self, notifier: TelegramNotifier, level=logging.ERROR):
         super().__init__(level=level)
         self.notifier = notifier
@@ -77,7 +79,7 @@ def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
     logging.info("Logging configured successfully.")
 
 def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
-    """Builds all services and populates the global registry."""
+    """Builds all services and populates the global registry in the correct dependency order."""
     repo = RecommendationRepository()
     notifier = TelegramNotifier()
     if ptb_app:
@@ -85,16 +87,23 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     
     setup_logging(notifier)
 
-    spot_creds = BinanceCreds(os.getenv("BINANCE_API_KEY", ""), os.getenv("BINANCE_API_SECRET", ""))
-    futu_creds = BinanceCreds(os.getenv("BINANCE_FUT_API_KEY", spot_creds.api_key), os.getenv("BINANCE_FUT_API_SECRET", spot_creds.api_secret))
-    exec_spot = BinanceExec(spot_creds, futures=False)
-    exec_futu = BinanceExec(futu_creds, futures=True)
-
     market_data_service = MarketDataService()
     price_service = PriceService()
     analytics_service = AnalyticsService(repo=repo)
     
-    alert_service = AlertService(trade_service=None, repo=repo)
+    # ✅ --- START OF CRITICAL FIX ---
+    # The order of initialization is crucial. We must create services that are dependencies *before* the services that depend on them.
+
+    # 1. Initialize AlertService with its required dependencies.
+    # It needs the notifier and admin_chat_id for its health monitor.
+    alert_service = AlertService(
+        trade_service=None,  # Placeholder, will be set in the next step
+        repo=repo,
+        notifier=notifier,
+        admin_chat_id=settings.TELEGRAM_ADMIN_CHAT_ID
+    )
+
+    # 2. Initialize TradeService, which depends on AlertService.
     trade_service = TradeService(
         repo=repo, 
         notifier=notifier, 
@@ -102,7 +111,11 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         price_service=price_service,
         alert_service=alert_service
     )
+
+    # 3. Inject the fully initialized TradeService back into AlertService to resolve the circular dependency.
     alert_service.trade_service = trade_service
+    
+    # --- END OF CRITICAL FIX ---
 
     services = {
         "trade_service": trade_service,
@@ -120,7 +133,7 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
 def bootstrap_app() -> Optional[Application]:
     """Bootstraps the Telegram bot application."""
     if not settings.TELEGRAM_BOT_TOKEN:
-        logging.error("TELEGRAM_BOT_TOKEN not set. Bot cannot start.")
+        # This log now happens inside build_services, which is called even if bootstrap fails
         return None
     try:
         persistence = PicklePersistence(filepath="./telegram_bot_persistence")
@@ -135,5 +148,3 @@ def bootstrap_app() -> Optional[Application]:
     except Exception as e:
         logging.exception(f"CRITICAL: Failed to bootstrap bot: {e}")
         return None
-
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.2.0) ---
