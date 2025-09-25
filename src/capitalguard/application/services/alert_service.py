@@ -300,15 +300,23 @@ class AlertService:
         if self._bg_thread and self._bg_thread.is_alive():
             log.warning("AlertService background thread already running.")
             return
+        
+        # ✅ --- START OF CRITICAL FIX ---
         def _bg_runner():
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 self._bg_loop = loop
+                
+                # Create tasks but don't run the loop yet
                 self._processing_task = loop.create_task(self._process_queue())
                 self._index_sync_task = loop.create_task(self._run_index_sync())
                 self._health_monitor_task = loop.create_task(self._run_health_monitor())
+                
+                # Now that the loop is set for the current thread, start the streamer
                 self.streamer.start()
+                
+                # Finally, run the loop forever
                 loop.run_forever()
             except Exception:
                 log.exception("AlertService background runner crashed.")
@@ -319,6 +327,8 @@ class AlertService:
                 loop.run_until_complete(gather_cancelled())
                 loop.close()
                 log.info("AlertService background loop stopped.")
+        # ✅ --- END OF CRITICAL FIX ---
+
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
         log.info("AlertService v19.0.3 started in background thread.")
