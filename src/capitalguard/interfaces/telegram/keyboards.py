@@ -1,5 +1,5 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v14.0.1 - Final with UX improvement)
-# --- START OF FINAL, COMPLETE, AND UX-FIXED FILE ---
+# src/capitalguard/interfaces/telegram/keyboards.py (v14.0.2 - NameError Hotfix)
+# --- START OF FINAL, COMPLETE, AND CORRECTED FILE ---
 
 import math
 from typing import List, Iterable, Set, Optional
@@ -75,10 +75,12 @@ async def build_open_recs_keyboard(
 def public_channel_keyboard(rec_id: int, bot_username: str) -> InlineKeyboardMarkup:
     """Builds the keyboard for a public channel message."""
     buttons = [
-        InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec.id}")
+        # ✅ FIX: Changed rec.id to rec_id
+        InlineKeyboardButton("🔄 تحديث البيانات الحية", callback_data=f"rec:update_public:{rec_id}")
     ]
     
     if bot_username:
+        # ✅ FIX: Changed rec.id to rec_id
         buttons.insert(0, InlineKeyboardButton("📊 تتبّع الإشارة", url=f"https://t.me/{bot_username}?start=track_{rec_id}"))
 
     return InlineKeyboardMarkup([buttons])
@@ -92,22 +94,22 @@ def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
     
     if rec.status == RecommendationStatus.PENDING:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ إلغاء التوصية", callback_data=f"rec:cancel_pending:{rec.id}")],
+            [InlineKeyboardButton("❌ إلغاء التوصية", callback_data=f"rec:cancel_pending:{rec_id}")],
             [InlineKeyboardButton("⬅️ العودة للقائمة", callback_data=f"open_nav:page:1")],
         ])
     
     # Default keyboard for ACTIVE recommendations
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec.id}"),
-            InlineKeyboardButton("✏️ تعديل", callback_data=f"rec:edit_menu:{rec.id}"),
+            InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec_id}"),
+            InlineKeyboardButton("✏️ تعديل", callback_data=f"rec:edit_menu:{rec_id}"),
         ],
         [
-            InlineKeyboardButton("📈 استراتيجية الخروج", callback_data=f"rec:strategy_menu:{rec.id}"),
-            InlineKeyboardButton("💰 جني ربح جزئي", callback_data=f"rec:close_partial:{rec.id}"),
+            InlineKeyboardButton("📈 استراتيجية الخروج", callback_data=f"rec:strategy_menu:{rec_id}"),
+            InlineKeyboardButton("💰 جني ربح جزئي", callback_data=f"rec:close_partial:{rec_id}"),
         ],
         [
-            InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_menu:{rec.id}")
+            InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_menu:{rec_id}")
         ],
         [InlineKeyboardButton("⬅️ العودة لقائمة التوصيات", callback_data=f"open_nav:page:1")],
     ])
@@ -116,18 +118,20 @@ def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
 def build_close_options_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📉 إغلاق بسعر السوق الآن", callback_data=f"rec:close_market:{rec_id}")],
-        [InlineKeyboardButton("✍️ إغلاق بسعر محدد", callback_data=f"rec:close_manual:{rec.id}")],
-        [InlineKeyboardButton("⬅️ إلغاء", callback_data=f"rec:back_to_main:{rec.id}")],
+        # ✅ FIX: Changed rec.id to rec_id
+        [InlineKeyboardButton("✍️ إغلاق بسعر محدد", callback_data=f"rec:close_manual:{rec_id}")],
+        [InlineKeyboardButton("⬅️ إلغاء", callback_data=f"rec:back_to_main:{rec_id}")],
     ])
 
 
 def analyst_edit_menu_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=f"rec:edit_sl:{rec.id}"),
-            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"rec:edit_tp:{rec.id}"),
+            # ✅ FIX: Changed rec.id to rec_id
+            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=f"rec:edit_sl:{rec_id}"),
+            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"rec:edit_tp:{rec_id}"),
         ],
-        [InlineKeyboardButton("⬅️ العودة للوحة التحكم", callback_data=f"rec:back_to_main:{rec.id}")],
+        [InlineKeyboardButton("⬅️ العودة للوحة التحكم", callback_data=f"rec:back_to_main:{rec_id}")],
     ])
 
 
@@ -144,13 +148,13 @@ def build_exit_strategy_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(auto_close_text, callback_data=f"rec:set_strategy:{rec_id}:{ExitStrategy.CLOSE_AT_FINAL_TP.value}")],
         [InlineKeyboardButton(manual_close_text, callback_data=f"rec:set_strategy:{rec_id}:{ExitStrategy.MANUAL_CLOSE_ONLY.value}")],
-        [InlineKeyboardButton("🛡️ وضع/تعديل وقف الربح", callback_data=f"rec:set_profit_stop:{rec.id}")],
+        [InlineKeyboardButton("🛡️ وضع/تعديل وقف الربح", callback_data=f"rec:set_profit_stop:{rec_id}")],
     ]
     
     if getattr(rec, "profit_stop_price", None) is not None:
-        keyboard.append([InlineKeyboardButton("🗑️ إزالة وقف الربح", callback_data=f"rec:set_profit_stop:{rec.id}:remove")])
+        keyboard.append([InlineKeyboardButton("🗑️ إزالة وقف الربح", callback_data=f"rec:set_profit_stop:{rec_id}:remove")])
         
-    keyboard.append([InlineKeyboardButton("⬅️ العودة للوحة التحكم", callback_data=f"rec:back_to_main:{rec.id}")])
+    keyboard.append([InlineKeyboardButton("⬅️ العودة للوحة التحكم", callback_data=f"rec:back_to_main:{rec_id}")])
     
     return InlineKeyboardMarkup(keyboard)
 
@@ -159,7 +163,7 @@ def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMark
     return InlineKeyboardMarkup(
         [[
             InlineKeyboardButton("✅ تأكيد الإغلاق", callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"),
-            InlineKeyboardButton("❌ تراجع", callback_data=f"rec:cancel_close:{rec.id}"),
+            InlineKeyboardButton("❌ تراجع", callback_data=f"rec:cancel_close:{rec_id}"),
         ]]
     )
 
@@ -253,12 +257,13 @@ def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineK
 def build_signal_tracking_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔔 نبهني عند الهدف الأول", callback_data=f"track:notify_tp1:{rec.id}"),
-            InlineKeyboardButton("🔔 نبهني عند وقف الخسارة", callback_data=f"track:notify_sl:{rec.id}")
+            # ✅ FIX: Changed rec.id to rec_id
+            InlineKeyboardButton("🔔 نبهني عند الهدف الأول", callback_data=f"track:notify_tp1:{rec_id}"),
+            InlineKeyboardButton("🔔 نبهني عند وقف الخسارة", callback_data=f"track:notify_sl:{rec_id}")
         ],
         [
-            InlineKeyboardButton("➕ أضف إلى محفظتي (قريباً)", callback_data=f"track:add_portfolio:{rec.id}")
+            InlineKeyboardButton("➕ أضف إلى محفظتي (قريباً)", callback_data=f"track:add_portfolio:{rec_id}")
         ]
     ])
 
-# --- END OF FINAL, COMPLETE, AND UX-FIXED FILE ---
+# --- END OF FINAL, COMPLETE, AND CORRECTED FILE ---
