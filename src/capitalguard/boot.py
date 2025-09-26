@@ -94,15 +94,33 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     price_service = PriceService()
     analytics_service = AnalyticsService(repo=repo)
     
-    alert_service = AlertService(trade_service=None, repo=repo)
+    # ✅ ARCHITECTURAL FIX: Dependency injection order is corrected.
+    # 1. Services with no dependencies on other services are created.
+    # 2. TradeService is created, as AlertService depends on it.
+    # 3. AlertService is created last, receiving the fully-formed TradeService.
+    
+    # This placeholder is needed because TradeService needs an alert_service reference.
+    # A better long-term solution would be an event bus to fully decouple them.
+    # For now, we will keep the reference but fix the circular assignment.
+    alert_service_placeholder = {"service": None}
+
     trade_service = TradeService(
         repo=repo, 
         notifier=notifier, 
         market_data_service=market_data_service, 
         price_service=price_service,
-        alert_service=alert_service
+        alert_service=alert_service_placeholder # Pass a mutable reference
     )
-    alert_service.trade_service = trade_service
+    
+    alert_service = AlertService(
+        trade_service=trade_service, # Pass the fully constructed trade_service
+        repo=repo
+    )
+    
+    # Fulfill the placeholder reference
+    alert_service_placeholder["service"] = alert_service
+    # And now set the reference correctly inside TradeService
+    trade_service.alert_service = alert_service
 
     services = {
         "trade_service": trade_service,
