@@ -253,4 +253,4 @@ class AlertService:
                 elif ttype_raw == "PROFIT_STOP": await self.trade_service.process_profit_stop_hit_event(rec_id, trigger.get("user_id"), execution_price)
                 await self.add_processed_event_in_memory(rec_id, event_key)
             except Exception:
-                log.exception("Failed to process and commit event for rec #%s, type %s. Will retry.", rec_id, ttype_raw)```
+                log.exception("Failed to process and commit event for rec #%s, type %s. Will retry.", rec_id, ttype_raw)
