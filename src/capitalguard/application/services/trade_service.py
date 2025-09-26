@@ -1,13 +1,6 @@
-# src/capitalguard/application/services/trade_service.py v18.0.0 (with Invalidation Logic)
+# src/capitalguard/application/services/trade_service.py v18.0.2 (Notification Hotfix)
 """
-TradeService — Now with proactive pending recommendation management.
-
-Key additions:
-- process_invalidation_event: Handles automatic cancellation of PENDING recs
-  when the SL is hit before the entry price.
-- cancel_pending_recommendation_manual: Allows users to manually cancel a
-  PENDING recommendation.
-- All previous features and fixes are retained.
+TradeService — Hotfix to ensure cancellation notifications are sent to channels.
 """
 
 import logging
@@ -220,10 +213,6 @@ class TradeService:
 
     @uow_transaction
     async def process_invalidation_event(self, rec_id: int, *, db_session: Session):
-        """
-        ✅ NEW: Handles the automatic cancellation of a PENDING recommendation
-        when its Stop Loss is hit before the entry price.
-        """
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         if not rec_orm or rec_orm.status != RecommendationStatus.PENDING:
             log.warning("Skipping invalidation for Rec #%s: Not found or status is not PENDING.", rec_id)
@@ -346,9 +335,6 @@ class TradeService:
 
     @uow_transaction
     async def cancel_pending_recommendation_manual(self, rec_id: int, user_telegram_id: str, *, db_session: Session) -> Recommendation:
-        """
-        ✅ NEW: Handles the manual cancellation of a PENDING recommendation by the user.
-        """
         uid_int = _parse_int_user_id(user_telegram_id)
         if not uid_int: raise ValueError("Invalid User ID.")
         rec_orm = self.repo.get_for_update(db_session, rec_id)
@@ -359,6 +345,12 @@ class TradeService:
         rec.status = RecommendationStatus.CLOSED
         rec.closed_at = datetime.now(timezone.utc)
         updated_rec = self.repo.update_with_event(db_session, rec, "CANCELED_MANUAL", {"reason": "Cancelled manually by the user."})
+        
+        # ✅ NOTIFICATION FIX: Ensure notifications are sent for manual cancellations.
+        if updated_rec:
+            self.notify_reply(rec_id, f"❌ <b>تم إلغاء التوصية #{updated_rec.asset.value}</b> يدويًا.")
+            await self.notify_card_update(updated_rec)
+
         await self.alert_service.remove_triggers_for_recommendation(rec_id)
         return updated_rec
 
