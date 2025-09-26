@@ -25,18 +25,25 @@ class AlertService:
         self.repo = repo
         self.price_queue: asyncio.Queue = asyncio.Queue()
         self.streamer = streamer or PriceStreamer(self.price_queue, self.repo)
+
         self.active_triggers: Dict[str, List[Dict[str, Any]]] = {}
         self._triggers_lock = asyncio.Lock()
+
         self._processing_task: Optional[asyncio.Task] = None
         self._index_sync_task: Optional[asyncio.Task] = None
+
         self._bg_thread: Optional[threading.Thread] = None
         self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
+
         self._last_processed: Dict[int, Dict[str, float]] = {}
         self._debounce_seconds = float(debounce_seconds)
+
         self._tp_re = re.compile(r"^TP(\d+)$", flags=re.IGNORECASE)
 
+    # ---------- Trigger index ----------
+
     async def build_triggers_index(self):
-        log.info("Attempting to build in-memory trigger index...")
+        log.info("Attempting to build in-memory trigger index for all active recommendations...")
         retry_delay = 5
         while True:
             try:
@@ -44,9 +51,10 @@ class AlertService:
                     trigger_data = self.repo.list_all_active_triggers_data(session)
                 break
             except Exception:
-                log.critical("CRITICAL: DB read failure. Retrying in %ds...", retry_delay, exc_info=True)
+                log.critical("CRITICAL: Failed to read triggers from repository. Retrying in %ds...", retry_delay, exc_info=True)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
+
         new_triggers: Dict[str, List[Dict[str, Any]]] = {}
         for item in trigger_data:
             try:
@@ -58,29 +66,43 @@ class AlertService:
                 self._add_item_to_trigger_dict(new_triggers, item)
             except Exception:
                 log.exception("Failed processing trigger item: %s", item)
+
         async with self._triggers_lock:
             self.active_triggers = new_triggers
+
         total_recs = len(trigger_data) if trigger_data is not None else 0
-        log.info("✅ Trigger index built: %d recommendations across %d symbols.", total_recs, len(new_triggers))
+        log.info("✅ Trigger index built successfully: %d recommendations across %d symbols.", total_recs, len(new_triggers))
 
     def _add_item_to_trigger_dict(self, trigger_dict: Dict[str, list], item: Dict[str, Any]):
         asset = (item.get("asset") or "").strip().upper()
         if not asset: raise ValueError("Empty asset")
         if asset not in trigger_dict: trigger_dict[asset] = []
+
         rec_id = item.get("id")
         processed_events = item.get("processed_events", set())
+
         def _create_trigger(trigger_type: str, price: Any) -> Dict[str, Any]:
-            return {"rec_id": rec_id, "user_id": item.get("user_id"), "side": item.get("side"), "type": trigger_type, "price": float(price), "order_type": item.get("order_type"), "processed_events": processed_events, "status": item.get("status")}
+            return {
+                "rec_id": rec_id, "user_id": item.get("user_id"), "side": item.get("side"),
+                "type": trigger_type, "price": float(price), "order_type": item.get("order_type"),
+                "processed_events": processed_events, "status": item.get("status")
+            }
+
         status = item.get("status")
         status_norm = status.name if hasattr(status, "name") else str(status).upper()
+
+        # ✅ UPDATED: Now monitors SL for PENDING recommendations as well
         if status_norm == "PENDING":
             trigger_dict[asset].append(_create_trigger("ENTRY", item.get("entry")))
             if item.get("stop_loss") is not None:
                 trigger_dict[asset].append(_create_trigger("SL", item.get("stop_loss")))
             return
+
         if status_norm == "ACTIVE":
-            if item.get("stop_loss") is not None: trigger_dict[asset].append(_create_trigger("SL", item.get("stop_loss")))
-            if item.get("profit_stop_price") is not None: trigger_dict[asset].append(_create_trigger("PROFIT_STOP", item.get("profit_stop_price")))
+            if item.get("stop_loss") is not None:
+                trigger_dict[asset].append(_create_trigger("SL", item.get("stop_loss")))
+            if item.get("profit_stop_price") is not None:
+                trigger_dict[asset].append(_create_trigger("PROFIT_STOP", item.get("profit_stop_price")))
             for idx, target in enumerate(item.get("targets", []), 1):
                 trigger_dict[asset].append(_create_trigger(f"TP{idx}", target.get("price")))
 
@@ -90,15 +112,18 @@ class AlertService:
             for symbol in list(self.active_triggers.keys()):
                 self.active_triggers[symbol] = [t for t in self.active_triggers[symbol] if t.get("rec_id") != rec_id]
                 if not self.active_triggers[symbol]: del self.active_triggers[symbol]
+
         try:
             with session_scope() as session:
                 item = self.repo.get_active_trigger_data_by_id(session, rec_id)
         except Exception:
             log.exception("Failed fetching active trigger data for rec %s", rec_id)
             return
+
         if not item:
             log.debug("No active trigger found for rec %s.", rec_id)
             return
+
         asset = (item.get("asset") or "").strip().upper()
         item["asset"] = asset
         async with self._triggers_lock:
@@ -119,6 +144,7 @@ class AlertService:
                     self.active_triggers.pop(symbol, None)
 
     async def add_processed_event_in_memory(self, rec_id: int, event_type: str):
+        """Immediately updates the in-memory state to prevent duplicate events."""
         async with self._triggers_lock:
             for symbol, triggers in self.active_triggers.items():
                 for trigger in triggers:
@@ -147,7 +173,8 @@ class AlertService:
                 except Exception:
                     log.exception("Error while processing alerts for %s", symbol)
                 finally:
-                    with suppress(Exception): self.price_queue.task_done()
+                    with suppress(Exception):
+                        self.price_queue.task_done()
         except asyncio.CancelledError:
             log.info("Queue processor cancelled.")
         except Exception:
@@ -156,8 +183,10 @@ class AlertService:
     def start(self):
         try:
             loop = asyncio.get_running_loop()
-            if self._processing_task is None or self._processing_task.done(): self._processing_task = loop.create_task(self._process_queue())
-            if self._index_sync_task is None or self._index_sync_task.done(): self._index_sync_task = loop.create_task(self._run_index_sync())
+            if self._processing_task is None or self._processing_task.done():
+                self._processing_task = loop.create_task(self._process_queue())
+            if self._index_sync_task is None or self._index_sync_task.done():
+                self._index_sync_task = loop.create_task(self._run_index_sync())
             if hasattr(self.streamer, "start"): self.streamer.start()
             log.info("AlertService started in existing event loop.")
             return
@@ -165,6 +194,7 @@ class AlertService:
             if self._bg_thread and self._bg_thread.is_alive():
                 log.warning("AlertService background thread already running.")
                 return
+
             def _bg_runner():
                 try:
                     loop = asyncio.new_event_loop()
@@ -181,6 +211,7 @@ class AlertService:
                         for t in (self._processing_task, self._index_sync_task):
                             if t and not t.done(): self._bg_loop.call_soon_threadsafe(t.cancel)
                         self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
+            
             self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
             self._bg_thread.start()
             log.info("AlertService started in background thread.")
@@ -220,37 +251,52 @@ class AlertService:
         async with self._triggers_lock:
             triggers_for_symbol = list(self.active_triggers.get((symbol or "").upper(), []))
         if not triggers_for_symbol: return
+
         triggers_for_symbol.sort(key=lambda t: t.get("type") != "ENTRY")
         now_ts = time.time()
+
         for trigger in triggers_for_symbol:
             rec_id = int(trigger.get("rec_id", 0))
             ttype_raw = (trigger.get("type") or "").upper()
             execution_price = float(trigger.get("price", 0.0))
             processed_events: Set[str] = trigger.get("processed_events", set())
             status_in_memory = trigger.get("status")
+
             event_key = ttype_raw
             if self._tp_re.match(ttype_raw):
                 m = self._tp_re.match(ttype_raw)
                 event_key = f"TP{m.group(1)}_HIT"
+
             if event_key in processed_events: continue
+
             if not self._is_price_condition_met(trigger.get("side"), low_price, high_price, execution_price, ttype_raw, trigger.get("order_type")): continue
+
             last_map = self._last_processed.setdefault(rec_id, {})
             if last_ts := last_map.get(ttype_raw):
                 if (now_ts - last_ts) < self._debounce_seconds: continue
             last_map[ttype_raw] = now_ts
+
             log.info("Trigger HIT for Rec #%s: Type=%s, Symbol=%s, Range=[%s,%s], Target=%s", rec_id, ttype_raw, symbol, low_price, high_price, execution_price)
+            
             try:
+                # ✅ NEW: Special logic for PENDING recommendations when SL is hit
                 if status_in_memory == RecommendationStatus.PENDING and ttype_raw == "SL":
                     log.warning("Invalidation HIT for PENDING Rec #%s: SL hit before entry.", rec_id)
                     await self.trade_service.process_invalidation_event(rec_id)
                     continue
-                if ttype_raw == "ENTRY": await self.trade_service.process_activation_event(rec_id)
+
+                if ttype_raw == "ENTRY": 
+                    await self.trade_service.process_activation_event(rec_id)
                 elif self._tp_re.match(ttype_raw):
                     m = self._tp_re.match(ttype_raw)
                     idx = int(m.group(1)) if m else 1
                     await self.trade_service.process_tp_hit_event(rec_id, trigger.get("user_id"), idx, execution_price)
-                elif ttype_raw == "SL": await self.trade_service.process_sl_hit_event(rec_id, trigger.get("user_id"), execution_price)
-                elif ttype_raw == "PROFIT_STOP": await self.trade_service.process_profit_stop_hit_event(rec_id, trigger.get("user_id"), execution_price)
+                elif ttype_raw == "SL": 
+                    await self.trade_service.process_sl_hit_event(rec_id, trigger.get("user_id"), execution_price)
+                elif ttype_raw == "PROFIT_STOP": 
+                    await self.trade_service.process_profit_stop_hit_event(rec_id, trigger.get("user_id"), execution_price)
+                
                 await self.add_processed_event_in_memory(rec_id, event_key)
+
             except Exception:
                 log.exception("Failed to process and commit event for rec #%s, type %s. Will retry.", rec_id, ttype_raw)
