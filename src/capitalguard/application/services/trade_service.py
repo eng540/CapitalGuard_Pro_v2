@@ -1,7 +1,6 @@
-# src/capitalguard/application/services/trade_service.py v18.0.2 (Notification Hotfix)
+# src/capitalguard/application/services/trade_service.py v18.1.0 (Centralized Notifications)
 """
-TradeService — Final hardened version with proactive pending recommendation management.
-This version includes a hotfix to ensure manual cancellation notifications are sent correctly.
+TradeService — Centralized notification logic for all closure events.
 """
 
 import logging
@@ -192,9 +191,9 @@ class TradeService:
                     if post_fn is None: raise RuntimeError("Notifier missing 'post_to_channel' method.")
                     res = await self._call_notifier_maybe_async(post_fn, ch.telegram_channel_id, rec, keyboard)
                     if isinstance(res, tuple) and len(res) == 2:
-                        publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res, telegram_message_id=res)
+                        publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res[0], telegram_message_id=res[1])
                         session.add(publication)
-                        report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res})
+                        report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res[1]})
                         success = True
                         break
                     else:
@@ -219,13 +218,10 @@ class TradeService:
             log.warning("Skipping invalidation for Rec #%s: Not found or status is not PENDING.", rec_id)
             await self.alert_service.remove_triggers_for_recommendation(rec_id)
             return
-
         rec = self.repo._to_entity(rec_orm)
         rec.status = RecommendationStatus.CLOSED
         rec.closed_at = datetime.now(timezone.utc)
-        
         updated_rec = self.repo.update_with_event(db_session, rec, "INVALIDATED_SL_BREACH", {"reason": "Stop Loss was hit before entry price."})
-        
         if updated_rec:
             self.notify_reply(rec_id, f"❌ <b>تم إلغاء التوصية #{updated_rec.asset.value}</b>\nتم الوصول لوقف الخسارة قبل سعر الدخول.")
             await self.notify_card_update(updated_rec)
@@ -277,13 +273,7 @@ class TradeService:
         if not rec_orm or rec_orm.status != RecommendationStatus.ACTIVE:
             log.warning("Skipping SL hit for Rec #%s: Not found or not ACTIVE.", rec_id)
             return
-        updated_rec = await self.close_recommendation_for_user_async(rec_id, user_id, price, reason="SL_HIT", db_session=db_session)
-        if updated_rec:
-            pnl = _pct(updated_rec.entry.value, price, updated_rec.side.value)
-            emoji, r_text = ("🏆", "ربح") if pnl > 0.001 else ("💔", "خسارة")
-            self.notify_reply(rec_id, f"<b>{emoji} تم إغلاق الصفقة #{updated_rec.asset.value}</b>\nأُغلقت عند {price:g} بنتيجة <b>{pnl:+.2f}%</b> ({r_text}).")
-            await self.notify_card_update(updated_rec)
-            await self.alert_service.remove_triggers_for_recommendation(rec_id)
+        await self.close_recommendation_for_user_async(rec_id, user_id, price, reason="SL_HIT", db_session=db_session)
 
     @uow_transaction
     async def process_profit_stop_hit_event(self, rec_id: int, user_id: str, price: float, *, db_session: Session):
@@ -291,13 +281,7 @@ class TradeService:
         if not rec_orm or rec_orm.status != RecommendationStatus.ACTIVE:
             log.warning("Skipping Profit Stop hit for Rec #%s: Not found or not ACTIVE.", rec_id)
             return
-        updated_rec = await self.close_recommendation_for_user_async(rec_id, user_id, price, reason="PROFIT_STOP_HIT", db_session=db_session)
-        if updated_rec:
-            pnl = _pct(updated_rec.entry.value, price, updated_rec.side.value)
-            emoji, r_text = ("🏆", "ربح") if pnl > 0.001 else ("💔", "خسارة")
-            self.notify_reply(rec_id, f"<b>{emoji} تم إغلاق الصفقة #{updated_rec.asset.value}</b>\nأُغلقت عند {price:g} بنتيجة <b>{pnl:+.2f}%</b> ({r_text}).")
-            await self.notify_card_update(updated_rec)
-            await self.alert_service.remove_triggers_for_recommendation(rec_id)
+        await self.close_recommendation_for_user_async(rec_id, user_id, price, reason="PROFIT_STOP_HIT", db_session=db_session)
 
     @uow_transaction
     async def create_and_publish_recommendation_async(self, *, db_session: Session, **kwargs) -> Tuple[Recommendation, Dict]:
@@ -363,9 +347,18 @@ class TradeService:
         rec = self.repo._to_entity(rec_orm)
         if not rec or rec.user_id != str(uid_int): raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
         if rec.status == RecommendationStatus.CLOSED: return rec
+        
         rec.open_size_percent = 0.0
         rec.close(exit_price)
         updated_rec = self.repo.update_with_event(db_session, rec, "CLOSED", {"exit_price": exit_price, "reason": reason})
+        
+        # ✅ NOTIFICATION LOGIC CENTRALIZED HERE
+        if updated_rec:
+            pnl = _pct(updated_rec.entry.value, exit_price, updated_rec.side.value)
+            emoji, r_text = ("🏆", "ربح") if pnl > 0.001 else ("💔", "خسارة")
+            self.notify_reply(rec_id, f"<b>{emoji} تم إغلاق الصفقة #{updated_rec.asset.value}</b>\nأُغلقت عند {exit_price:g} بنتيجة <b>{pnl:+.2f}%</b> ({r_text}).")
+            await self.notify_card_update(updated_rec)
+
         await self.alert_service.remove_triggers_for_recommendation(rec_id)
         return updated_rec
 
@@ -375,12 +368,8 @@ class TradeService:
         if not rec: raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
         live_price = await self.price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
         if live_price is None: raise RuntimeError(f"Could not fetch live market price for {rec.asset.value}.")
-        updated_rec = await self.close_recommendation_for_user_async(rec_id, user_telegram_id, live_price, reason="MANUAL_MARKET_CLOSE")
-        pnl = _pct(updated_rec.entry.value, live_price, updated_rec.side.value)
-        emoji, r_text = ("🏆", "ربح") if pnl > 0.001 else ("💔", "خسارة")
-        self.notify_reply(rec_id, f"<b>{emoji} تم إغلاق الصفقة #{updated_rec.asset.value}</b>\nأُغلقت عند {live_price:g} بنتيجة <b>{pnl:+.2f}%</b> ({r_text}).")
-        await self.notify_card_update(updated_rec)
-        return updated_rec
+        # This now calls the centralized closing function which handles notifications
+        return await self.close_recommendation_for_user_async(rec_id, user_telegram_id, live_price, reason="MANUAL_MARKET_CLOSE")
 
     @uow_transaction
     async def activate_recommendation_async(self, rec_id: int, *, db_session: Session) -> Optional[Recommendation]:
