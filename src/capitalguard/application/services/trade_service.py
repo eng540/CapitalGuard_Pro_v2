@@ -1,6 +1,7 @@
 # src/capitalguard/application/services/trade_service.py v18.0.2 (Notification Hotfix)
 """
-TradeService — Hotfix to ensure cancellation notifications are sent to channels.
+TradeService — Final hardened version with proactive pending recommendation management.
+This version includes a hotfix to ensure manual cancellation notifications are sent correctly.
 """
 
 import logging
@@ -191,9 +192,9 @@ class TradeService:
                     if post_fn is None: raise RuntimeError("Notifier missing 'post_to_channel' method.")
                     res = await self._call_notifier_maybe_async(post_fn, ch.telegram_channel_id, rec, keyboard)
                     if isinstance(res, tuple) and len(res) == 2:
-                        publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res[0], telegram_message_id=res[1])
+                        publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res, telegram_message_id=res)
                         session.add(publication)
-                        report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res[1]})
+                        report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res})
                         success = True
                         break
                     else:
@@ -346,7 +347,6 @@ class TradeService:
         rec.closed_at = datetime.now(timezone.utc)
         updated_rec = self.repo.update_with_event(db_session, rec, "CANCELED_MANUAL", {"reason": "Cancelled manually by the user."})
         
-        # ✅ NOTIFICATION FIX: Ensure notifications are sent for manual cancellations.
         if updated_rec:
             self.notify_reply(rec_id, f"❌ <b>تم إلغاء التوصية #{updated_rec.asset.value}</b> يدويًا.")
             await self.notify_card_update(updated_rec)
