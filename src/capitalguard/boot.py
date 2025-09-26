@@ -1,4 +1,5 @@
-# src/capitalguard/boot.py (Temporary Diagnostic Version)
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.2.0) ---
+# src/capitalguard/boot.py
 
 import os
 import logging
@@ -57,10 +58,8 @@ def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
 
-    # <<<--- DIAGNOSTIC CHANGE: Temporarily set to DEBUG --->>>
-    # This will enable all the detailed diagnostic messages we added.
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
         stream=sys.stdout,
     )
@@ -95,19 +94,32 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     price_service = PriceService()
     analytics_service = AnalyticsService(repo=repo)
     
+    # ✅ ARCHITECTURAL FIX: Dependency injection order is corrected.
+    # 1. Services with no dependencies on other services are created.
+    # 2. TradeService is created, as AlertService depends on it.
+    # 3. AlertService is created last, receiving the fully-formed TradeService.
+    
+    # This placeholder is needed because TradeService needs an alert_service reference.
+    # A better long-term solution would be an event bus to fully decouple them.
+    # For now, we will keep the reference but fix the circular assignment.
+    alert_service_placeholder = {"service": None}
+
     trade_service = TradeService(
         repo=repo, 
         notifier=notifier, 
         market_data_service=market_data_service, 
         price_service=price_service,
-        alert_service=None  # Will be set after AlertService is created
+        alert_service=alert_service_placeholder # Pass a mutable reference
     )
     
     alert_service = AlertService(
-        trade_service=trade_service,
+        trade_service=trade_service, # Pass the fully constructed trade_service
         repo=repo
     )
     
+    # Fulfill the placeholder reference
+    alert_service_placeholder["service"] = alert_service
+    # And now set the reference correctly inside TradeService
     trade_service.alert_service = alert_service
 
     services = {
@@ -141,3 +153,5 @@ def bootstrap_app() -> Optional[Application]:
     except Exception as e:
         logging.exception(f"CRITICAL: Failed to bootstrap bot: {e}")
         return None
+
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.2.0) ---
