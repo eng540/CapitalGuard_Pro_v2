@@ -303,4 +303,4 @@ class AlertService:
                 # If any exception occurred (including DB commit failure), it's caught here.
                 # We log it, but crucially, we DO NOT update the in-memory state.
                 # This means the trigger will be re-evaluated in the next price tick.
-                log.exception("Failed to process and commit event for rec #%s, type %s. Will retry.", rec_id, ttype_raw)```
+                log.exception("Failed to process and commit event for rec #%s, type %s. Will retry.", rec_id, ttype_raw)
