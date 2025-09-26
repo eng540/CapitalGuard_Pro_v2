@@ -306,6 +306,29 @@ class TradeService:
     # ---------------- Event processors (core flows) ----------------
 
     @uow_transaction
+    async def process_invalidation_event(self, rec_id: int, *, db_session: Session):
+        """
+        ✅ NEW: Handles the automatic cancellation of a PENDING recommendation
+        when its Stop Loss is hit before the entry price.
+        """
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        if not rec_orm or rec_orm.status != RecommendationStatus.PENDING:
+            log.warning("Skipping invalidation for Rec #%s: Not found or status is not PENDING.", rec_id)
+            await self.alert_service.remove_triggers_for_recommendation(rec_id)
+            return
+
+        rec = self.repo._to_entity(rec_orm)
+        rec.status = RecommendationStatus.CLOSED  # تصحيح الخطأ: CLOSED بدلاً من CLOSED
+        rec.closed_at = datetime.now(timezone.utc)
+        
+        updated_rec = self.repo.update_with_event(db_session, rec, "INVALIDATED_SL_BREACH", {"reason": "Stop Loss was hit before entry price."})
+        
+        if updated_rec:
+            self.notify_reply(rec_id, f"❌ <b>تم إلغاء التوصية #{updated_rec.asset.value}</b>\nتم الوصول لوقف الخسارة قبل سعر الدخول.")
+            await self.notify_card_update(updated_rec)
+            await self.alert_service.remove_triggers_for_recommendation(rec_id)
+
+    @uow_transaction
     async def process_activation_event(self, rec_id: int, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         if not rec_orm or rec_orm.status != RecommendationStatus.PENDING:
@@ -411,6 +434,34 @@ class TradeService:
         await self.alert_service.update_triggers_for_recommendation(created_rec.id)
         final_rec, report = await self._publish_recommendation(db_session, created_rec, str(uid_int), target_channel_ids)
         return final_rec, report
+
+    @uow_transaction
+    async def cancel_pending_recommendation_manual(self, rec_id: int, user_telegram_id: str, *, db_session: Session) -> Recommendation:
+        """
+        ✅ NEW: Handles the manual cancellation of a PENDING recommendation by the user.
+        """
+        uid_int = _parse_int_user_id(user_telegram_id)
+        if not uid_int:
+            raise ValueError("Invalid User ID.")
+        
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        if not rec_orm:
+            raise ValueError(f"Recommendation #{rec_id} not found.")
+            
+        rec = self.repo._to_entity(rec_orm)
+        if not rec or rec.user_id != str(uid_int):
+            raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
+        
+        if rec.status != RecommendationStatus.PENDING:
+            raise ValueError("Only PENDING recommendations can be cancelled.")
+
+        rec.status = RecommendationStatus.CLOSED
+        rec.closed_at = datetime.now(timezone.utc)
+        
+        updated_rec = self.repo.update_with_event(db_session, rec, "CANCELED_MANUAL", {"reason": "Cancelled manually by the user."})
+        
+        await self.alert_service.remove_triggers_for_recommendation(rec_id)
+        return updated_rec
 
     @uow_transaction
     async def close_recommendation_for_user_async(self, rec_id: int, user_telegram_id: str, exit_price: float, reason: str = "MANUAL_CLOSE", *, db_session: Session) -> Recommendation:
