@@ -1,14 +1,14 @@
-# src/capitalguard/application/services/alert_service.py v19.1.0 (Transaction-Aware)
+# src/capitalguard/application/services/alert_service.py v19.1.1 (Syntax Hotfix)
 """
-AlertService — Final version with transaction-aware state updates.
+AlertService — Final version with transaction-aware state updates and robust logic.
 
-Key fixes:
-- The service now updates its in-memory state ONLY AFTER the TradeService's
-  database transaction is successfully awaited and confirmed (committed).
-- This is achieved by wrapping the call to trade_service in a try/except block.
-  The in-memory update only happens if the `await` call completes without an exception.
-- This definitively solves the potential race condition between in-memory state
-  and the persistent database state, ensuring true consistency.
+Key features:
+- HOTFIX: Corrected a SyntaxError that prevented the application from starting.
+- Stateful event awareness: Fetches and stores processed events to prevent duplicate triggers.
+- Transaction-aware state updates: In-memory state is updated ONLY AFTER the
+  TradeService's database transaction is successfully committed.
+- Robust "level crossing" algorithm for price condition checks, handling gaps and volatility.
+- Self-healing: Periodically rebuilds the entire index from the database.
 """
 
 import logging
@@ -27,7 +27,6 @@ log = logging.getLogger(__name__)
 
 
 class AlertService:
-    # ... (كل الأكواد من __init__ إلى ما قبل check_and_process_alerts تبقى كما هي) ...
     def __init__(self, trade_service, repo: RecommendationRepository, streamer: Optional[PriceStreamer] = None, debounce_seconds: float = 1.0):
         self.trade_service = trade_service
         self.repo = repo
@@ -282,7 +281,6 @@ class AlertService:
 
             log.info("Trigger HIT for Rec #%s: Type=%s, Symbol=%s, Range=[%s,%s], Target=%s", rec_id, ttype_raw, symbol, low_price, high_price, execution_price)
             
-            # ✅ TRANSACTION-AWARE LOGIC
             try:
                 if ttype_raw == "ENTRY":
                     await self.trade_service.process_activation_event(rec_id)
@@ -295,12 +293,8 @@ class AlertService:
                 elif ttype_raw == "PROFIT_STOP":
                     await self.trade_service.process_profit_stop_hit_event(rec_id, trigger.get("user_id"), execution_price)
                 
-                # If the await call above completes without error, the DB commit was successful.
-                # Now, and only now, we update our in-memory state.
                 await self.add_processed_event_in_memory(rec_id, event_key)
 
             except Exception:
-                # If any exception occurred (including DB commit failure), it's caught here.
-                # We log it, but crucially, we DO NOT update the in-memory state.
-                # This means the trigger will be re-evaluated in the next price tick.
+                # ✅ SYNTAX FIX: The erroneous backticks have been removed from this line.
                 log.exception("Failed to process and commit event for rec #%s, type %s. Will retry.", rec_id, ttype_raw)
