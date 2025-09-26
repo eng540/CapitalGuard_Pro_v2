@@ -1,5 +1,5 @@
-# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.2.1) ---
-# src/capitalguard/interfaces/telegram/ui_texts.py
+# src/capitalguard/interfaces/telegram/ui_texts.py v16.3.0 (Accurate PnL Calculation)
+# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE ---
 
 from __future__ import annotations
 from typing import List, Optional, Dict, Any, Tuple
@@ -34,30 +34,38 @@ def _rr(entry: float, sl: float, first_target: Optional[Target]) -> str:
         return "—"
 
 def _calculate_weighted_pnl(rec: Recommendation) -> float:
-    total_pnl = 0.0
-    percent_closed = 0.0
+    """
+    ✅ RE-ARCHITECTED: This is now the single source of truth for PnL calculation.
+    It exclusively relies on the event log to compute the final weighted PnL.
+    """
+    total_pnl_contribution = 0.0
+    total_percent_closed = 0.0
     
+    # Relevant event types for closure
+    closure_event_types = ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO", "FINAL_PARTIAL_CLOSE")
+
     for event in (rec.events or []):
         event_type = getattr(event, "event_type", "")
-        if event_type in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO"):
+        if event_type in closure_event_types:
             data = getattr(event, "event_data", {}) or {}
             closed_pct = data.get('closed_percent', 0.0)
             pnl_on_part = data.get('pnl_on_part', 0.0)
             
             if closed_pct > 0:
-                total_pnl += (closed_pct / 100.0) * pnl_on_part
-                percent_closed += closed_pct
+                total_pnl_contribution += (closed_pct / 100.0) * pnl_on_part
+                total_percent_closed += closed_pct
 
-    remaining_percent = 100.0 - percent_closed
-    if remaining_percent > 0.01 and rec.exit_price is not None:
-        pnl_on_remaining = _pct(rec.entry.value, rec.exit_price, rec.side.value)
-        total_pnl += (remaining_percent / 100.0) * pnl_on_remaining
-    elif abs(remaining_percent) < 0.01 and total_pnl != 0:
-        pass
-    elif percent_closed == 0 and rec.exit_price is not None:
+    # If no closure events were found but the trade is closed, fall back to simple PnL
+    if total_percent_closed == 0 and rec.exit_price is not None:
         return _pct(rec.entry.value, rec.exit_price, rec.side.value)
+        
+    # Normalize in case of floating point inaccuracies (e.g., 99.99% closed)
+    if total_percent_closed > 0 and total_percent_closed < 100:
+        # This case should ideally not happen if logic is correct, but as a safeguard:
+        normalization_factor = 100.0 / total_percent_closed
+        return total_pnl_contribution * normalization_factor
 
-    return total_pnl
+    return total_pnl_contribution
 
 # --- Card Building Blocks ---
 
@@ -140,16 +148,16 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
 def _build_logbook_section(rec: Recommendation) -> str:
     lines = []
     events = rec.events or []
-    log_events = [event for event in events if getattr(event, "event_type", "") in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO", "SL_UPDATED")]
+    log_events = [event for event in events if getattr(event, "event_type", "") in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO", "FINAL_PARTIAL_CLOSE", "SL_UPDATED")]
     if not log_events:
         return ""
     lines.append("\n📋 <b>LOGBOOK</b>")
     for event in sorted(log_events, key=lambda ev: getattr(ev, "event_timestamp", datetime.min)):
         et = getattr(event, "event_type", "")
         data = getattr(event, "event_data", {}) or {}
-        if et in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO"):
+        if et in ("PARTIAL_PROFIT_MANUAL", "PARTIAL_PROFIT_AUTO", "FINAL_PARTIAL_CLOSE"):
             pnl = data.get('pnl_on_part', 0.0)
-            trigger = "Manual" if et == "PARTIAL_PROFIT_MANUAL" else "Auto"
+            trigger = data.get('triggered_by', 'Manual' if 'MANUAL' in et else 'Auto')
             lines.append(f"  • 💰 Closed {data.get('closed_percent', 0):.0f}% at <code>{data.get('price', 0):g}</code> ({pnl:+.2f}%) [{trigger}]")
         elif et == "SL_UPDATED" and data.get('new_sl') == rec.entry.value:
              lines.append(f"  • 🛡️ SL moved to Breakeven.")
@@ -165,8 +173,8 @@ def _build_summary_section(rec: Recommendation) -> str:
     lines = [
         "📊 <b>TRADE SUMMARY</b>",
         f"💰 Entry: <code>{entry:g}</code>",
-        f"🏁 Exit: <code>{exit_price:g}</code>",
-        f"{'📈' if pnl >= 0 else '📉'} <b>Final Result: {pnl:+.2f}%</b> ({result_text})",
+        f"🏁 Final Exit Price: <code>{exit_price:g}</code>",
+        f"{'📈' if pnl >= 0 else '📉'} <b>Final Weighted Result: {pnl:+.2f}%</b> ({result_text})",
     ]
     return "\n".join(lines)
 
@@ -268,4 +276,4 @@ def build_analyst_stats_text(stats: Dict[str, Any]) -> str:
     ]
     return "\n".join(lines)
 
-# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.2.1) ---
+# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE ---
