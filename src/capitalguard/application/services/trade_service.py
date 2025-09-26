@@ -159,7 +159,7 @@ class TradeService:
         if risk > 0 and (reward / risk) < min_acceptable_rr:
             raise ValueError(f"Risk/Reward ratio too low: {(reward / risk):.3f}. Minimum allowed: {min_acceptable_rr}")
         total_close = sum(float(t.get('close_percent', 0)) for t in targets)
-        if total_close > 100.01: # Allow for small float inaccuracies
+        if total_close > 100.01:  # Allow for small float inaccuracies
             raise ValueError("Sum of close percentages exceeds 100%")
         is_long = side_upper == 'LONG'
         sorted_targets = sorted(targets, key=lambda t: t['price'], reverse=not is_long)
@@ -405,7 +405,7 @@ class TradeService:
         rec = self.repo._to_entity(rec_orm)
         if not rec or rec.user_id != user_id: raise ValueError("Access denied.")
         if rec.status != RecommendationStatus.ACTIVE: raise ValueError("Partial profit can only be taken on active recommendations.")
-        if not (0 < close_percent <= rec.open_size_percent + 0.1): # Add tolerance
+        if not (0 < close_percent <= rec.open_size_percent + 0.1):  # Add tolerance
             raise ValueError(f"Invalid percentage. Must be between 0 and {rec.open_size_percent:.2f}.")
         rec.open_size_percent -= close_percent
         pnl_on_part = _pct(rec.entry.value, price, rec.side.value)
