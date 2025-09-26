@@ -1,8 +1,10 @@
-# src/capitalguard/application/services/alert_service.py V 18.3.1
+# src/capitalguard/application/services/alert_service.py V 18.3.1 (Hardened)
 """
-AlertService — fixes for missed TP/close events.
+AlertService — Hardened against silent failures and race conditions.
 
 Key fixes:
+- build_triggers_index now enters a resilient retry loop on DB failure instead of failing silently.
+- Enhanced logging to CRITICAL on persistent failures.
 - Ensure trigger prices are numeric.
 - Robust TP index parsing.
 - Inclusive comparisons for edge prices.
@@ -52,15 +54,27 @@ class AlertService:
     # ---------- Trigger index ----------
 
     async def build_triggers_index(self):
-        log.info("Building in-memory trigger index for all active recommendations...")
-        new_triggers: Dict[str, List[Dict[str, Any]]] = {}
-        try:
-            with session_scope() as session:
-                trigger_data = self.repo.list_all_active_triggers_data(session)
-        except Exception:
-            log.exception("Failed reading triggers from repository.")
-            return
+        """
+        ✅ HARDENED: This method now retries indefinitely on database failure
+        to prevent the service from running with a stale or empty trigger index.
+        """
+        log.info("Attempting to build in-memory trigger index for all active recommendations...")
+        retry_delay = 5
+        while True:
+            try:
+                with session_scope() as session:
+                    trigger_data = self.repo.list_all_active_triggers_data(session)
+                break  # Success, exit the loop
+            except Exception:
+                log.critical(
+                    "CRITICAL: Failed to read triggers from repository. This is a major service degradation. Retrying in %ds...",
+                    retry_delay,
+                    exc_info=True
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60) # Exponential backoff up to 1 minute
 
+        new_triggers: Dict[str, List[Dict[str, Any]]] = {}
         for item in trigger_data:
             try:
                 asset_raw = (item.get("asset") or "").strip().upper()
@@ -87,7 +101,7 @@ class AlertService:
             self.active_triggers = new_triggers
 
         total_recs = len(trigger_data) if trigger_data is not None else 0
-        log.info("Trigger index built: %d recommendations across %d symbols.", total_recs, len(new_triggers))
+        log.info("✅ Trigger index built successfully: %d recommendations across %d symbols.", total_recs, len(new_triggers))
 
     def _add_item_to_trigger_dict(self, trigger_dict: Dict[str, list], item: Dict[str, Any]):
         asset = (item.get("asset") or "").strip().upper()

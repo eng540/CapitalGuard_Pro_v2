@@ -1,12 +1,12 @@
-# src/capitalguard/application/services/trade_service.py v 17.4.2 (Corrected)
+# src/capitalguard/application/services/trade_service.py v 17.4.2 (Resilient)
 """
-TradeService — production-ready, compatible, non-breaking release.
+TradeService — production-ready, resilient, non-breaking release.
 
-Quick changes summary:
+Key fixes:
+- _publish_recommendation is now resilient with retries and detailed reporting.
 - Robust uow_transaction decorator supporting sync + async callers.
 - Use session_scope() for safe session management and single-commit semantics.
 - notify_card_update: non-blocking edits, safe delete + single commit.
-- _publish_recommendation: async, retry logic, handles async/sync notifier implementations, canonical response handling.
 - Fixed get_recent_assets_for_user param mismatch.
 - Defensive logging and minimal behavioral changes to preserve compatibility.
 - Added R/R validation, target monotonicity, total close percentage check.
@@ -246,10 +246,9 @@ class TradeService:
 
     async def _publish_recommendation(self, session: Session, rec: Recommendation, user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[Recommendation, Dict]:
         """
-        Publish recommendation to user's channels.
-        Resilient to notifier sync/async implementations.
+        ✅ RESILIENT: Publish recommendation to user's channels.
         Retries up to 3 times with small backoff on transient notifier failure.
-        Records PublishedMessage records on success.
+        Records PublishedMessage records on success and returns a detailed report.
         """
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
         uid_int = _parse_int_user_id(user_id)
@@ -277,47 +276,31 @@ class TradeService:
                     post_fn = getattr(self.notifier, "post_to_channel", None)
                     if post_fn is None:
                         raise RuntimeError("Notifier missing 'post_to_channel' method.")
-                    # call notifier in a safe unified manner
+                    
                     res = await self._call_notifier_maybe_async(post_fn, ch.telegram_channel_id, rec, keyboard)
-                    # canonicalize response: accept tuple (channel_id, message_id) or object with attrs
+                    
                     if isinstance(res, tuple) and len(res) == 2:
                         publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res[0], telegram_message_id=res[1])
                         session.add(publication)
                         report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res[1]})
                         success = True
                         break
-                    # fallback: try to extract channel/message attributes
-                    elif hasattr(res, "channel_id") and hasattr(res, "message_id"):
-                        publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res.channel_id, telegram_message_id=res.message_id)
-                        session.add(publication)
-                        report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": res.message_id})
-                        success = True
-                        break
                     else:
-                        # some notifiers return True/False or None
-                        if res is True:
-                            publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=ch.telegram_channel_id, telegram_message_id=None)
-                            session.add(publication)
-                            report["success"].append({"channel_id": ch.telegram_channel_id, "message_id": None})
-                            success = True
-                            break
-                        raise RuntimeError("Notifier returned unsupported response type.")
+                        raise RuntimeError(f"Notifier returned unsupported response type: {type(res)}")
                 except Exception as e:
                     last_exc = e
                     log.warning("Publish attempt %d failed for channel %s: %s", attempt + 1, ch.telegram_channel_id, e)
-                    # small async backoff
-                    try:
-                        await asyncio.sleep(0.2 * (attempt + 1))
-                    except Exception:
-                        pass
+                    await asyncio.sleep(0.2 * (attempt + 1))
+
             if not success:
                 err_msg = str(last_exc) if last_exc is not None else "Unknown error"
                 report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": err_msg})
-        # flush adds to DB; session_scope will commit
+        
         try:
             session.flush()
         except Exception:
             log.exception("Failed to flush PublishedMessage records.")
+        
         return rec, report
 
     # ---------------- Event processors (core flows) ----------------

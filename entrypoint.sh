@@ -3,10 +3,10 @@
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-# Run database migrations
+# Run database migrations synchronously
 echo "Entrypoint: Running database migrations..."
-# ✅ --- الإصلاح: تم إزالة '&' لجعل الأمر متزامنًا ---
-# هذا يضمن أن السكربت سينتظر حتى يكتمل الترحيل قبل المتابعة.
+# ✅ FIX: Removed the '&' to make the command blocking.
+# This ensures the script waits for migrations to complete before proceeding.
 alembic upgrade head
 
 # Start the main application using supervisord
