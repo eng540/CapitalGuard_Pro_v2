@@ -1,6 +1,7 @@
-# src/capitalguard/application/services/trade_service.py v18.1.0 (Centralized Notifications)
+# src/capitalguard/application/services/trade_service.py v18.1.1 (Comprehensive Notifications)
 """
-TradeService — Centralized notification logic for all closure events.
+TradeService — Final version with comprehensive and consistent notification logic
+for every state-changing event, ensuring the system feels alive and responsive.
 """
 
 import logging
@@ -352,7 +353,6 @@ class TradeService:
         rec.close(exit_price)
         updated_rec = self.repo.update_with_event(db_session, rec, "CLOSED", {"exit_price": exit_price, "reason": reason})
         
-        # ✅ NOTIFICATION LOGIC CENTRALIZED HERE
         if updated_rec:
             pnl = _pct(updated_rec.entry.value, exit_price, updated_rec.side.value)
             emoji, r_text = ("🏆", "ربح") if pnl > 0.001 else ("💔", "خسارة")
@@ -368,7 +368,6 @@ class TradeService:
         if not rec: raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
         live_price = await self.price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
         if live_price is None: raise RuntimeError(f"Could not fetch live market price for {rec.asset.value}.")
-        # This now calls the centralized closing function which handles notifications
         return await self.close_recommendation_for_user_async(rec_id, user_telegram_id, live_price, reason="MANUAL_MARKET_CLOSE")
 
     @uow_transaction
