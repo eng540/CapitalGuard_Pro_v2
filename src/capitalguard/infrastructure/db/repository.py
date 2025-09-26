@@ -1,5 +1,5 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.1-patched) ---
-# src/capitalguard/infrastructure/db/repository.py
+# src/capitalguard/infrastructure/db/repository.py (v17.2.0 - Event-Aware)
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE ---
 
 import logging
 from datetime import datetime, timezone
@@ -25,10 +25,6 @@ class UserRepository:
         return self.session.query(User).filter(User.telegram_user_id == telegram_id).first()
 
     def find_or_create(self, telegram_id: int, **kwargs) -> User:
-        """
-        Finds a user by their Telegram ID, or creates a new one if not found.
-        This method is now concurrency-safe to prevent race conditions.
-        """
         user = self.find_by_telegram_id(telegram_id)
         if user:
             return user
@@ -135,7 +131,7 @@ class RecommendationRepository:
         )
 
     def get_for_update(self, session: Session, rec_id: int) -> Optional[RecommendationORM]:
-        return session.query(RecommendationORM).filter(RecommendationORM.id == rec_id).with_for_update().first()
+        return session.query(RecommendationORM).options(selectinload(RecommendationORM.events)).filter(RecommendationORM.id == rec_id).with_for_update().first()
 
     def update_with_event(self, session: Session, rec: Recommendation, event_type: str, event_data: Dict[str, Any]) -> Recommendation:
         row = self.get_for_update(session, rec.id)
@@ -220,15 +216,6 @@ class RecommendationRepository:
             RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
         ).order_by(RecommendationORM.created_at.desc()).all()
 
-    def list_open_by_symbol_orm(self, session: Session, symbol: str) -> List[RecommendationORM]:
-        return session.query(RecommendationORM).options(
-            joinedload(RecommendationORM.user),
-            selectinload(RecommendationORM.events)
-        ).filter(
-            RecommendationORM.asset == symbol.upper(),
-            RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
-        ).all()
-
     def list_all_for_user(self, session: Session, user_telegram_id: int) -> List[Recommendation]:
         user = UserRepository(session).find_by_telegram_id(user_telegram_id)
         if not user: return []
@@ -258,99 +245,64 @@ class RecommendationRepository:
         
         return [r[0] for r in results]
 
-    def update_price_tracking(self, session: Session, rec_id: int, current_price: float):
-        rec = session.query(RecommendationORM).filter(RecommendationORM.id == rec_id).first()
-        if not rec: return
-
-        if rec.highest_price_reached is None or current_price > rec.highest_price_reached:
-            rec.highest_price_reached = current_price
-        if rec.lowest_price_reached is None or current_price < rec.lowest_price_reached:
-            rec.lowest_price_reached = current_price
-    
     def get_published_messages(self, session: Session, rec_id: int) -> List[PublishedMessage]:
         return session.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
 
-    def get_events_for_recommendations(self, session: Session, rec_ids: List[int]) -> Dict[int, Set[str]]:
-        if not rec_ids: return {}
-        
-        rows = session.query(
-            RecommendationEvent.recommendation_id, RecommendationEvent.event_type
-        ).filter(RecommendationEvent.recommendation_id.in_(rec_ids)).all()
-        
-        result: Dict[int, Set[str]] = {rec_id: set() for rec_id in rec_ids}
-        for rec_id, event_type in rows:
-            result[rec_id].add(event_type)
-            
-        return result
-
     def list_all_active_triggers_data(self, session: Session) -> List[Dict[str, Any]]:
-        results = session.query(
-            RecommendationORM.id,
-            RecommendationORM.user_id,
-            User.telegram_user_id,
-            RecommendationORM.asset,
-            RecommendationORM.side,
-            RecommendationORM.entry,
-            RecommendationORM.stop_loss,
-            RecommendationORM.targets,
-            RecommendationORM.status,
-            RecommendationORM.order_type,
-            RecommendationORM.profit_stop_price
-        ).join(User, RecommendationORM.user_id == User.id).filter(
+        """
+        ✅ ENHANCED: Now eagerly loads events to provide the full state to AlertService.
+        """
+        results = session.query(RecommendationORM).options(
+            joinedload(RecommendationORM.user),
+            selectinload(RecommendationORM.events)
+        ).filter(
             RecommendationORM.status.in_([RecommendationStatus.PENDING.value, RecommendationStatus.ACTIVE.value])
         ).all()
 
         return [
             {
-                "id": r.id, "user_id": str(r.telegram_user_id), "asset": r.asset, "side": r.side,
+                "id": r.id, "user_id": str(r.user.telegram_user_id), "asset": r.asset, "side": r.side,
                 "entry": float(r.entry), 
                 "stop_loss": float(r.stop_loss), 
                 "targets": [{"price": float(t['price']), "close_percent": t.get('close_percent', 0)} for t in r.targets],
                 "status": RecommendationStatus(r.status), 
                 "order_type": OrderType(r.order_type),
-                "profit_stop_price": float(r.profit_stop_price) if r.profit_stop_price is not None else None
+                "profit_stop_price": float(r.profit_stop_price) if r.profit_stop_price is not None else None,
+                "processed_events": {e.event_type for e in r.events}
             }
             for r in results
         ]
 
     def get_active_trigger_data_by_id(self, session: Session, rec_id: int) -> Optional[Dict[str, Any]]:
-        r = session.query(
-            RecommendationORM.id,
-            RecommendationORM.user_id,
-            User.telegram_user_id,
-            RecommendationORM.asset,
-            RecommendationORM.side,
-            RecommendationORM.entry,
-            RecommendationORM.stop_loss,
-            RecommendationORM.targets,
-            RecommendationORM.status,
-            RecommendationORM.order_type,
-            RecommendationORM.profit_stop_price
-        ).join(User, RecommendationORM.user_id == User.id).filter(
+        """
+        ✅ ENHANCED: Also loads events for single-recommendation updates.
+        """
+        r = session.query(RecommendationORM).options(
+            joinedload(RecommendationORM.user),
+            selectinload(RecommendationORM.events)
+        ).filter(
             RecommendationORM.id == rec_id
         ).first()
 
         if not r:
             return None
 
-        # Normalize status into RecommendationStatus enum safely
         try:
             status_enum = RecommendationStatus(r.status)
         except Exception:
-            # If status cannot be mapped, treat as not active
             return None
 
         if status_enum not in (RecommendationStatus.PENDING, RecommendationStatus.ACTIVE):
             return None
 
         return {
-            "id": r.id, "user_id": str(r.telegram_user_id), "asset": r.asset, "side": r.side,
+            "id": r.id, "user_id": str(r.user.telegram_user_id), "asset": r.asset, "side": r.side,
             "entry": float(r.entry), 
             "stop_loss": float(r.stop_loss), 
             "targets": [{"price": float(t['price']), "close_percent": t.get('close_percent', 0)} for t in r.targets],
             "status": status_enum, 
             "order_type": OrderType(r.order_type),
-            "profit_stop_price": float(r.profit_stop_price) if r.profit_stop_price is not None else None
+            "profit_stop_price": float(r.profit_stop_price) if r.profit_stop_price is not None else None,
+            "processed_events": {e.event_type for e in r.events}
         }
-
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 17.1.1-patched) ---
+# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE ---
