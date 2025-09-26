@@ -1,6 +1,6 @@
-# src/capitalguard/application/services/trade_service.py v18.0.1 (Final Hardened)
+# src/capitalguard/application/services/trade_service.py v18.0.2 (Notification Hotfix)
 """
-TradeService — Final hardened version with proactive pending recommendation management.
+TradeService — Hotfix to ensure cancellation notifications are sent to channels.
 """
 
 import logging
@@ -345,6 +345,12 @@ class TradeService:
         rec.status = RecommendationStatus.CLOSED
         rec.closed_at = datetime.now(timezone.utc)
         updated_rec = self.repo.update_with_event(db_session, rec, "CANCELED_MANUAL", {"reason": "Cancelled manually by the user."})
+        
+        # ✅ NOTIFICATION FIX: Ensure notifications are sent for manual cancellations.
+        if updated_rec:
+            self.notify_reply(rec_id, f"❌ <b>تم إلغاء التوصية #{updated_rec.asset.value}</b> يدويًا.")
+            await self.notify_card_update(updated_rec)
+
         await self.alert_service.remove_triggers_for_recommendation(rec_id)
         return updated_rec
 
