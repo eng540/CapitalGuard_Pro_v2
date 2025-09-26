@@ -1,14 +1,9 @@
-# src/capitalguard/application/services/alert_service.py v19.1.1 (Syntax Hotfix)
+# src/capitalguard/application/services/alert_service.py v19.1.2-debug (Diagnostic Version)
 """
-AlertService — Final version with transaction-aware state updates and robust logic.
-
-Key features:
-- HOTFIX: Corrected a SyntaxError that prevented the application from starting.
-- Stateful event awareness: Fetches and stores processed events to prevent duplicate triggers.
-- Transaction-aware state updates: In-memory state is updated ONLY AFTER the
-  TradeService's database transaction is successfully committed.
-- Robust "level crossing" algorithm for price condition checks, handling gaps and volatility.
-- Self-healing: Periodically rebuilds the entire index from the database.
+AlertService — DIAGNOSTIC VERSION.
+This version includes extensive DEBUG-level logging to trace the entire data
+flow from price reception to condition evaluation. Its purpose is to identify
+why existing recommendations are not being auto-corrected.
 """
 
 import logging
@@ -23,6 +18,7 @@ from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
 
+# NOTE: Ensure your root logger is set to DEBUG level to see these messages.
 log = logging.getLogger(__name__)
 
 
@@ -32,25 +28,18 @@ class AlertService:
         self.repo = repo
         self.price_queue: asyncio.Queue = asyncio.Queue()
         self.streamer = streamer or PriceStreamer(self.price_queue, self.repo)
-
         self.active_triggers: Dict[str, List[Dict[str, Any]]] = {}
         self._triggers_lock = asyncio.Lock()
-
         self._processing_task: Optional[asyncio.Task] = None
         self._index_sync_task: Optional[asyncio.Task] = None
-
         self._bg_thread: Optional[threading.Thread] = None
         self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
-
         self._last_processed: Dict[int, Dict[str, float]] = {}
         self._debounce_seconds = float(debounce_seconds)
-
         self._tp_re = re.compile(r"^TP(\d+)$", flags=re.IGNORECASE)
 
-    # ---------- Trigger index ----------
-
     async def build_triggers_index(self):
-        log.info("Attempting to build in-memory trigger index for all active recommendations...")
+        log.info("Attempting to build in-memory trigger index...")
         retry_delay = 5
         while True:
             try:
@@ -58,7 +47,7 @@ class AlertService:
                     trigger_data = self.repo.list_all_active_triggers_data(session)
                 break
             except Exception:
-                log.critical("CRITICAL: Failed to read triggers from repository. Retrying in %ds...", retry_delay, exc_info=True)
+                log.critical("CRITICAL: DB read failure. Retrying in %ds...", retry_delay, exc_info=True)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
 
@@ -78,35 +67,26 @@ class AlertService:
             self.active_triggers = new_triggers
 
         total_recs = len(trigger_data) if trigger_data is not None else 0
-        log.info("✅ Trigger index built successfully: %d recommendations across %d symbols.", total_recs, len(new_triggers))
+        log.info("✅ Trigger index built: %d recommendations across %d symbols.", total_recs, len(new_triggers))
+        # <<<--- DIAGNOSTIC LOGGING --->>>
+        log.debug(f"Current active triggers in memory: {self.active_triggers}")
 
     def _add_item_to_trigger_dict(self, trigger_dict: Dict[str, list], item: Dict[str, Any]):
         asset = (item.get("asset") or "").strip().upper()
         if not asset: raise ValueError("Empty asset")
         if asset not in trigger_dict: trigger_dict[asset] = []
-
         rec_id = item.get("id")
         processed_events = item.get("processed_events", set())
-
         def _create_trigger(trigger_type: str, price: Any) -> Dict[str, Any]:
-            return {
-                "rec_id": rec_id, "user_id": item.get("user_id"), "side": item.get("side"),
-                "type": trigger_type, "price": float(price), "order_type": item.get("order_type"),
-                "processed_events": processed_events
-            }
-
+            return {"rec_id": rec_id, "user_id": item.get("user_id"), "side": item.get("side"), "type": trigger_type, "price": float(price), "order_type": item.get("order_type"), "processed_events": processed_events}
         status = item.get("status")
         status_norm = status.name if hasattr(status, "name") else str(status).upper()
-
         if status_norm == "PENDING":
             trigger_dict[asset].append(_create_trigger("ENTRY", item.get("entry")))
             return
-
         if status_norm == "ACTIVE":
-            if item.get("stop_loss") is not None:
-                trigger_dict[asset].append(_create_trigger("SL", item.get("stop_loss")))
-            if item.get("profit_stop_price") is not None:
-                trigger_dict[asset].append(_create_trigger("PROFIT_STOP", item.get("profit_stop_price")))
+            if item.get("stop_loss") is not None: trigger_dict[asset].append(_create_trigger("SL", item.get("stop_loss")))
+            if item.get("profit_stop_price") is not None: trigger_dict[asset].append(_create_trigger("PROFIT_STOP", item.get("profit_stop_price")))
             for idx, target in enumerate(item.get("targets", []), 1):
                 trigger_dict[asset].append(_create_trigger(f"TP{idx}", target.get("price")))
 
@@ -116,18 +96,15 @@ class AlertService:
             for symbol in list(self.active_triggers.keys()):
                 self.active_triggers[symbol] = [t for t in self.active_triggers[symbol] if t.get("rec_id") != rec_id]
                 if not self.active_triggers[symbol]: del self.active_triggers[symbol]
-
         try:
             with session_scope() as session:
                 item = self.repo.get_active_trigger_data_by_id(session, rec_id)
         except Exception:
             log.exception("Failed fetching active trigger data for rec %s", rec_id)
             return
-
         if not item:
             log.debug("No active trigger found for rec %s.", rec_id)
             return
-
         asset = (item.get("asset") or "").strip().upper()
         item["asset"] = asset
         async with self._triggers_lock:
@@ -140,14 +117,14 @@ class AlertService:
     async def remove_triggers_for_recommendation(self, rec_id: int):
         async with self._triggers_lock:
             for symbol in list(self.active_triggers.keys()):
-                before_len = len(self.active_triggers[symbol])
-                self.active_triggers[symbol] = [t for t in self.active_triggers[symbol] if t.get("rec_id") != rec_id]
-                if len(self.active_triggers[symbol]) < before_len:
+                before_len = len(self.active_triggers.get(symbol, []))
+                self.active_triggers[symbol] = [t for t in self.active_triggers.get(symbol, []) if t.get("rec_id") != rec_id]
+                if len(self.active_triggers.get(symbol, [])) < before_len:
                     log.info("Removed triggers for Rec #%s from symbol %s in memory.", rec_id, symbol)
-                if not self.active_triggers[symbol]: del self.active_triggers[symbol]
+                if not self.active_triggers.get(symbol):
+                    self.active_triggers.pop(symbol, None)
 
     async def add_processed_event_in_memory(self, rec_id: int, event_type: str):
-        """Immediately updates the in-memory state to prevent duplicate events."""
         async with self._triggers_lock:
             for symbol, triggers in self.active_triggers.items():
                 for trigger in triggers:
@@ -171,13 +148,14 @@ class AlertService:
         try:
             while True:
                 symbol, low_price, high_price = await self.price_queue.get()
+                # <<<--- DIAGNOSTIC LOGGING --->>>
+                log.debug(f"Received price update from queue: {symbol} {low_price}-{high_price}")
                 try:
                     await self.check_and_process_alerts(symbol, low_price, high_price)
                 except Exception:
                     log.exception("Error while processing alerts for %s", symbol)
                 finally:
-                    with suppress(Exception):
-                        self.price_queue.task_done()
+                    with suppress(Exception): self.price_queue.task_done()
         except asyncio.CancelledError:
             log.info("Queue processor cancelled.")
         except Exception:
@@ -186,10 +164,8 @@ class AlertService:
     def start(self):
         try:
             loop = asyncio.get_running_loop()
-            if self._processing_task is None or self._processing_task.done():
-                self._processing_task = loop.create_task(self._process_queue())
-            if self._index_sync_task is None or self._index_sync_task.done():
-                self._index_sync_task = loop.create_task(self._run_index_sync())
+            if self._processing_task is None or self._processing_task.done(): self._processing_task = loop.create_task(self._process_queue())
+            if self._index_sync_task is None or self._index_sync_task.done(): self._index_sync_task = loop.create_task(self._run_index_sync())
             if hasattr(self.streamer, "start"): self.streamer.start()
             log.info("AlertService started in existing event loop.")
             return
@@ -197,7 +173,6 @@ class AlertService:
             if self._bg_thread and self._bg_thread.is_alive():
                 log.warning("AlertService background thread already running.")
                 return
-
             def _bg_runner():
                 try:
                     loop = asyncio.new_event_loop()
@@ -214,7 +189,6 @@ class AlertService:
                         for t in (self._processing_task, self._index_sync_task):
                             if t and not t.done(): self._bg_loop.call_soon_threadsafe(t.cancel)
                         self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
-            
             self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
             self._bg_thread.start()
             log.info("AlertService started in background thread.")
@@ -254,47 +228,40 @@ class AlertService:
         async with self._triggers_lock:
             triggers_for_symbol = list(self.active_triggers.get((symbol or "").upper(), []))
         if not triggers_for_symbol: return
-
         now_ts = time.time()
         for trigger in triggers_for_symbol:
             rec_id = int(trigger.get("rec_id", 0))
             ttype_raw = (trigger.get("type") or "").upper()
             execution_price = float(trigger.get("price", 0.0))
             processed_events: Set[str] = trigger.get("processed_events", set())
-
             event_key = ttype_raw
             if self._tp_re.match(ttype_raw):
                 m = self._tp_re.match(ttype_raw)
                 event_key = f"TP{m.group(1)}_HIT"
-            
             if event_key in processed_events:
                 continue
+            
+            is_met = self._is_price_condition_met(trigger.get("side"), low_price, high_price, execution_price, ttype_raw, trigger.get("order_type"))
+            # <<<--- DIAGNOSTIC LOGGING --->>>
+            if symbol.upper() == "ASTERUSDT": # Log only for the problematic symbol
+                 log.debug(f"Evaluating Rec #{rec_id} Type {ttype_raw} for ASTERUSDT: Price {low_price}-{high_price}, Target {execution_price}. Met: {is_met}")
 
-            if not self._is_price_condition_met(trigger.get("side"), low_price, high_price, execution_price, ttype_raw, trigger.get("order_type")):
+            if not is_met:
                 continue
 
             last_map = self._last_processed.setdefault(rec_id, {})
             if last_ts := last_map.get(ttype_raw):
-                if (now_ts - last_ts) < self._debounce_seconds:
-                    continue
+                if (now_ts - last_ts) < self._debounce_seconds: continue
             last_map[ttype_raw] = now_ts
-
             log.info("Trigger HIT for Rec #%s: Type=%s, Symbol=%s, Range=[%s,%s], Target=%s", rec_id, ttype_raw, symbol, low_price, high_price, execution_price)
-            
             try:
-                if ttype_raw == "ENTRY":
-                    await self.trade_service.process_activation_event(rec_id)
+                if ttype_raw == "ENTRY": await self.trade_service.process_activation_event(rec_id)
                 elif self._tp_re.match(ttype_raw):
                     m = self._tp_re.match(ttype_raw)
                     idx = int(m.group(1)) if m else 1
                     await self.trade_service.process_tp_hit_event(rec_id, trigger.get("user_id"), idx, execution_price)
-                elif ttype_raw == "SL":
-                    await self.trade_service.process_sl_hit_event(rec_id, trigger.get("user_id"), execution_price)
-                elif ttype_raw == "PROFIT_STOP":
-                    await self.trade_service.process_profit_stop_hit_event(rec_id, trigger.get("user_id"), execution_price)
-                
+                elif ttype_raw == "SL": await self.trade_service.process_sl_hit_event(rec_id, trigger.get("user_id"), execution_price)
+                elif ttype_raw == "PROFIT_STOP": await self.trade_service.process_profit_stop_hit_event(rec_id, trigger.get("user_id"), execution_price)
                 await self.add_processed_event_in_memory(rec_id, event_key)
-
             except Exception:
-                # ✅ SYNTAX FIX: The erroneous backticks have been removed from this line.
                 log.exception("Failed to process and commit event for rec #%s, type %s. Will retry.", rec_id, ttype_raw)
