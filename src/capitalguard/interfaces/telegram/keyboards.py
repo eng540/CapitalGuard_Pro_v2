@@ -1,16 +1,14 @@
-# --- START OF FINAL, COMPLETE, AND UX-FIXED FILE (Version 13.1.1) ---
+# --- START OF FINAL, COMPLETE, AND UX-FIXED FILE (Version 14.0.0 - with Cancellation Button) ---
 # src/capitalguard/interfaces/telegram/keyboards.py
 
 import math
 from typing import List, Iterable, Set, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.interfaces.telegram.ui_texts import _pct
-from capitalguard.config import settings
 
 ITEMS_PER_PAGE = 8
 
@@ -86,10 +84,20 @@ def public_channel_keyboard(rec_id: int, bot_username: str) -> InlineKeyboardMar
     return InlineKeyboardMarkup([buttons])
 
 
-def analyst_control_panel_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
+    """✅ UPDATED: Now accepts full Recommendation object to show different buttons for PENDING status."""
+    rec_id = rec.id
+    
+    if rec.status == RecommendationStatus.PENDING:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec.id}")],
+            [InlineKeyboardButton("❌ إلغاء التوصية", callback_data=f"rec:cancel_pending:{rec_id}")],
+            [InlineKeyboardButton("⬅️ العودة للقائمة", callback_data=f"open_nav:page:1")],
+        ])
+    
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec_id}"),
+            InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec.id}"),
             InlineKeyboardButton("✏️ تعديل", callback_data=f"rec:edit_menu:{rec_id}"),
         ],
         [

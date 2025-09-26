@@ -1,14 +1,6 @@
-# src/capitalguard/application/services/alert_service.py v19.1.1 (Syntax Hotfix)
+# src/capitalguard/application/services/alert_service.py v20.0.0 (with Invalidation Logic)
 """
-AlertService — Final version with transaction-aware state updates and robust logic.
-
-Key features:
-- HOTFIX: Corrected a SyntaxError that prevented the application from starting.
-- Stateful event awareness: Fetches and stores processed events to prevent duplicate triggers.
-- Transaction-aware state updates: In-memory state is updated ONLY AFTER the
-  TradeService's database transaction is successfully committed.
-- Robust "level crossing" algorithm for price condition checks, handling gaps and volatility.
-- Self-healing: Periodically rebuilds the entire index from the database.
+AlertService — Now with proactive invalidation of PENDING recommendations.
 """
 
 import logging
@@ -19,6 +11,7 @@ from contextlib import suppress
 import time
 import re
 
+from capitalguard.domain.entities import RecommendationStatus
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
@@ -92,14 +85,17 @@ class AlertService:
             return {
                 "rec_id": rec_id, "user_id": item.get("user_id"), "side": item.get("side"),
                 "type": trigger_type, "price": float(price), "order_type": item.get("order_type"),
-                "processed_events": processed_events
+                "processed_events": processed_events, "status": item.get("status")
             }
 
         status = item.get("status")
         status_norm = status.name if hasattr(status, "name") else str(status).upper()
 
+        # ✅ UPDATED: Now monitors SL for PENDING recommendations as well
         if status_norm == "PENDING":
             trigger_dict[asset].append(_create_trigger("ENTRY", item.get("entry")))
+            if item.get("stop_loss") is not None:
+                trigger_dict[asset].append(_create_trigger("SL", item.get("stop_loss")))
             return
 
         if status_norm == "ACTIVE":
@@ -140,11 +136,12 @@ class AlertService:
     async def remove_triggers_for_recommendation(self, rec_id: int):
         async with self._triggers_lock:
             for symbol in list(self.active_triggers.keys()):
-                before_len = len(self.active_triggers[symbol])
-                self.active_triggers[symbol] = [t for t in self.active_triggers[symbol] if t.get("rec_id") != rec_id]
-                if len(self.active_triggers[symbol]) < before_len:
+                before_len = len(self.active_triggers.get(symbol, []))
+                self.active_triggers[symbol] = [t for t in self.active_triggers.get(symbol, []) if t.get("rec_id") != rec_id]
+                if len(self.active_triggers.get(symbol, [])) < before_len:
                     log.info("Removed triggers for Rec #%s from symbol %s in memory.", rec_id, symbol)
-                if not self.active_triggers[symbol]: del self.active_triggers[symbol]
+                if not self.active_triggers.get(symbol):
+                    self.active_triggers.pop(symbol, None)
 
     async def add_processed_event_in_memory(self, rec_id: int, event_type: str):
         """Immediately updates the in-memory state to prevent duplicate events."""
@@ -255,46 +252,51 @@ class AlertService:
             triggers_for_symbol = list(self.active_triggers.get((symbol or "").upper(), []))
         if not triggers_for_symbol: return
 
+        triggers_for_symbol.sort(key=lambda t: t.get("type") != "ENTRY")
         now_ts = time.time()
+
         for trigger in triggers_for_symbol:
             rec_id = int(trigger.get("rec_id", 0))
             ttype_raw = (trigger.get("type") or "").upper()
             execution_price = float(trigger.get("price", 0.0))
             processed_events: Set[str] = trigger.get("processed_events", set())
+            status_in_memory = trigger.get("status")
 
             event_key = ttype_raw
             if self._tp_re.match(ttype_raw):
                 m = self._tp_re.match(ttype_raw)
                 event_key = f"TP{m.group(1)}_HIT"
-            
-            if event_key in processed_events:
-                continue
 
-            if not self._is_price_condition_met(trigger.get("side"), low_price, high_price, execution_price, ttype_raw, trigger.get("order_type")):
-                continue
+            if event_key in processed_events: continue
+
+            if not self._is_price_condition_met(trigger.get("side"), low_price, high_price, execution_price, ttype_raw, trigger.get("order_type")): continue
 
             last_map = self._last_processed.setdefault(rec_id, {})
             if last_ts := last_map.get(ttype_raw):
-                if (now_ts - last_ts) < self._debounce_seconds:
-                    continue
+                if (now_ts - last_ts) < self._debounce_seconds: continue
             last_map[ttype_raw] = now_ts
 
             log.info("Trigger HIT for Rec #%s: Type=%s, Symbol=%s, Range=[%s,%s], Target=%s", rec_id, ttype_raw, symbol, low_price, high_price, execution_price)
             
             try:
-                if ttype_raw == "ENTRY":
+                # ✅ NEW: Special logic for PENDING recommendations when SL is hit
+                if status_in_memory == RecommendationStatus.PENDING and ttype_raw == "SL":
+                    log.warning("Invalidation HIT for PENDING Rec #%s: SL hit before entry.", rec_id)
+                    await self.trade_service.process_invalidation_event(rec_id)
+                    continue
+
+                if ttype_raw == "ENTRY": 
                     await self.trade_service.process_activation_event(rec_id)
                 elif self._tp_re.match(ttype_raw):
                     m = self._tp_re.match(ttype_raw)
                     idx = int(m.group(1)) if m else 1
                     await self.trade_service.process_tp_hit_event(rec_id, trigger.get("user_id"), idx, execution_price)
-                elif ttype_raw == "SL":
+                elif ttype_raw == "SL": 
                     await self.trade_service.process_sl_hit_event(rec_id, trigger.get("user_id"), execution_price)
-                elif ttype_raw == "PROFIT_STOP":
+                elif ttype_raw == "PROFIT_STOP": 
                     await self.trade_service.process_profit_stop_hit_event(rec_id, trigger.get("user_id"), execution_price)
                 
                 await self.add_processed_event_in_memory(rec_id, event_key)
 
             except Exception:
-                # ✅ SYNTAX FIX: The erroneous backticks have been removed from this line.
                 log.exception("Failed to process and commit event for rec #%s, type %s. Will retry.", rec_id, ttype_raw)

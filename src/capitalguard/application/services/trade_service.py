@@ -1,15 +1,13 @@
-# src/capitalguard/application/services/trade_service.py v 17.4.2 (Resilient)
+# src/capitalguard/application/services/trade_service.py v18.0.0 (with Invalidation Logic)
 """
-TradeService — production-ready, resilient, non-breaking release.
+TradeService — Now with proactive pending recommendation management.
 
-Key fixes:
-- _publish_recommendation is now resilient with retries and detailed reporting.
-- Robust uow_transaction decorator supporting sync + async callers.
-- Use session_scope() for safe session management and single-commit semantics.
-- notify_card_update: non-blocking edits, safe delete + single commit.
-- Fixed get_recent_assets_for_user param mismatch.
-- Defensive logging and minimal behavioral changes to preserve compatibility.
-- Added R/R validation, target monotonicity, total close percentage check.
+Key additions:
+- process_invalidation_event: Handles automatic cancellation of PENDING recs
+  when the SL is hit before the entry price.
+- cancel_pending_recommendation_manual: Allows users to manually cancel a
+  PENDING recommendation.
+- All previous features and fixes are retained.
 """
 
 import logging
@@ -43,13 +41,7 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
 
 
 def uow_transaction(func):
-    """
-    Decorator that supports both sync and async functions.
-    If caller passes 'db_session' it is used as-is.
-    Otherwise a new session_scope() is created and commit/rollback applied.
-    """
     is_coro = asyncio.iscoroutinefunction(func)
-
     if is_coro:
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -57,10 +49,8 @@ def uow_transaction(func):
                 return await func(*args, **kwargs)
             with session_scope() as session:
                 try:
-                    result = await func(*args, db_session=session, **kwargs)
-                    return result
+                    return await func(*args, db_session=session, **kwargs)
                 except Exception:
-                    # session_scope will rollback on exception
                     log.exception("Transaction failed in async '%s'", func.__name__)
                     raise
         return async_wrapper
@@ -71,8 +61,7 @@ def uow_transaction(func):
                 return func(*args, **kwargs)
             with session_scope() as session:
                 try:
-                    result = func(*args, db_session=session, **kwargs)
-                    return result
+                    return func(*args, db_session=session, **kwargs)
                 except Exception:
                     log.exception("Transaction failed in sync '%s'", func.__name__)
                     raise
@@ -94,44 +83,24 @@ class TradeService:
         self.price_service = price_service
         self.alert_service = alert_service
 
-    # ---------------- Notification utilities ----------------
-
     async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
-        """
-        Call notifier method that may be sync or async.
-        For sync call, run in thread to avoid blocking event loop.
-        Returns whatever the notifier returned.
-        """
         if inspect.iscoroutinefunction(fn):
             return await fn(*args, **kwargs)
-        # run sync function in thread
         return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def notify_card_update(self, rec: Recommendation):
-        """
-        Update all published cards for a recommendation.
-        Non-blocking. Uses session_scope and commits deletions once.
-        """
-        # collect deletions to commit once
         to_delete = []
         with session_scope() as session:
             published_messages = self.repo.get_published_messages(session, rec.id)
-            if not published_messages:
-                return
+            if not published_messages: return
             log.info("Asynchronously updating %d cards for rec #%s...", len(published_messages), rec.id)
             for msg_meta in published_messages:
                 try:
-                    # notifier.edit_recommendation_card_by_ids may be sync or async
                     edit_fn = getattr(self.notifier, "edit_recommendation_card_by_ids", None)
                     if edit_fn is None:
                         log.error("Notifier missing 'edit_recommendation_card_by_ids' method.")
                         continue
-                    await self._call_notifier_maybe_async(
-                        edit_fn,
-                        channel_id=msg_meta.telegram_channel_id,
-                        message_id=msg_meta.telegram_message_id,
-                        rec=rec
-                    )
+                    await self._call_notifier_maybe_async(edit_fn, channel_id=msg_meta.telegram_channel_id, message_id=msg_meta.telegram_message_id, rec=rec)
                 except Exception as e:
                     err_text = str(e).lower()
                     if "message to edit not found" in err_text or "message not found" in err_text:
@@ -139,7 +108,6 @@ class TradeService:
                         to_delete.append(msg_meta)
                     else:
                         log.error("Failed to update card for rec %s on channel %s: %s", rec.id, msg_meta.telegram_channel_id, e, exc_info=True)
-            # perform deletions + single commit (session_scope handles commit)
             for dm in to_delete:
                 try:
                     session.delete(dm)
@@ -147,10 +115,6 @@ class TradeService:
                     log.exception("Failed to delete PublishedMessage %s", getattr(dm, "id", "<unknown>"))
 
     def notify_reply(self, rec_id: int, text: str):
-        """
-        Synchronous notification reply. Safe to call from sync contexts.
-        Uses session_scope to read published messages.
-        """
         with session_scope() as session:
             published_messages = self.repo.get_published_messages(session, rec_id)
             for msg_meta in published_messages:
@@ -160,34 +124,15 @@ class TradeService:
                         log.error("Notifier missing 'post_notification_reply' method.")
                         continue
                     if inspect.iscoroutinefunction(post_fn):
-                        # schedule safely if there's a running loop
                         try:
                             loop = asyncio.get_running_loop()
-                            asyncio.run_coroutine_threadsafe(
-                                post_fn(
-                                    chat_id=msg_meta.telegram_channel_id,
-                                    message_id=msg_meta.telegram_message_id,
-                                    text=text
-                                ), loop
-                            )
+                            asyncio.run_coroutine_threadsafe(post_fn(chat_id=msg_meta.telegram_channel_id, message_id=msg_meta.telegram_message_id, text=text), loop)
                         except RuntimeError:
-                            # no running loop; run directly
-                            asyncio.run(post_fn(
-                                chat_id=msg_meta.telegram_channel_id,
-                                message_id=msg_meta.telegram_message_id,
-                                text=text
-                            ))
+                            asyncio.run(post_fn(chat_id=msg_meta.telegram_channel_id, message_id=msg_meta.telegram_message_id, text=text))
                     else:
-                        # sync call
-                        post_fn(
-                            chat_id=msg_meta.telegram_channel_id,
-                            message_id=msg_meta.telegram_message_id,
-                            text=text
-                        )
+                        post_fn(chat_id=msg_meta.telegram_channel_id, message_id=msg_meta.telegram_message_id, text=text)
                 except Exception as e:
                     log.warning("Failed to send reply notification for rec #%s to channel %s: %s", rec_id, msg_meta.telegram_channel_id, e)
-
-    # ---------------- Validation / publishing ----------------
 
     def _validate_recommendation_data(self, side: str, entry: float, stop_loss: float, targets: List[Dict[str, float]]):
         side_upper = side.upper()
@@ -196,67 +141,45 @@ class TradeService:
                 raise ValueError("For new LONG trades, Stop Loss must be < Entry Price.")
             if side_upper == "SHORT" and not (stop_loss > entry):
                 raise ValueError("For new SHORT trades, Stop Loss must be > Entry Price.")
-
         target_prices = [t['price'] for t in targets]
         if len(target_prices) != len(set(target_prices)):
             raise ValueError("Target prices must be unique.")
-
-        # --- ✅ الإضافة الجديدة: التحقق من R/R ---
         risk = abs(entry - stop_loss)
-        # pick nearest target beyond entry depending on side
-        if not targets:
-            raise ValueError("At least one target is required.")
-        # determine first logical target
+        if not targets: raise ValueError("At least one target is required.")
         if side_upper == "LONG":
             first_targets = [t for t in targets if t['price'] > entry]
-            if not first_targets:
-                raise ValueError("At least one target must be above entry for LONG.")
+            if not first_targets: raise ValueError("At least one target must be above entry for LONG.")
             first_target = min(first_targets, key=lambda t: t['price'])
         else:
             first_targets = [t for t in targets if t['price'] < entry]
-            if not first_targets:
-                raise ValueError("At least one target must be below entry for SHORT.")
+            if not first_targets: raise ValueError("At least one target must be below entry for SHORT.")
             first_target = max(first_targets, key=lambda t: t['price'])
-
         reward = abs(first_target['price'] - entry)
-        min_acceptable_rr = 0.1  # minimum reward/risk ratio (reward/risk)
+        min_acceptable_rr = 0.1
         if risk > 0 and (reward / risk) < min_acceptable_rr:
             raise ValueError(f"Risk/Reward ratio too low: {(reward / risk):.3f}. Minimum allowed: {min_acceptable_rr}")
-
-        # --- ✅ الإضافة الجديدة: التحقق من مجموع نسب الإغلاق ---
         total_close = sum(float(t.get('close_percent', 0)) for t in targets)
-        if total_close > 100:
+        if total_close > 100.01:  # Allow for small float inaccuracies
             raise ValueError("Sum of close percentages exceeds 100%")
-
-        # --- ✅ الإضافة الجديدة: التحقق من ترتيب الأهداف ---
         is_long = side_upper == 'LONG'
         sorted_targets = sorted(targets, key=lambda t: t['price'], reverse=not is_long)
         if [t['price'] for t in targets] != [t['price'] for t in sorted_targets]:
             raise ValueError("Targets must be in ascending/descending order based on side.")
-
         targets_vo = Targets(targets)
         for target in targets_vo.values:
             if entry > 0:
-                if (side_upper == 'LONG' and target.price <= entry) or \
-                   (side_upper == 'SHORT' and target.price >= entry):
+                if (side_upper == 'LONG' and target.price <= entry) or (side_upper == 'SHORT' and target.price >= entry):
                     raise ValueError(f"Target price {target.price} is not valid for a {side} trade with entry {entry}.")
-            if (side_upper == 'LONG' and target.price <= stop_loss) or \
-               (side_upper == 'SHORT' and target.price >= stop_loss):
+            if (side_upper == 'LONG' and target.price <= stop_loss) or (side_upper == 'SHORT' and target.price >= stop_loss):
                 raise ValueError(f"Target price {target.price} cannot be on the same side of the trade as the stop loss {stop_loss}.")
 
     async def _publish_recommendation(self, session: Session, rec: Recommendation, user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[Recommendation, Dict]:
-        """
-        ✅ RESILIENT: Publish recommendation to user's channels.
-        Retries up to 3 times with small backoff on transient notifier failure.
-        Records PublishedMessage records on success and returns a detailed report.
-        """
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
         uid_int = _parse_int_user_id(user_id)
         user = UserRepository(session).find_by_telegram_id(uid_int)
         if not user:
             report["failed"].append({"reason": "User not found"})
             return rec, report
-
         channels_to_publish = ChannelRepository(session).list_by_user(user.id, only_active=True)
         if target_channel_ids is not None:
             channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids]
@@ -264,21 +187,16 @@ class TradeService:
             reason = "No active channels linked." if target_channel_ids is None else "No selected channels are active or linked."
             report["failed"].append({"reason": reason})
             return rec, report
-
         from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
         keyboard = public_channel_keyboard(rec.id, getattr(self.notifier, "bot_username", None))
-
         for ch in channels_to_publish:
             success = False
             last_exc = None
             for attempt in range(3):
                 try:
                     post_fn = getattr(self.notifier, "post_to_channel", None)
-                    if post_fn is None:
-                        raise RuntimeError("Notifier missing 'post_to_channel' method.")
-                    
+                    if post_fn is None: raise RuntimeError("Notifier missing 'post_to_channel' method.")
                     res = await self._call_notifier_maybe_async(post_fn, ch.telegram_channel_id, rec, keyboard)
-                    
                     if isinstance(res, tuple) and len(res) == 2:
                         publication = PublishedMessage(recommendation_id=rec.id, telegram_channel_id=res[0], telegram_message_id=res[1])
                         session.add(publication)
@@ -291,25 +209,43 @@ class TradeService:
                     last_exc = e
                     log.warning("Publish attempt %d failed for channel %s: %s", attempt + 1, ch.telegram_channel_id, e)
                     await asyncio.sleep(0.2 * (attempt + 1))
-
             if not success:
                 err_msg = str(last_exc) if last_exc is not None else "Unknown error"
                 report["failed"].append({"channel_id": ch.telegram_channel_id, "reason": err_msg})
-        
         try:
             session.flush()
         except Exception:
             log.exception("Failed to flush PublishedMessage records.")
-        
         return rec, report
 
-    # ---------------- Event processors (core flows) ----------------
+    @uow_transaction
+    async def process_invalidation_event(self, rec_id: int, *, db_session: Session):
+        """
+        ✅ NEW: Handles the automatic cancellation of a PENDING recommendation
+        when its Stop Loss is hit before the entry price.
+        """
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        if not rec_orm or rec_orm.status != RecommendationStatus.PENDING:
+            log.warning("Skipping invalidation for Rec #%s: Not found or status is not PENDING.", rec_id)
+            await self.alert_service.remove_triggers_for_recommendation(rec_id)
+            return
+
+        rec = self.repo._to_entity(rec_orm)
+        rec.status = RecommendationStatus.CLOSED
+        rec.closed_at = datetime.now(timezone.utc)
+        
+        updated_rec = self.repo.update_with_event(db_session, rec, "INVALIDATED_SL_BREACH", {"reason": "Stop Loss was hit before entry price."})
+        
+        if updated_rec:
+            self.notify_reply(rec_id, f"❌ <b>تم إلغاء التوصية #{updated_rec.asset.value}</b>\nتم الوصول لوقف الخسارة قبل سعر الدخول.")
+            await self.notify_card_update(updated_rec)
+            await self.alert_service.remove_triggers_for_recommendation(rec_id)
 
     @uow_transaction
     async def process_activation_event(self, rec_id: int, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         if not rec_orm or rec_orm.status != RecommendationStatus.PENDING:
-            log.warning("Skipping activation for Rec #%s: Not found or status is not PENDING (current: %s). Forcing index sync.", rec_id, getattr(rec_orm, "status", "N/A"))
+            log.warning("Skipping activation for Rec #%s: Not found or status is not PENDING (current: %s).", rec_id, getattr(rec_orm, "status", "N/A"))
             await self.alert_service.update_triggers_for_recommendation(rec_id)
             return
         updated_rec = await self.activate_recommendation_async(rec_id, db_session=db_session)
@@ -321,13 +257,13 @@ class TradeService:
     @uow_transaction
     async def process_tp_hit_event(self, rec_id: int, user_id: str, target_index: int, price: float, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm:
+        if not rec_orm or rec_orm.status != RecommendationStatus.ACTIVE:
+            log.warning("Skipping TP hit for Rec #%s: Status is not ACTIVE.", rec_id)
             return
         rec = self.repo._to_entity(rec_orm)
         event_name = f"TP{target_index}_HIT"
-        if rec.status != RecommendationStatus.ACTIVE or event_name in {e.event_type for e in rec.events}:
-            log.warning("Skipping %s for Rec #%s: Status is not ACTIVE or event already processed. Forcing index sync.", event_name, rec_id)
-            await self.alert_service.update_triggers_for_recommendation(rec_id)
+        if event_name in {e.event_type for e in rec.events}:
+            log.warning("Skipping %s for Rec #%s: Event already processed.", event_name, rec_id)
             return
         updated_rec = await self.process_target_hit_async(rec_id, user_id, target_index, price, db_session=db_session)
         if updated_rec:
@@ -348,9 +284,8 @@ class TradeService:
     @uow_transaction
     async def process_sl_hit_event(self, rec_id: int, user_id: str, price: float, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED:
-            log.warning("Skipping SL hit for Rec #%s: Not found or already closed. Forcing index sync.", rec_id)
-            await self.alert_service.remove_triggers_for_recommendation(rec_id)
+        if not rec_orm or rec_orm.status != RecommendationStatus.ACTIVE:
+            log.warning("Skipping SL hit for Rec #%s: Not found or not ACTIVE.", rec_id)
             return
         updated_rec = await self.close_recommendation_for_user_async(rec_id, user_id, price, reason="SL_HIT", db_session=db_session)
         if updated_rec:
@@ -363,9 +298,8 @@ class TradeService:
     @uow_transaction
     async def process_profit_stop_hit_event(self, rec_id: int, user_id: str, price: float, *, db_session: Session):
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm or rec_orm.status == RecommendationStatus.CLOSED:
-            log.warning("Skipping Profit Stop hit for Rec #%s: Not found or already closed. Forcing index sync.", rec_id)
-            await self.alert_service.remove_triggers_for_recommendation(rec_id)
+        if not rec_orm or rec_orm.status != RecommendationStatus.ACTIVE:
+            log.warning("Skipping Profit Stop hit for Rec #%s: Not found or not ACTIVE.", rec_id)
             return
         updated_rec = await self.close_recommendation_for_user_async(rec_id, user_id, price, reason="PROFIT_STOP_HIT", db_session=db_session)
         if updated_rec:
@@ -378,8 +312,7 @@ class TradeService:
     @uow_transaction
     async def create_and_publish_recommendation_async(self, *, db_session: Session, **kwargs) -> Tuple[Recommendation, Dict]:
         uid_int = _parse_int_user_id(kwargs.get('user_id'))
-        if not uid_int:
-            raise ValueError("A valid user_id is required.")
+        if not uid_int: raise ValueError("A valid user_id is required.")
         target_channel_ids = kwargs.get('target_channel_ids')
         asset = kwargs['asset'].strip().upper()
         side = kwargs['side'].upper()
@@ -390,8 +323,7 @@ class TradeService:
         status, final_entry = (RecommendationStatus.PENDING, kwargs['entry'])
         if order_type_enum == OrderType.MARKET:
             live_price = await self.price_service.get_cached_price(asset, market, force_refresh=True)
-            if live_price is None:
-                raise RuntimeError(f"Could not fetch live price for {asset}.")
+            if live_price is None: raise RuntimeError(f"Could not fetch live price for {asset}.")
             status, final_entry = RecommendationStatus.ACTIVE, live_price
         targets_list = kwargs['targets']
         is_long = side == "LONG"
@@ -413,18 +345,32 @@ class TradeService:
         return final_rec, report
 
     @uow_transaction
+    async def cancel_pending_recommendation_manual(self, rec_id: int, user_telegram_id: str, *, db_session: Session) -> Recommendation:
+        """
+        ✅ NEW: Handles the manual cancellation of a PENDING recommendation by the user.
+        """
+        uid_int = _parse_int_user_id(user_telegram_id)
+        if not uid_int: raise ValueError("Invalid User ID.")
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        if not rec_orm: raise ValueError(f"Recommendation #{rec_id} not found.")
+        rec = self.repo._to_entity(rec_orm)
+        if not rec or rec.user_id != str(uid_int): raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
+        if rec.status != RecommendationStatus.PENDING: raise ValueError("Only PENDING recommendations can be cancelled.")
+        rec.status = RecommendationStatus.CLOSED
+        rec.closed_at = datetime.now(timezone.utc)
+        updated_rec = self.repo.update_with_event(db_session, rec, "CANCELED_MANUAL", {"reason": "Cancelled manually by the user."})
+        await self.alert_service.remove_triggers_for_recommendation(rec_id)
+        return updated_rec
+
+    @uow_transaction
     async def close_recommendation_for_user_async(self, rec_id: int, user_telegram_id: str, exit_price: float, reason: str = "MANUAL_CLOSE", *, db_session: Session) -> Recommendation:
         uid_int = _parse_int_user_id(user_telegram_id)
-        if not uid_int:
-            raise ValueError("Invalid User ID.")
+        if not uid_int: raise ValueError("Invalid User ID.")
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm:
-            raise ValueError(f"Recommendation #{rec_id} not found.")
+        if not rec_orm: raise ValueError(f"Recommendation #{rec_id} not found.")
         rec = self.repo._to_entity(rec_orm)
-        if not rec or rec.user_id != str(uid_int):
-            raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
-        if rec.status == RecommendationStatus.CLOSED:
-            return rec
+        if not rec or rec.user_id != str(uid_int): raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
+        if rec.status == RecommendationStatus.CLOSED: return rec
         rec.open_size_percent = 0.0
         rec.close(exit_price)
         updated_rec = self.repo.update_with_event(db_session, rec, "CLOSED", {"exit_price": exit_price, "reason": reason})
@@ -434,11 +380,9 @@ class TradeService:
     async def close_recommendation_at_market_for_user_async(self, rec_id: int, user_telegram_id: str) -> Recommendation:
         with session_scope() as session:
             rec = self.repo.get_by_id_for_user(session, rec_id, user_telegram_id)
-        if not rec:
-            raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
+        if not rec: raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
         live_price = await self.price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
-        if live_price is None:
-            raise RuntimeError(f"Could not fetch live market price for {rec.asset.value}.")
+        if live_price is None: raise RuntimeError(f"Could not fetch live market price for {rec.asset.value}.")
         updated_rec = await self.close_recommendation_for_user_async(rec_id, user_telegram_id, live_price, reason="MANUAL_MARKET_CLOSE")
         pnl = _pct(updated_rec.entry.value, live_price, updated_rec.side.value)
         emoji, r_text = ("🏆", "ربح") if pnl > 0.001 else ("💔", "خسارة")
@@ -449,11 +393,9 @@ class TradeService:
     @uow_transaction
     async def activate_recommendation_async(self, rec_id: int, *, db_session: Session) -> Optional[Recommendation]:
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm:
-            return None
+        if not rec_orm: return None
         rec = self.repo._to_entity(rec_orm)
-        if not rec or rec.status != RecommendationStatus.PENDING:
-            return rec
+        if not rec or rec.status != RecommendationStatus.PENDING: return rec
         rec.activate()
         rec.highest_price_reached = rec.lowest_price_reached = rec.entry.value
         updated_rec = self.repo.update_with_event(db_session, rec, "ACTIVATED", {})
@@ -461,11 +403,9 @@ class TradeService:
 
     async def _take_partial_profit_atomic(self, rec_orm: RecommendationORM, user_id: str, close_percent: float, price: float, triggered_by: str, *, db_session: Session) -> Recommendation:
         rec = self.repo._to_entity(rec_orm)
-        if not rec or rec.user_id != user_id:
-            raise ValueError("Access denied.")
-        if rec.status != RecommendationStatus.ACTIVE:
-            raise ValueError("Partial profit can only be taken on active recommendations.")
-        if not (0 < close_percent <= rec.open_size_percent):
+        if not rec or rec.user_id != user_id: raise ValueError("Access denied.")
+        if rec.status != RecommendationStatus.ACTIVE: raise ValueError("Partial profit can only be taken on active recommendations.")
+        if not (0 < close_percent <= rec.open_size_percent + 0.1):  # Add tolerance
             raise ValueError(f"Invalid percentage. Must be between 0 and {rec.open_size_percent:.2f}.")
         rec.open_size_percent -= close_percent
         pnl_on_part = _pct(rec.entry.value, price, rec.side.value)
@@ -482,10 +422,8 @@ class TradeService:
     async def process_target_hit_async(self, rec_id: int, user_id: str, target_index: int, hit_price: float, *, db_session: Session) -> Recommendation:
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         rec = self.repo._to_entity(rec_orm)
-        if not rec_orm or rec.status != RecommendationStatus.ACTIVE:
-            return rec
-        if not rec.targets.values or len(rec.targets.values) < target_index:
-            return rec
+        if not rec_orm or rec.status != RecommendationStatus.ACTIVE: return rec
+        if not rec.targets.values or len(rec.targets.values) < target_index: return rec
         target = rec.targets.values[target_index - 1]
         event_type = f"TP{target_index}_HIT"
         updated_rec = self.repo.update_with_event(db_session, rec, event_type, {"price": hit_price, "target": target.price})
@@ -498,10 +436,8 @@ class TradeService:
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: float, *, db_session: Session) -> Recommendation:
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         rec = self.repo._to_entity(rec_orm)
-        if not rec or rec.user_id != user_id:
-            raise ValueError("Access Denied.")
-        if rec.status == RecommendationStatus.CLOSED:
-            raise ValueError("Cannot update SL for a closed recommendation.")
+        if not rec or rec.user_id != user_id: raise ValueError("Access Denied.")
+        if rec.status == RecommendationStatus.CLOSED: raise ValueError("Cannot update SL for a closed recommendation.")
         old_sl = rec.stop_loss.value
         rec.stop_loss = Price(new_sl)
         updated_rec = self.repo.update_with_event(db_session, rec, "SL_UPDATED", {"old_sl": old_sl, "new_sl": new_sl})
@@ -514,10 +450,8 @@ class TradeService:
     async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, float]], *, db_session: Session) -> Recommendation:
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         rec = self.repo._to_entity(rec_orm)
-        if not rec or rec.user_id != user_id:
-            raise ValueError("Access Denied.")
-        if rec.status == RecommendationStatus.CLOSED:
-            raise ValueError("Cannot update targets for a closed recommendation.")
+        if not rec or rec.user_id != user_id: raise ValueError("Access Denied.")
+        if rec.status == RecommendationStatus.CLOSED: raise ValueError("Cannot update targets for a closed recommendation.")
         old_targets = [t.price for t in rec.targets.values]
         rec.targets = Targets(new_targets)
         updated_rec = self.repo.update_with_event(db_session, rec, "TARGETS_UPDATED", {"old": old_targets, "new": [t.price for t in rec.targets.values]})
@@ -530,10 +464,8 @@ class TradeService:
     async def update_exit_strategy_for_user_async(self, rec_id: int, user_id: str, new_strategy: ExitStrategy, *, db_session: Session) -> Recommendation:
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         rec = self.repo._to_entity(rec_orm)
-        if not rec or rec.user_id != user_id:
-            raise ValueError("Access Denied.")
-        if rec.status == RecommendationStatus.CLOSED:
-            return rec
+        if not rec or rec.user_id != user_id: raise ValueError("Access Denied.")
+        if rec.status == RecommendationStatus.CLOSED: return rec
         old_strategy = rec.exit_strategy
         rec.exit_strategy = new_strategy
         updated_rec = self.repo.update_with_event(db_session, rec, "STRATEGY_UPDATED", {"old": old_strategy.value, "new": new_strategy.value})
@@ -546,10 +478,8 @@ class TradeService:
     async def update_profit_stop_for_user_async(self, rec_id: int, user_id: str, new_price: Optional[float], *, db_session: Session) -> Recommendation:
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         rec = self.repo._to_entity(rec_orm)
-        if not rec or rec.user_id != user_id:
-            raise ValueError("Access Denied.")
-        if rec.status != RecommendationStatus.ACTIVE:
-            raise ValueError("Profit Stop can only be set on active recommendations.")
+        if not rec or rec.user_id != user_id: raise ValueError("Access Denied.")
+        if rec.status != RecommendationStatus.ACTIVE: raise ValueError("Profit Stop can only be set on active recommendations.")
         old_price = rec.profit_stop_price
         rec.profit_stop_price = new_price
         updated_rec = self.repo.update_with_event(db_session, rec, "PROFIT_STOP_UPDATED", {"old": old_price, "new": new_price})
@@ -559,24 +489,17 @@ class TradeService:
         await self.alert_service.update_triggers_for_recommendation(rec_id)
         return updated_rec
 
-    # ---------------- Read helpers ----------------
-
     def get_recommendation_for_user(self, session: Session, rec_id: int, user_telegram_id: str) -> Optional[Recommendation]:
         uid_int = _parse_int_user_id(user_telegram_id)
-        if not uid_int:
-            raise ValueError("Invalid User ID format.")
+        if not uid_int: raise ValueError("Invalid User ID format.")
         return self.repo.get_by_id_for_user(session, rec_id, uid_int)
 
     def get_open_recommendations_for_user(self, session: Session, user_telegram_id: str, **filters) -> List[Recommendation]:
         uid_int = _parse_int_user_id(user_telegram_id)
-        if not uid_int:
-            return []
+        if not uid_int: return []
         return self.repo.list_open_for_user(session, uid_int, **filters)
 
-    # ✅ --- الإصلاح: تم تعديل توقيع الدالة ليكون أكثر وضوحًا ويتطابق مع الاستدعاءات ---
     def get_recent_assets_for_user(self, session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
         uid_int = _parse_int_user_id(user_telegram_id)
-        if not uid_int:
-            return []
-        # التأكد من أن اسم المعلمة الممرر للمخزن صحيح
+        if not uid_int: return []
         return self.repo.get_recent_assets_for_user(session, user_telegram_id=uid_int, limit=limit)
