@@ -1,7 +1,7 @@
-# src/capitalguard/application/services/trade_service.py v18.1.1 (Comprehensive Notifications)
+# src/capitalguard/application/services/trade_service.py v18.2.0 (Accurate PnL & Comprehensive Notifications)
 """
-TradeService — Final version with comprehensive and consistent notification logic
-for every state-changing event, ensuring the system feels alive and responsive.
+TradeService — Final hardened version with proactive pending recommendation management,
+accurate weighted PnL calculations, and comprehensive notifications for all state changes.
 """
 
 import logging
@@ -15,14 +15,14 @@ from sqlalchemy.orm import Session
 
 from capitalguard.infrastructure.db.base import SessionLocal
 from capitalguard.infrastructure.db.uow import session_scope
-from capitalguard.infrastructure.db.models import PublishedMessage, RecommendationORM
+from capitalguard.infrastructure.db.models import PublishedMessage, RecommendationORM, RecommendationEvent
 from capitalguard.infrastructure.db.repository import RecommendationRepository, ChannelRepository, UserRepository
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType, ExitStrategy
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from capitalguard.domain.ports import NotifierPort
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.interfaces.telegram.ui_texts import _pct
+from capitalguard.interfaces.telegram.ui_texts import _pct, _calculate_weighted_pnl
 
 log = logging.getLogger(__name__)
 
@@ -349,14 +349,24 @@ class TradeService:
         if not rec or rec.user_id != str(uid_int): raise ValueError(f"Recommendation #{rec_id} not found or access denied.")
         if rec.status == RecommendationStatus.CLOSED: return rec
         
+        remaining_percent = rec.open_size_percent
+        if remaining_percent > 0:
+            pnl_on_part = _pct(rec.entry.value, exit_price, rec.side.value)
+            event_type = "FINAL_PARTIAL_CLOSE"
+            event_data = {"price": exit_price, "closed_percent": remaining_percent, "remaining_percent": 0.0, "pnl_on_part": pnl_on_part, "triggered_by": reason}
+            new_event = RecommendationEvent(recommendation_id=rec.id, event_type=event_type, event_data=event_data)
+            db_session.add(new_event)
+            rec.events.append(new_event)
+
         rec.open_size_percent = 0.0
         rec.close(exit_price)
+        
         updated_rec = self.repo.update_with_event(db_session, rec, "CLOSED", {"exit_price": exit_price, "reason": reason})
         
         if updated_rec:
-            pnl = _pct(updated_rec.entry.value, exit_price, updated_rec.side.value)
-            emoji, r_text = ("🏆", "ربح") if pnl > 0.001 else ("💔", "خسارة")
-            self.notify_reply(rec_id, f"<b>{emoji} تم إغلاق الصفقة #{updated_rec.asset.value}</b>\nأُغلقت عند {exit_price:g} بنتيجة <b>{pnl:+.2f}%</b> ({r_text}).")
+            final_pnl = _calculate_weighted_pnl(updated_rec)
+            emoji, r_text = ("🏆", "ربح") if final_pnl > 0.001 else ("💔", "خسارة")
+            self.notify_reply(rec_id, f"<b>{emoji} تم إغلاق الصفقة #{updated_rec.asset.value}</b>\nأُغلقت بالكامل بنتيجة نهائية <b>{final_pnl:+.2f}%</b> ({r_text}).")
             await self.notify_card_update(updated_rec)
 
         await self.alert_service.remove_triggers_for_recommendation(rec_id)
