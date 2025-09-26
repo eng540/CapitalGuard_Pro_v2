@@ -1,6 +1,6 @@
-# src/capitalguard/application/services/alert_service.py v20.0.1 (Final Hardened)
+# src/capitalguard/application/services/alert_service.py v20.0.2 (Syntax Hotfix)
 """
-AlertService — Final hardened version with proactive invalidation of PENDING recommendations.
+AlertService — Final hardened version with proactive invalidation and syntax hotfix.
 """
 
 import logging
