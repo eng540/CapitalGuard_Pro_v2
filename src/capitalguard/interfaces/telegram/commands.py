@@ -1,5 +1,5 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 13.3.1) ---
-# src/capitalguard/interfaces/telegram/commands.py
+# src/capitalguard/interfaces/telegram/commands.py (Updated for AuditService)
+# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE ---
 
 import io
 import csv
@@ -19,7 +19,9 @@ from capitalguard.config import settings
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+from capitalguard.application.services.audit_service import AuditService
+from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository, RecommendationRepository
+from capitalguard.infrastructure.db.models import RecommendationEvent
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +30,6 @@ ADMIN_USERNAMES = [username.strip() for username in (os.getenv("ADMIN_USERNAMES"
 admin_filter = filters.User(username=ADMIN_USERNAMES)
 
 def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], Optional[str]]:
-    """Extracts channel info from a forwarded message."""
     chat_obj = getattr(message, "forward_from_chat", None)
     if chat_obj is None:
         fwd_origin = getattr(message, "forward_origin", None)
@@ -38,7 +39,6 @@ def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], O
     return (int(getattr(chat_obj, "id")), getattr(chat_obj, "title", None), getattr(chat_obj, "username", None))
 
 async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: int) -> bool:
-    """Performs a lightweight post to verify the bot can publish in the channel."""
     try:
         await context.bot.send_message(chat_id=channel_id, text="✅ Channel successfully linked.", disable_notification=True)
         return True
@@ -48,9 +48,6 @@ async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: i
 
 @unit_of_work
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    """
-    Handles the /start command. It now also ensures the user is created in the DB.
-    """
     user = update.effective_user
     log.info(f"User {user.id} ({user.username}) started interaction.")
 
@@ -102,21 +99,19 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         "<b>Available Commands:</b>\n\n"
-        "<b>--- Recommendation Creation ---</b>\n"
+        "<b>--- Recommendation Management ---</b>\n"
         "• <code>/newrec</code> — Show creation method menu.\n"
-        "• <code>/new</code> — Start interactive builder directly.\n"
-        "• <code>/rec</code> — Use the quick command mode.\n"
-        "• <code>/editor</code> — Use the text editor mode.\n\n"
-        "<b>--- Management & Analytics ---</b>\n"
-        "• <code>/open [filter]</code> — View your open recommendations.\n"
+        "• <code>/open</code> — View your open recommendations.\n"
+        "• <code>/events &lt;id&gt;</code> — Show event log for a recommendation.\n\n"
+        "<b>--- Analytics & Export ---</b>\n"
         "• <code>/stats</code> — View your personal performance summary.\n"
         "• <code>/export</code> — Export your recommendations.\n\n"
         "<b>--- Channel Management ---</b>\n"
         "• <code>/link_channel</code> — Link a new channel via forward.\n"
         "• <code>/channels</code> — View your linked channels.\n"
         "• <code>/toggle_channel &lt;id&gt;</code> — Activate/deactivate a channel.\n\n"
-        "<b>--- Settings ---</b>\n"
-        "• <code>/settings</code> — (Future placeholder for account settings)."
+        "<b>--- General ---</b>\n"
+        "• <code>/cancel</code> — Cancel current operation."
     )
 
 @require_active_user
@@ -141,8 +136,7 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessio
             else: filters_map["symbol"] = a; filter_text_parts.append(f"Symbol: {a.upper()}")
     context.user_data["last_open_filters"] = filters_map
     
-    # ✅ SOLUTION: Call the correct method on the repository, not the service.
-    items = trade_service.repo.list_open_for_user(db_session, int(user_telegram_id), **filters_map)
+    items = trade_service.get_open_recommendations_for_user(db_session, user_telegram_id, **filters_map)
     
     if not items:
         await update.message.reply_text("✅ No open recommendations match the current filter.")
@@ -256,6 +250,49 @@ async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE,
     repo.set_active(user.id, chat_id, not target.is_active)
     await update.message.reply_text("✅ Channel status has been updated.")
 
+@require_active_user
+async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    ✅ UPDATED: Fetches and displays the event log for a specific recommendation
+    using the dedicated AuditService.
+    Usage: /events <rec_id>
+    """
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_html("<b>Usage:</b> <code>/events &lt;recommendation_id&gt;</code>")
+        return
+
+    rec_id = int(context.args[0])
+    user_telegram_id = str(update.effective_user.id)
+    
+    audit_service = get_service(context, "audit_service", AuditService)
+
+    try:
+        events = audit_service.get_recommendation_events_for_user(rec_id, user_telegram_id)
+        
+        if not events:
+            await update.message.reply_html(f"No events found for Recommendation #{rec_id}.")
+            return
+
+        message_lines = [f"📋 <b>Event Log for Recommendation #{rec_id}</b>", "─" * 20]
+        for event in events:
+            timestamp = event['timestamp']
+            event_type = event['type'].replace('_', ' ').title()
+            data_str = str(event['data']) if event['data'] else "No data"
+            message_lines.append(f"<b>- {event_type}</b> (at {timestamp})")
+            message_lines.append(f"  <code>{data_str}</code>")
+
+        message_text = "\n".join(message_lines)
+        if len(message_text) > 4096:
+            message_text = message_text[:4090] + "\n..."
+
+        await update.message.reply_html(message_text)
+
+    except ValueError as e:
+        await update.message.reply_text(str(e))
+    except Exception as e:
+        log.error(f"Error fetching events for rec #{rec_id}: {e}", exc_info=True)
+        await update.message.reply_text("An unexpected error occurred while fetching the event log.")
+
 def register_commands(app: Application):
     """Registers all basic, non-conversational commands for the bot."""
     app.add_handler(CommandHandler("start", start_cmd))
@@ -267,6 +304,5 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("link_channel", link_channel_cmd))
     app.add_handler(CommandHandler("channels", channels_cmd))
     app.add_handler(CommandHandler("toggle_channel", toggle_channel_cmd))
+    app.add_handler(CommandHandler("events", events_cmd))
     app.add_handler(MessageHandler(filters.FORWARDED, link_channel_forward_handler))
-
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 13.3.1) ---
