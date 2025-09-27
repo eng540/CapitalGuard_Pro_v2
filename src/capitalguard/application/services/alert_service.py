@@ -1,6 +1,6 @@
-# src/capitalguard/application/services/alert_service.py v20.0.2 (Syntax Hotfix)
+# src/capitalguard/application/services/alert_service.py v21.0.0 (The Watchdog)
 """
-AlertService — Final hardened version with proactive invalidation and syntax hotfix.
+AlertService — Final hardened version with a self-healing watchdog mechanism.
 """
 
 import logging
@@ -15,20 +15,30 @@ from capitalguard.domain.entities import RecommendationStatus
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
+from capitalguard.application.services.price_service import PriceService
 
 log = logging.getLogger(__name__)
 
+WATCHDOG_INTERVAL_SECONDS = 60
+WATCHDOG_STALE_THRESHOLD_SECONDS = 90
+
 
 class AlertService:
-    def __init__(self, trade_service, repo: RecommendationRepository, streamer: Optional[PriceStreamer] = None, debounce_seconds: float = 1.0):
+    def __init__(self, trade_service, price_service: PriceService, repo: RecommendationRepository, streamer: Optional[PriceStreamer] = None, debounce_seconds: float = 1.0):
         self.trade_service = trade_service
+        self.price_service = price_service
         self.repo = repo
         self.price_queue: asyncio.Queue = asyncio.Queue()
         self.streamer = streamer or PriceStreamer(self.price_queue, self.repo)
         self.active_triggers: Dict[str, List[Dict[str, Any]]] = {}
         self._triggers_lock = asyncio.Lock()
+        
+        self._last_price_seen_at: Dict[str, float] = {}
+        
         self._processing_task: Optional[asyncio.Task] = None
         self._index_sync_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
+
         self._bg_thread: Optional[threading.Thread] = None
         self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
         self._last_processed: Dict[int, Dict[str, float]] = {}
@@ -36,7 +46,7 @@ class AlertService:
         self._tp_re = re.compile(r"^TP(\d+)$", flags=re.IGNORECASE)
 
     async def build_triggers_index(self):
-        log.info("Attempting to build in-memory trigger index for all active recommendations...")
+        log.info("Attempting to build in-memory trigger index...")
         retry_delay = 5
         while True:
             try:
@@ -44,7 +54,7 @@ class AlertService:
                     trigger_data = self.repo.list_all_active_triggers_data(session)
                 break
             except Exception:
-                log.critical("CRITICAL: Failed to read triggers from repository. Retrying in %ds...", retry_delay, exc_info=True)
+                log.critical("CRITICAL: DB read failure. Retrying in %ds...", retry_delay, exc_info=True)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
         new_triggers: Dict[str, List[Dict[str, Any]]] = {}
@@ -61,7 +71,7 @@ class AlertService:
         async with self._triggers_lock:
             self.active_triggers = new_triggers
         total_recs = len(trigger_data) if trigger_data is not None else 0
-        log.info("✅ Trigger index built successfully: %d recommendations across %d symbols.", total_recs, len(new_triggers))
+        log.info("✅ Trigger index built: %d recommendations across %d symbols.", total_recs, len(new_triggers))
 
     def _add_item_to_trigger_dict(self, trigger_dict: Dict[str, list], item: Dict[str, Any]):
         asset = (item.get("asset") or "").strip().upper()
@@ -137,11 +147,36 @@ class AlertService:
         except Exception:
             log.exception("Index sync encountered error.")
 
+    async def _run_watchdog_check(self):
+        log.info("Price stream watchdog started (interval=%ss).", WATCHDOG_INTERVAL_SECONDS)
+        while True:
+            await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
+            try:
+                async with self._triggers_lock:
+                    watched_symbols = list(self.active_triggers.keys())
+                
+                now = time.time()
+                for symbol in watched_symbols:
+                    last_seen = self._last_price_seen_at.get(symbol, 0)
+                    if now - last_seen > WATCHDOG_STALE_THRESHOLD_SECONDS:
+                        log.warning("Watchdog: Price stream for %s is stale (last seen %.1f s ago). Fetching price manually.", symbol, now - last_seen)
+                        try:
+                            # Use the reliable REST-based service as a fallback
+                            price = await self.price_service.get_cached_price(symbol, "Futures", force_refresh=True)
+                            if price:
+                                # Manually inject the price into the processing queue
+                                await self.price_queue.put((symbol, price, price))
+                        except Exception:
+                            log.exception("Watchdog: Failed to fetch manual price for stale symbol %s.", symbol)
+            except Exception:
+                log.exception("An error occurred in the watchdog task.")
+
     async def _process_queue(self):
         log.info("AlertService queue processor started.")
         try:
             while True:
                 symbol, low_price, high_price = await self.price_queue.get()
+                self._last_price_seen_at[symbol.upper()] = time.time()
                 try:
                     await self.check_and_process_alerts(symbol, low_price, high_price)
                 except Exception:
@@ -158,8 +193,9 @@ class AlertService:
             loop = asyncio.get_running_loop()
             if self._processing_task is None or self._processing_task.done(): self._processing_task = loop.create_task(self._process_queue())
             if self._index_sync_task is None or self._index_sync_task.done(): self._index_sync_task = loop.create_task(self._run_index_sync())
+            if self._watchdog_task is None or self._watchdog_task.done(): self._watchdog_task = loop.create_task(self._run_watchdog_check())
             if hasattr(self.streamer, "start"): self.streamer.start()
-            log.info("AlertService started in existing event loop.")
+            log.info("AlertService and its tasks started in existing event loop.")
             return
         except RuntimeError:
             if self._bg_thread and self._bg_thread.is_alive():
@@ -172,13 +208,15 @@ class AlertService:
                     asyncio.set_event_loop(loop)
                     self._processing_task = loop.create_task(self._process_queue())
                     self._index_sync_task = loop.create_task(self._run_index_sync())
+                    self._watchdog_task = loop.create_task(self._run_watchdog_check())
                     if hasattr(self.streamer, "start"): self.streamer.start()
                     loop.run_forever()
                 except Exception:
                     log.exception("AlertService background runner crashed.")
                 finally:
                     if self._bg_loop:
-                        for t in (self._processing_task, self._index_sync_task):
+                        all_tasks = (self._processing_task, self._index_sync_task, self._watchdog_task)
+                        for t in all_tasks:
                             if t and not t.done(): self._bg_loop.call_soon_threadsafe(t.cancel)
                         self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
             self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
@@ -187,12 +225,13 @@ class AlertService:
 
     def stop(self):
         if hasattr(self.streamer, "stop"): self.streamer.stop()
-        if self._processing_task and not self._processing_task.done(): self._processing_task.cancel()
-        if self._index_sync_task and not self._index_sync_task.done(): self._index_sync_task.cancel()
+        all_tasks = (self._processing_task, self._index_sync_task, self._watchdog_task)
+        for t in all_tasks:
+            if t and not t.done(): t.cancel()
         if self._bg_loop and self._bg_thread:
             self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
             self._bg_thread.join(timeout=5.0)
-        self._bg_thread = self._bg_loop = self._processing_task = self._index_sync_task = None
+        self._bg_thread = self._bg_loop = self._processing_task = self._index_sync_task = self._watchdog_task = None
         log.info("AlertService stopped and cleaned up.")
 
     def _is_price_condition_met(self, side: str, low_price: float, high_price: float, target_price: float, condition_type: str, order_type: Optional[Any] = None) -> bool:
