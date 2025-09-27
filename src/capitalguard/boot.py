@@ -1,6 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.2.0) ---
-# src/capitalguard/boot.py
-
+# src/capitalguard/boot.py (Updated for AuditService) v 18.0.0
 import os
 import logging
 import sys
@@ -15,16 +13,14 @@ from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.alert_service import AlertService
 from capitalguard.application.services.market_data_service import MarketDataService
-from capitalguard.infrastructure.db.repository import RecommendationRepository
+from capitalguard.application.services.audit_service import AuditService
+from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.infrastructure.execution.binance_exec import BinanceExec, BinanceCreds
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
 from capitalguard.service_registry import register_global_services
 
 class TelegramLogHandler(logging.Handler):
-    """
-    A custom logging handler that sends critical messages to a Telegram chat.
-    """
     def __init__(self, notifier: TelegramNotifier, level=logging.ERROR):
         super().__init__(level=level)
         self.notifier = notifier
@@ -32,12 +28,8 @@ class TelegramLogHandler(logging.Handler):
         self._local.is_handling = False
 
     def emit(self, record: logging.LogRecord):
-        if getattr(self._local, 'is_handling', False):
-            return
-        
-        if not self.notifier or not settings.TELEGRAM_ADMIN_CHAT_ID:
-            return
-        
+        if getattr(self._local, 'is_handling', False): return
+        if not self.notifier or not settings.TELEGRAM_ADMIN_CHAT_ID: return
         try:
             self._local.is_handling = True
             simple_message = f"⚠️ CRITICAL ERROR: {record.getMessage()}"
@@ -53,7 +45,6 @@ class TelegramLogHandler(logging.Handler):
             self._local.is_handling = False
 
 def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
-    """Configures the root logger for the entire application."""
     root_logger = logging.getLogger()
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
@@ -77,8 +68,9 @@ def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
     logging.info("Logging configured successfully.")
 
 def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
-    """Builds all services and populates the global registry."""
-    repo = RecommendationRepository()
+    rec_repo = RecommendationRepository()
+    user_repo_class = UserRepository
+
     notifier = TelegramNotifier()
     if ptb_app:
         notifier.set_ptb_app(ptb_app)
@@ -92,34 +84,22 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
 
     market_data_service = MarketDataService()
     price_service = PriceService()
-    analytics_service = AnalyticsService(repo=repo)
+    analytics_service = AnalyticsService(repo=rec_repo)
+    audit_service = AuditService(rec_repo=rec_repo, user_repo_class=user_repo_class)
     
-    # ✅ ARCHITECTURAL FIX: Dependency injection order is corrected.
-    # 1. Services with no dependencies on other services are created.
-    # 2. TradeService is created, as AlertService depends on it.
-    # 3. AlertService is created last, receiving the fully-formed TradeService.
-    
-    # This placeholder is needed because TradeService needs an alert_service reference.
-    # A better long-term solution would be an event bus to fully decouple them.
-    # For now, we will keep the reference but fix the circular assignment.
-    alert_service_placeholder = {"service": None}
-
     trade_service = TradeService(
-        repo=repo, 
+        repo=rec_repo, 
         notifier=notifier, 
         market_data_service=market_data_service, 
         price_service=price_service,
-        alert_service=alert_service_placeholder # Pass a mutable reference
+        alert_service=None
     )
     
     alert_service = AlertService(
-        trade_service=trade_service, # Pass the fully constructed trade_service
-        repo=repo
+        trade_service=trade_service,
+        repo=rec_repo
     )
     
-    # Fulfill the placeholder reference
-    alert_service_placeholder["service"] = alert_service
-    # And now set the reference correctly inside TradeService
     trade_service.alert_service = alert_service
 
     services = {
@@ -129,6 +109,7 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         "alert_service": alert_service,
         "notifier": notifier,
         "market_data_service": market_data_service,
+        "audit_service": audit_service,
     }
 
     register_global_services(services)
@@ -136,7 +117,6 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     return services
 
 def bootstrap_app() -> Optional[Application]:
-    """Bootstraps the Telegram bot application."""
     if not settings.TELEGRAM_BOT_TOKEN:
         logging.error("TELEGRAM_BOT_TOKEN not set. Bot cannot start.")
         return None
@@ -153,5 +133,3 @@ def bootstrap_app() -> Optional[Application]:
     except Exception as e:
         logging.exception(f"CRITICAL: Failed to bootstrap bot: {e}")
         return None
-
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 15.2.0) ---
