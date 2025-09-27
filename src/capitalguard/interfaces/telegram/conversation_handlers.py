@@ -1,4 +1,6 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py v 15.3.0 (Corrected)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py v15.3.1 (Market Order Flow Hotfix)
+# --- START OF FINAL, COMPLETE, AND CORRECTED FILE ---
+
 import logging
 import uuid
 import types
@@ -28,7 +30,6 @@ from capitalguard.infrastructure.db.repository import ChannelRepository, UserRep
 
 log = logging.getLogger(__name__)
 
-# --- State Definitions & Keys ---
 (SELECT_METHOD, AWAIT_TEXT_INPUT, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_NOTES, I_REVIEW, I_CHANNEL_PICKER) = range(9)
 CONVERSATION_DATA_KEY = "new_rec_draft"
 LAST_MSG_KEY = "last_conv_message"
@@ -36,7 +37,6 @@ CHANNEL_PICKER_KEY = "channel_picker_selection"
 REV_TOKENS_MAP = "review_tokens_map"
 REV_TOKENS_REVERSE = "review_tokens_rev"
 
-# --- Helper Functions ---
 def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop(CONVERSATION_DATA_KEY, None)
     context.user_data.pop(LAST_MSG_KEY, None)
@@ -76,7 +76,6 @@ def _resolve_review_key_from_token(context: ContextTypes.DEFAULT_TYPE, token: st
     _ensure_token_maps(context)
     return context.bot_data[REV_TOKENS_MAP].get(token)
 
-# --- Entry Point and State Handlers ---
 @require_active_user
 @require_channel_subscription
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -101,7 +100,6 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
     trade_service = get_service(context, "trade_service", TradeService)
     user_id_str = str(user.id)
     
-    # ✅ --- الإصلاح: استخدام اسم المعلمة الصريح 'user_telegram_id' عند استدعاء الخدمة ---
     recent_assets = trade_service.get_recent_assets_for_user(db_session, user_telegram_id=user_id_str, limit=5)
 
     reply_method = message_obj.edit_text if update.callback_query else message_obj.reply_text  
@@ -237,26 +235,56 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return I_PRICES
 
 async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    ✅ RE-ARCHITECTED: Now correctly handles the MARKET order flow by fetching
+    the live price *before* validation.
+    """
     draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
     order_type = draft.get('order_type', 'LIMIT').upper()
     tokens = (update.message.text or "").strip().replace(',', ' ').split()
+    
     try:
+        trade_service = get_service(context, "trade_service", TradeService)
+        
         if order_type == 'MARKET':
             if len(tokens) < 2: raise ValueError("MARKET format requires: STOP then TARGETS...")
-            draft["entry"] = 0
-            draft["stop_loss"] = parse_number(tokens[0])
-            draft["targets"] = parse_targets_list(tokens[1:])
-        else:
+            
+            # 1. Parse SL and Targets first
+            stop_loss = parse_number(tokens[0])
+            targets = parse_targets_list(tokens[1:])
+            if not targets: raise ValueError("No valid targets were parsed.")
+
+            # 2. Fetch live price to use as entry
+            price_service = get_service(context, "price_service", PriceService)
+            live_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"), force_refresh=True)
+            if live_price is None:
+                raise ValueError(f"Could not fetch live price for {draft['asset']}. Please try again.")
+            
+            # 3. Now, validate with the complete data
+            trade_service._validate_recommendation_data(draft["side"], live_price, stop_loss, targets)
+            
+            # 4. If validation passes, save to draft
+            draft["entry"] = live_price
+            draft["stop_loss"] = stop_loss
+            draft["targets"] = targets
+
+        else: # LIMIT or STOP_MARKET
             if len(tokens) < 3: raise ValueError("LIMIT/STOP_MARKET format requires: ENTRY STOP then TARGETS...")
-            draft["entry"] = parse_number(tokens[0])
-            draft["stop_loss"] = parse_number(tokens[1])
-            draft["targets"] = parse_targets_list(tokens[2:])
-        trade_service = get_service(context, "trade_service", TradeService)
-        trade_service._validate_recommendation_data(draft["side"], draft["entry"], draft["stop_loss"], draft["targets"])
-        if not draft["targets"]: raise ValueError("No valid targets were parsed.")
+            entry = parse_number(tokens[0])
+            stop_loss = parse_number(tokens[1])
+            targets = parse_targets_list(tokens[2:])
+            if not targets: raise ValueError("No valid targets were parsed.")
+
+            trade_service._validate_recommendation_data(draft["side"], entry, stop_loss, targets)
+            
+            draft["entry"] = entry
+            draft["stop_loss"] = stop_loss
+            draft["targets"] = targets
+
     except ValueError as e:
         await update.message.reply_text(f"❌ Invalid format or logic: {e}\nPlease try again.")
         return I_PRICES
+        
     context.user_data[CONVERSATION_DATA_KEY] = draft
     return await show_review_card(update, context)
 
@@ -284,16 +312,21 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
         target_chat_id, target_message_id = (message.chat_id, message.message_id)  
 
     try:  
-        await context.bot.edit_message_text(  
+        sent_message = await context.bot.edit_message_text(  
             chat_id=target_chat_id, message_id=target_message_id,  
             text=review_text, reply_markup=keyboard,  
             parse_mode='HTML', disable_web_page_preview=True  
         )  
-        if update.message: await update.message.delete()  
+        if update.message: await update.message.delete()
+        # ✅ UX FIX: Update the last message ID to the one we just edited.
+        if isinstance(sent_message, Message):
+            context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)
+
     except BadRequest as e:  
         if "Message is not modified" not in str(e):  
             log.warning(f"Edit failed, sending new message. Error: {e}")  
             sent_message = await context.bot.send_message(chat_id=target_chat_id, text=review_text, reply_markup=keyboard, parse_mode='HTML')  
+            # ✅ UX FIX: Update the last message ID to the new message.
             context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)  
             
     return I_REVIEW
@@ -346,7 +379,6 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     trade_service = get_service(context, "trade_service", TradeService)  
     try:
-        # ✅ FIX: Removed the `db_session` argument. The @uow_transaction decorator in TradeService handles it.
         saved_rec, report = await trade_service.create_and_publish_recommendation_async(  
             user_id=str(query.from_user.id),   
             target_channel_ids=selected_channels,   
@@ -422,9 +454,6 @@ async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_
 
 @unit_of_work
 async def channel_picker_logic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
-    """
-    Handles all interactions within the channel picker UI (toggle, navigation).
-    """
     query = update.callback_query
     await query.answer()
     
@@ -496,3 +525,5 @@ def register_conversation_handlers(app: Application):
         per_message=False
     )
     app.add_handler(conv_handler)
+
+# --- END OF FINAL, COMPLETE, AND CORRECTED FILE ---
