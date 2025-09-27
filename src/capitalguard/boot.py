@@ -1,4 +1,5 @@
-# src/capitalguard/boot.py (Updated for AuditService) v 18.0.0
+# src/capitalguard/boot.py v21.0.1 (Dependency Hotfix)
+
 import os
 import logging
 import sys
@@ -95,8 +96,10 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         alert_service=None
     )
     
+    # ✅ DEPENDENCY FIX: Pass the required 'price_service' to the AlertService constructor.
     alert_service = AlertService(
         trade_service=trade_service,
+        price_service=price_service,
         repo=rec_repo
     )
     
