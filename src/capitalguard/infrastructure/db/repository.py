@@ -1,4 +1,4 @@
-# src/capitalguard/infrastructure/db/repository.py (v17.2.0 - Event-Aware)
+# src/capitalguard/infrastructure/db/repository.py (Updated for AuditService)
 # --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE ---
 
 import logging
@@ -248,10 +248,16 @@ class RecommendationRepository:
     def get_published_messages(self, session: Session, rec_id: int) -> List[PublishedMessage]:
         return session.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
 
+    def get_events_for_recommendation(self, session: Session, rec_id: int) -> List[RecommendationEvent]:
+        """
+        ✅ NEW: Fetches all event records for a specific recommendation,
+        ordered by timestamp.
+        """
+        return session.query(RecommendationEvent).filter(
+            RecommendationEvent.recommendation_id == rec_id
+        ).order_by(RecommendationEvent.event_timestamp.asc()).all()
+
     def list_all_active_triggers_data(self, session: Session) -> List[Dict[str, Any]]:
-        """
-        ✅ ENHANCED: Now eagerly loads events to provide the full state to AlertService.
-        """
         results = session.query(RecommendationORM).options(
             joinedload(RecommendationORM.user),
             selectinload(RecommendationORM.events)
@@ -274,9 +280,6 @@ class RecommendationRepository:
         ]
 
     def get_active_trigger_data_by_id(self, session: Session, rec_id: int) -> Optional[Dict[str, Any]]:
-        """
-        ✅ ENHANCED: Also loads events for single-recommendation updates.
-        """
         r = session.query(RecommendationORM).options(
             joinedload(RecommendationORM.user),
             selectinload(RecommendationORM.events)
@@ -284,16 +287,10 @@ class RecommendationRepository:
             RecommendationORM.id == rec_id
         ).first()
 
-        if not r:
-            return None
-
-        try:
-            status_enum = RecommendationStatus(r.status)
-        except Exception:
-            return None
-
-        if status_enum not in (RecommendationStatus.PENDING, RecommendationStatus.ACTIVE):
-            return None
+        if not r: return None
+        try: status_enum = RecommendationStatus(r.status)
+        except Exception: return None
+        if status_enum not in (RecommendationStatus.PENDING, RecommendationStatus.ACTIVE): return None
 
         return {
             "id": r.id, "user_id": str(r.user.telegram_user_id), "asset": r.asset, "side": r.side,
