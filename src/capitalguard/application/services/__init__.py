@@ -1,4 +1,4 @@
-# src/capitalguard/application/services/__init__.py (Fixed)
+# src/capitalguard/application/services/__init__.py (Updated)
 """
 تصدير جميع خدمات التطبيق
 """
@@ -11,6 +11,7 @@ from .market_data_service import MarketDataService
 from .autotrade_service import AutoTradeService
 from .risk_service import RiskService
 from .report_service import ReportService
+from .audit_service import AuditService  # ✅ NEW: Import the new service
 
 __all__ = [
     "TradeService",
@@ -21,4 +22,5 @@ __all__ = [
     "AutoTradeService",
     "RiskService",
     "ReportService",
+    "AuditService",  # ✅ NEW: Export the new service
 ]
