@@ -1,7 +1,7 @@
-# src/capitalguard/application/services/trade_service.py v18.2.0 (Accurate PnL & Comprehensive Notifications)
+# src/capitalguard/application/services/trade_service.py v18.2.1 (Fortified Validation)
 """
-TradeService — Final hardened version with proactive pending recommendation management,
-accurate weighted PnL calculations, and comprehensive notifications for all state changes.
+TradeService — Final version with fortified validation logic to prevent illogical
+recommendations from ever entering the system.
 """
 
 import logging
@@ -129,43 +129,64 @@ class TradeService:
                     log.warning("Failed to send reply notification for rec #%s to channel %s: %s", rec_id, msg_meta.telegram_channel_id, e)
 
     def _validate_recommendation_data(self, side: str, entry: float, stop_loss: float, targets: List[Dict[str, float]]):
+        """
+        ✅ FORTIFIED: This validation logic is now more robust and ordered
+        to catch logical errors early and prevent inconsistent data.
+        """
         side_upper = side.upper()
-        if entry > 0:
-            if side_upper == "LONG" and not (stop_loss < entry):
-                raise ValueError("For new LONG trades, Stop Loss must be < Entry Price.")
-            if side_upper == "SHORT" and not (stop_loss > entry):
-                raise ValueError("For new SHORT trades, Stop Loss must be > Entry Price.")
+
+        # Rule 1: Basic price sanity checks
+        if entry <= 0 or stop_loss <= 0:
+            raise ValueError("Entry and Stop Loss prices must be positive.")
+        if not targets or not all(t.get('price', 0) > 0 for t in targets):
+            raise ValueError("At least one valid target with a positive price is required.")
+
+        # Rule 2: Directional logic for Stop Loss
+        if side_upper == "LONG" and stop_loss >= entry:
+            raise ValueError("For new LONG trades, Stop Loss must be < Entry Price.")
+        if side_upper == "SHORT" and stop_loss <= entry:
+            raise ValueError("For new SHORT trades, Stop Loss must be > Entry Price.")
+
+        # Rule 3: Directional logic for Targets
+        for target in targets:
+            if side_upper == 'LONG' and target['price'] <= entry:
+                raise ValueError(f"Target price {target['price']} must be above entry for a LONG trade.")
+            if side_upper == 'SHORT' and target['price'] >= entry:
+                raise ValueError(f"Target price {target['price']} must be below entry for a SHORT trade.")
+
+        # Rule 4: Risk/Reward Ratio - The most critical business rule
+        risk = abs(entry - stop_loss)
+        if risk <= 1e-9: # Prevent division by zero
+            raise ValueError("Entry and Stop Loss prices cannot be the same.")
+            
+        # Determine the first logical target to calculate reward
+        if side_upper == "LONG":
+            first_target_price = min(t['price'] for t in targets)
+        else: # SHORT
+            first_target_price = max(t['price'] for t in targets)
+        
+        reward = abs(first_target_price - entry)
+        min_acceptable_rr = 0.1
+        if (reward / risk) < min_acceptable_rr:
+            raise ValueError(f"Risk/Reward ratio too low: {(reward / risk):.3f}. Minimum allowed: {min_acceptable_rr}")
+
+        # Rule 5: Uniqueness and Order of Targets
         target_prices = [t['price'] for t in targets]
         if len(target_prices) != len(set(target_prices)):
             raise ValueError("Target prices must be unique.")
-        risk = abs(entry - stop_loss)
-        if not targets: raise ValueError("At least one target is required.")
-        if side_upper == "LONG":
-            first_targets = [t for t in targets if t['price'] > entry]
-            if not first_targets: raise ValueError("At least one target must be above entry for LONG.")
-            first_target = min(first_targets, key=lambda t: t['price'])
-        else:
-            first_targets = [t for t in targets if t['price'] < entry]
-            if not first_targets: raise ValueError("At least one target must be below entry for SHORT.")
-            first_target = max(first_targets, key=lambda t: t['price'])
-        reward = abs(first_target['price'] - entry)
-        min_acceptable_rr = 0.1
-        if risk > 0 and (reward / risk) < min_acceptable_rr:
-            raise ValueError(f"Risk/Reward ratio too low: {(reward / risk):.3f}. Minimum allowed: {min_acceptable_rr}")
+        
+        is_long = side_upper == 'LONG'
+        sorted_prices = sorted(target_prices, reverse=not is_long)
+        if target_prices != sorted_prices:
+            raise ValueError("Targets must be in ascending order for LONG trades and descending for SHORT trades.")
+
+        # Rule 6: Total close percentage
         total_close = sum(float(t.get('close_percent', 0)) for t in targets)
         if total_close > 100.01:  # Allow for small float inaccuracies
-            raise ValueError("Sum of close percentages exceeds 100%")
-        is_long = side_upper == 'LONG'
-        sorted_targets = sorted(targets, key=lambda t: t['price'], reverse=not is_long)
-        if [t['price'] for t in targets] != [t['price'] for t in sorted_targets]:
-            raise ValueError("Targets must be in ascending/descending order based on side.")
-        targets_vo = Targets(targets)
-        for target in targets_vo.values:
-            if entry > 0:
-                if (side_upper == 'LONG' and target.price <= entry) or (side_upper == 'SHORT' and target.price >= entry):
-                    raise ValueError(f"Target price {target.price} is not valid for a {side} trade with entry {entry}.")
-            if (side_upper == 'LONG' and target.price <= stop_loss) or (side_upper == 'SHORT' and target.price >= stop_loss):
-                raise ValueError(f"Target price {target.price} cannot be on the same side of the trade as the stop loss {stop_loss}.")
+            raise ValueError("Sum of target close percentages cannot exceed 100%.")
+
+    # ... (The rest of the file remains unchanged from the last complete version v18.2.0)
+    # I will include the full file for completeness.
 
     async def _publish_recommendation(self, session: Session, rec: Recommendation, user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[Recommendation, Dict]:
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
