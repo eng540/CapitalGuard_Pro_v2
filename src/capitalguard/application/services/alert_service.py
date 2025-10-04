@@ -109,7 +109,6 @@ class AlertService:
                     trigger_dict[asset].append(_create_trigger("SL", item.get("stop_loss")))
 
     async def update_triggers_for_recommendation(self, rec_id: int):
-        # This method might need to be adapted or split for UserTrades vs Recommendations
         log.debug("Generic trigger update called for ID #%s. Rebuilding index for safety.", rec_id)
         await self.build_triggers_index()
 
@@ -129,7 +128,7 @@ class AlertService:
 
     async def add_processed_event_in_memory(self, item_id: int, is_user_trade: bool, event_type: str):
         async with self._triggers_lock:
-            for triggers in self.active_triggers.values():
+            for symbol, triggers in self.active_triggers.items():
                 for trigger in triggers:
                     if trigger.get("id") == item_id and trigger.get("is_user_trade") == is_user_trade:
                         trigger["processed_events"].add(event_type)
@@ -275,10 +274,9 @@ class AlertService:
             
             try:
                 if is_user_trade:
-                    # Logic for UserTrades will be handled here in Phase 1
                     log.warning("UserTrade trigger hit for #%s, but logic is not implemented yet.", item_id)
                 else: # It's a Recommendation
-                    if status_in_memory == RecommendationStatusEnum.PENDING and ttype_raw == "SL":
+                    if status_in_memory == RecommendationStatus.PENDING and ttype_raw == "SL":
                         log.warning("Invalidation HIT for PENDING Rec #%s: SL hit before entry.", item_id)
                         await self.trade_service.process_invalidation_event(item_id)
                         continue
