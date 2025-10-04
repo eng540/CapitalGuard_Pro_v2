@@ -1,4 +1,4 @@
-# src/capitalguard/boot.py v21.0.1 (Dependency Hotfix)
+# --src/capitalguard/boot.py v21.0.1 (Dependency Hotfix)
 
 import os
 import logging
