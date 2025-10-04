@@ -1,4 +1,4 @@
-# - src/capitalguard/infrastructure/db/repository.py (v3.1 - Import Hotfix)
+# src/capitalguard/infrastructure/db/repository.py (v3.1 - Import Hotfix)
 import logging
 from typing import List, Optional, Any, Union, Dict
 from types import SimpleNamespace
