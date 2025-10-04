@@ -7,11 +7,12 @@ from types import SimpleNamespace
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from capitalguard.domain.entities import Recommendation, RecommendationStatus, OrderType, ExitStrategy
-from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
+from capitalguard.domain.entities import Recommendation as RecommendationEntity
+from capitalguard.domain.entities import RecommendationStatus as RecommendationStatusEntity
+from capitalguard.domain.value_objects import Symbol, Price, Targets, Side, OrderType, ExitStrategy
 from .models import (
     User, UserType, Channel, Recommendation, RecommendationEvent, 
-    PublishedMessage, UserTrade, UserTradeStatus
+    PublishedMessage, UserTrade, UserTradeStatus, RecommendationStatusEnum
 )
 
 log = logging.getLogger(__name__)
@@ -52,10 +53,34 @@ class ChannelRepository:
 
 class RecommendationRepository:
     @staticmethod
-    def _to_entity(row: Recommendation) -> Optional[Recommendation]:
-        # The ORM model is now the source of truth, we can adapt it to the entity if needed
-        # For now, we'll simplify and assume the ORM object is sufficient
-        return row
+    def _to_entity(row: Recommendation) -> Optional[RecommendationEntity]:
+        if not row: return None
+        
+        return RecommendationEntity(
+            id=row.id,
+            asset=Symbol(row.asset),
+            side=Side(row.side),
+            entry=Price(row.entry),
+            stop_loss=Price(row.stop_loss),
+            targets=Targets(row.targets),
+            order_type=OrderType(row.order_type.value),
+            status=RecommendationStatusEntity[row.status.name],
+            market="Futures", # Assuming default, needs to be added to model if dynamic
+            notes="", # Assuming default, needs to be added to model if dynamic
+            user_id=str(row.analyst.telegram_user_id) if row.analyst else None,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            exit_price=float(row.exit_price) if row.exit_price is not None else None,
+            activated_at=row.activated_at,
+            closed_at=row.closed_at,
+            exit_strategy=ExitStrategy(row.exit_strategy.value),
+            open_size_percent=100.0, # This is now on UserTrade, default for entity
+            events=[SimpleNamespace(
+                event_type=ev.event_type,
+                event_data=ev.event_data,
+                event_timestamp=ev.event_timestamp
+            ) for ev in row.events]
+        )
 
     def get(self, session: Session, rec_id: int) -> Optional[Recommendation]:
         return session.query(Recommendation).options(
@@ -71,23 +96,20 @@ class RecommendationRepository:
         ).order_by(RecommendationEvent.event_timestamp.asc()).all()
 
     def list_all_active_triggers_data(self, session: Session) -> List[Dict[str, Any]]:
-        # This now needs to fetch from UserTrades, not Recommendations
-        results = session.query(UserTrade).options(
+        active_user_trades = session.query(UserTrade).options(
             joinedload(UserTrade.user)
         ).filter(
             UserTrade.status == UserTradeStatus.OPEN
         ).all()
 
-        # We also need to fetch PENDING official recommendations for analysts
-        pending_recs = session.query(Recommendation).options(
-            joinedload(Recommendation.analyst)
+        pending_recommendations = session.query(Recommendation).options(
+            joinedload(Recommendation.analyst), selectinload(Recommendation.events)
         ).filter(
             Recommendation.status == RecommendationStatusEnum.PENDING
         ).all()
 
         trigger_data = []
-        # Add triggers for user trades (SL and TPs)
-        for trade in results:
+        for trade in active_user_trades:
             trigger_data.append({
                 "id": trade.id,
                 "user_id": str(trade.user.telegram_user_id),
@@ -96,13 +118,12 @@ class RecommendationRepository:
                 "entry": float(trade.entry),
                 "stop_loss": float(trade.stop_loss),
                 "targets": trade.targets,
-                "status": RecommendationStatus.ACTIVE, # User trades are conceptually "ACTIVE"
+                "status": RecommendationStatusEnum.ACTIVE,
                 "is_user_trade": True,
-                "processed_events": set() # User trades don't have events yet
+                "processed_events": set() 
             })
 
-        # Add triggers for analyst's pending recommendations (ENTRY only)
-        for rec in pending_recs:
+        for rec in pending_recommendations:
             trigger_data.append({
                 "id": rec.id,
                 "user_id": str(rec.analyst.telegram_user_id),
@@ -111,8 +132,11 @@ class RecommendationRepository:
                 "entry": float(rec.entry),
                 "stop_loss": float(rec.stop_loss),
                 "targets": rec.targets,
-                "status": RecommendationStatus.PENDING,
+                "status": RecommendationStatusEnum.PENDING,
                 "is_user_trade": False,
                 "processed_events": {e.event_type for e in rec.events}
             })
         return trigger_data
+        
+    def get_published_messages(self, session: Session, rec_id: int) -> List[PublishedMessage]:
+        return session.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
