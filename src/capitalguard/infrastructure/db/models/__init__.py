@@ -1,20 +1,37 @@
-# --- START OF CORRECTED FILE: src/capitalguard/infrastructure/db/models/__init__.py ---
-# This file makes the 'models' directory a package and ensures all models are discoverable.
-from .base import Base
-from .auth import User, Role, UserRole
-from .recommendation import RecommendationORM
-from .channel import Channel
-from .published_message import PublishedMessage
-from .recommendation_event import RecommendationEvent # Make sure this file exists
+# src/capitalguard/infrastructure/db/models/__init__.py (Corrected for v3.0)
 
+from .base import Base
+from .auth import User, UserType
+from .recommendation import (
+    RecommendationStatusEnum,
+    OrderTypeEnum,
+    ExitStrategyEnum,
+    UserTradeStatus,
+    AnalystProfile,
+    Channel,
+    Recommendation,
+    UserTrade,
+    RecommendationEvent,
+    Subscription,
+    AnalystStats,
+    PublishedMessage,
+)
+
+# The old Role and UserRole are deprecated and have been removed.
 __all__ = [
-    "Base", 
-    "User", 
-    "Role", 
-    "UserRole", 
-    "RecommendationORM", 
-    "Channel", 
+    "Base",
+    "User",
+    "UserType",
+    "AnalystProfile",
+    "Channel",
+    "Recommendation",
+    "UserTrade",
+    "RecommendationEvent",
+    "Subscription",
+    "AnalystStats",
     "PublishedMessage",
-    "RecommendationEvent"
+    "RecommendationStatusEnum",
+    "OrderTypeEnum",
+    "ExitStrategyEnum",
+    "UserTradeStatus",
 ]
-# --- END OF CORRECTED FILE ---
