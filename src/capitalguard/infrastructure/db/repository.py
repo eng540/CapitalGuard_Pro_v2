@@ -1,4 +1,4 @@
-# src/capitalguard/infrastructure/db/repository.py (v3.0 - Final & Complete)
+# src/capitalguard/infrastructure/db/repository.py (v3.1 - Import Hotfix)
 import logging
 from typing import List, Optional, Any, Union, Dict
 from types import SimpleNamespace
@@ -6,9 +6,14 @@ from types import SimpleNamespace
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from capitalguard.domain.entities import Recommendation as RecommendationEntity
-from capitalguard.domain.entities import RecommendationStatus as RecommendationStatusEntity
-from capitalguard.domain.value_objects import Symbol, Price, Targets, Side, OrderType, ExitStrategy
+# ✅ IMPORT FIX: Import Enums from their new correct location
+from capitalguard.domain.entities import (
+    Recommendation as RecommendationEntity,
+    RecommendationStatus as RecommendationStatusEntity,
+    OrderType, 
+    ExitStrategy
+)
+from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 from .models import (
     User, UserType, Channel, Recommendation, RecommendationEvent, 
     PublishedMessage, UserTrade, UserTradeStatus, RecommendationStatusEnum, AnalystProfile
