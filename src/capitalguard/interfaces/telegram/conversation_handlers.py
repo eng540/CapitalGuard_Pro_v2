@@ -1,10 +1,4 @@
 # src/capitalguard/interfaces/telegram/conversation_handlers.py (v15.3.1 - Final Multi-Tenant)
-"""
-This file contains the ConversationHandlers for creating recommendations.
-It has been fully updated to be compatible with the v3.0 multi-tenant architecture,
-restricting creation to Analysts and fixing the MARKET order flow.
-"""
-
 import logging
 import uuid
 import types
@@ -26,6 +20,7 @@ from .keyboards import (
 )
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
 from .auth import require_active_user, require_analyst_user
+
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
