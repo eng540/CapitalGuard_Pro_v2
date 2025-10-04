@@ -1,9 +1,4 @@
 # src/capitalguard/interfaces/telegram/commands.py (v3.0 - Final Multi-Tenant)
-"""
-This file contains the handlers for basic, non-conversational bot commands.
-It has been fully updated to support the multi-tenant (Trader/Analyst) architecture.
-"""
-
 import io
 import csv
 import logging
@@ -13,9 +8,9 @@ from telegram import Update, InputFile
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
 
 from .helpers import get_service, unit_of_work
-from .auth import require_active_user
+from .auth import require_active_user, require_analyst_user
 from .ui_texts import build_analyst_stats_text, build_trade_card_text
-from .keyboards import build_open_recs_keyboard, build_signal_tracking_keyboard
+from .keyboards import build_open_recs_keyboard
 from capitalguard.config import settings
 
 from capitalguard.application.services.trade_service import TradeService
@@ -23,7 +18,6 @@ from capitalguard.application.services.analytics_service import AnalyticsService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.audit_service import AuditService
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
-from capitalguard.infrastructure.db.models import RecommendationEvent
 
 log = logging.getLogger(__name__)
 
@@ -31,9 +25,6 @@ AWAITING_FORWARD_KEY = "awaiting_forward_channel_link"
 
 @unit_of_work
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    """
-    Handles the /start command. Ensures a user record exists in the database.
-    """
     user = update.effective_user
     log.info(f"User {user.id} ({user.username}) started interaction.")
     UserRepository(db_session).find_or_create(telegram_id=user.id, first_name=user.first_name, username=user.username)
@@ -41,9 +32,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
 
 @require_active_user
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handles the /help command, showing available commands.
-    """
     await update.message.reply_html(
         "<b>Available Commands:</b>\n\n"
         "<b>--- Trading ---</b>\n"
@@ -61,15 +49,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_active_user
 @unit_of_work
 async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    """
-    Handles the /open command.
-    Displays open Recommendations for Analysts, and open UserTrades for Traders.
-    """
     trade_service = get_service(context, "trade_service", TradeService)
     price_service = get_service(context, "price_service", PriceService)
     user_telegram_id = str(update.effective_user.id)
     
-    # The service layer now correctly distinguishes between user types
     items = trade_service.get_open_positions_for_user(db_session, user_telegram_id)
     
     if not items:
@@ -81,9 +64,6 @@ async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessio
 
 @require_active_user
 async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handles the /events command using the dedicated AuditService.
-    """
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_html("<b>Usage:</b> <code>/events &lt;id&gt;</code>")
         return
@@ -120,14 +100,8 @@ async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.error(f"Error fetching events for rec #{rec_id}: {e}", exc_info=True)
         await update.message.reply_text("An unexpected error occurred while fetching the event log.")
 
-# Note: Other commands like stats, export, link_channel etc. need to be
-# re-evaluated and re-implemented in the context of the new multi-tenant design.
-# They are omitted here to provide a clean, working baseline for Phase 0.
-
 def register_commands(app: Application):
-    """Registers all basic, non-conversational commands for the bot."""
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("open", open_cmd))
     app.add_handler(CommandHandler("events", events_cmd))
-    # Other commands will be added back as they are refactored for v3.0
