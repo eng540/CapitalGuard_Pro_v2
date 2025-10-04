@@ -1,5 +1,9 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py v15.3.1 (Market Order Flow Hotfix)
-# --- START OF FINAL, COMPLETE, AND CORRECTED FILE ---
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v15.3.1 - Final Multi-Tenant)
+"""
+This file contains the ConversationHandlers for creating recommendations.
+It has been fully updated to be compatible with the v3.0 multi-tenant architecture,
+restricting creation to Analysts and fixing the MARKET order flow.
+"""
 
 import logging
 import uuid
@@ -21,8 +25,7 @@ from .keyboards import (
     build_channel_picker_keyboard
 )
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
-from .auth import require_active_user, require_channel_subscription
-
+from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
@@ -42,7 +45,9 @@ def _clean_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop(LAST_MSG_KEY, None)
     context.user_data.pop(CHANNEL_PICKER_KEY, None)
     review_key = context.user_data.pop('current_review_key', None)
-    if review_key: context.bot_data.pop(review_key, None)
+    if review_key and context.bot_data:
+        context.bot_data.get(REV_TOKENS_MAP, {}).pop(context.bot_data.get(REV_TOKENS_REVERSE, {}).pop(review_key, None), None)
+        context.bot_data.get(REV_TOKENS_REVERSE, {}).pop(review_key, None)
     context.user_data.pop('current_review_token', None)
     context.user_data.pop('original_query_message', None)
     context.user_data.pop('input_mode', None)
@@ -77,7 +82,7 @@ def _resolve_review_key_from_token(context: ContextTypes.DEFAULT_TYPE, token: st
     return context.bot_data[REV_TOKENS_MAP].get(token)
 
 @require_active_user
-@require_channel_subscription
+@require_analyst_user
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
@@ -89,7 +94,7 @@ async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_T
     return SELECT_METHOD
 
 @require_active_user
-@require_channel_subscription
+@require_analyst_user
 @unit_of_work
 async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
     _clean_conversation_state(context)
@@ -115,7 +120,7 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
     return I_ASSET
 
 @require_active_user
-@require_channel_subscription
+@require_analyst_user
 async def start_text_input_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clean_conversation_state(context)
     context.user_data[CONVERSATION_DATA_KEY] = {}
@@ -235,10 +240,6 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return I_PRICES
 
 async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    ✅ RE-ARCHITECTED: Now correctly handles the MARKET order flow by fetching
-    the live price *before* validation.
-    """
     draft = context.user_data.get(CONVERSATION_DATA_KEY, {})
     order_type = draft.get('order_type', 'LIMIT').upper()
     tokens = (update.message.text or "").strip().replace(',', ' ').split()
@@ -249,21 +250,17 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if order_type == 'MARKET':
             if len(tokens) < 2: raise ValueError("MARKET format requires: STOP then TARGETS...")
             
-            # 1. Parse SL and Targets first
             stop_loss = parse_number(tokens[0])
             targets = parse_targets_list(tokens[1:])
             if not targets: raise ValueError("No valid targets were parsed.")
 
-            # 2. Fetch live price to use as entry
             price_service = get_service(context, "price_service", PriceService)
             live_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"), force_refresh=True)
             if live_price is None:
                 raise ValueError(f"Could not fetch live price for {draft['asset']}. Please try again.")
             
-            # 3. Now, validate with the complete data
             trade_service._validate_recommendation_data(draft["side"], live_price, stop_loss, targets)
             
-            # 4. If validation passes, save to draft
             draft["entry"] = live_price
             draft["stop_loss"] = stop_loss
             draft["targets"] = targets
@@ -318,7 +315,6 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
             parse_mode='HTML', disable_web_page_preview=True  
         )  
         if update.message: await update.message.delete()
-        # ✅ UX FIX: Update the last message ID to the one we just edited.
         if isinstance(sent_message, Message):
             context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)
 
@@ -326,7 +322,6 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE, i
         if "Message is not modified" not in str(e):  
             log.warning(f"Edit failed, sending new message. Error: {e}")  
             sent_message = await context.bot.send_message(chat_id=target_chat_id, text=review_text, reply_markup=keyboard, parse_mode='HTML')  
-            # ✅ UX FIX: Update the last message ID to the new message.
             context.user_data[LAST_MSG_KEY] = (sent_message.chat_id, sent_message.message_id)  
             
     return I_REVIEW
@@ -439,7 +434,7 @@ async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.message.edit_text("❌ Could not find your user profile."); return ConversationHandler.END  
 
     channel_repo = ChannelRepository(db_session)  
-    all_channels = channel_repo.list_by_user(user.id, only_active=False)  
+    all_channels = channel_repo.list_by_analyst(user.id, only_active=False)  
     
     selected_channel_ids: Set[int] = {ch.telegram_channel_id for ch in all_channels if ch.is_active}  
     context.user_data[CHANNEL_PICKER_KEY] = selected_channel_ids  
@@ -474,7 +469,7 @@ async def channel_picker_logic_handler(update: Update, context: ContextTypes.DEF
 
     user_repo = UserRepository(db_session)
     user = user_repo.find_by_telegram_id(query.from_user.id)
-    all_channels = ChannelRepository(db_session).list_by_user(user.id, only_active=False)
+    all_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False)
 
     keyboard = build_channel_picker_keyboard(token, all_channels, selected_channel_ids, page=page)
     await query.message.edit_reply_markup(reply_markup=keyboard)
@@ -525,5 +520,3 @@ def register_conversation_handlers(app: Application):
         per_message=False
     )
     app.add_handler(conv_handler)
-
-# --- END OF FINAL, COMPLETE, AND CORRECTED FILE ---

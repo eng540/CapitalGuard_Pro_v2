@@ -1,126 +1,99 @@
-# --- START OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE (Version 13.2.0) ---
-# src/capitalguard/interfaces/telegram/auth.py
+# src/capitalguard/interfaces/telegram/auth.py (v12.1 - Final Multi-Tenant)
+"""
+This module provides authentication and authorization decorators for Telegram handlers,
+fully compatible with the new multi-tenant (UserType) schema.
+"""
 
 import logging
-import functools
-from typing import Callable
+from functools import wraps
+from typing import Optional, Callable
 
 from telegram import Update
 from telegram.ext import ContextTypes
-from telegram.ext.filters import BaseFilter
 
+from capitalguard.config import settings
 from capitalguard.infrastructure.db.repository import UserRepository
 from capitalguard.infrastructure.db.base import SessionLocal
+from capitalguard.infrastructure.db.models import User, UserType
 from .keyboards import build_subscription_keyboard
-from capitalguard.config import settings
 
 log = logging.getLogger(__name__)
 
-class _EnsureUserFilter(BaseFilter):
+def _get_db_user(telegram_id: int) -> Optional[User]:
+    """Helper to fetch a user from the database within its own session."""
+    with SessionLocal() as session:
+        return UserRepository(session).find_by_telegram_id(telegram_id)
+
+def require_active_user(func: Callable) -> Callable:
     """
-    A fundamental filter that runs for almost all user interactions.
-    Its SOLE responsibility is to ensure that a user record exists in the database.
-    It creates a user as inactive if they don't exist.
+    Decorator that ensures a user record exists and is active.
+    1. It first ensures a user record is in the DB for the interacting user.
+    2. It then checks if that user's `is_active` flag is True.
+    3. If active, it proceeds; otherwise, it blocks and sends a denial message.
     """
-    def __init__(self) -> None:
-        super().__init__(name="Ensure_User_Filter")
-
-    def filter(self, update: Update) -> bool:
-        if not update or not getattr(update, "effective_user", None):
-            return False
-
-        u = update.effective_user
-        tg_id = u.id
-
-        try:
-            with SessionLocal() as session:
-                user_repo = UserRepository(session)
-                user_repo.find_or_create(
-                    telegram_id=tg_id,
-                    first_name=getattr(u, "first_name", None),
-                )
-            return True # Always pass, its job is just to create.
-        except Exception as e:
-            log.error(f"EnsureUserFilter: Database error for user {tg_id}: {e}", exc_info=True)
-            return False # Block if DB fails
-
-class _AccessControlFilter(BaseFilter):
-    """
-    A DB-backed filter that checks if a user is marked as `is_active=True`.
-    It ASSUMES the user record already exists (thanks to EnsureUserFilter).
-    """
-    def __init__(self) -> None:
-        super().__init__(name="Access_Control_Filter")
-
-    def filter(self, update: Update) -> bool:
-        if not update or not getattr(update, "effective_user", None):
-            return False
-
-        u = update.effective_user
-        tg_id = u.id
-
-        try:
-            with SessionLocal() as session:
-                user_repo = UserRepository(session)
-                user = user_repo.find_by_telegram_id(tg_id)
-                if user and user.is_active:
-                    return True
-        except Exception as e:
-            log.error(f"AccessControlFilter: Database error for user {tg_id}: {e}", exc_info=True)
-        
-        return False
-
-# Create instances of the filters
-ENSURE_USER_FILTER = _EnsureUserFilter()
-ALLOWED_USER_FILTER = _AccessControlFilter()
-
-
-def require_active_user(handler_func: Callable) -> Callable:
-    """
-    Decorator that checks if the user is active. If not, it sends a denial
-    message and stops execution. This should be the first decorator.
-    """
-    @functools.wraps(handler_func)
+    @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if ALLOWED_USER_FILTER.filter(update):
-            return await handler_func(update, context, *args, **kwargs)
-
         user = update.effective_user
-        log.warning(f"Blocked access for inactive user {user.id} ({user.username}) to a protected command.")
+        if not user:
+            log.debug("Ignoring update with no effective_user (e.g., channel post).")
+            return
         
-        contact_info = "the administrator"
-        if settings.ADMIN_CONTACT:
-            contact_info = f"<b>{settings.ADMIN_CONTACT}</b>"
+        # Use a task to run the synchronous DB call in the background without blocking the event loop
+        db_user = await context.application.create_task(_get_db_user, user.id)
+        
+        # If user does not exist at all, create them.
+        if not db_user:
+            with SessionLocal() as session:
+                # This is a rare case if the start command wasn't the first interaction
+                db_user = UserRepository(session).find_or_create(user.id, first_name=user.first_name, username=user.username)
 
-        message = (
-            "🚫 <b>Access Restricted</b>\n\n"
-            "Your account is not active. This is a premium bot for subscribers only.\n\n"
-            f"Please contact {contact_info} for access."
-        )
+        if not db_user.is_active:
+            log.warning(f"Blocked access for inactive user {user.id} ({user.username}).")
+            message = "🚫 <b>Access Denied</b>\nYour account is not active. Please contact support."
+            if update.message:
+                await update.message.reply_html(message)
+            elif update.callback_query:
+                await update.callback_query.answer("🚫 Access Denied: Account not active.", show_alert=True)
+            return
         
-        if update.message:
-            await update.message.reply_html(message)
-        elif update.callback_query:
-            await update.callback_query.answer(
-                "🚫 Access Restricted. Please contact support.",
-                show_alert=True
-            )
-        return
-        
+        # Store the fetched user object in context for downstream handlers to use
+        context.user_data['db_user'] = db_user
+        return await func(update, context, *args, **kwargs)
     return wrapper
 
+def require_analyst_user(func: Callable) -> Callable:
+    """
+    Decorator that checks if the user has the 'ANALYST' role.
+    This decorator MUST be placed *after* @require_active_user in the stack.
+    """
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        # It's safe to assume db_user exists because @require_active_user ran first
+        db_user: Optional[User] = context.user_data.get('db_user')
+        
+        if not db_user or db_user.user_type != UserType.ANALYST:
+            log.warning(f"Blocked analyst-only command for non-analyst user {update.effective_user.id}.")
+            message = "🚫 <b>Permission Denied</b>\nThis command is available for analysts only."
+            if update.message:
+                await update.message.reply_html(message)
+            elif update.callback_query:
+                await update.callback_query.answer("🚫 Permission Denied: Analysts only.", show_alert=True)
+            return
+            
+        return await func(update, context, *args, **kwargs)
+    return wrapper
 
-def require_channel_subscription(handler_func: Callable) -> Callable:
+def require_channel_subscription(func: Callable) -> Callable:
     """
     A decorator that enforces channel subscription before executing a command handler.
     This should be placed *after* @require_active_user.
     """
-    @functools.wraps(handler_func)
+    @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         channel_id_str = settings.TELEGRAM_CHAT_ID
         if not channel_id_str:
-            log.error("TELEGRAM_CHAT_ID is not set. Cannot check for channel subscription. Skipping check.")
-            return await handler_func(update, context, *args, **kwargs)
+            log.warning("TELEGRAM_CHAT_ID is not set. Skipping channel subscription check.")
+            return await func(update, context, *args, **kwargs)
 
         user = update.effective_user
         if not user:
@@ -128,10 +101,10 @@ def require_channel_subscription(handler_func: Callable) -> Callable:
 
         try:
             member = await context.bot.get_chat_member(chat_id=channel_id_str, user_id=user.id)
-            if member.status in ['creator', 'administrator', 'member']:
-                return await handler_func(update, context, *args, **kwargs)
+            if member.status in ['creator', 'administrator', 'member', 'restricted']:
+                return await func(update, context, *args, **kwargs)
             else:
-                raise ValueError("User is not a member.")
+                raise ValueError(f"User is not a member, status: {member.status}")
         except Exception:
             log.info(f"User {user.id} blocked from command '{getattr(update.message, 'text', 'N/A')}' due to not being in channel {channel_id_str}.")
             
@@ -167,5 +140,3 @@ def require_channel_subscription(handler_func: Callable) -> Callable:
             return
 
     return wrapper
-
-# --- END OF FINAL, COMPLETE, AND LOGIC-CORRECTED FILE ---
