@@ -17,13 +17,43 @@ depends_on = None
 
 def upgrade() -> None:
     # =========================
-    # ENUM Types
+    # ENUM Types with existence check
     # =========================
-    op.execute("CREATE TYPE recommendationstatus AS ENUM ('PENDING', 'ACTIVE', 'CLOSED');")
-    op.execute("CREATE TYPE ordertype AS ENUM ('MARKET', 'LIMIT', 'STOP_MARKET');")
-    op.execute("CREATE TYPE exitstrategy AS ENUM ('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY');")
-    op.execute("CREATE TYPE usertype AS ENUM ('TRADER', 'ANALYST');")
-    op.execute("CREATE TYPE usertradestatus AS ENUM ('OPEN', 'CLOSED');")
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE recommendationstatus AS ENUM ('PENDING', 'ACTIVE', 'CLOSED');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE ordertype AS ENUM ('MARKET', 'LIMIT', 'STOP_MARKET');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE exitstrategy AS ENUM ('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE usertype AS ENUM ('TRADER', 'ANALYST');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE usertradestatus AS ENUM ('OPEN', 'CLOSED');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """)
 
     # =========================
     # Tables
@@ -31,7 +61,7 @@ def upgrade() -> None:
     op.create_table('users',
         sa.Column('id', sa.Integer, primary_key=True, autoincrement=True),
         sa.Column('telegram_user_id', sa.BigInteger, nullable=False, unique=True, index=True),
-        sa.Column('user_type', sa.Enum('TRADER', 'ANALYST', name='usertype'), nullable=False, server_default='TRADER'),
+        sa.Column('user_type', postgresql.ENUM('TRADER', 'ANALYST', name='usertype', create_type=False), nullable=False, server_default='TRADER'),
         sa.Column('username', sa.String, nullable=True),
         sa.Column('first_name', sa.String, nullable=True),
         sa.Column('is_active', sa.Boolean, nullable=False, server_default=sa.text('false')),
@@ -73,8 +103,8 @@ def upgrade() -> None:
         sa.Column('entry', sa.Numeric(20, 8), nullable=False),
         sa.Column('stop_loss', sa.Numeric(20, 8), nullable=False),
         sa.Column('targets', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column('order_type', sa.Enum('MARKET', 'LIMIT', 'STOP_MARKET', name='ordertype'), nullable=False, server_default='LIMIT'),
-        sa.Column('status', sa.Enum('PENDING', 'ACTIVE', 'CLOSED', name='recommendationstatus'), nullable=False, server_default='PENDING'),
+        sa.Column('order_type', postgresql.ENUM('MARKET', 'LIMIT', 'STOP_MARKET', name='ordertype', create_type=False), nullable=False, server_default='LIMIT'),
+        sa.Column('status', postgresql.ENUM('PENDING', 'ACTIVE', 'CLOSED', name='recommendationstatus', create_type=False), nullable=False, server_default='PENDING'),
         sa.Column('channel_id', sa.BigInteger, nullable=True),
         sa.Column('message_id', sa.BigInteger, nullable=True),
         sa.Column('published_at', sa.DateTime(timezone=True), nullable=True),
@@ -88,7 +118,7 @@ def upgrade() -> None:
         sa.Column('alert_meta', postgresql.JSONB(astext_type=sa.Text()), server_default='{}', nullable=False),
         sa.Column('highest_price_reached', sa.Numeric(20, 8), nullable=True),
         sa.Column('lowest_price_reached', sa.Numeric(20, 8), nullable=True),
-        sa.Column('exit_strategy', sa.Enum('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY', name='exitstrategy'), nullable=False, server_default='CLOSE_AT_FINAL_TP'),
+        sa.Column('exit_strategy', postgresql.ENUM('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY', name='exitstrategy', create_type=False), nullable=False, server_default='CLOSE_AT_FINAL_TP'),
         sa.Column('profit_stop_price', sa.Numeric(20, 8), nullable=True),
         sa.Column('open_size_percent', sa.Numeric(5, 2), nullable=False, server_default='100.00'),
     )
@@ -130,7 +160,7 @@ def upgrade() -> None:
         sa.Column('entry', sa.Numeric(20, 8), nullable=False),
         sa.Column('stop_loss', sa.Numeric(20, 8), nullable=False),
         sa.Column('targets', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column('status', sa.Enum('OPEN', 'CLOSED', name='usertradestatus'), nullable=False),
+        sa.Column('status', postgresql.ENUM('OPEN', 'CLOSED', name='usertradestatus', create_type=False), nullable=False),
         sa.Column('close_price', sa.Numeric(20, 8), nullable=True),
         sa.Column('pnl_percentage', sa.Numeric(10, 4), nullable=True),
         sa.Column('source_recommendation_id', sa.Integer, sa.ForeignKey('recommendations.id', ondelete="SET NULL"), nullable=True),
