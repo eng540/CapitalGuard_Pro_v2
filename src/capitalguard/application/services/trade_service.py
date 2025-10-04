@@ -23,6 +23,7 @@ from capitalguard.infrastructure.db.repository import (
     RecommendationRepository, ChannelRepository, UserRepository
 )
 from capitalguard.domain.entities import Recommendation as RecommendationEntity
+from capitalguard.domain.entities import RecommendationStatus as RecommendationStatusEntity
 from capitalguard.domain.value_objects import OrderType, ExitStrategy, Symbol, Side, Price, Targets
 from capitalguard.interfaces.telegram.ui_texts import _pct, _calculate_weighted_pnl
 
