@@ -1,24 +1,37 @@
-#--- START OF FILE: src/capitalguard/infrastructure/db/models.py ---
-#--- START OF FILE: src/capitalguard/infrastructure/db/models.py ---
-# ✅ تم التعديل: هذا الملف يعمل الآن كنقطة وصول مركزية لنماذج ORM.
-# يقوم باستيرادها من وحداتها المخصصة لضمان وجود مصدر واحد للحقيقة ومنع التعارضات.
+# src/capitalguard/infrastructure/db/models.py (Updated for v3.0)
 
-# استيراد النموذج الأساسي الذي ترث منه جميع النماذج الأخرى
 from .models.base import Base
+from .models.auth import User, UserType
+from .models.recommendation import (
+    RecommendationStatusEnum,
+    OrderTypeEnum,
+    ExitStrategyEnum,
+    UserTradeStatus,
+    AnalystProfile,
+    Channel,
+    Recommendation,
+    UserTrade,
+    RecommendationEvent,
+    Subscription,
+    AnalystStats,
+    PublishedMessage,
+)
 
-# استيراد نماذج المصادقة (المستخدمون والأدوار)
-from .models.auth import User, Role, UserRole
-
-# استيراد نموذج التوصيات الكامل والصحيح من موقعه المخصص
-from .models.recommendation import RecommendationORM
-
-# هذا السطر اختياري ولكنه ممارسة جيدة.
-# يحدد بشكل صريح ما الذي يتم "تصديره" عندما يستخدم ملف آخر `from .models import *`
+# The old Role and UserRole are deprecated and no longer exported.
 __all__ = [
     "Base",
-    "RecommendationORM",
     "User",
-    "Role",
-    "UserRole",
+    "UserType",
+    "AnalystProfile",
+    "Channel",
+    "Recommendation",
+    "UserTrade",
+    "RecommendationEvent",
+    "Subscription",
+    "AnalystStats",
+    "PublishedMessage",
+    "RecommendationStatusEnum",
+    "OrderTypeEnum",
+    "ExitStrategyEnum",
+    "UserTradeStatus",
 ]
-#--- END OF FILE ---
