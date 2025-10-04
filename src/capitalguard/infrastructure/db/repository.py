@@ -1,6 +1,5 @@
-# src/capitalguard/infrastructure/db/repository.py (v3.0 - Multi-Tenant Compatible)
+# src/capitalguard/infrastructure/db/repository.py (v3.0 - Final & Complete)
 import logging
-from datetime import datetime, timezone
 from typing import List, Optional, Any, Union, Dict
 from types import SimpleNamespace
 
@@ -12,7 +11,7 @@ from capitalguard.domain.entities import RecommendationStatus as RecommendationS
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side, OrderType, ExitStrategy
 from .models import (
     User, UserType, Channel, Recommendation, RecommendationEvent, 
-    PublishedMessage, UserTrade, UserTradeStatus, RecommendationStatusEnum
+    PublishedMessage, UserTrade, UserTradeStatus, RecommendationStatusEnum, AnalystProfile
 )
 
 log = logging.getLogger(__name__)
@@ -34,7 +33,7 @@ class UserRepository:
             telegram_user_id=telegram_id,
             first_name=kwargs.get("first_name"),
             username=kwargs.get("username"),
-            is_active=False, # New users are inactive by default
+            is_active=False,
         )
         self.session.add(new_user)
         self.session.commit()
@@ -60,13 +59,13 @@ class RecommendationRepository:
             id=row.id,
             asset=Symbol(row.asset),
             side=Side(row.side),
-            entry=Price(row.entry),
-            stop_loss=Price(row.stop_loss),
+            entry=Price(float(row.entry)),
+            stop_loss=Price(float(row.stop_loss)),
             targets=Targets(row.targets),
             order_type=OrderType(row.order_type.value),
             status=RecommendationStatusEntity[row.status.name],
-            market="Futures", # Assuming default, needs to be added to model if dynamic
-            notes="", # Assuming default, needs to be added to model if dynamic
+            market=row.market,
+            notes=row.notes,
             user_id=str(row.analyst.telegram_user_id) if row.analyst else None,
             created_at=row.created_at,
             updated_at=row.updated_at,
@@ -74,7 +73,7 @@ class RecommendationRepository:
             activated_at=row.activated_at,
             closed_at=row.closed_at,
             exit_strategy=ExitStrategy(row.exit_strategy.value),
-            open_size_percent=100.0, # This is now on UserTrade, default for entity
+            open_size_percent=float(row.open_size_percent) if row.open_size_percent is not None else 100.0,
             events=[SimpleNamespace(
                 event_type=ev.event_type,
                 event_data=ev.event_data,
@@ -140,3 +139,15 @@ class RecommendationRepository:
         
     def get_published_messages(self, session: Session, rec_id: int) -> List[PublishedMessage]:
         return session.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
+
+    def get_open_recs_for_analyst(self, session: Session, analyst_user_id: int) -> List[Recommendation]:
+        return session.query(Recommendation).filter(
+            Recommendation.analyst_id == analyst_user_id,
+            Recommendation.status.in_([RecommendationStatusEnum.PENDING, RecommendationStatusEnum.ACTIVE])
+        ).order_by(Recommendation.created_at.desc()).all()
+
+    def get_open_trades_for_trader(self, session: Session, trader_user_id: int) -> List[UserTrade]:
+        return session.query(UserTrade).filter(
+            UserTrade.user_id == trader_user_id,
+            UserTrade.status == UserTradeStatus.OPEN
+        ).order_by(UserTrade.created_at.desc()).all()
