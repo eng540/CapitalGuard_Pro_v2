@@ -1,92 +1,143 @@
-# --- START OF FINAL, COMPLETE, AND READY-TO-USE FILE ---
-import sqlalchemy as sa
+# src/capitalguard/infrastructure/db/models/recommendation.py (Updated for v3.0)
+
+import enum
+from datetime import datetime
 from sqlalchemy import (
-    Column, Integer, BigInteger, String, Float,
-    DateTime, JSON, Text, Index, Enum, func, ForeignKey
+    Column, Integer, String, DateTime, Boolean,
+    ForeignKey, Enum, Text, BigInteger, Numeric, func
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
-from capitalguard.domain.entities import RecommendationStatus, OrderType, ExitStrategy
 
-class RecommendationORM(Base):
-    __tablename__ = "recommendations"
+# Enum definitions are now centralized here
+class RecommendationStatusEnum(enum.Enum):
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    CLOSED = "CLOSED"
 
-    id = Column(Integer, primary_key=True, index=True)
+class OrderTypeEnum(enum.Enum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    STOP_MARKET = "STOP_MARKET"
+
+class ExitStrategyEnum(enum.Enum):
+    CLOSE_AT_FINAL_TP = "CLOSE_AT_FINAL_TP"
+    MANUAL_CLOSE_ONLY = "MANUAL_CLOSE_ONLY"
+
+class UserTradeStatus(enum.Enum):
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+
+class AnalystProfile(Base):
+    __tablename__ = 'analyst_profiles'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True)
+    public_name = Column(String, nullable=True)
+    bio = Column(Text, nullable=True)
+    is_public = Column(Boolean, default=False, server_default='false', nullable=False)
     
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user = relationship("User", back_populates="analyst_profile")
+    stats = relationship("AnalystStats", back_populates="analyst_profile", uselist=False, cascade="all, delete-orphan")
 
-    asset = Column(String, index=True, nullable=False)
+class Channel(Base):
+    __tablename__ = 'channels'
+    id = Column(Integer, primary_key=True)
+    analyst_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    telegram_channel_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    channel_name = Column(String, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    analyst = relationship("User", back_populates="owned_channels")
+    recommendations = relationship("Recommendation", back_populates="channel")
+
+class Recommendation(Base):
+    __tablename__ = 'recommendations'
+    id = Column(Integer, primary_key=True)
+    analyst_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True)
+    
+    asset = Column(String, nullable=False, index=True)
     side = Column(String, nullable=False)
-    entry = Column(Float, nullable=False)
-    stop_loss = Column(Float, nullable=False)
-    targets = Column(JSON, nullable=False)
-    
-    order_type = Column(
-        Enum(OrderType, name="ordertype", create_type=False),
-        default=OrderType.LIMIT, nullable=False
-    )
-    status = Column(
-        Enum(RecommendationStatus, name="recommendationstatus", create_type=False),
-        default=RecommendationStatus.PENDING, index=True, nullable=False
-    )
-
-    # --- LEGACY FIELDS (to be deprecated) ---
-    channel_id = Column(BigInteger, index=True, nullable=True)
-    message_id = Column(BigInteger, nullable=True)
-    # --- END LEGACY FIELDS ---
-
-    published_at = Column(DateTime(timezone=True), nullable=True)
-    market = Column(String, nullable=True)
-    notes = Column(Text, nullable=True)
-    exit_price = Column(Float, nullable=True)
-    activated_at = Column(DateTime(timezone=True), nullable=True)
-    closed_at = Column(DateTime(timezone=True), nullable=True)
+    entry = Column(Numeric(20, 8), nullable=False)
+    stop_loss = Column(Numeric(20, 8), nullable=False)
+    targets = Column(JSONB, nullable=False)
+    status = Column(Enum(RecommendationStatusEnum, name="recommendationstatusenum"), nullable=False, default=RecommendationStatusEnum.PENDING, index=True)
+    order_type = Column(Enum(OrderTypeEnum, name="ordertypeenum"), nullable=False, default=OrderTypeEnum.LIMIT)
+    exit_strategy = Column(Enum(ExitStrategyEnum, name="exitstrategyenum"), nullable=False, default=ExitStrategyEnum.CLOSE_AT_FINAL_TP)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    activated_at = Column(DateTime(timezone=True), nullable=True)
+    closed_at = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-    alert_meta = Column(JSONB, nullable=False, server_default=sa.text("'{}'::jsonb"))
+
+    analyst = relationship("User", back_populates="created_recommendations")
+    channel = relationship("Channel", back_populates="recommendations")
+    events = relationship("RecommendationEvent", back_populates="recommendation", cascade="all, delete-orphan")
+    followed_trades = relationship("UserTrade", back_populates="source_recommendation")
+    published_messages = relationship("PublishedMessage", back_populates="recommendation", cascade="all, delete-orphan")
+
+class UserTrade(Base):
+    __tablename__ = 'user_trades'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
     
-    highest_price_reached = Column(Float, nullable=True)
-    lowest_price_reached = Column(Float, nullable=True)
+    asset = Column(String, nullable=False, index=True)
+    side = Column(String, nullable=False)
+    entry = Column(Numeric(20, 8), nullable=False)
+    stop_loss = Column(Numeric(20, 8), nullable=False)
+    targets = Column(JSONB, nullable=False)
+    status = Column(Enum(UserTradeStatus, name="usertradestatus"), nullable=False, default=UserTradeStatus.OPEN, index=True)
+    
+    close_price = Column(Numeric(20, 8), nullable=True)
+    pnl_percentage = Column(Numeric(10, 4), nullable=True)
+    
+    source_recommendation_id = Column(Integer, ForeignKey('recommendations.id'), nullable=True, index=True)
+    source_forwarded_text = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    closed_at = Column(DateTime(timezone=True), nullable=True)
 
-    exit_strategy = Column(
-        Enum(ExitStrategy, name="exitstrategy", create_type=False),
-        default=ExitStrategy.CLOSE_AT_FINAL_TP,
-        server_default=ExitStrategy.CLOSE_AT_FINAL_TP.value,
-        nullable=False
-    )
-    profit_stop_price = Column(Float, nullable=True)
+    user = relationship("User", back_populates="user_trades")
+    source_recommendation = relationship("Recommendation", back_populates="followed_trades")
 
-    # ✅ --- NEW: OPEN SIZE PERCENT COLUMN ---
-    # This column tracks the remaining open percentage of the trade.
-    open_size_percent = Column(
-        Float,
-        nullable=False,
-        server_default=sa.text('100.0'),
-        default=100.0
-    )
+class RecommendationEvent(Base):
+    __tablename__ = 'recommendation_events'
+    id = Column(Integer, primary_key=True)
+    recommendation_id = Column(Integer, ForeignKey('recommendations.id'), nullable=False, index=True)
+    event_type = Column(String(50), nullable=False, index=True)
+    event_data = Column(JSONB, nullable=True)
+    event_timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    # --- RELATIONSHIPS ---
-    user = relationship("User", back_populates="recommendations")
+    recommendation = relationship("Recommendation", back_populates="events")
 
-    published_messages = relationship(
-        "PublishedMessage", 
-        back_populates="recommendation", 
-        cascade="all, delete-orphan",
-        lazy="selectin" 
-    )
+class Subscription(Base):
+    __tablename__ = 'subscriptions'
+    id = Column(Integer, primary_key=True)
+    trader_user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    analyst_user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    start_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    end_date = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
 
-    events = relationship(
-        "RecommendationEvent",
-        back_populates="recommendation",
-        cascade="all, delete-orphan",
-        lazy="select"
-    )
+    trader = relationship("User", foreign_keys=[trader_user_id], back_populates="subscriptions_as_trader")
+    analyst = relationship("User", foreign_keys=[analyst_user_id], back_populates="subscriptions_as_analyst")
 
-    def __repr__(self):
-        return f"<RecommendationORM(id={self.id}, user_id={self.user_id}, asset='{self.asset}')>"
+class AnalystStats(Base):
+    __tablename__ = 'analyst_stats'
+    analyst_profile_id = Column(Integer, ForeignKey('analyst_profiles.id'), primary_key=True)
+    win_rate = Column(Numeric(5, 2), nullable=True)
+    total_pnl = Column(Numeric(10, 4), nullable=True)
+    total_trades = Column(Integer, default=0)
+    last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-Index("idx_recs_status_created", RecommendationORM.status, RecommendationORM.created_at.desc())
-Index("idx_recs_asset_status",  RecommendationORM.asset, RecommendationORM.status)
-# --- END OF FINAL, COMPLETE, AND READY-TO-USE FILE ---
+    analyst_profile = relationship("AnalystProfile", back_populates="stats")
+
+class PublishedMessage(Base):
+    __tablename__ = 'published_messages'
+    id = Column(Integer, primary_key=True)
+    recommendation_id = Column(Integer, ForeignKey('recommendations.id'), nullable=False, index=True)
+    telegram_channel_id = Column(BigInteger, nullable=False)
+    telegram_message_id = Column(BigInteger, nullable=False)
+
+    recommendation = relationship("Recommendation", back_populates="published_messages")
