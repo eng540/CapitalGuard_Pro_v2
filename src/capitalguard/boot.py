@@ -1,10 +1,9 @@
-# src/capitalguard/boot.py (مصحح)
+# src/capitalguard/boot.py (v3.2 - Final, DEBUG removed)
 """
 Bootstrap and dependency injection setup for CapitalGuard Pro.
 This is the single source of truth for service initialization.
 """
 
-import os
 import logging
 from typing import Dict, Any, Optional
 
@@ -36,7 +35,7 @@ from capitalguard.application.services.autotrade_service import AutoTradeService
 from capitalguard.application.services.risk_service import RiskService
 from capitalguard.application.services.report_service import ReportService
 from capitalguard.application.services.audit_service import AuditService
-from capitalguard.application.services.image_parsing_service import ImageParsingService
+from capitalguard.application.services.image_parsing_service import ImageParsingService  # ✅ NEW
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +44,7 @@ def setup_database():
     try:
         engine = create_engine(
             settings.DATABASE_URL,
-            connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {},
-            echo=False  # ✅ FIX: تم إزالة settings.DEBUG واستبداله بـ False
+            connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
         )
         
         # إنشاء الجداول إذا لم تكن موجودة
@@ -73,8 +71,8 @@ def build_services() -> Dict[str, Any]:
         
         # === 2. تهيئة المستودعات ===
         services['recommendation_repo'] = RecommendationRepository()
-        services['user_repo'] = UserRepository
-        services['channel_repo'] = ChannelRepository
+        services['user_repo'] = UserRepository()
+        services['channel_repo'] = ChannelRepository()
         
         # === 3. خدمات البنية التحتية ===
         
@@ -83,10 +81,10 @@ def build_services() -> Dict[str, Any]:
         
         # خدمات بينانس (إذا كانت بيانات الاعتماد متوفرة)
         binance_creds = None
-        if os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_API_SECRET"):
+        if settings.BINANCE_API_KEY and settings.BINANCE_API_SECRET:
             binance_creds = BinanceCreds(
-                api_key=os.getenv("BINANCE_API_KEY"),
-                api_secret=os.getenv("BINANCE_API_SECRET")
+                api_key=settings.BINANCE_API_KEY,
+                api_secret=settings.BINANCE_API_SECRET
             )
         
         services['exec_spot'] = BinanceExec(binance_creds, futures=False) if binance_creds else None
@@ -129,7 +127,7 @@ def build_services() -> Dict[str, Any]:
         # قائمة الانتظار المشتركة
         price_queue = ThreadSafeQueue()
         
-        # باثق الأسعار
+        # بث الأسعار
         services['price_streamer'] = PriceStreamer(
             queue=price_queue,
             repo=services['recommendation_repo']
@@ -179,8 +177,7 @@ def bootstrap_app() -> Optional[Application]:
     تهيئة تطبيق التيليجرام وإعداد جميع الخدمات.
     هذه هي نقطة الدخول الرئيسية للتطبيق.
     """
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not bot_token:
+    if not settings.TELEGRAM_BOT_TOKEN:
         log.critical("❌ TELEGRAM_BOT_TOKEN is required but not provided")
         return None
         
@@ -189,10 +186,11 @@ def bootstrap_app() -> Optional[Application]:
         services = build_services()
         
         # إنشاء تطبيق التيليجرام
-        application = Application.builder().token(bot_token).build()
+        application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
         
         # تخزين الخدمات في bot_data للوصول العالمي
         application.bot_data.update(services)
+        application.bot_data['db_session'] = setup_database
         application.bot_data['services'] = services
         
         # حقن تطبيق PTB في الإشعارات
