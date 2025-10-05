@@ -1,138 +1,219 @@
-# --src/capitalguard/boot.py v21.0.1 (Dependency Hotfix)
+# src/capitalguard/boot.py (v3.1 - Final with Image Parsing)
+"""
+Bootstrap and dependency injection setup for CapitalGuard Pro.
+This is the single source of truth for service initialization.
+"""
 
 import os
 import logging
-import sys
 from typing import Dict, Any, Optional
-import threading
 
-from telegram.ext import Application, PicklePersistence
+from telegram.ext import Application
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from capitalguard.config import settings
-from capitalguard.application.services.trade_service import TradeService
-from capitalguard.application.services.analytics_service import AnalyticsService
-from capitalguard.application.services.price_service import PriceService
-from capitalguard.application.services.alert_service import AlertService
-from capitalguard.application.services.market_data_service import MarketDataService
-from capitalguard.application.services.audit_service import AuditService
-from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository
+from capitalguard.infrastructure.db.models import Base
+from capitalguard.infrastructure.db.repository import (
+    RecommendationRepository, 
+    UserRepository, 
+    ChannelRepository
+)
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.infrastructure.execution.binance_exec import BinanceExec, BinanceCreds
-from capitalguard.interfaces.telegram.handlers import register_all_handlers
-from capitalguard.service_registry import register_global_services
+from capitalguard.infrastructure.pricing.binance import BinancePricing
+from capitalguard.infrastructure.market.ws_client import BinanceWS
+from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
+from capitalguard.infrastructure.sched.shared_queue import ThreadSafeQueue
 
-class TelegramLogHandler(logging.Handler):
-    def __init__(self, notifier: TelegramNotifier, level=logging.ERROR):
-        super().__init__(level=level)
-        self.notifier = notifier
-        self._local = threading.local()
-        self._local.is_handling = False
+# Service Imports
+from capitalguard.application.services.trade_service import TradeService
+from capitalguard.application.services.analytics_service import AnalyticsService
+from capitalguard.application.services.alert_service import AlertService
+from capitalguard.application.services.price_service import PriceService
+from capitalguard.application.services.market_data_service import MarketDataService
+from capitalguard.application.services.autotrade_service import AutoTradeService
+from capitalguard.application.services.risk_service import RiskService
+from capitalguard.application.services.report_service import ReportService
+from capitalguard.application.services.audit_service import AuditService
+from capitalguard.application.services.image_parsing_service import ImageParsingService  # ✅ NEW
 
-    def emit(self, record: logging.LogRecord):
-        if getattr(self._local, 'is_handling', False): return
-        if not self.notifier or not settings.TELEGRAM_ADMIN_CHAT_ID: return
-        try:
-            self._local.is_handling = True
-            simple_message = f"⚠️ CRITICAL ERROR: {record.getMessage()}"
-            admin_chat_id = int(settings.TELEGRAM_ADMIN_CHAT_ID)
-            if hasattr(self.notifier, 'send_private_text'):
-                self.notifier.send_private_text(chat_id=admin_chat_id, text=simple_message)
-        except Exception as e:
-            root_logger = logging.getLogger()
-            root_logger.removeHandler(self)
-            root_logger.error(f"CRITICAL: Failed to send log to Telegram: {e}", exc_info=False)
-            root_logger.addHandler(self)
-        finally:
-            self._local.is_handling = False
+log = logging.getLogger(__name__)
 
-def setup_logging(notifier: Optional[TelegramNotifier] = None) -> None:
-    root_logger = logging.getLogger()
-    if root_logger.hasHandlers():
-        root_logger.handlers.clear()
+def setup_database():
+    """إعداد وتهيئة قاعدة البيانات"""
+    try:
+        engine = create_engine(
+            settings.DATABASE_URL,
+            connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {},
+            echo=settings.DEBUG  # عرض استعلامات SQL في وضع التصحيح
+        )
+        
+        # إنشاء الجداول إذا لم تكن موجودة
+        Base.metadata.create_all(bind=engine)
+        
+        SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        log.info("✅ Database setup completed successfully")
+        return SessionLocal
+        
+    except Exception as e:
+        log.critical(f"❌ Database setup failed: {e}")
+        raise
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-        stream=sys.stdout,
-    )
-
-    if notifier and settings.TELEGRAM_ADMIN_CHAT_ID:
-        telegram_handler = TelegramLogHandler(notifier)
-        telegram_handler.setLevel(logging.ERROR)
-        root_logger.addHandler(telegram_handler)
-        logging.info("TelegramLogHandler configured for admin notifications.")
-    else:
-        logging.warning("TelegramLogHandler is not configured (TELEGRAM_ADMIN_CHAT_ID not set).")
-
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("apscheduler").setLevel(logging.WARNING)
-    logging.info("Logging configured successfully.")
-
-def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
-    rec_repo = RecommendationRepository()
-    user_repo_class = UserRepository
-
-    notifier = TelegramNotifier()
-    if ptb_app:
-        notifier.set_ptb_app(ptb_app)
+def build_services() -> Dict[str, Any]:
+    """
+    بناء وتسجيل جميع خدمات التطبيق.
+    هذا هو المصدر الوحيد للحقيقة لتهيئة الخدمات.
+    """
+    services = {}
     
-    setup_logging(notifier)
-
-    spot_creds = BinanceCreds(os.getenv("BINANCE_API_KEY", ""), os.getenv("BINANCE_API_SECRET", ""))
-    futu_creds = BinanceCreds(os.getenv("BINANCE_FUT_API_KEY", spot_creds.api_key), os.getenv("BINANCE_FUT_API_SECRET", spot_creds.api_secret))
-    exec_spot = BinanceExec(spot_creds, futures=False)
-    exec_futu = BinanceExec(futu_creds, futures=True)
-
-    market_data_service = MarketDataService()
-    price_service = PriceService()
-    analytics_service = AnalyticsService(repo=rec_repo)
-    audit_service = AuditService(rec_repo=rec_repo, user_repo_class=user_repo_class)
-    
-    trade_service = TradeService(
-        repo=rec_repo, 
-        notifier=notifier, 
-        market_data_service=market_data_service, 
-        price_service=price_service,
-        alert_service=None
-    )
-    
-    # ✅ DEPENDENCY FIX: Pass the required 'price_service' to the AlertService constructor.
-    alert_service = AlertService(
-        trade_service=trade_service,
-        price_service=price_service,
-        repo=rec_repo
-    )
-    
-    trade_service.alert_service = alert_service
-
-    services = {
-        "trade_service": trade_service,
-        "analytics_service": analytics_service,
-        "price_service": price_service,
-        "alert_service": alert_service,
-        "notifier": notifier,
-        "market_data_service": market_data_service,
-        "audit_service": audit_service,
-    }
-
-    register_global_services(services)
-    
+    try:
+        # === 1. إعداد قاعدة البيانات والمستودعات ===
+        SessionLocal = setup_database()
+        
+        # === 2. تهيئة المستودعات ===
+        services['recommendation_repo'] = RecommendationRepository()
+        services['user_repo'] = UserRepository
+        services['channel_repo'] = ChannelRepository
+        
+        # === 3. خدمات البنية التحتية ===
+        
+        # خدمة الإشعارات
+        services['notifier'] = TelegramNotifier()
+        
+        # خدمات بينانس (إذا كانت بيانات الاعتماد متوفرة)
+        binance_creds = None
+        if settings.BINANCE_API_KEY and settings.BINANCE_API_SECRET:
+            binance_creds = BinanceCreds(
+                api_key=settings.BINANCE_API_KEY,
+                api_secret=settings.BINANCE_API_SECRET
+            )
+        
+        services['exec_spot'] = BinanceExec(binance_creds, futures=False) if binance_creds else None
+        services['exec_futu'] = BinanceExec(binance_creds, futures=True) if binance_creds else None
+        
+        # خدمات التسعير والبيانات السوقية
+        services['price_service'] = PriceService()
+        services['market_data_service'] = MarketDataService()
+        
+        # === 4. خدمات التطبيق الأساسية ===
+        
+        # خدمة إدارة المخاطر
+        services['risk_service'] = RiskService(
+            exec_spot=services['exec_spot'],
+            exec_futu=services['exec_futu']
+        )
+        
+        # خدمة التداول الآلي
+        services['autotrade_service'] = AutoTradeService(
+            repo=services['recommendation_repo'],
+            notifier=services['notifier'],
+            risk=services['risk_service'],
+            exec_spot=services['exec_spot'],
+            exec_futu=services['exec_futu']
+        )
+        
+        # خدمة التقارير
+        services['report_service'] = ReportService(
+            repo=services['recommendation_repo']
+        )
+        
+        # خدمة التدقيق
+        services['audit_service'] = AuditService(
+            rec_repo=services['recommendation_repo'],
+            user_repo_class=services['user_repo']
+        )
+        
+        # === 5. خدمات البث والمراقبة ===
+        
+        # قائمة الانتظار المشتركة
+        price_queue = ThreadSafeQueue()
+        
+        # باثق الأسعار
+        services['price_streamer'] = PriceStreamer(
+            queue=price_queue,
+            repo=services['recommendation_repo']
+        )
+        
+        # خدمة التنبيهات
+        services['alert_service'] = AlertService(
+            trade_service=None,  # سيتم تعيينها لاحقاً
+            price_service=services['price_service'],
+            repo=services['recommendation_repo'],
+            streamer=services['price_streamer'],
+            debounce_seconds=1.0
+        )
+        
+        # === 6. الخدمات الرئيسية ===
+        
+        # خدمة التحليل
+        services['analytics_service'] = AnalyticsService(
+            repo=services['recommendation_repo']
+        )
+        
+        # ✅ NEW: خدمة تحليل الصور والنص
+        services['image_parsing_service'] = ImageParsingService()
+        
+        # خدمة التداول (يجب أن تكون الأخيرة بسبب التبعيات الدائرية)
+        services['trade_service'] = TradeService(
+            repo=services['recommendation_repo'],
+            notifier=services['notifier'],
+            market_data_service=services['market_data_service'],
+            price_service=services['price_service'],
+            alert_service=services['alert_service']
+        )
+        
+        # حل التبعية الدائرية في AlertService
+        services['alert_service'].trade_service = services['trade_service']
+        
+        log.info("✅ All services built successfully")
+        
+    except Exception as e:
+        log.critical(f"❌ Service building failed: {e}")
+        raise
+        
     return services
 
 def bootstrap_app() -> Optional[Application]:
+    """
+    تهيئة تطبيق التيليجرام وإعداد جميع الخدمات.
+    هذه هي نقطة الدخول الرئيسية للتطبيق.
+    """
     if not settings.TELEGRAM_BOT_TOKEN:
-        logging.error("TELEGRAM_BOT_TOKEN not set. Bot cannot start.")
+        log.critical("❌ TELEGRAM_BOT_TOKEN is required but not provided")
         return None
-    try:
-        persistence = PicklePersistence(filepath="./telegram_bot_persistence")
-        ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
         
-        services = build_services(ptb_app)
-        ptb_app.bot_data["services"] = services
-
-        register_all_handlers(ptb_app)
-        logging.info("Telegram bot bootstrapped successfully.")
-        return ptb_app
+    try:
+        # بناء جميع الخدمات
+        services = build_services()
+        
+        # إنشاء تطبيق التيليجرام
+        application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
+        
+        # تخزين الخدمات في bot_data للوصول العالمي
+        application.bot_data.update(services)
+        application.bot_data['db_session'] = setup_database
+        application.bot_data['services'] = services
+        
+        # حقن تطبيق PTB في الإشعارات
+        services['notifier'].set_ptb_app(application)
+        
+        log.info("✅ Telegram application bootstrapped successfully")
+        return application
+        
     except Exception as e:
-        logging.exception(f"CRITICAL: Failed to bootstrap bot: {e}")
+        log.critical(f"❌ Application bootstrap failed: {e}")
         return None
+
+def get_service_from_context(context, service_name: str, service_type: type) -> Any:
+    """
+    أداة مساعدة للحصول على الخدمات من context.
+    """
+    service = context.bot_data.get('services', {}).get(service_name)
+    if not service or not isinstance(service, service_type):
+        log.error(f"Service {service_name} not found or wrong type")
+        raise RuntimeError(f"Service {service_name} unavailable")
+    return service
+
+# تصدير للاستخدام في أماكن أخرى
+__all__ = ['bootstrap_app', 'build_services', 'get_service_from_context']
