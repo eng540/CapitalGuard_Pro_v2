@@ -284,4 +284,355 @@ class TradeService:
         created_rec_entity = self.repo._to_entity(rec_orm)
         await self.alert_service.update_triggers_for_recommendation(created_rec_entity.id)
         
-        final_rec, report = await self._publish_recommendation(db_session,
+        final_rec, report = await self._publish_recommendation(db_session, created_rec_entity, user_id, kwargs.get('target_channel_ids'))
+        return final_rec, report
+
+    def get_recommendation_for_user(self, db_session: Session, rec_id: int, user_telegram_id: str) -> Optional[RecommendationEntity]:
+        user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
+        if not user: 
+            return None
+        
+        if user.user_type == UserType.ANALYST:
+            rec_orm = self.repo.get(db_session, rec_id)
+            if not rec_orm or rec_orm.analyst_id != user.id: 
+                return None
+            return self.repo._to_entity(rec_orm)
+        
+        return None
+
+    def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str, **filters) -> List[Any]:
+        user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
+        if not user: 
+            return []
+        
+        if user.user_type == UserType.ANALYST:
+            recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id)
+            return [self.repo._to_entity(r) for r in recs_orm]
+        else:
+            # ✅ NEW: إرجاع صفقات المتداول الشخصية
+            trades_orm = self.repo.get_open_trades_for_trader(db_session, user.id)
+            return trades_orm
+
+    def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
+        user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
+        if not user:
+            return []
+            
+        if user.user_type == UserType.ANALYST:
+            # للمحللين: الأصول من توصياتهم
+            recs = self.repo.get_open_recs_for_analyst(db_session, user.id)
+            assets = list(set([r.asset for r in recs]))[:limit]
+        else:
+            # للمتداولين: الأصول من صفقاتهم
+            trades = self.repo.get_open_trades_for_trader(db_session, user.id)
+            assets = list(set([t.asset for t in trades]))[:limit]
+            
+        return assets if assets else ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"]
+
+    # ✅ NEW: دوال إدارة التوصيات المعلقة
+    @uow_transaction
+    async def cancel_pending_recommendation_manual(self, rec_id: int, user_telegram_id: str, db_session: Session) -> RecommendationEntity:
+        """إلغاء توصية معلقة يدوياً"""
+        user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
+        if not user or user.user_type != UserType.ANALYST:
+            raise ValueError("Only analysts can cancel recommendations.")
+            
+        rec_orm = self.repo.get(db_session, rec_id)
+        if not rec_orm or rec_orm.analyst_id != user.id:
+            raise ValueError("Recommendation not found or access denied.")
+            
+        if rec_orm.status != RecommendationStatusEnum.PENDING:
+            raise ValueError("Only pending recommendations can be cancelled.")
+            
+        # تحديث الحالة إلى CLOSED
+        rec_orm.status = RecommendationStatusEnum.CLOSED
+        rec_orm.closed_at = datetime.now(timezone.utc)
+        rec_orm.updated_at = datetime.now(timezone.utc)
+        
+        # إضافة حدث
+        event = RecommendationEvent(
+            recommendation_id=rec_id,
+            event_type="CANCELLED_MANUALLY",
+            event_data={"cancelled_by": user_telegram_id}
+        )
+        db_session.add(event)
+        
+        # تحديث فهارس التنبيهات
+        await self.alert_service.remove_triggers_for_item(rec_id, is_user_trade=False)
+        
+        log.info(f"✅ Cancelled pending recommendation #{rec_id} by user {user_telegram_id}")
+        return self.repo._to_entity(rec_orm)
+
+    # ✅ NEW: دوال إغلاق التوصيات
+    @uow_transaction
+    async def close_recommendation_for_user_async(self, rec_id: int, user_telegram_id: str, exit_price: float, reason: str = "MANUAL_CLOSE", db_session: Session = None) -> RecommendationEntity:
+        """إغلاق توصية بسعر محدد"""
+        user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
+        if not user or user.user_type != UserType.ANALYST:
+            raise ValueError("Only analysts can close recommendations.")
+            
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        if not rec_orm or rec_orm.analyst_id != user.id:
+            raise ValueError("Recommendation not found or access denied.")
+            
+        if rec_orm.status == RecommendationStatusEnum.CLOSED:
+            raise ValueError("Recommendation is already closed.")
+            
+        # تحديث الحالة والسعر
+        rec_orm.status = RecommendationStatusEnum.CLOSED
+        rec_orm.exit_price = exit_price
+        rec_orm.closed_at = datetime.now(timezone.utc)
+        rec_orm.updated_at = datetime.now(timezone.utc)
+        
+        # إضافة حدث
+        event = RecommendationEvent(
+            recommendation_id=rec_id,
+            event_type="CLOSED_MANUALLY",
+            event_data={
+                "exit_price": exit_price,
+                "reason": reason,
+                "closed_by": user_telegram_id
+            }
+        )
+        db_session.add(event)
+        
+        # تحديث البطاقة في القنوات
+        rec_entity = self.repo._to_entity(rec_orm)
+        await self.notify_card_update(rec_entity)
+        
+        # تحديث فهارس التنبيهات
+        await self.alert_service.remove_triggers_for_item(rec_id, is_user_trade=False)
+        
+        log.info(f"✅ Closed recommendation #{rec_id} at price {exit_price} by user {user_telegram_id}")
+        return rec_entity
+
+    async def close_recommendation_at_market_for_user_async(self, rec_id: int, user_telegram_id: str) -> RecommendationEntity:
+        """إغلاق توصية بسعر السوق الحالي"""
+        # الحصول على التوصية
+        with session_scope() as session:
+            user = UserRepository(session).find_by_telegram_id(int(user_telegram_id))
+            if not user or user.user_type != UserType.ANALYST:
+                raise ValueError("Only analysts can close recommendations.")
+                
+            rec_orm = self.repo.get(session, rec_id)
+            if not rec_orm or rec_orm.analyst_id != user.id:
+                raise ValueError("Recommendation not found or access denied.")
+                
+            # الحصول على سعر السوق
+            market_price = await self.price_service.get_cached_price(rec_orm.asset, rec_orm.market, force_refresh=True)
+            if not market_price:
+                raise ValueError("Could not fetch current market price.")
+                
+            # استخدام الدالة الرئيسية للإغلاق
+            return await self.close_recommendation_for_user_async(rec_id, user_telegram_id, market_price, "MARKET_CLOSE")
+
+    # ✅ NEW: دوال تحديث التوصيات
+    @uow_transaction
+    async def update_sl_for_user_async(self, rec_id: int, user_telegram_id: str, new_sl: float, db_session: Session) -> RecommendationEntity:
+        """تحديث وقف الخسارة لتوصية"""
+        user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
+        if not user or user.user_type != UserType.ANALYST:
+            raise ValueError("Only analysts can update recommendations.")
+            
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        if not rec_orm or rec_orm.analyst_id != user.id:
+            raise ValueError("Recommendation not found or access denied.")
+            
+        if rec_orm.status != RecommendationStatusEnum.ACTIVE:
+            raise ValueError("Only active recommendations can be updated.")
+            
+        old_sl = rec_orm.stop_loss
+        rec_orm.stop_loss = new_sl
+        rec_orm.updated_at = datetime.now(timezone.utc)
+        
+        # إضافة حدث
+        event = RecommendationEvent(
+            recommendation_id=rec_id,
+            event_type="SL_UPDATED",
+            event_data={
+                "old_sl": float(old_sl),
+                "new_sl": new_sl,
+                "updated_by": user_telegram_id
+            }
+        )
+        db_session.add(event)
+        
+        # تحديث البطاقة في القنوات
+        rec_entity = self.repo._to_entity(rec_orm)
+        await self.notify_card_update(rec_entity)
+        
+        # تحديث فهارس التنبيهات
+        await self.alert_service.update_triggers_for_recommendation(rec_id)
+        
+        log.info(f"✅ Updated SL for recommendation #{rec_id} from {old_sl} to {new_sl} by user {user_telegram_id}")
+        return rec_entity
+
+    @uow_transaction
+    async def update_targets_for_user_async(self, rec_id: int, user_telegram_id: str, new_targets: List[Dict[str, float]], db_session: Session) -> RecommendationEntity:
+        """تحديث أهداف الربح لتوصية"""
+        user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
+        if not user or user.user_type != UserType.ANALYST:
+            raise ValueError("Only analysts can update recommendations.")
+            
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        if not rec_orm or rec_orm.analyst_id != user.id:
+            raise ValueError("Recommendation not found or access denied.")
+            
+        if rec_orm.status != RecommendationStatusEnum.ACTIVE:
+            raise ValueError("Only active recommendations can be updated.")
+            
+        # التحقق من صحة الأهداف الجديدة
+        self._validate_recommendation_data(rec_orm.side, float(rec_orm.entry), float(rec_orm.stop_loss), new_targets)
+        
+        old_targets = rec_orm.targets
+        rec_orm.targets = new_targets
+        rec_orm.updated_at = datetime.now(timezone.utc)
+        
+        # إضافة حدث
+        event = RecommendationEvent(
+            recommendation_id=rec_id,
+            event_type="TARGETS_UPDATED",
+            event_data={
+                "old_targets": old_targets,
+                "new_targets": new_targets,
+                "updated_by": user_telegram_id
+            }
+        )
+        db_session.add(event)
+        
+        # تحديث البطاقة في القنوات
+        rec_entity = self.repo._to_entity(rec_orm)
+        await self.notify_card_update(rec_entity)
+        
+        # تحديث فهارس التنبيهات
+        await self.alert_service.update_triggers_for_recommendation(rec_id)
+        
+        log.info(f"✅ Updated targets for recommendation #{rec_id} by user {user_telegram_id}")
+        return rec_entity
+
+    # ✅ NEW: دوال معالجة الأحداث من AlertService
+    async def process_activation_event(self, rec_id: int):
+        """معالجة حدث تفعيل التوصية (وصول سعر الدخول)"""
+        with session_scope() as session:
+            rec_orm = self.repo.get_for_update(session, rec_id)
+            if not rec_orm or rec_orm.status != RecommendationStatusEnum.PENDING:
+                return
+                
+            # تحديث الحالة إلى ACTIVE
+            rec_orm.status = RecommendationStatusEnum.ACTIVE
+            rec_orm.activated_at = datetime.now(timezone.utc)
+            rec_orm.updated_at = datetime.now(timezone.utc)
+            
+            # إضافة حدث
+            event = RecommendationEvent(
+                recommendation_id=rec_id,
+                event_type="ACTIVATED_AUTO",
+                event_data={"activated_at": rec_orm.activated_at.isoformat()}
+            )
+            session.add(event)
+            
+            # تحديث البطاقة في القنوات
+            rec_entity = self.repo._to_entity(rec_orm)
+            await self.notify_card_update(rec_entity)
+            
+            log.info(f"✅ Auto-activated recommendation #{rec_id}")
+
+    async def process_invalidation_event(self, rec_id: int):
+        """معالجة حدث إبطال التوصية (وصول SL قبل الدخول)"""
+        with session_scope() as session:
+            rec_orm = self.repo.get_for_update(session, rec_id)
+            if not rec_orm or rec_orm.status != RecommendationStatusEnum.PENDING:
+                return
+                
+            # تحديث الحالة إلى CLOSED
+            rec_orm.status = RecommendationStatusEnum.CLOSED
+            rec_orm.closed_at = datetime.now(timezone.utc)
+            rec_orm.updated_at = datetime.now(timezone.utc)
+            
+            # إضافة حدث
+            event = RecommendationEvent(
+                recommendation_id=rec_id,
+                event_type="INVALIDATED_AUTO",
+                event_data={"invalidated_at": rec_orm.closed_at.isoformat()}
+            )
+            session.add(event)
+            
+            # تحديث البطاقة في القنوات
+            rec_entity = self.repo._to_entity(rec_orm)
+            await self.notify_card_update(rec_entity)
+            
+            log.info(f"🔄 Auto-invalidated recommendation #{rec_id} (SL hit before entry)")
+
+    # ✅ NEW: دوال إدارة صفقات المتداولين (UserTrades)
+    @uow_transaction
+    async def track_forwarded_trade(self, user_id: str, trade_data: Dict[str, Any], db_session: Session) -> Dict[str, Any]:
+        """
+        تتبع صفقة معاد توجيهها وإضافتها إلى محفظة المستخدم
+        
+        Args:
+            user_id: معرف المستخدم
+            trade_data: بيانات الصفقة المستخرجة
+            db_session: جلسة قاعدة البيانات
+            
+        Returns:
+            معلومات الصفقة المضافة
+        """
+        try:
+            # البحث عن المستخدم
+            user_repo = UserRepository(db_session)
+            user = user_repo.find_by_telegram_id(int(user_id))
+            
+            if not user:
+                return {'success': False, 'error': 'المستخدم غير موجود'}
+                
+            # إنشاء سجل UserTrade جديد
+            new_trade = UserTrade(
+                user_id=user.id,
+                asset=trade_data['asset'],
+                side=trade_data['side'],
+                entry=float(trade_data['entry']),
+                stop_loss=float(trade_data['stop_loss']),
+                targets=trade_data['targets'],
+                status=UserTradeStatus.OPEN,
+                source_forwarded_text=str(trade_data)
+            )
+            
+            db_session.add(new_trade)
+            db_session.flush()
+            
+            # تحديث فهارس التنبيهات
+            await self.alert_service.build_triggers_index()
+            
+            log.info(f"✅ Added forwarded trade #{new_trade.id} for user {user_id} - {trade_data['asset']} {trade_data['side']}")
+            
+            return {
+                'success': True,
+                'trade_id': new_trade.id,
+                'asset': new_trade.asset,
+                'side': new_trade.side,
+                'status': 'ADDED'
+            }
+            
+        except Exception as e:
+            log.error(f"❌ Failed to track forwarded trade for user {user_id}: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @uow_transaction
+    async def close_user_trade_async(self, trade_id: int, user_telegram_id: str, exit_price: float, db_session: Session) -> Dict[str, Any]:
+        """إغلاق صفقة متداول شخصية"""
+        try:
+            user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
+            if not user:
+                return {'success': False, 'error': 'المستخدم غير موجود'}
+                
+            # البحث عن الصفقة
+            trade = db_session.query(UserTrade).filter(
+                UserTrade.id == trade_id,
+                UserTrade.user_id == user.id
+            ).first()
+            
+            if not trade:
+                return {'success': False, 'error': 'الصفقة غير موجودة أو لا ت
