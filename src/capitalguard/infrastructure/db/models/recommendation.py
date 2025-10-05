@@ -1,5 +1,4 @@
-# src/capitalguard/infrastructure/db/models/recommendation.py (Updated for v3.0)
-
+# src/capitalguard/infrastructure/db/models/recommendation.py (v3.1 - Final Schema)
 import enum
 from datetime import datetime
 from sqlalchemy import (
@@ -10,7 +9,6 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
 
-# Enum definitions are now centralized here
 class RecommendationStatusEnum(enum.Enum):
     PENDING = "PENDING"
     ACTIVE = "ACTIVE"
@@ -32,7 +30,7 @@ class UserTradeStatus(enum.Enum):
 class AnalystProfile(Base):
     __tablename__ = 'analyst_profiles'
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, unique=True)
     public_name = Column(String, nullable=True)
     bio = Column(Text, nullable=True)
     is_public = Column(Boolean, default=False, server_default='false', nullable=False)
@@ -43,7 +41,7 @@ class AnalystProfile(Base):
 class Channel(Base):
     __tablename__ = 'channels'
     id = Column(Integer, primary_key=True)
-    analyst_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    analyst_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     telegram_channel_id = Column(BigInteger, unique=True, nullable=False, index=True)
     channel_name = Column(String, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
@@ -54,7 +52,7 @@ class Channel(Base):
 class Recommendation(Base):
     __tablename__ = 'recommendations'
     id = Column(Integer, primary_key=True)
-    analyst_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    analyst_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True)
     
     asset = Column(String, nullable=False, index=True)
@@ -65,6 +63,13 @@ class Recommendation(Base):
     status = Column(Enum(RecommendationStatusEnum, name="recommendationstatusenum"), nullable=False, default=RecommendationStatusEnum.PENDING, index=True)
     order_type = Column(Enum(OrderTypeEnum, name="ordertypeenum"), nullable=False, default=OrderTypeEnum.LIMIT)
     exit_strategy = Column(Enum(ExitStrategyEnum, name="exitstrategyenum"), nullable=False, default=ExitStrategyEnum.CLOSE_AT_FINAL_TP)
+    
+    # ✅ SCHEMA FIX: Added the missing 'market' and 'notes' fields.
+    market = Column(String, nullable=True, default="Futures")
+    notes = Column(Text, nullable=True)
+    
+    open_size_percent = Column(Numeric(5, 2), nullable=False, server_default='100.00')
+    exit_price = Column(Numeric(20, 8), nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     activated_at = Column(DateTime(timezone=True), nullable=True)
@@ -80,7 +85,7 @@ class Recommendation(Base):
 class UserTrade(Base):
     __tablename__ = 'user_trades'
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     
     asset = Column(String, nullable=False, index=True)
     side = Column(String, nullable=False)
@@ -114,8 +119,8 @@ class RecommendationEvent(Base):
 class Subscription(Base):
     __tablename__ = 'subscriptions'
     id = Column(Integer, primary_key=True)
-    trader_user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    analyst_user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    trader_user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
+    analyst_user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
     start_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     end_date = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
@@ -136,7 +141,7 @@ class AnalystStats(Base):
 class PublishedMessage(Base):
     __tablename__ = 'published_messages'
     id = Column(Integer, primary_key=True)
-    recommendation_id = Column(Integer, ForeignKey('recommendations.id'), nullable=False, index=True)
+    recommendation_id = Column(Integer, ForeignKey('recommendations.id', ondelete="CASCADE"), nullable=False, index=True)
     telegram_channel_id = Column(BigInteger, nullable=False)
     telegram_message_id = Column(BigInteger, nullable=False)
 
