@@ -1,8 +1,8 @@
-# src/capitalguard/application/services/trade_service.py (v19.1 - Final Multi-Tenant)
+# src/capitalguard/application/services/trade_service.py (v19.2 - Import Hotfix)
 """
 TradeService — Final, complete, and multi-tenant ready version.
-This file contains the full business logic for both Analysts and Traders (future),
-with comprehensive notifications and accurate PnL calculations.
+This version includes a critical hotfix for import paths to align with the new
+v3.0 domain-driven design structure.
 """
 
 import logging
@@ -22,9 +22,14 @@ from capitalguard.infrastructure.db.models import (
 from capitalguard.infrastructure.db.repository import (
     RecommendationRepository, ChannelRepository, UserRepository
 )
-from capitalguard.domain.entities import Recommendation as RecommendationEntity
-from capitalguard.domain.entities import RecommendationStatus as RecommendationStatusEntity
-from capitalguard.domain.value_objects import OrderType, ExitStrategy, Symbol, Side, Price, Targets
+# ✅ IMPORT FIX: Import Entities and Value Objects from their correct, separate locations.
+from capitalguard.domain.entities import (
+    Recommendation as RecommendationEntity,
+    RecommendationStatus as RecommendationStatusEntity,
+    OrderType,
+    ExitStrategy
+)
+from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
 from capitalguard.interfaces.telegram.ui_texts import _pct, _calculate_weighted_pnl
 
 log = logging.getLogger(__name__)
