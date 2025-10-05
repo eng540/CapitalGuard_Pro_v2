@@ -1,4 +1,4 @@
-# src/capitalguard/boot.py (v3.1 - Final with Image Parsing)
+# src/capitalguard/boot.py (مصحح)
 """
 Bootstrap and dependency injection setup for CapitalGuard Pro.
 This is the single source of truth for service initialization.
@@ -36,7 +36,7 @@ from capitalguard.application.services.autotrade_service import AutoTradeService
 from capitalguard.application.services.risk_service import RiskService
 from capitalguard.application.services.report_service import ReportService
 from capitalguard.application.services.audit_service import AuditService
-from capitalguard.application.services.image_parsing_service import ImageParsingService  # ✅ NEW
+from capitalguard.application.services.image_parsing_service import ImageParsingService
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def setup_database():
         engine = create_engine(
             settings.DATABASE_URL,
             connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {},
-            echo=settings.DEBUG  # عرض استعلامات SQL في وضع التصحيح
+            echo=False  # ✅ FIX: تم إزالة settings.DEBUG واستبداله بـ False
         )
         
         # إنشاء الجداول إذا لم تكن موجودة
@@ -83,10 +83,10 @@ def build_services() -> Dict[str, Any]:
         
         # خدمات بينانس (إذا كانت بيانات الاعتماد متوفرة)
         binance_creds = None
-        if settings.BINANCE_API_KEY and settings.BINANCE_API_SECRET:
+        if os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_API_SECRET"):
             binance_creds = BinanceCreds(
-                api_key=settings.BINANCE_API_KEY,
-                api_secret=settings.BINANCE_API_SECRET
+                api_key=os.getenv("BINANCE_API_KEY"),
+                api_secret=os.getenv("BINANCE_API_SECRET")
             )
         
         services['exec_spot'] = BinanceExec(binance_creds, futures=False) if binance_creds else None
@@ -179,7 +179,8 @@ def bootstrap_app() -> Optional[Application]:
     تهيئة تطبيق التيليجرام وإعداد جميع الخدمات.
     هذه هي نقطة الدخول الرئيسية للتطبيق.
     """
-    if not settings.TELEGRAM_BOT_TOKEN:
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not bot_token:
         log.critical("❌ TELEGRAM_BOT_TOKEN is required but not provided")
         return None
         
@@ -188,11 +189,10 @@ def bootstrap_app() -> Optional[Application]:
         services = build_services()
         
         # إنشاء تطبيق التيليجرام
-        application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
+        application = Application.builder().token(bot_token).build()
         
         # تخزين الخدمات في bot_data للوصول العالمي
         application.bot_data.update(services)
-        application.bot_data['db_session'] = setup_database
         application.bot_data['services'] = services
         
         # حقن تطبيق PTB في الإشعارات
