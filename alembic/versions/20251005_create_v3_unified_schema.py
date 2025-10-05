@@ -227,4 +227,100 @@ def upgrade() -> None:
     # =============================
     if has_table(conn, "published_messages"):
         if not has_index(conn, "ix_published_messages_recommendation_id"):
-            op.create_index("ix_published_messages_recommendation_id", "published_messages", ["recommend
+            op.create_index("ix_published_messages_recommendation_id", "published_messages", ["recommendation_id"])
+    else:
+        op.create_table(
+            'published_messages',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('recommendation_id', sa.Integer(), sa.ForeignKey('recommendations.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('telegram_message_id', sa.Integer(), nullable=False),
+            sa.Column('channel_id', sa.Integer(), sa.ForeignKey('channels.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('sent_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+        )
+        op.create_index("ix_published_messages_recommendation_id", "published_messages", ["recommendation_id"])
+        op.create_index("ix_published_messages_channel_id", "published_messages", ["channel_id"])
+
+    # =============================
+    # USER_TRADES
+    # =============================
+    if has_table(conn, "user_trades"):
+        if not has_column("user_trades", "position_size_percent"):
+            op.add_column("user_trades", sa.Column("position_size_percent", sa.Numeric(5, 2), server_default='100.00', nullable=False))
+        if not has_column("user_trades", "notes"):
+            op.add_column("user_trades", sa.Column("notes", sa.Text(), nullable=True))
+        for idx, cols, uniq in [
+            ("ix_user_trades_user_id", ["user_id"], False),
+            ("ix_user_trades_recommendation_id", ["recommendation_id"], False),
+            ("ix_user_trades_status", ["status"], False),
+        ]:
+            if not has_index(conn, idx):
+                op.create_index(idx, "user_trades", cols, unique=uniq)
+    else:
+        op.create_table(
+            'user_trades',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('user_id', sa.Integer(), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('recommendation_id', sa.Integer(), sa.ForeignKey('recommendations.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('status', sa.Enum('OPEN','CLOSED', name='usertradestatusenum', create_type=False), server_default='OPEN', nullable=False),
+            sa.Column('entry_price', sa.Numeric(20, 8), nullable=True),
+            sa.Column('exit_price', sa.Numeric(20, 8), nullable=True),
+            sa.Column('position_size_percent', sa.Numeric(5, 2), server_default='100.00', nullable=False),
+            sa.Column('notes', sa.Text(), nullable=True),
+            sa.Column('opened_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+            sa.Column('closed_at', sa.DateTime(timezone=True), nullable=True),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), onupdate=sa.text('now()'), nullable=False),
+        )
+        for idx, cols, uniq in [
+            ("ix_user_trades_user_id", ["user_id"], False),
+            ("ix_user_trades_recommendation_id", ["recommendation_id"], False),
+            ("ix_user_trades_status", ["status"], False),
+        ]:
+            op.create_index(idx, 'user_trades', cols, unique=uniq)
+
+    # =============================
+    # USER_SETTINGS
+    # =============================
+    if not has_table(conn, "user_settings"):
+        op.create_table(
+            'user_settings',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('user_id', sa.Integer(), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False, unique=True),
+            sa.Column('default_position_size', sa.Numeric(5, 2), server_default='100.00', nullable=False),
+            sa.Column('auto_copy_trades', sa.Boolean(), server_default=sa.text('false'), nullable=False),
+            sa.Column('notifications_enabled', sa.Boolean(), server_default=sa.text('true'), nullable=False),
+            sa.Column('risk_level', sa.String(), server_default='MEDIUM', nullable=False),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), onupdate=sa.text('now()'), nullable=False),
+        )
+        op.create_index("ix_user_settings_user_id", "user_settings", ["user_id"], unique=True)
+
+
+def downgrade() -> None:
+    # Note: This is a complex migration. In production, you might want to
+    # create separate downgrade migrations for specific schema changes.
+    # This is a minimal safe downgrade that won't destroy data.
+    
+    # Drop new tables in reverse order
+    op.drop_table('user_settings')
+    op.drop_table('user_trades')
+    op.drop_table('published_messages')
+    
+    # Drop new indexes
+    indexes_to_drop = [
+        "ix_published_messages_recommendation_id",
+        "ix_published_messages_channel_id",
+        "ix_user_trades_user_id", 
+        "ix_user_trades_recommendation_id",
+        "ix_user_trades_status",
+        "ix_user_settings_user_id",
+    ]
+    
+    conn = op.get_bind()
+    for index_name in indexes_to_drop:
+        if has_index(conn, index_name):
+            op.drop_index(index_name)
+    
+    # Note: We don't drop enum types as they might be used by other tables
+    # and dropping them requires checking dependencies first.
