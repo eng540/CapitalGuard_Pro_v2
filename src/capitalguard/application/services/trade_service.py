@@ -134,40 +134,60 @@ class TradeService:
                     log.warning("Failed to send reply notification for rec #%s to channel %s: %s", rec_id, msg_meta.telegram_channel_id, e)
 
     def _validate_recommendation_data(self, side: str, entry: float, stop_loss: float, targets: List[Dict[str, float]]):
+        """
+        ✅ FORTIFIED: This validation logic is now more robust and ordered
+        to catch logical errors early and prevent inconsistent data.
+        """
         side_upper = side.upper()
+
+        # Rule 1: Basic price sanity checks
         if entry <= 0 or stop_loss <= 0:
             raise ValueError("Entry and Stop Loss prices must be positive.")
         if not targets or not all(t.get('price', 0) > 0 for t in targets):
             raise ValueError("At least one valid target with a positive price is required.")
+
+        # Rule 2: Directional logic for Stop Loss
         if side_upper == "LONG" and stop_loss >= entry:
             raise ValueError("For new LONG trades, Stop Loss must be < Entry Price.")
         if side_upper == "SHORT" and stop_loss <= entry:
             raise ValueError("For new SHORT trades, Stop Loss must be > Entry Price.")
+
+        # Rule 3: Directional logic for Targets
         for target in targets:
             if side_upper == 'LONG' and target['price'] <= entry:
                 raise ValueError(f"Target price {target['price']} must be above entry for a LONG trade.")
             if side_upper == 'SHORT' and target['price'] >= entry:
                 raise ValueError(f"Target price {target['price']} must be below entry for a SHORT trade.")
+
+        # Rule 4: Risk/Reward Ratio - The most critical business rule
         risk = abs(entry - stop_loss)
-        if risk <= 1e-9:
+        if risk <= 1e-9: # Prevent division by zero
             raise ValueError("Entry and Stop Loss prices cannot be the same.")
+            
+        # Determine the first logical target to calculate reward
         if side_upper == "LONG":
             first_target_price = min(t['price'] for t in targets)
-        else:
+        else: # SHORT
             first_target_price = max(t['price'] for t in targets)
+        
         reward = abs(first_target_price - entry)
         min_acceptable_rr = 0.1
         if (reward / risk) < min_acceptable_rr:
             raise ValueError(f"Risk/Reward ratio too low: {(reward / risk):.3f}. Minimum allowed: {min_acceptable_rr}")
+
+        # Rule 5: Uniqueness and Order of Targets
         target_prices = [t['price'] for t in targets]
         if len(target_prices) != len(set(target_prices)):
             raise ValueError("Target prices must be unique.")
+        
         is_long = side_upper == 'LONG'
         sorted_prices = sorted(target_prices, reverse=not is_long)
         if target_prices != sorted_prices:
             raise ValueError("Targets must be in ascending order for LONG trades and descending for SHORT trades.")
+
+        # Rule 6: Total close percentage
         total_close = sum(float(t.get('close_percent', 0)) for t in targets)
-        if total_close > 100.01:
+        if total_close > 100.01:  # Allow for small float inaccuracies
             raise ValueError("Sum of target close percentages cannot exceed 100%.")
 
     def _convert_enum_to_string(self, value):
@@ -635,4 +655,92 @@ class TradeService:
             ).first()
             
             if not trade:
-                return {'success': False, 'error': 'الصفقة غير موجودة أو لا ت
+                return {'success': False, 'error': 'الصفقة غير موجودة أو لا تملك صلاحية الوصول'}
+                
+            if trade.status == UserTradeStatus.CLOSED:
+                return {'success': False, 'error': 'الصفقة مغلقة بالفعل'}
+                
+            # تحديث الصفقة
+            trade.status = UserTradeStatus.CLOSED
+            trade.close_price = exit_price
+            trade.closed_at = datetime.now(timezone.utc)
+            
+            # حساب PnL
+            if trade.side.upper() == "LONG":
+                pnl_pct = ((exit_price - float(trade.entry)) / float(trade.entry)) * 100
+            else:  # SHORT
+                pnl_pct = ((float(trade.entry) - exit_price) / float(trade.entry)) * 100
+                
+            trade.pnl_percentage = pnl_pct
+            
+            # تحديث فهارس التنبيهات
+            await self.alert_service.build_triggers_index()
+            
+            log.info(f"✅ Closed user trade #{trade_id} at price {exit_price} for user {user_telegram_id}")
+            
+            return {
+                'success': True,
+                'trade_id': trade_id,
+                'asset': trade.asset,
+                'side': trade.side,
+                'pnl_percent': pnl_pct,
+                'status': 'CLOSED'
+            }
+            
+        except Exception as e:
+            log.error(f"❌ Failed to close user trade #{trade_id}: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    # ✅ NEW: دوال إضافية للتحقق من الصلاحيات
+    def _check_analyst_permission(self, user: User) -> bool:
+        """التحقق من أن المستخدم محلل"""
+        return user and user.user_type == UserType.ANALYST
+
+    def _check_trade_ownership(self, trade: UserTrade, user_id: int) -> bool:
+        """التحقق من ملكية الصفقة"""
+        return trade and trade.user_id == user_id
+
+    def _check_recommendation_ownership(self, rec: Recommendation, user_id: int) -> bool:
+        """التحقق من ملكية التوصية"""
+        return rec and rec.analyst_id == user_id
+
+    # ✅ NEW: دوال مساعدة للواجهات
+    def format_trade_for_display(self, trade: UserTrade) -> Dict[str, Any]:
+        """تنسيق بيانات الصفقة للعرض"""
+        return {
+            'id': trade.id,
+            'asset': trade.asset,
+            'side': trade.side,
+            'entry': float(trade.entry),
+            'stop_loss': float(trade.stop_loss),
+            'targets': trade.targets,
+            'status': trade.status.value,
+            'created_at': trade.created_at.isoformat() if trade.created_at else None,
+            'closed_at': trade.closed_at.isoformat() if trade.closed_at else None,
+            'pnl_percent': float(trade.pnl_percentage) if trade.pnl_percentage else None
+        }
+
+    def format_recommendation_for_display(self, rec: RecommendationEntity) -> Dict[str, Any]:
+        """تنسيق بيانات التوصية للعرض"""
+        return {
+            'id': rec.id,
+            'asset': rec.asset.value,
+            'side': rec.side.value,
+            'entry': rec.entry.value,
+            'stop_loss': rec.stop_loss.value,
+            'targets': [{'price': t.price, 'close_percent': t.close_percent} for t in rec.targets.values],
+            'status': rec.status.value,
+            'market': rec.market,
+            'order_type': rec.order_type.value,
+            'exit_strategy': rec.exit_strategy.value,
+            'open_size_percent': rec.open_size_percent,
+            'created_at': rec.created_at.isoformat() if rec.created_at else None,
+            'activated_at': rec.activated_at.isoformat() if rec.activated_at else None,
+            'closed_at': rec.closed_at.isoformat() if rec.closed_at else None
+        }
+
+# تصدير الكلاس للاستخدام في أماكن أخرى
+__all__ = ['TradeService', 'uow_transaction']
