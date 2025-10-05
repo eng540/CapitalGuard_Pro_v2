@@ -11,7 +11,8 @@ from .market_data_service import MarketDataService
 from .autotrade_service import AutoTradeService
 from .risk_service import RiskService
 from .report_service import ReportService
-from .audit_service import AuditService  # ✅ NEW: Import the new service
+from .audit_service import AuditService
+from .image_parsing_service import ImageParsingService  # ✅ NEW: خدمة تحليل الصور
 
 __all__ = [
     "TradeService",
@@ -22,5 +23,6 @@ __all__ = [
     "AutoTradeService",
     "RiskService",
     "ReportService",
-    "AuditService",  # ✅ NEW: Export the new service
+    "AuditService",
+    "ImageParsingService",  # ✅ NEW: خدمة تحليل الصور
 ]
