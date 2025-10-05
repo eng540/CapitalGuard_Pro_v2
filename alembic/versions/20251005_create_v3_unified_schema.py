@@ -1,7 +1,7 @@
 """Unified safe & smart schema migration (full idempotent)
 
 Revision ID: 20251008_full_unified_schema
-Revises: 20251005_create_v3_unified_schema
+Revises: None
 Create Date: 2025-10-08 00:00:00.000000
 """
 from alembic import op
@@ -10,7 +10,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers
 revision = '20251008_full_unified_schema'
-down_revision = '20251005_create_v3_unified_schema'
+down_revision = None
 branch_labels = None
 depends_on = None
 
