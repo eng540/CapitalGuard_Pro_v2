@@ -1,7 +1,6 @@
-# src/capitalguard/application/services/trade_service.py (v19.3 - Enum Fix)
+# src/capitalguard/application/services/trade_service.py (v20.0 - Final Multi-Tenant with Forwarding)
 """
-TradeService — Final, complete, and multi-tenant ready version.
-This version includes a critical fix for Enum to string conversion.
+TradeService — الإصدار النهائي الكامل والداعم لتعدد المستخدمين مع ميزة التتبع الذكي.
 """
 
 import logging
@@ -16,12 +15,11 @@ from sqlalchemy.orm import Session
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.models import (
     PublishedMessage, Recommendation, RecommendationEvent, User, UserType,
-    RecommendationStatusEnum
+    RecommendationStatusEnum, UserTrade, UserTradeStatus
 )
 from capitalguard.infrastructure.db.repository import (
     RecommendationRepository, ChannelRepository, UserRepository
 )
-# ✅ IMPORT FIX: Import Entities and Value Objects from their correct, separate locations.
 from capitalguard.domain.entities import (
     Recommendation as RecommendationEntity,
     RecommendationStatus as RecommendationStatusEntity,
@@ -286,34 +284,4 @@ class TradeService:
         created_rec_entity = self.repo._to_entity(rec_orm)
         await self.alert_service.update_triggers_for_recommendation(created_rec_entity.id)
         
-        final_rec, report = await self._publish_recommendation(db_session, created_rec_entity, user_id, kwargs.get('target_channel_ids'))
-        return final_rec, report
-
-    def get_recommendation_for_user(self, db_session: Session, rec_id: int, user_telegram_id: str) -> Optional[RecommendationEntity]:
-        user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
-        if not user: 
-            return None
-        
-        if user.user_type == UserType.ANALYST:
-            rec_orm = self.repo.get(db_session, rec_id)
-            if not rec_orm or rec_orm.analyst_id != user.id: 
-                return None
-            return self.repo._to_entity(rec_orm)
-        
-        return None
-
-    def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str, **filters) -> List[Any]:
-        user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
-        if not user: 
-            return []
-        
-        if user.user_type == UserType.ANALYST:
-            recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id)
-            return [self.repo._to_entity(r) for r in recs_orm]
-        else:
-            log.info(f"Fetching open UserTrades for trader {user.id} (Not Implemented).")
-            return []
-
-    def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
-        # This needs to be adapted
-        return ["BTCUSDT", "ETHUSDT"]
+        final_rec, report = await self._publish_recommendation(db_session,
