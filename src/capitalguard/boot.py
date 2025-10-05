@@ -1,9 +1,10 @@
-# src/capitalguard/boot.py (v3.2 - Final, DEBUG removed)
+# src/capitalguard/boot.py (الإصدار المصحح)
 """
 Bootstrap and dependency injection setup for CapitalGuard Pro.
-This is the single source of truth for service initialization.
+Production-ready version - FIXED
 """
 
+import os
 import logging
 from typing import Dict, Any, Optional
 
@@ -20,8 +21,6 @@ from capitalguard.infrastructure.db.repository import (
 )
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.infrastructure.execution.binance_exec import BinanceExec, BinanceCreds
-from capitalguard.infrastructure.pricing.binance import BinancePricing
-from capitalguard.infrastructure.market.ws_client import BinanceWS
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
 from capitalguard.infrastructure.sched.shared_queue import ThreadSafeQueue
 
@@ -35,21 +34,25 @@ from capitalguard.application.services.autotrade_service import AutoTradeService
 from capitalguard.application.services.risk_service import RiskService
 from capitalguard.application.services.report_service import ReportService
 from capitalguard.application.services.audit_service import AuditService
-from capitalguard.application.services.image_parsing_service import ImageParsingService  # ✅ NEW
+from capitalguard.application.services.image_parsing_service import ImageParsingService
 
 log = logging.getLogger(__name__)
 
 def setup_database():
-    """إعداد وتهيئة قاعدة البيانات"""
+    """إعداد قاعدة البيانات للإنتاج"""
     try:
         engine = create_engine(
             settings.DATABASE_URL,
-            connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
+            connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {},
+            echo=False,
+            pool_pre_ping=True  # ✅ مهم للإنتاج
         )
         
-        # إنشاء الجداول إذا لم تكن موجودة
-        Base.metadata.create_all(bind=engine)
+        # التحقق من اتصال قاعدة البيانات
+        with engine.connect() as conn:
+            conn.execute("SELECT 1")
         
+        Base.metadata.create_all(bind=engine)
         SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
         log.info("✅ Database setup completed successfully")
         return SessionLocal
@@ -59,50 +62,48 @@ def setup_database():
         raise
 
 def build_services() -> Dict[str, Any]:
-    """
-    بناء وتسجيل جميع خدمات التطبيق.
-    هذا هو المصدر الوحيد للحقيقة لتهيئة الخدمات.
-    """
+    """بناء جميع الخدمات للإنتاج"""
     services = {}
     
     try:
-        # === 1. إعداد قاعدة البيانات والمستودعات ===
+        # ✅ FIX: إنشاء SessionLocal فقط (لا إنشاء session هنا)
         SessionLocal = setup_database()
         
-        # === 2. تهيئة المستودعات ===
+        # ✅ FIX: تمرير SessionLocal بدلاً من session
+        services['session_factory'] = SessionLocal
+        
+        # ✅ FIX: إنشاء المستودعات بدون session (سيتم تمريرها لاحقاً)
         services['recommendation_repo'] = RecommendationRepository()
-        services['user_repo'] = UserRepository()
-        services['channel_repo'] = ChannelRepository()
+        services['user_repo'] = UserRepository
+        services['channel_repo'] = ChannelRepository
         
-        # === 3. خدمات البنية التحتية ===
-        
-        # خدمة الإشعارات
+        # خدمات البنية التحتية
         services['notifier'] = TelegramNotifier()
         
-        # خدمات بينانس (إذا كانت بيانات الاعتماد متوفرة)
+        # خدمات بينانس (اختيارية)
         binance_creds = None
-        if settings.BINANCE_API_KEY and settings.BINANCE_API_SECRET:
+        if os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_API_SECRET"):
             binance_creds = BinanceCreds(
-                api_key=settings.BINANCE_API_KEY,
-                api_secret=settings.BINANCE_API_SECRET
+                api_key=os.getenv("BINANCE_API_KEY"),
+                api_secret=os.getenv("BINANCE_API_SECRET")
             )
+            log.info("✅ Binance credentials loaded")
+        else:
+            log.warning("⚠️ Binance credentials not found - auto trading disabled")
         
         services['exec_spot'] = BinanceExec(binance_creds, futures=False) if binance_creds else None
         services['exec_futu'] = BinanceExec(binance_creds, futures=True) if binance_creds else None
         
-        # خدمات التسعير والبيانات السوقية
+        # خدمات البيانات
         services['price_service'] = PriceService()
         services['market_data_service'] = MarketDataService()
         
-        # === 4. خدمات التطبيق الأساسية ===
-        
-        # خدمة إدارة المخاطر
+        # خدمات التطبيق
         services['risk_service'] = RiskService(
             exec_spot=services['exec_spot'],
             exec_futu=services['exec_futu']
         )
         
-        # خدمة التداول الآلي
         services['autotrade_service'] = AutoTradeService(
             repo=services['recommendation_repo'],
             notifier=services['notifier'],
@@ -111,48 +112,33 @@ def build_services() -> Dict[str, Any]:
             exec_futu=services['exec_futu']
         )
         
-        # خدمة التقارير
-        services['report_service'] = ReportService(
-            repo=services['recommendation_repo']
-        )
-        
-        # خدمة التدقيق
+        services['report_service'] = ReportService(repo=services['recommendation_repo'])
         services['audit_service'] = AuditService(
             rec_repo=services['recommendation_repo'],
             user_repo_class=services['user_repo']
         )
         
-        # === 5. خدمات البث والمراقبة ===
-        
-        # قائمة الانتظار المشتركة
+        # خدمات البث والمراقبة
         price_queue = ThreadSafeQueue()
-        
-        # بث الأسعار
         services['price_streamer'] = PriceStreamer(
             queue=price_queue,
             repo=services['recommendation_repo']
         )
         
-        # خدمة التنبيهات
+        # ✅ FIX: إنشاء AlertService مع trade_service=None مؤقتاً
         services['alert_service'] = AlertService(
-            trade_service=None,  # سيتم تعيينها لاحقاً
+            trade_service=None,  # سيتم تعيينه لاحقاً
             price_service=services['price_service'],
             repo=services['recommendation_repo'],
             streamer=services['price_streamer'],
             debounce_seconds=1.0
         )
         
-        # === 6. الخدمات الرئيسية ===
-        
-        # خدمة التحليل
-        services['analytics_service'] = AnalyticsService(
-            repo=services['recommendation_repo']
-        )
-        
-        # ✅ NEW: خدمة تحليل الصور والنص
+        # الخدمات الرئيسية
+        services['analytics_service'] = AnalyticsService(repo=services['recommendation_repo'])
         services['image_parsing_service'] = ImageParsingService()
         
-        # خدمة التداول (يجب أن تكون الأخيرة بسبب التبعيات الدائرية)
+        # ✅ FIX: إنشاء TradeService أخيراً
         services['trade_service'] = TradeService(
             repo=services['recommendation_repo'],
             notifier=services['notifier'],
@@ -161,57 +147,59 @@ def build_services() -> Dict[str, Any]:
             alert_service=services['alert_service']
         )
         
-        # حل التبعية الدائرية في AlertService
+        # ✅ FIX: حل التبعية الدائرية
         services['alert_service'].trade_service = services['trade_service']
         
         log.info("✅ All services built successfully")
         
     except Exception as e:
-        log.critical(f"❌ Service building failed: {e}")
+        log.critical(f"❌ Service building failed: {e}", exc_info=True)
         raise
         
     return services
 
 def bootstrap_app() -> Optional[Application]:
-    """
-    تهيئة تطبيق التيليجرام وإعداد جميع الخدمات.
-    هذه هي نقطة الدخول الرئيسية للتطبيق.
-    """
-    if not settings.TELEGRAM_BOT_TOKEN:
+    """تهيئة تطبيق Telegram للإنتاج"""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    
+    if not bot_token:
         log.critical("❌ TELEGRAM_BOT_TOKEN is required but not provided")
         return None
-        
+    
+    log.info(f"✅ Bot token found: {bot_token[:10]}...")
+    
     try:
-        # بناء جميع الخدمات
         services = build_services()
         
-        # إنشاء تطبيق التيليجرام
-        application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
+        # إنشاء تطبيق Telegram
+        application = Application.builder().token(bot_token).build()
         
-        # تخزين الخدمات في bot_data للوصول العالمي
+        # ✅ FIX: تسجيل جميع handlers
+        from capitalguard.interfaces.telegram.handlers import register_all_handlers
+        register_all_handlers(application)
+        
+        # تخزين الخدمات في bot_data
         application.bot_data.update(services)
-        application.bot_data['db_session'] = setup_database
         application.bot_data['services'] = services
         
         # حقن تطبيق PTB في الإشعارات
         services['notifier'].set_ptb_app(application)
         
         log.info("✅ Telegram application bootstrapped successfully")
+        log.info("✅ All handlers registered successfully")
+        
         return application
         
     except Exception as e:
-        log.critical(f"❌ Application bootstrap failed: {e}")
+        log.critical(f"❌ Application bootstrap failed: {e}", exc_info=True)
         return None
 
 def get_service_from_context(context, service_name: str, service_type: type) -> Any:
-    """
-    أداة مساعدة للحصول على الخدمات من context.
-    """
+    """الحصول على الخدمات من context"""
     service = context.bot_data.get('services', {}).get(service_name)
     if not service or not isinstance(service, service_type):
         log.error(f"Service {service_name} not found or wrong type")
         raise RuntimeError(f"Service {service_name} unavailable")
     return service
 
-# تصدير للاستخدام في أماكن أخرى
 __all__ = ['bootstrap_app', 'build_services', 'get_service_from_context']
