@@ -1,8 +1,7 @@
-# src/capitalguard/application/services/trade_service.py (v19.2 - Import Hotfix)
+# src/capitalguard/application/services/trade_service.py (v19.3 - Enum Fix)
 """
 TradeService — Final, complete, and multi-tenant ready version.
-This version includes a critical hotfix for import paths to align with the new
-v3.0 domain-driven design structure.
+This version includes a critical fix for Enum to string conversion.
 """
 
 import logging
@@ -173,6 +172,12 @@ class TradeService:
         if total_close > 100.01:
             raise ValueError("Sum of target close percentages cannot exceed 100%.")
 
+    def _convert_enum_to_string(self, value):
+        """Convert Enum objects to their string values for database compatibility"""
+        if hasattr(value, 'value'):
+            return value.value
+        return value
+
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
         uid_int = _parse_int_user_id(user_id)
@@ -228,17 +233,23 @@ class TradeService:
         asset = kwargs['asset'].strip().upper()
         side = kwargs['side'].upper()
         market = kwargs.get('market', 'Futures')
-        order_type_enum = OrderType(kwargs['order_type'].upper())
+        
+        # ✅ FIX: Convert Enum to string for database compatibility
+        order_type_input = kwargs['order_type']
+        order_type_str = self._convert_enum_to_string(order_type_input)
+        order_type_enum = OrderType(order_type_str)
         
         status, final_entry = (RecommendationStatusEnum.PENDING, kwargs['entry'])
         if order_type_enum == OrderType.MARKET:
             live_price = await self.price_service.get_cached_price(asset, market, force_refresh=True)
-            if live_price is None: raise RuntimeError(f"Could not fetch live price for {asset}.")
+            if live_price is None: 
+                raise RuntimeError(f"Could not fetch live price for {asset}.")
             status, final_entry = RecommendationStatusEnum.ACTIVE, live_price
         
         targets_list = kwargs['targets']
         self._validate_recommendation_data(side, final_entry, kwargs['stop_loss'], targets_list)
 
+        # ✅ FIX: Convert all Enum fields to strings before saving to database
         rec_orm = Recommendation(
             analyst_id=user.id,
             asset=asset,
@@ -246,18 +257,27 @@ class TradeService:
             entry=final_entry,
             stop_loss=kwargs['stop_loss'],
             targets=targets_list,
-            order_type=order_type_enum,
-            status=status,
+            # ✅ Convert Enum to string for database
+            order_type=order_type_str,
+            status=self._convert_enum_to_string(status),
             market=market,
             notes=kwargs.get('notes'),
-            exit_strategy=kwargs.get('exit_strategy', ExitStrategy.CLOSE_AT_FINAL_TP),
+            # ✅ Convert Enum to string for database
+            exit_strategy=self._convert_enum_to_string(kwargs.get('exit_strategy', ExitStrategy.CLOSE_AT_FINAL_TP)),
             open_size_percent=100.0,
             activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None
         )
+        
         db_session.add(rec_orm)
+        
+        # ✅ EXTRA SAFETY: Ensure all Enum fields are converted before flush
+        rec_orm.order_type = self._convert_enum_to_string(rec_orm.order_type)
+        rec_orm.status = self._convert_enum_to_string(rec_orm.status)
+        rec_orm.exit_strategy = self._convert_enum_to_string(rec_orm.exit_strategy)
+        
         db_session.flush()
 
-        event_type = "CREATED_ACTIVE" if rec_orm.status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING"
+        event_type = "CREATED_ACTIVE" if rec_orm.status == RecommendationStatusEnum.ACTIVE.value else "CREATED_PENDING"
         new_event = RecommendationEvent(recommendation_id=rec_orm.id, event_type=event_type, event_data={})
         db_session.add(new_event)
         db_session.commit()
@@ -271,18 +291,21 @@ class TradeService:
 
     def get_recommendation_for_user(self, db_session: Session, rec_id: int, user_telegram_id: str) -> Optional[RecommendationEntity]:
         user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
-        if not user: return None
+        if not user: 
+            return None
         
         if user.user_type == UserType.ANALYST:
             rec_orm = self.repo.get(db_session, rec_id)
-            if not rec_orm or rec_orm.analyst_id != user.id: return None
+            if not rec_orm or rec_orm.analyst_id != user.id: 
+                return None
             return self.repo._to_entity(rec_orm)
         
         return None
 
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str, **filters) -> List[Any]:
         user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
-        if not user: return []
+        if not user: 
+            return []
         
         if user.user_type == UserType.ANALYST:
             recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id)
