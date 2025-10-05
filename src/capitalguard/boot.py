@@ -9,7 +9,7 @@ import logging
 from typing import Dict, Any, Optional
 
 from telegram.ext import Application
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text  # ✅ أضف text هنا
 from sqlalchemy.orm import sessionmaker
 
 from capitalguard.config import settings
@@ -50,7 +50,7 @@ def setup_database():
         
         # التحقق من اتصال قاعدة البيانات
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
+            conn.execute(text("SELECT 1"))  # ✅ استخدم text() هنا
         
         Base.metadata.create_all(bind=engine)
         SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
