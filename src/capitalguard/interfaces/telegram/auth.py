@@ -1,12 +1,8 @@
-# src/capitalguard/interfaces/telegram/auth.py (v12.1 - Final Multi-Tenant)
-"""
-This module provides authentication and authorization decorators for Telegram handlers,
-fully compatible with the new multi-tenant (UserType) schema.
-"""
-
+# src/capitalguard/interfaces/telegram/auth.py (v12.2 - Async Hotfix)
 import logging
 from functools import wraps
 from typing import Optional, Callable
+import asyncio
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -20,31 +16,23 @@ from .keyboards import build_subscription_keyboard
 log = logging.getLogger(__name__)
 
 def _get_db_user(telegram_id: int) -> Optional[User]:
-    """Helper to fetch a user from the database within its own session."""
     with SessionLocal() as session:
         return UserRepository(session).find_by_telegram_id(telegram_id)
 
 def require_active_user(func: Callable) -> Callable:
-    """
-    Decorator that ensures a user record exists and is active.
-    1. It first ensures a user record is in the DB for the interacting user.
-    2. It then checks if that user's `is_active` flag is True.
-    3. If active, it proceeds; otherwise, it blocks and sends a denial message.
-    """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user = update.effective_user
         if not user:
-            log.debug("Ignoring update with no effective_user (e.g., channel post).")
+            log.debug("Ignoring update with no effective_user.")
             return
         
-        # Use a task to run the synchronous DB call in the background without blocking the event loop
-        db_user = await context.application.create_task(_get_db_user, user.id)
+        # ✅ ASYNC FIX: Use run_in_executor to correctly run sync DB code in an async context.
+        loop = asyncio.get_running_loop()
+        db_user = await loop.run_in_executor(None, _get_db_user, user.id)
         
-        # If user does not exist at all, create them.
         if not db_user:
             with SessionLocal() as session:
-                # This is a rare case if the start command wasn't the first interaction
                 db_user = UserRepository(session).find_or_create(user.id, first_name=user.first_name, username=user.username)
 
         if not db_user.is_active:
@@ -56,19 +44,13 @@ def require_active_user(func: Callable) -> Callable:
                 await update.callback_query.answer("🚫 Access Denied: Account not active.", show_alert=True)
             return
         
-        # Store the fetched user object in context for downstream handlers to use
         context.user_data['db_user'] = db_user
         return await func(update, context, *args, **kwargs)
     return wrapper
 
 def require_analyst_user(func: Callable) -> Callable:
-    """
-    Decorator that checks if the user has the 'ANALYST' role.
-    This decorator MUST be placed *after* @require_active_user in the stack.
-    """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        # It's safe to assume db_user exists because @require_active_user ran first
         db_user: Optional[User] = context.user_data.get('db_user')
         
         if not db_user or db_user.user_type != UserType.ANALYST:
@@ -84,10 +66,6 @@ def require_analyst_user(func: Callable) -> Callable:
     return wrapper
 
 def require_channel_subscription(func: Callable) -> Callable:
-    """
-    A decorator that enforces channel subscription before executing a command handler.
-    This should be placed *after* @require_active_user.
-    """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         channel_id_str = settings.TELEGRAM_CHAT_ID
