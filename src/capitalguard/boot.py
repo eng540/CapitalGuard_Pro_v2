@@ -1,4 +1,4 @@
-# src/capitalguard/boot.py (الإصدار المصحح)
+# src/capitalguard/boot.py (الإصدار النهائي المصحح)
 """
 Bootstrap and dependency injection setup for CapitalGuard Pro.
 Production-ready version - FIXED
@@ -9,7 +9,7 @@ import logging
 from typing import Dict, Any, Optional
 
 from telegram.ext import Application
-from sqlalchemy import create_engine, text  # ✅ أضف text هنا
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from capitalguard.config import settings
@@ -45,12 +45,12 @@ def setup_database():
             settings.DATABASE_URL,
             connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {},
             echo=False,
-            pool_pre_ping=True  # ✅ مهم للإنتاج
+            pool_pre_ping=True
         )
         
         # التحقق من اتصال قاعدة البيانات
         with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))  # ✅ استخدم text() هنا
+            conn.execute(text("SELECT 1"))
         
         Base.metadata.create_all(bind=engine)
         SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -66,13 +66,13 @@ def build_services() -> Dict[str, Any]:
     services = {}
     
     try:
-        # ✅ FIX: إنشاء SessionLocal فقط (لا إنشاء session هنا)
+        # إنشاء SessionLocal
         SessionLocal = setup_database()
         
-        # ✅ FIX: تمرير SessionLocal بدلاً من session
+        # تخزين مصنع الجلسات
         services['session_factory'] = SessionLocal
         
-        # ✅ FIX: إنشاء المستودعات بدون session (سيتم تمريرها لاحقاً)
+        # إنشاء المستودعات
         services['recommendation_repo'] = RecommendationRepository()
         services['user_repo'] = UserRepository
         services['channel_repo'] = ChannelRepository
@@ -125,9 +125,9 @@ def build_services() -> Dict[str, Any]:
             repo=services['recommendation_repo']
         )
         
-        # ✅ FIX: إنشاء AlertService مع trade_service=None مؤقتاً
+        # إنشاء AlertService مع trade_service=None مؤقتاً
         services['alert_service'] = AlertService(
-            trade_service=None,  # سيتم تعيينه لاحقاً
+            trade_service=None,
             price_service=services['price_service'],
             repo=services['recommendation_repo'],
             streamer=services['price_streamer'],
@@ -138,7 +138,8 @@ def build_services() -> Dict[str, Any]:
         services['analytics_service'] = AnalyticsService(repo=services['recommendation_repo'])
         services['image_parsing_service'] = ImageParsingService()
         
-        # ✅ FIX: إنشاء TradeService أخيراً
+        # إنشاء TradeService أخيراً
+        log.info("🔄 Building trade_service...")
         services['trade_service'] = TradeService(
             repo=services['recommendation_repo'],
             notifier=services['notifier'],
@@ -146,11 +147,12 @@ def build_services() -> Dict[str, Any]:
             price_service=services['price_service'],
             alert_service=services['alert_service']
         )
+        log.info(f"✅ trade_service built successfully")
         
-        # ✅ FIX: حل التبعية الدائرية
+        # حل التبعية الدائرية
         services['alert_service'].trade_service = services['trade_service']
         
-        log.info("✅ All services built successfully")
+        log.info(f"✅ All services built successfully: {list(services.keys())}")
         
     except Exception as e:
         log.critical(f"❌ Service building failed: {e}", exc_info=True)
@@ -174,17 +176,17 @@ def bootstrap_app() -> Optional[Application]:
         # إنشاء تطبيق Telegram
         application = Application.builder().token(bot_token).build()
         
-        # ✅ FIX: تسجيل جميع handlers
+        # تخزين الخدمات في bot_data
+        application.bot_data['services'] = services
+        
+        # تسجيل جميع handlers
         from capitalguard.interfaces.telegram.handlers import register_all_handlers
         register_all_handlers(application)
-        
-        # تخزين الخدمات في bot_data
-        application.bot_data.update(services)
-        application.bot_data['services'] = services
         
         # حقن تطبيق PTB في الإشعارات
         services['notifier'].set_ptb_app(application)
         
+        log.info(f"✅ Services registered in bot_data: {list(services.keys())}")
         log.info("✅ Telegram application bootstrapped successfully")
         log.info("✅ All handlers registered successfully")
         
@@ -196,10 +198,21 @@ def bootstrap_app() -> Optional[Application]:
 
 def get_service_from_context(context, service_name: str, service_type: type) -> Any:
     """الحصول على الخدمات من context"""
-    service = context.bot_data.get('services', {}).get(service_name)
-    if not service or not isinstance(service, service_type):
-        log.error(f"Service {service_name} not found or wrong type")
-        raise RuntimeError(f"Service {service_name} unavailable")
-    return service
+    # ابحث في context.bot_data أولاً
+    if hasattr(context, 'bot_data') and context.bot_data:
+        service = context.bot_data.get('services', {}).get(service_name)
+        if service and isinstance(service, service_type):
+            return service
+    
+    # ابحث في application.bot_data إذا لم تجد في context
+    if hasattr(context, 'application') and context.application:
+        service = context.application.bot_data.get('services', {}).get(service_name)
+        if service and isinstance(service, service_type):
+            return service
+    
+    # إذا لم توجد في أي مكان
+    available_services = list(context.bot_data.get('services', {}).keys()) if hasattr(context, 'bot_data') else 'N/A'
+    log.error(f"❌ Service '{service_name}' not found. Available services: {available_services}")
+    raise RuntimeError(f"Service '{service_name}' is unavailable.")
 
 __all__ = ['bootstrap_app', 'build_services', 'get_service_from_context']
