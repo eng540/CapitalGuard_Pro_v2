@@ -141,19 +141,36 @@ class ForwardingHandlers:
         await query.edit_message_text("❌ Operation cancelled.")
         return ConversationHandler.END
 
+# إنشاء instance عالمي
 forwarding_handlers = ForwardingHandlers()
 
 def create_forwarding_conversation_handler():
     """إنشاء معالج المحادثة الخاص بإعادة التوجيه"""
     return ConversationHandler(
-        entry_points=[MessageHandler(filters.FORWARDED & filters.TEXT, forwarding_handlers.handle_forwarded_message)],
+        entry_points=[
+            MessageHandler(
+                filters.FORWARDED & filters.TEXT,
+                forwarding_handlers.handle_forwarded_message
+            )
+        ],
         states={
             AWAITING_CONFIRMATION: [
-                CallbackQueryHandler(forwarding_handlers.handle_confirmation, pattern="^confirm_forwarded_trade$"),
-                CallbackQueryHandler(forwarding_handlers.handle_cancellation, pattern="^cancel_forwarded_trade$")
+                CallbackQueryHandler(
+                    forwarding_handlers.handle_confirmation,
+                    pattern="^confirm_forwarded_trade$"
+                ),
+                CallbackQueryHandler(
+                    forwarding_handlers.handle_cancellation, 
+                    pattern="^cancel_forwarded_trade$"
+                )
             ]
         },
-        fallbacks=[CallbackQueryHandler(forwarding_handlers.handle_cancellation, pattern="^cancel_forwarded_trade$")],
+        fallbacks=[
+            CallbackQueryHandler(
+                forwarding_handlers.handle_cancellation,
+                pattern="^cancel_forwarded_trade$"
+            )
+        ],
         name="forwarding_conversation",
         persistent=False
     )
