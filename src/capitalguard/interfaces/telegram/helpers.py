@@ -1,30 +1,33 @@
-# --- START OF FINAL, PRODUCTION-READY FILE (Version 15.3.0) ---
-# src/capitalguard/interfaces/telegram/helpers.py
+# src/capitalguard/interfaces/telegram/helpers.py (RE-ARCHITECTED & FINAL)
 
 import functools
 import logging
 from typing import TypeVar, Callable, Optional, List
 
 from telegram.ext import ContextTypes
+from sqlalchemy.orm import Session
 
-from capitalguard.service_registry import get_global_service
-from capitalguard.infrastructure.db.base import SessionLocal
+from capitalguard.infrastructure.db.uow import session_scope
 
 log = logging.getLogger(__name__)
 T = TypeVar('T')
 
 def get_service(context: ContextTypes.DEFAULT_TYPE, service_name: str, service_type: type[T]) -> T:
     """
-    A robust service getter that retrieves a service from the global registry.
+    A robust service getter that retrieves a service directly from the bot_data context.
+    This is the new single source of truth for accessing services from handlers.
     """
-    service = get_global_service(service_name, service_type)
-    if service is None:
+    try:
+        service = context.bot_data['services'][service_name]
+        if not isinstance(service, service_type):
+            raise TypeError(f"Service '{service_name}' is not of type '{service_type.__name__}'.")
+        return service
+    except KeyError:
         log.critical(
-            "CRITICAL: Service '%s' of type '%s' could not be found.",
-            service_name, service_type.__name__
+            "CRITICAL: Service '%s' could not be found in context.bot_data. Available services: %s",
+            service_name, list(context.bot_data.get('services', {}).keys())
         )
         raise RuntimeError(f"Service '{service_name}' is unavailable.")
-    return service
 
 def unit_of_work(func: Callable) -> Callable:
     """
@@ -33,16 +36,13 @@ def unit_of_work(func: Callable) -> Callable:
     """
     @functools.wraps(func)
     async def wrapper(update, context, *args, **kwargs):
-        with SessionLocal() as session:
+        with session_scope() as session:
             try:
-                # This decorator is now primarily for handlers that need to READ from the DB.
-                # Write operations should be delegated to transactional service methods.
                 result = await func(update, context, db_session=session, *args, **kwargs)
-                session.commit() # Commit is safe for read-only or simple write operations.
+                # Commit is handled by session_scope context manager
                 return result
             except Exception as e:
-                log.error(f"Exception in handler '{func.__name__}', rolling back transaction.", exc_info=True)
-                session.rollback()
+                log.error(f"Exception in handler '{func.__name__}', transaction rolled back.", exc_info=True)
                 # Re-raise the exception to be caught by the global error handler
                 raise e
     return wrapper
@@ -59,5 +59,3 @@ def parse_cq_parts(data: str) -> List[str]:
     if not isinstance(data, str):
         return []
     return data.split(":")
-
-# --- END OF FINAL, PRODUCTION-READY FILE (Version 15.3.0) ---
