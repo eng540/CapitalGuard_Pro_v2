@@ -1,5 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND SIMPLIFIED FILE (Version 14.0.0) ---
-# src/capitalguard/interfaces/telegram/handlers.py
+# src/capitalguard/interfaces/telegram/handlers.py (v14.0.0 - Final)
 
 from telegram.ext import Application
 
@@ -7,7 +6,7 @@ from .commands import register_commands
 from .management_handlers import register_management_handlers
 from .conversation_handlers import register_conversation_handlers
 from .admin_commands import register_admin_commands
-from .forwarding_handlers import create_forwarding_conversation_handler  # ✅ NEW
+from .forwarding_handlers import create_forwarding_conversation_handler
 
 def register_all_handlers(application: Application):
     """
@@ -18,17 +17,14 @@ def register_all_handlers(application: Application):
     # Group 0: Admin Commands (Highest Priority)
     register_admin_commands(application)
 
-    # ✅ NEW: Group 1: Forwarding Conversation Handler (High Priority)
-    # يجب أن يكون هذا قبل أي معالجات أخرى قد تتعارض مع الرسائل المعاد توجيهها
+    # Group 1: Forwarding Conversation Handler (High Priority)
     application.add_handler(create_forwarding_conversation_handler())
 
     # Group 2: Main User Commands (Non-conversational)
     register_commands(application)
 
-    # Group 3: Conversational Handlers
+    # Group 3: Analyst-specific Conversational Handlers
     register_conversation_handlers(application)
 
     # Group 4: General Callback Query Handlers (Lowest Priority)
     register_management_handlers(application)
-
-# --- END OF FINAL, COMPLETE, AND SIMPLIFIED FILE ---
