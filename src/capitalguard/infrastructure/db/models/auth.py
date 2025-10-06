@@ -30,5 +30,3 @@ class User(Base):
     # Relationships to primary content created by this user (if they are an analyst)
     created_recommendations = relationship("Recommendation", back_populates="analyst")
     owned_channels = relationship("Channel", back_populates="analyst")
-
-# The Role and UserRole tables are now deprecated and removed in the new schema.

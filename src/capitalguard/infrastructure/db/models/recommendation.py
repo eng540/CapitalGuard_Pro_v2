@@ -64,7 +64,6 @@ class Recommendation(Base):
     order_type = Column(Enum(OrderTypeEnum, name="ordertypeenum"), nullable=False, default=OrderTypeEnum.LIMIT)
     exit_strategy = Column(Enum(ExitStrategyEnum, name="exitstrategyenum"), nullable=False, default=ExitStrategyEnum.CLOSE_AT_FINAL_TP)
     
-    # ✅ SCHEMA FIX: Added the missing 'market' and 'notes' fields.
     market = Column(String, nullable=True, default="Futures")
     notes = Column(Text, nullable=True)
     
