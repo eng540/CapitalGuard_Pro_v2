@@ -1,6 +1,6 @@
-# src/capitalguard/application/services/trade_service.py (v23.0 - FINAL OPTIMIZED with Shadow Recommendation)
+# src/capitalguard/application/services/trade_service.py (v24.0 - FINAL COMPLETE with Shadow Fix)
 """
-TradeService - الإصدار النهائي المحسن مع منطق "توصية الظل" القوي
+TradeService - الإصدار النهائي الكامل مع إصلاح حقل Shadow
 """
 
 import logging
@@ -657,8 +657,8 @@ class TradeService:
                 order_type="MARKET", # افتراض دخول بسعر السوق للتبسيط
                 notes="معاد توجيهها من قبل المستخدم.",
                 market="Futures",
-                activated_at=datetime.now(timezone.utc),
-                is_shadow_recommendation=True # ✅ علامة واضحة لتوصية الظل
+                is_shadow=True, # ✅ الإصلاح هنا - استخدم is_shadow بدلاً من is_shadow_recommendation
+                activated_at=datetime.now(timezone.utc)
             )
             db_session.add(shadow_rec)
             db_session.flush()
@@ -808,7 +808,8 @@ class TradeService:
                     trade_data['shadow_recommendation'] = {
                         'id': shadow_rec.id,
                         'status': shadow_rec.status,
-                        'created_at': shadow_rec.created_at.isoformat() if shadow_rec.created_at else None
+                        'created_at': shadow_rec.created_at.isoformat() if shadow_rec.created_at else None,
+                        'is_shadow': getattr(shadow_rec, 'is_shadow', False)
                     }
             result.append(trade_data)
             
