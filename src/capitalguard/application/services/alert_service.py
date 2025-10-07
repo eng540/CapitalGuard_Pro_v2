@@ -1,8 +1,8 @@
-# src/capitalguard/application/services/alert_service.py (v21.0.1 - Final Multi-Tenant)
+# src/capitalguard/application/services/alert_service.py (v22.0 - FINAL & COMPLETE)
 """
 AlertService — Final, complete, and multi-tenant ready version.
-This file contains the full logic for monitoring both UserTrades and pending
-Analyst Recommendations, including the self-healing Watchdog mechanism.
+This file contains the full logic for monitoring both UserTrades (via Shadow Recommendations)
+and pending Analyst Recommendations, including the self-healing Watchdog mechanism.
 """
 
 import logging
@@ -44,7 +44,7 @@ class AlertService:
 
         self._bg_thread: Optional[threading.Thread] = None
         self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._last_processed: Dict[int, Dict[str, float]] = {}
+        self._last_processed: Dict[str, Dict[str, float]] = {} # Key is now f"{item_type}:{item_id}"
         self._debounce_seconds = float(debounce_seconds)
         self._tp_re = re.compile(r"^TP(\d+)$", flags=re.IGNORECASE)
 
@@ -60,6 +60,7 @@ class AlertService:
                 log.critical("CRITICAL: DB read failure. Retrying in %ds...", retry_delay, exc_info=True)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
+        
         new_triggers: Dict[str, List[Dict[str, Any]]] = {}
         for item in trigger_data:
             try:
@@ -71,8 +72,10 @@ class AlertService:
                 self._add_item_to_trigger_dict(new_triggers, item)
             except Exception:
                 log.exception("Failed processing trigger item: %s", item)
+        
         async with self._triggers_lock:
             self.active_triggers = new_triggers
+        
         total_items = len(trigger_data) if trigger_data is not None else 0
         log.info("✅ Trigger index built: %d trigger items across %d symbols.", total_items, len(new_triggers))
 
@@ -92,24 +95,25 @@ class AlertService:
                 "price": float(price),
                 "processed_events": item.get("processed_events", set()),
                 "status": item.get("status"),
-                "is_user_trade": is_user_trade
+                "is_user_trade": is_user_trade,
+                "source_rec_id": item.get("source_rec_id") # For user trades
             }
 
         status = item.get("status")
         
-        if is_user_trade: # This is a UserTrade
+        if is_user_trade:
             if item.get("stop_loss") is not None:
                 trigger_dict[asset].append(_create_trigger("SL", item.get("stop_loss")))
             for idx, target in enumerate(item.get("targets", []), 1):
                 trigger_dict[asset].append(_create_trigger(f"TP{idx}", target.get("price")))
-        else: # This is an official Recommendation
+        else: # Official Recommendation
             if status == RecommendationStatus.PENDING:
                 trigger_dict[asset].append(_create_trigger("ENTRY", item.get("entry")))
                 if item.get("stop_loss") is not None:
                     trigger_dict[asset].append(_create_trigger("SL", item.get("stop_loss")))
 
-    async def update_triggers_for_recommendation(self, rec_id: int):
-        log.debug("Generic trigger update called for ID #%s. Rebuilding index for safety.", rec_id)
+    async def update_triggers_for_item(self, item_id: int, is_user_trade: bool):
+        log.debug("Generic trigger update called for item #%s (is_trade=%s). Rebuilding index for safety.", item_id, is_user_trade)
         await self.build_triggers_index()
 
     async def remove_triggers_for_item(self, item_id: int, is_user_trade: bool):
@@ -125,14 +129,6 @@ class AlertService:
                     log.info("Removed triggers for %s #%s from symbol %s in memory.", item_type, item_id, symbol)
                 if not self.active_triggers[symbol]:
                     del self.active_triggers[symbol]
-
-    async def add_processed_event_in_memory(self, item_id: int, is_user_trade: bool, event_type: str):
-        async with self._triggers_lock:
-            for symbol, triggers in self.active_triggers.items():
-                for trigger in triggers:
-                    if trigger.get("id") == item_id and trigger.get("is_user_trade") == is_user_trade:
-                        trigger["processed_events"].add(event_type)
-                        log.debug("Added event '%s' to in-memory state for item #%s", event_type, item_id)
 
     async def _run_index_sync(self, interval_seconds: int = 300):
         log.info("Index sync task started (interval=%ss).", interval_seconds)
@@ -256,6 +252,7 @@ class AlertService:
             processed_events: Set[str] = trigger.get("processed_events", set())
             status_in_memory = trigger.get("status")
             is_user_trade = trigger.get("is_user_trade")
+            user_id = trigger.get("user_id")
 
             event_key = ttype_raw
             if self._tp_re.match(ttype_raw):
@@ -265,7 +262,8 @@ class AlertService:
             if not is_user_trade and event_key in processed_events: continue
             if not self._is_price_condition_met(trigger.get("side"), low_price, high_price, execution_price, ttype_raw): continue
             
-            last_map = self._last_processed.setdefault(item_id, {})
+            debounce_key = f"{'trade' if is_user_trade else 'rec'}:{item_id}"
+            last_map = self._last_processed.setdefault(debounce_key, {})
             if last_ts := last_map.get(ttype_raw):
                 if (now_ts - last_ts) < self._debounce_seconds: continue
             last_map[ttype_raw] = now_ts
@@ -274,15 +272,17 @@ class AlertService:
             
             try:
                 if is_user_trade:
-                    log.warning("UserTrade trigger hit for #%s, but logic is not implemented yet.", item_id)
+                    if ttype_raw == "SL":
+                        await self.trade_service.process_user_trade_sl_hit_event(item_id, user_id, execution_price)
+                    elif self._tp_re.match(ttype_raw):
+                        m = self._tp_re.match(ttype_raw)
+                        idx = int(m.group(1)) if m else 1
+                        await self.trade_service.process_user_trade_tp_hit_event(item_id, user_id, idx, execution_price)
                 else: # It's a Recommendation
                     if status_in_memory == RecommendationStatus.PENDING and ttype_raw == "SL":
                         log.warning("Invalidation HIT for PENDING Rec #%s: SL hit before entry.", item_id)
                         await self.trade_service.process_invalidation_event(item_id)
-                        continue
-                    if ttype_raw == "ENTRY":
+                    elif ttype_raw == "ENTRY":
                         await self.trade_service.process_activation_event(item_id)
-                
-                await self.add_processed_event_in_memory(item_id, is_user_trade, event_key)
             except Exception:
                 log.exception("Failed to process and commit event for item #%s, type %s. Will retry.", item_id, ttype_raw)
