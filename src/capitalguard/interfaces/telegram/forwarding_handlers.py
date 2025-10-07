@@ -1,3 +1,4 @@
+# src/capitalguard/interfaces/telegram/forwarding_handlers.py (v2.1 - FINAL DECORATOR FIX)
 """
 ForwardingHandlers - معالجات إعادة توجيه الرسائل لإنشاء صفقات شخصية
 """
@@ -18,6 +19,7 @@ from .helpers import get_service, unit_of_work
 from .auth import require_active_user
 from capitalguard.application.services.image_parsing_service import ImageParsingService
 from capitalguard.application.services.trade_service import TradeService
+from capitalguard.infrastructure.db.repository import UserRepository
 
 log = logging.getLogger(__name__)
 
@@ -37,9 +39,11 @@ class ForwardingHandlers:
             await self.parsing_service.initialize()
         return self.parsing_service
         
+    # ✅ FIX: Decorators are now applied to the inner logic function
     @require_active_user
-    async def handle_forwarded_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """معالجة الرسائل المعاد توجيهها"""
+    @unit_of_work
+    async def handle_forwarded_message_logic(self, update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
+        """المنطق الفعلي لمعالجة الرسائل المعاد توجيهها"""
         user = update.effective_user
         message = update.message
         
@@ -74,7 +78,6 @@ class ForwardingHandlers:
         return AWAITING_CONFIRMATION
         
     def _build_confirmation_text(self, trade_data: Dict[str, Any]) -> str:
-        """بناء نص تأكيد البيانات المستخرجة"""
         asset = trade_data['asset']
         side = trade_data['side']
         entry = trade_data['entry']
@@ -96,7 +99,6 @@ class ForwardingHandlers:
         return text
         
     def _build_confirmation_keyboard(self) -> InlineKeyboardMarkup:
-        """بناء زر التأكيد"""
         keyboard = [
             [
                 InlineKeyboardButton("✅ Confirm & Add to Portfolio", callback_data="confirm_forwarded_trade"),
@@ -107,7 +109,6 @@ class ForwardingHandlers:
         
     @unit_of_work
     async def handle_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
-        """معالجة تأكيد إضافة الصفقة"""
         query = update.callback_query
         await query.answer()
         
@@ -134,7 +135,6 @@ class ForwardingHandlers:
         return ConversationHandler.END
         
     async def handle_cancellation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """معالجة إلغاء العملية"""
         query = update.callback_query
         await query.answer("Cancelled")
         context.user_data.pop('pending_trade', None)
@@ -144,13 +144,19 @@ class ForwardingHandlers:
 # إنشاء instance عالمي
 forwarding_handlers = ForwardingHandlers()
 
+# ✅ NEW: Simple, undecorated entry point function for the ConversationHandler
+async def forwarding_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """This is the clean entry point that ConversationHandler will call."""
+    return await forwarding_handlers.handle_forwarded_message_logic(update, context)
+
 def create_forwarding_conversation_handler():
     """إنشاء معالج المحادثة الخاص بإعادة التوجيه"""
     return ConversationHandler(
         entry_points=[
             MessageHandler(
                 filters.FORWARDED & filters.TEXT,
-                forwarding_handlers.handle_forwarded_message
+                # ✅ FIX: Use the clean entry point function
+                forwarding_entry_point
             )
         ],
         states={
