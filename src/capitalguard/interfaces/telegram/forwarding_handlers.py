@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/forwarding_handlers.py (v2.1 - FINAL DECORATOR FIX)
+# src/capitalguard/interfaces/telegram/forwarding_handlers.py (v2.2 - FINAL DECORATOR FIX)
 """
 ForwardingHandlers - معالجات إعادة توجيه الرسائل لإنشاء صفقات شخصية
 """
@@ -15,11 +15,11 @@ from telegram.ext import (
     ConversationHandler
 )
 
-from .helpers import get_service, unit_of_work
-from .auth import require_active_user
+from .helpers import get_service
 from capitalguard.application.services.image_parsing_service import ImageParsingService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.infrastructure.db.repository import UserRepository
+from capitalguard.infrastructure.db.uow import session_scope # Import session_scope directly
 
 log = logging.getLogger(__name__)
 
@@ -39,43 +39,64 @@ class ForwardingHandlers:
             await self.parsing_service.initialize()
         return self.parsing_service
         
-    # ✅ FIX: Decorators are now applied to the inner logic function
-    @require_active_user
-    @unit_of_work
-    async def handle_forwarded_message_logic(self, update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
-        """المنطق الفعلي لمعالجة الرسائل المعاد توجيهها"""
+    # ✅ FINAL FIX: Decorators are removed, and their logic is now inlined.
+    async def handle_forwarded_message_logic(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """المنطق الفعلي لمعالجة الرسائل المعاد توجيهها مع دمج منطق الديكورات"""
         user = update.effective_user
-        message = update.message
-        
-        log.info(f"🔄 Processing forwarded message from user {user.id}")
-        
-        parsing_service = await self.get_parsing_service(context)
-        
-        content = message.text or ""
-        if not content:
-            await update.message.reply_text("❌ Forwarded message contains no text to parse.")
+        if not user:
             return ConversationHandler.END
+
+        # --- Start of Inlined @unit_of_work and @require_active_user logic ---
+        with session_scope() as db_session:
+            try:
+                # Inlined @require_active_user logic
+                user_repo = UserRepository(db_session)
+                db_user = user_repo.find_by_telegram_id(user.id)
+                if not db_user:
+                    db_user = user_repo.find_or_create(user.id, first_name=user.first_name, username=user.username)
+                
+                if not db_user.is_active:
+                    log.warning(f"Blocked forwarded message from inactive user {user.id}")
+                    await update.message.reply_html("🚫 <b>Access Denied</b>\nYour account is not active. Please contact support.")
+                    return ConversationHandler.END
+
+                # --- Original handler logic starts here ---
+                message = update.message
+                log.info(f"🔄 Processing forwarded message from user {user.id}")
+                
+                parsing_service = await self.get_parsing_service(context)
+                
+                content = message.text or ""
+                if not content:
+                    await update.message.reply_text("❌ Forwarded message contains no text to parse.")
+                    return ConversationHandler.END
+                    
+                processing_msg = await update.message.reply_text("🔄 Analyzing signal...")
+                    
+                trade_data = await parsing_service.extract_trade_data(content, is_image=False)
+                
+                if not trade_data:
+                    await processing_msg.edit_text("❌ Could not recognize trade data in this message.")
+                    return ConversationHandler.END
+                    
+                context.user_data['pending_trade'] = trade_data
+                
+                confirmation_text = self._build_confirmation_text(trade_data)
+                keyboard = self._build_confirmation_keyboard()
+                
+                await processing_msg.edit_text(
+                    confirmation_text,
+                    reply_markup=keyboard,
+                    parse_mode='HTML'
+                )
+                
+                return AWAITING_CONFIRMATION
             
-        processing_msg = await update.message.reply_text("🔄 Analyzing signal...")
-            
-        trade_data = await parsing_service.extract_trade_data(content, is_image=False)
-        
-        if not trade_data:
-            await processing_msg.edit_text("❌ Could not recognize trade data in this message.")
-            return ConversationHandler.END
-            
-        context.user_data['pending_trade'] = trade_data
-        
-        confirmation_text = self._build_confirmation_text(trade_data)
-        keyboard = self._build_confirmation_keyboard()
-        
-        await processing_msg.edit_text(
-            confirmation_text,
-            reply_markup=keyboard,
-            parse_mode='HTML'
-        )
-        
-        return AWAITING_CONFIRMATION
+            except Exception as e:
+                log.error(f"Exception in handle_forwarded_message_logic, transaction rolled back.", exc_info=True)
+                # Re-raise to be caught by the global error handler
+                raise e
+        # --- End of Inlined logic ---
         
     def _build_confirmation_text(self, trade_data: Dict[str, Any]) -> str:
         asset = trade_data['asset']
@@ -144,7 +165,7 @@ class ForwardingHandlers:
 # إنشاء instance عالمي
 forwarding_handlers = ForwardingHandlers()
 
-# ✅ NEW: Simple, undecorated entry point function for the ConversationHandler
+# نقطة الدخول البسيطة التي لا تحتوي على ديكورات
 async def forwarding_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """This is the clean entry point that ConversationHandler will call."""
     return await forwarding_handlers.handle_forwarded_message_logic(update, context)
@@ -155,7 +176,6 @@ def create_forwarding_conversation_handler():
         entry_points=[
             MessageHandler(
                 filters.FORWARDED & filters.TEXT,
-                # ✅ FIX: Use the clean entry point function
                 forwarding_entry_point
             )
         ],
