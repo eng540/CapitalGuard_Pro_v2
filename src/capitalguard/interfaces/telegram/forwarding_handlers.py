@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/forwarding_handlers.py (v2.2 - FINAL DECORATOR FIX)
+# src/capitalguard/interfaces/telegram/forwarding_handlers.py (v2.3 - FINAL NameError FIX)
 """
 ForwardingHandlers - معالجات إعادة توجيه الرسائل لإنشاء صفقات شخصية
 """
@@ -15,11 +15,13 @@ from telegram.ext import (
     ConversationHandler
 )
 
-from .helpers import get_service
+# ✅ FIX: Re-import the necessary decorators and helpers
+from .helpers import get_service, unit_of_work
+from .auth import require_active_user
 from capitalguard.application.services.image_parsing_service import ImageParsingService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.infrastructure.db.repository import UserRepository
-from capitalguard.infrastructure.db.uow import session_scope # Import session_scope directly
+from capitalguard.infrastructure.db.uow import session_scope
 
 log = logging.getLogger(__name__)
 
@@ -39,17 +41,14 @@ class ForwardingHandlers:
             await self.parsing_service.initialize()
         return self.parsing_service
         
-    # ✅ FINAL FIX: Decorators are removed, and their logic is now inlined.
     async def handle_forwarded_message_logic(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """المنطق الفعلي لمعالجة الرسائل المعاد توجيهها مع دمج منطق الديكورات"""
         user = update.effective_user
         if not user:
             return ConversationHandler.END
 
-        # --- Start of Inlined @unit_of_work and @require_active_user logic ---
         with session_scope() as db_session:
             try:
-                # Inlined @require_active_user logic
                 user_repo = UserRepository(db_session)
                 db_user = user_repo.find_by_telegram_id(user.id)
                 if not db_user:
@@ -60,7 +59,6 @@ class ForwardingHandlers:
                     await update.message.reply_html("🚫 <b>Access Denied</b>\nYour account is not active. Please contact support.")
                     return ConversationHandler.END
 
-                # --- Original handler logic starts here ---
                 message = update.message
                 log.info(f"🔄 Processing forwarded message from user {user.id}")
                 
@@ -94,9 +92,7 @@ class ForwardingHandlers:
             
             except Exception as e:
                 log.error(f"Exception in handle_forwarded_message_logic, transaction rolled back.", exc_info=True)
-                # Re-raise to be caught by the global error handler
                 raise e
-        # --- End of Inlined logic ---
         
     def _build_confirmation_text(self, trade_data: Dict[str, Any]) -> str:
         asset = trade_data['asset']
@@ -128,8 +124,10 @@ class ForwardingHandlers:
         ]
         return InlineKeyboardMarkup(keyboard)
         
+    # ✅ FIX: The @unit_of_work decorator is now correctly applied here.
     @unit_of_work
     async def handle_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
+        """معالجة تأكيد إضافة الصفقة"""
         query = update.callback_query
         await query.answer()
         
@@ -156,6 +154,7 @@ class ForwardingHandlers:
         return ConversationHandler.END
         
     async def handle_cancellation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """معالجة إلغاء العملية"""
         query = update.callback_query
         await query.answer("Cancelled")
         context.user_data.pop('pending_trade', None)
