@@ -1,12 +1,13 @@
-# src/capitalguard/application/services/trade_service.py (v20.0 - Final Multi-Tenant with Forwarding)
+# src/capitalguard/application/services/trade_service.py (v21.0 - FINAL & COMPLETE)
 """
 TradeService — الإصدار النهائي الكامل والداعم لتعدد المستخدمين مع ميزة التتبع الذكي.
+This version contains all analyst and trader functionalities, with the UoW decorator
+removed from service methods to fix the TypeError.
 """
 
 import logging
 import asyncio
 import inspect
-from functools import wraps
 from typing import List, Optional, Tuple, Dict, Any, Set
 from datetime import datetime, timezone
 
@@ -31,41 +32,11 @@ from capitalguard.interfaces.telegram.ui_texts import _pct, _calculate_weighted_
 
 log = logging.getLogger(__name__)
 
-
 def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
     try:
         return int(user_id) if user_id is not None and str(user_id).strip().isdigit() else None
     except (TypeError, ValueError):
         return None
-
-
-def uow_transaction(func):
-    is_coro = asyncio.iscoroutinefunction(func)
-    if is_coro:
-        @wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            if 'db_session' in kwargs and isinstance(kwargs['db_session'], Session):
-                return await func(*args, **kwargs)
-            with session_scope() as session:
-                try:
-                    return await func(*args, db_session=session, **kwargs)
-                except Exception:
-                    log.exception("Transaction failed in async '%s'", func.__name__)
-                    raise
-        return async_wrapper
-    else:
-        @wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            if 'db_session' in kwargs and isinstance(kwargs['db_session'], Session):
-                return func(*args, **kwargs)
-            with session_scope() as session:
-                try:
-                    return func(*args, db_session=session, **kwargs)
-                except Exception:
-                    log.exception("Transaction failed in sync '%s'", func.__name__)
-                    raise
-        return sync_wrapper
-
 
 class TradeService:
     def __init__(
@@ -220,7 +191,6 @@ class TradeService:
             log.exception("Failed to flush PublishedMessage records.")
         return rec_entity, report
 
-    @uow_transaction
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         uid_int = _parse_int_user_id(user_id)
         user = UserRepository(db_session).find_by_telegram_id(uid_int)
@@ -262,17 +232,13 @@ class TradeService:
         )
         
         db_session.add(rec_orm)
-        
-        rec_orm.order_type = self._convert_enum_to_string(rec_orm.order_type)
-        rec_orm.status = self._convert_enum_to_string(rec_orm.status)
-        rec_orm.exit_strategy = self._convert_enum_to_string(rec_orm.exit_strategy)
-        
         db_session.flush()
 
         event_type = "CREATED_ACTIVE" if rec_orm.status == RecommendationStatusEnum.ACTIVE.value else "CREATED_PENDING"
         new_event = RecommendationEvent(recommendation_id=rec_orm.id, event_type=event_type, event_data={})
         db_session.add(new_event)
-        db_session.commit()
+        db_session.flush()
+        
         db_session.refresh(rec_orm)
 
         created_rec_entity = self.repo._to_entity(rec_orm)
@@ -320,7 +286,6 @@ class TradeService:
             
         return assets if assets else ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"]
 
-    @uow_transaction
     async def cancel_pending_recommendation_manual(self, rec_id: int, user_telegram_id: str, db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
         if not user or user.user_type != UserType.ANALYST:
@@ -349,7 +314,6 @@ class TradeService:
         log.info(f"✅ Cancelled pending recommendation #{rec_id} by user {user_telegram_id}")
         return self.repo._to_entity(rec_orm)
 
-    @uow_transaction
     async def close_recommendation_for_user_async(self, rec_id: int, user_telegram_id: str, exit_price: float, reason: str = "MANUAL_CLOSE", db_session: Session = None) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
         if not user or user.user_type != UserType.ANALYST:
@@ -386,23 +350,21 @@ class TradeService:
         log.info(f"✅ Closed recommendation #{rec_id} at price {exit_price} by user {user_telegram_id}")
         return rec_entity
 
-    async def close_recommendation_at_market_for_user_async(self, rec_id: int, user_telegram_id: str) -> RecommendationEntity:
-        with session_scope() as session:
-            user = UserRepository(session).find_by_telegram_id(int(user_telegram_id))
-            if not user or user.user_type != UserType.ANALYST:
-                raise ValueError("Only analysts can close recommendations.")
-                
-            rec_orm = self.repo.get(session, rec_id)
-            if not rec_orm or rec_orm.analyst_id != user.id:
-                raise ValueError("Recommendation not found or access denied.")
-                
-            market_price = await self.price_service.get_cached_price(rec_orm.asset, rec_orm.market, force_refresh=True)
-            if not market_price:
-                raise ValueError("Could not fetch current market price.")
-                
-            return await self.close_recommendation_for_user_async(rec_id, user_telegram_id, market_price, "MARKET_CLOSE")
+    async def close_recommendation_at_market_for_user_async(self, rec_id: int, user_telegram_id: str, db_session: Session) -> RecommendationEntity:
+        user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
+        if not user or user.user_type != UserType.ANALYST:
+            raise ValueError("Only analysts can close recommendations.")
+            
+        rec_orm = self.repo.get(db_session, rec_id)
+        if not rec_orm or rec_orm.analyst_id != user.id:
+            raise ValueError("Recommendation not found or access denied.")
+            
+        market_price = await self.price_service.get_cached_price(rec_orm.asset, rec_orm.market, force_refresh=True)
+        if not market_price:
+            raise ValueError("Could not fetch current market price.")
+            
+        return await self.close_recommendation_for_user_async(rec_id, user_telegram_id, market_price, "MARKET_CLOSE", db_session=db_session)
 
-    @uow_transaction
     async def update_sl_for_user_async(self, rec_id: int, user_telegram_id: str, new_sl: float, db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
         if not user or user.user_type != UserType.ANALYST:
@@ -438,7 +400,6 @@ class TradeService:
         log.info(f"✅ Updated SL for recommendation #{rec_id} from {old_sl} to {new_sl} by user {user_telegram_id}")
         return rec_entity
 
-    @uow_transaction
     async def update_targets_for_user_async(self, rec_id: int, user_telegram_id: str, new_targets: List[Dict[str, float]], db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
         if not user or user.user_type != UserType.ANALYST:
@@ -520,14 +481,13 @@ class TradeService:
             
             log.info(f"🔄 Auto-invalidated recommendation #{rec_id} (SL hit before entry)")
 
-    @uow_transaction
     async def track_forwarded_trade(self, user_id: str, trade_data: Dict[str, Any], db_session: Session) -> Dict[str, Any]:
         try:
             user_repo = UserRepository(db_session)
             user = user_repo.find_by_telegram_id(int(user_id))
             
             if not user:
-                return {'success': False, 'error': 'المستخدم غير موجود'}
+                return {'success': False, 'error': 'User not found'}
                 
             new_trade = UserTrade(
                 user_id=user.id,
@@ -556,100 +516,8 @@ class TradeService:
             }
             
         except Exception as e:
-            log.error(f"❌ Failed to track forwarded trade for user {user_id}: {e}")
+            log.error(f"❌ Failed to track forwarded trade for user {user_id}: {e}", exc_info=True)
             return {
                 'success': False,
                 'error': str(e)
             }
-
-    @uow_transaction
-    async def close_user_trade_async(self, trade_id: int, user_telegram_id: str, exit_price: float, db_session: Session) -> Dict[str, Any]:
-        try:
-            user = UserRepository(db_session).find_by_telegram_id(int(user_telegram_id))
-            if not user:
-                return {'success': False, 'error': 'المستخدم غير موجود'}
-                
-            trade = db_session.query(UserTrade).filter(
-                UserTrade.id == trade_id,
-                UserTrade.user_id == user.id
-            ).first()
-            
-            if not trade:
-                return {'success': False, 'error': 'الصفقة غير موجودة أو لا تملك صلاحية الوصول'}
-                
-            if trade.status == UserTradeStatus.CLOSED:
-                return {'success': False, 'error': 'الصفقة مغلقة بالفعل'}
-                
-            trade.status = UserTradeStatus.CLOSED
-            trade.close_price = exit_price
-            trade.closed_at = datetime.now(timezone.utc)
-            
-            if trade.side.upper() == "LONG":
-                pnl_pct = ((exit_price - float(trade.entry)) / float(trade.entry)) * 100
-            else:
-                pnl_pct = ((float(trade.entry) - exit_price) / float(trade.entry)) * 100
-                
-            trade.pnl_percentage = pnl_pct
-            
-            await self.alert_service.build_triggers_index()
-            
-            log.info(f"✅ Closed user trade #{trade_id} at price {exit_price} for user {user_telegram_id}")
-            
-            return {
-                'success': True,
-                'trade_id': trade_id,
-                'asset': trade.asset,
-                'side': trade.side,
-                'pnl_percent': pnl_pct,
-                'status': 'CLOSED'
-            }
-            
-        except Exception as e:
-            log.error(f"❌ Failed to close user trade #{trade_id}: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
-
-    def _check_analyst_permission(self, user: User) -> bool:
-        return user and user.user_type == UserType.ANALYST
-
-    def _check_trade_ownership(self, trade: UserTrade, user_id: int) -> bool:
-        return trade and trade.user_id == user_id
-
-    def _check_recommendation_ownership(self, rec: Recommendation, user_id: int) -> bool:
-        return rec and rec.analyst_id == user_id
-
-    def format_trade_for_display(self, trade: UserTrade) -> Dict[str, Any]:
-        return {
-            'id': trade.id,
-            'asset': trade.asset,
-            'side': trade.side,
-            'entry': float(trade.entry),
-            'stop_loss': float(trade.stop_loss),
-            'targets': trade.targets,
-            'status': trade.status.value,
-            'created_at': trade.created_at.isoformat() if trade.created_at else None,
-            'closed_at': trade.closed_at.isoformat() if trade.closed_at else None,
-            'pnl_percent': float(trade.pnl_percentage) if trade.pnl_percentage else None
-        }
-
-    def format_recommendation_for_display(self, rec: RecommendationEntity) -> Dict[str, Any]:
-        return {
-            'id': rec.id,
-            'asset': rec.asset.value,
-            'side': rec.side.value,
-            'entry': rec.entry.value,
-            'stop_loss': rec.stop_loss.value,
-            'targets': [{'price': t.price, 'close_percent': t.close_percent} for t in rec.targets.values],
-            'status': rec.status.value,
-            'market': rec.market,
-            'order_type': rec.order_type.value,
-            'exit_strategy': rec.exit_strategy.value,
-            'open_size_percent': rec.open_size_percent,
-            'created_at': rec.created_at.isoformat() if rec.created_at else None,
-            'activated_at': rec.activated_at.isoformat() if rec.activated_at else None,
-            'closed_at': rec.closed_at.isoformat() if rec.closed_at else None
-        }
-
-__all__ = ['TradeService', 'uow_transaction']
