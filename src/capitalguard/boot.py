@@ -198,19 +198,16 @@ def bootstrap_app() -> Optional[Application]:
 
 def get_service_from_context(context, service_name: str, service_type: type) -> Any:
     """الحصول على الخدمات من context"""
-    # ابحث في context.bot_data أولاً
     if hasattr(context, 'bot_data') and context.bot_data:
         service = context.bot_data.get('services', {}).get(service_name)
         if service and isinstance(service, service_type):
             return service
     
-    # ابحث في application.bot_data إذا لم تجد في context
     if hasattr(context, 'application') and context.application:
         service = context.application.bot_data.get('services', {}).get(service_name)
         if service and isinstance(service, service_type):
             return service
     
-    # إذا لم توجد في أي مكان
     available_services = list(context.bot_data.get('services', {}).keys()) if hasattr(context, 'bot_data') else 'N/A'
     log.error(f"❌ Service '{service_name}' not found. Available services: {available_services}")
     raise RuntimeError(f"Service '{service_name}' is unavailable.")
