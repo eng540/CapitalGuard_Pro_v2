@@ -1,11 +1,13 @@
-# src/capitalguard/application/services/image_parsing_service.py (v2.2 - Intelligent Contextual Parser)
+# src/capitalguard/application/services/image_parsing_service.py (v2.3 - Typing Hotfix)
 """
 ImageParsingService - خدمة تحليل الصور والنص لاستخراج بيانات التداول
 """
 
 import logging
 import re
-from typing import Dict, Any, Optional, List
+import asyncio
+from typing import Dict, Any, Optional, List, Tuple # ✅ THE FIX IS HERE
+
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
