@@ -1,5 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 12.1.0) ---
-# src/capitalguard/interfaces/api/main.py
+# src/capitalguard/interfaces/api/main.py (ADAPTED FOR NEW DEPS - FINAL)
 
 import logging
 import asyncio
@@ -16,7 +15,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 from capitalguard.config import settings
-from capitalguard.boot import bootstrap_app, build_services
+from capitalguard.boot import bootstrap_app
 from capitalguard.interfaces.api.deps import get_trade_service, get_analytics_service, require_api_key
 from capitalguard.interfaces.api.schemas import RecommendationOut, CloseIn
 from capitalguard.interfaces.api.routers import auth as auth_router
@@ -30,7 +29,7 @@ log = logging.getLogger(__name__)
 
 # --- Application Setup ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="12.1.0-scalable")
+app = FastAPI(title="CapitalGuard Pro API", version="3.0.0-stable")
 app.state.ptb_app = None
 app.state.services = None
 
@@ -76,6 +75,8 @@ async def on_startup():
     if not ptb_app:
         logging.critical("Telegram Bot Token not provided. Bot features will be disabled.")
         app.state.ptb_app = None
+        # Even without the bot, we need the services for the API
+        from capitalguard.boot import build_services
         app.state.services = build_services()
         return
 
@@ -97,15 +98,8 @@ async def on_startup():
     await ptb_app.initialize()
 
     private_commands = [
-        BotCommand("newrec", "📊 New Recommendation (Menu)"),
-        BotCommand("new", "💬 Interactive Builder"),
-        BotCommand("rec", "⚡️ Quick Command Mode"),
-        BotCommand("editor", "📋 Text Editor Mode"),
-        BotCommand("open", "📂 View Open Trades"),
-        BotCommand("stats", "📈 View Performance"),
-        BotCommand("channels", "📡 Manage Channels"),
-        BotCommand("link_channel", "🔗 Link New Channel"),
-        BotCommand("cancel", "❌ Cancel Current Operation"),
+        BotCommand("newrec", "📊 New Recommendation (Analysts)"),
+        BotCommand("myportfolio", "📂 View My Trades"),
         BotCommand("help", "ℹ️ Show Help"),
     ]
 
@@ -220,5 +214,3 @@ def dashboard(
 # --- Include Routers ---
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
-
-# --- END OF FINAL, COMPLETE, AND PRODUCTION-READY FILE (Version 12.1.0) ---
