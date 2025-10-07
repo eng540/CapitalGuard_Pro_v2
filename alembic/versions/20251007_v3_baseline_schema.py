@@ -1,9 +1,9 @@
-# alembic/versions/20251007_v3_baseline_schema.py (FINAL, SIMPLIFIED & CORRECT)
+# alembic/versions/20251007_v3_baseline_schema.py (FINAL & SIMPLIFIED)
 """Creates the complete baseline schema for v3.0
 
 Revision ID: 20251007_v3_baseline
 Revises: 
-Create Date: 2025-10-07 21:00:00.000000
+Create Date: 2025-10-07 21:30:00.000000
 
 """
 from alembic import op
@@ -18,36 +18,20 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # ### Manually crafted, robust, and idempotent schema creation ###
+    # ### Manually crafted, robust schema creation ###
     
-    # --- ENUM Types (Idempotent Check using DO-BEGIN block) ---
-    op.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'usertype') THEN
-                CREATE TYPE usertype AS ENUM ('TRADER', 'ANALYST');
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'recommendationstatusenum') THEN
-                CREATE TYPE recommendationstatusenum AS ENUM ('PENDING', 'ACTIVE', 'CLOSED');
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ordertypeenum') THEN
-                CREATE TYPE ordertypeenum AS ENUM ('MARKET', 'LIMIT', 'STOP_MARKET');
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'exitstrategyenum') THEN
-                CREATE TYPE exitstrategyenum AS ENUM ('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY');
-            END IF;
-            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'usertradestatus') THEN
-                CREATE TYPE usertradestatus AS ENUM ('OPEN', 'CLOSED');
-            END IF;
-        END$$;
-    """)
+    # Define ENUM types for reuse
+    usertype_enum = sa.Enum('TRADER', 'ANALYST', name='usertype')
+    recommendationstatusenum_enum = sa.Enum('PENDING', 'ACTIVE', 'CLOSED', name='recommendationstatusenum')
+    ordertypeenum_enum = sa.Enum('MARKET', 'LIMIT', 'STOP_MARKET', name='ordertypeenum')
+    exitstrategyenum_enum = sa.Enum('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY', name='exitstrategyenum')
+    usertradestatus_enum = sa.Enum('OPEN', 'CLOSED', name='usertradestatus')
 
-    # --- Tables (No checkfirst needed, Alembic handles this) ---
-    
+    # USERS TABLE
     op.create_table('users',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('telegram_user_id', sa.BigInteger(), nullable=False),
-    sa.Column('user_type', sa.Enum('TRADER', 'ANALYST', name='usertype', create_type=False), server_default='TRADER', nullable=False),
+    sa.Column('user_type', usertype_enum, server_default='TRADER', nullable=False),
     sa.Column('username', sa.String(), nullable=True),
     sa.Column('first_name', sa.String(), nullable=True),
     sa.Column('is_active', sa.Boolean(), server_default=sa.text('false'), nullable=False),
@@ -91,9 +75,9 @@ def upgrade() -> None:
     sa.Column('entry', sa.Numeric(precision=20, scale=8), nullable=False),
     sa.Column('stop_loss', sa.Numeric(precision=20, scale=8), nullable=False),
     sa.Column('targets', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('status', sa.Enum('PENDING', 'ACTIVE', 'CLOSED', name='recommendationstatusenum', create_type=False), nullable=False),
-    sa.Column('order_type', sa.Enum('MARKET', 'LIMIT', 'STOP_MARKET', name='ordertypeenum', create_type=False), nullable=False),
-    sa.Column('exit_strategy', sa.Enum('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY', name='exitstrategyenum', create_type=False), nullable=False),
+    sa.Column('status', recommendationstatusenum_enum, nullable=False),
+    sa.Column('order_type', ordertypeenum_enum, nullable=False),
+    sa.Column('exit_strategy', exitstrategyenum_enum, nullable=False),
     sa.Column('market', sa.String(), nullable=True),
     sa.Column('notes', sa.Text(), nullable=True),
     sa.Column('open_size_percent', sa.Numeric(precision=5, scale=2), server_default=sa.text('100.00'), nullable=False),
@@ -119,7 +103,7 @@ def upgrade() -> None:
     sa.Column('entry', sa.Numeric(precision=20, scale=8), nullable=False),
     sa.Column('stop_loss', sa.Numeric(precision=20, scale=8), nullable=False),
     sa.Column('targets', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('status', sa.Enum('OPEN', 'CLOSED', name='usertradestatus', create_type=False), nullable=False),
+    sa.Column('status', usertradestatus_enum, nullable=False),
     sa.Column('close_price', sa.Numeric(precision=20, scale=8), nullable=True),
     sa.Column('pnl_percentage', sa.Numeric(precision=10, scale=4), nullable=True),
     sa.Column('source_recommendation_id', sa.Integer(), nullable=True),
