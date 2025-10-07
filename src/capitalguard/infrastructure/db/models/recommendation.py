@@ -1,4 +1,4 @@
-# src/capitalguard/infrastructure/db/models/recommendation.py (v3.1 - Final Schema)
+# src/capitalguard/infrastructure/db/models/recommendation.py (v3.2 - Final Schema with Hotfixes)
 import enum
 from datetime import datetime
 from sqlalchemy import (
@@ -8,7 +8,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
+from .auth import User # Import User for relationships
 
+# Define Enums directly here for clarity and encapsulation within this module
 class RecommendationStatusEnum(enum.Enum):
     PENDING = "PENDING"
     ACTIVE = "ACTIVE"
@@ -43,8 +45,10 @@ class Channel(Base):
     id = Column(Integer, primary_key=True)
     analyst_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     telegram_channel_id = Column(BigInteger, unique=True, nullable=False, index=True)
-    channel_name = Column(String, nullable=True)
+    username = Column(String, nullable=True)
+    title = Column(String, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     analyst = relationship("User", back_populates="owned_channels")
     recommendations = relationship("Recommendation", back_populates="channel")
@@ -108,7 +112,7 @@ class UserTrade(Base):
 class RecommendationEvent(Base):
     __tablename__ = 'recommendation_events'
     id = Column(Integer, primary_key=True)
-    recommendation_id = Column(Integer, ForeignKey('recommendations.id'), nullable=False, index=True)
+    recommendation_id = Column(Integer, ForeignKey('recommendations.id', ondelete="CASCADE"), nullable=False, index=True)
     event_type = Column(String(50), nullable=False, index=True)
     event_data = Column(JSONB, nullable=True)
     event_timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
