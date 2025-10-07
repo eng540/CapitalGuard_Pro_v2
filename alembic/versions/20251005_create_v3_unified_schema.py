@@ -1,3 +1,4 @@
+# alembic/versions/20251008_full_unified_schema_v2.py (FINAL & ROBUST)
 """Unified safe & smart schema migration (full idempotent)
 
 Revision ID: 20251008_full_unified_schema_v2
@@ -105,7 +106,6 @@ def safe_create_index(index_name: str, table_name: str, columns: list, unique=Fa
     if index_exists(index_name):
         return False
     
-    # Check if all columns exist
     for column in columns:
         if not column_exists(table_name, column):
             print(f"Warning: Column {column} not found in {table_name}, skipping index {index_name}")
@@ -139,7 +139,8 @@ def safe_create_foreign_key(table_name: str, column_name: str, target_table: str
             table_name,
             target_table,
             [column_name],
-            [target_column]
+            [target_column],
+            ondelete="CASCADE"
         )
         return True
     except Exception as e:
@@ -153,7 +154,7 @@ def safe_create_foreign_key(table_name: str, column_name: str, target_table: str
 def upgrade() -> None:
     conn = get_connection()
     
-    print("Starting safe schema migration...")
+    print("Starting safe schema migration for v3.0...")
 
     # --- ENUM TYPES ---
     print("Creating enum types...")
@@ -173,35 +174,17 @@ def upgrade() -> None:
     # =============================
     print("Setting up USERS table...")
     if not table_exists("users"):
-        print("Creating USERS table...")
         op.create_table(
             'users',
             sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
             sa.Column('telegram_user_id', sa.BigInteger(), nullable=False),
-            sa.Column('user_type', sa.Enum('TRADER', 'ANALYST', name='usertypeenum'), 
-                     server_default='TRADER', nullable=False),
+            sa.Column('user_type', sa.Enum('TRADER', 'ANALYST', name='usertypeenum'), server_default='TRADER', nullable=False),
             sa.Column('username', sa.String(255), nullable=True),
             sa.Column('first_name', sa.String(255), nullable=True),
             sa.Column('is_active', sa.Boolean(), server_default=sa.text('false'), nullable=False),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), 
-                     onupdate=sa.text('now()'), nullable=False),
-            sa.Column('email', sa.String(255), nullable=True),
-            sa.Column('last_login_at', sa.DateTime(timezone=True), nullable=True)
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), onupdate=sa.text('now()'), nullable=False),
         )
-        print("USERS table created successfully")
-    else:
-        print("USERS table already exists, adding missing columns...")
-        # Add missing columns safely
-        columns_to_add = [
-            sa.Column('email', sa.String(255), nullable=True),
-            sa.Column('last_login_at', sa.DateTime(timezone=True), nullable=True)
-        ]
-        
-        for column_def in columns_to_add:
-            safe_add_column("users", column_def)
-
-    # Create indexes for users table
     safe_create_index("ix_users_telegram_user_id", "users", ["telegram_user_id"], unique=True)
 
     # =============================
@@ -209,32 +192,14 @@ def upgrade() -> None:
     # =============================
     print("Setting up ANALYST_PROFILES table...")
     if not table_exists("analyst_profiles"):
-        print("Creating ANALYST_PROFILES table...")
         op.create_table(
             'analyst_profiles',
             sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
-            sa.Column('user_id', sa.Integer(), nullable=False),
+            sa.Column('user_id', sa.Integer(), nullable=False, unique=True),
             sa.Column('public_name', sa.String(255), nullable=True),
             sa.Column('bio', sa.Text(), nullable=True),
             sa.Column('is_public', sa.Boolean(), server_default=sa.text('false'), nullable=False),
-            sa.Column('profile_picture_url', sa.String(512), nullable=True),
-            sa.Column('is_verified', sa.Boolean(), server_default=sa.text('false'), nullable=False),
-            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), 
-                     onupdate=sa.text('now()'), nullable=False)
         )
-        print("ANALYST_PROFILES table created successfully")
-    else:
-        print("ANALYST_PROFILES table already exists, adding missing columns...")
-        columns_to_add = [
-            sa.Column('profile_picture_url', sa.String(512), nullable=True),
-            sa.Column('is_verified', sa.Boolean(), server_default=sa.text('false'), nullable=False)
-        ]
-        
-        for column_def in columns_to_add:
-            safe_add_column("analyst_profiles", column_def)
-
-    # Create foreign key for analyst_profiles
     safe_create_foreign_key("analyst_profiles", "user_id", "users")
 
     # =============================
@@ -242,7 +207,6 @@ def upgrade() -> None:
     # =============================
     print("Setting up CHANNELS table...")
     if not table_exists("channels"):
-        print("Creating CHANNELS table...")
         op.create_table(
             'channels',
             sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
@@ -252,21 +216,7 @@ def upgrade() -> None:
             sa.Column('title', sa.String(255), nullable=True),
             sa.Column('is_active', sa.Boolean(), server_default=sa.text('true'), nullable=False),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-            sa.Column('last_verified_at', sa.DateTime(timezone=True), nullable=True),
-            sa.Column('notes', sa.Text(), nullable=True)
         )
-        print("CHANNELS table created successfully")
-    else:
-        print("CHANNELS table already exists, adding missing columns...")
-        columns_to_add = [
-            sa.Column('last_verified_at', sa.DateTime(timezone=True), nullable=True),
-            sa.Column('notes', sa.Text(), nullable=True)
-        ]
-        
-        for column_def in columns_to_add:
-            safe_add_column("channels", column_def)
-
-    # Create indexes and foreign keys for channels
     safe_create_index("ix_channels_analyst_id", "channels", ["analyst_id"])
     safe_create_index("ix_channels_telegram_channel_id", "channels", ["telegram_channel_id"], unique=True)
     safe_create_foreign_key("channels", "analyst_id", "users")
@@ -276,7 +226,6 @@ def upgrade() -> None:
     # =============================
     print("Setting up RECOMMENDATIONS table...")
     if not table_exists("recommendations"):
-        print("Creating RECOMMENDATIONS table...")
         op.create_table(
             'recommendations',
             sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
@@ -287,42 +236,18 @@ def upgrade() -> None:
             sa.Column('entry', sa.Numeric(20, 8), nullable=False),
             sa.Column('stop_loss', sa.Numeric(20, 8), nullable=False),
             sa.Column('targets', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-            sa.Column('order_type', sa.Enum('MARKET', 'LIMIT', 'STOP_MARKET', name='ordertypeenum'), 
-                     server_default='LIMIT', nullable=False),
-            sa.Column('status', sa.Enum('PENDING', 'ACTIVE', 'CLOSED', name='recommendationstatusenum'), 
-                     server_default='PENDING', nullable=False),
-            sa.Column('market', sa.String(50), nullable=True),
+            sa.Column('order_type', sa.Enum('MARKET', 'LIMIT', 'STOP_MARKET', name='ordertypeenum'), server_default='LIMIT', nullable=False),
+            sa.Column('status', sa.Enum('PENDING', 'ACTIVE', 'CLOSED', name='recommendationstatusenum'), server_default='PENDING', nullable=False),
+            sa.Column('market', sa.String(50), nullable=True, server_default='Futures'),
             sa.Column('notes', sa.Text(), nullable=True),
-            sa.Column('exit_strategy', sa.Enum('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY', name='exitstrategyenum'), 
-                     server_default='CLOSE_AT_FINAL_TP', nullable=False),
+            sa.Column('exit_strategy', sa.Enum('CLOSE_AT_FINAL_TP', 'MANUAL_CLOSE_ONLY', name='exitstrategyenum'), server_default='CLOSE_AT_FINAL_TP', nullable=False),
             sa.Column('exit_price', sa.Numeric(20, 8), nullable=True),
-            sa.Column('alert_meta', postgresql.JSONB(astext_type=sa.Text()), server_default='{}', nullable=False),
-            sa.Column('highest_price_reached', sa.Numeric(20, 8), nullable=True),
-            sa.Column('lowest_price_reached', sa.Numeric(20, 8), nullable=True),
-            sa.Column('profit_stop_price', sa.Numeric(20, 8), nullable=True),
             sa.Column('open_size_percent', sa.Numeric(5, 2), server_default='100.00', nullable=False),
-            sa.Column('published_at', sa.DateTime(timezone=True), nullable=True),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
             sa.Column('activated_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('closed_at', sa.DateTime(timezone=True), nullable=True),
-            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), 
-                     onupdate=sa.text('now()'), nullable=False),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), onupdate=sa.text('now()'), nullable=False),
         )
-        print("RECOMMENDATIONS table created successfully")
-    else:
-        print("RECOMMENDATIONS table already exists, adding missing columns...")
-        columns_to_add = [
-            sa.Column('alert_meta', postgresql.JSONB(astext_type=sa.Text()), server_default='{}', nullable=False),
-            sa.Column('highest_price_reached', sa.Numeric(20, 8), nullable=True),
-            sa.Column('lowest_price_reached', sa.Numeric(20, 8), nullable=True),
-            sa.Column('profit_stop_price', sa.Numeric(20, 8), nullable=True),
-            sa.Column('open_size_percent', sa.Numeric(5, 2), server_default='100.00', nullable=False),
-        ]
-        
-        for column_def in columns_to_add:
-            safe_add_column("recommendations", column_def)
-
-    # Create indexes and foreign keys for recommendations
     safe_create_index("ix_recommendations_asset", "recommendations", ["asset"])
     safe_create_index("ix_recommendations_status", "recommendations", ["status"])
     safe_create_index("ix_recommendations_analyst_id", "recommendations", ["analyst_id"])
@@ -330,144 +255,108 @@ def upgrade() -> None:
     safe_create_foreign_key("recommendations", "channel_id", "channels")
 
     # =============================
-    # PUBLISHED_MESSAGES TABLE
-    # =============================
-    print("Setting up PUBLISHED_MESSAGES table...")
-    if not table_exists("published_messages"):
-        print("Creating PUBLISHED_MESSAGES table...")
-        op.create_table(
-            'published_messages',
-            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
-            sa.Column('recommendation_id', sa.Integer(), nullable=False),
-            sa.Column('telegram_message_id', sa.Integer(), nullable=False),
-            sa.Column('channel_id', sa.Integer(), nullable=False),
-            sa.Column('sent_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        )
-        print("PUBLISHED_MESSAGES table created successfully")
-    else:
-        print("PUBLISHED_MESSAGES table already exists")
-
-    # Create indexes and foreign keys for published_messages
-    safe_create_index("ix_published_messages_recommendation_id", "published_messages", ["recommendation_id"])
-    safe_create_index("ix_published_messages_channel_id", "published_messages", ["channel_id"])
-    safe_create_foreign_key("published_messages", "recommendation_id", "recommendations")
-    safe_create_foreign_key("published_messages", "channel_id", "channels")
-
-    # =============================
-    # USER_TRADES TABLE - FIXED VERSION
+    # USER_TRADES TABLE
     # =============================
     print("Setting up USER_TRADES table...")
     if not table_exists("user_trades"):
-        print("Creating USER_TRADES table...")
         op.create_table(
             'user_trades',
             sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
             sa.Column('user_id', sa.Integer(), nullable=False),
-            sa.Column('recommendation_id', sa.Integer(), nullable=False),
-            sa.Column('status', sa.Enum('OPEN', 'CLOSED', name='usertradestatusenum'), 
-                     server_default='OPEN', nullable=False),
-            sa.Column('entry_price', sa.Numeric(20, 8), nullable=True),
-            sa.Column('exit_price', sa.Numeric(20, 8), nullable=True),
-            sa.Column('position_size_percent', sa.Numeric(5, 2), server_default='100.00', nullable=False),
-            sa.Column('notes', sa.Text(), nullable=True),
-            sa.Column('opened_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-            sa.Column('closed_at', sa.DateTime(timezone=True), nullable=True),
+            sa.Column('source_recommendation_id', sa.Integer(), nullable=False),
+            sa.Column('asset', sa.String(100), nullable=False),
+            sa.Column('side', sa.String(50), nullable=False),
+            sa.Column('entry', sa.Numeric(20, 8), nullable=False),
+            sa.Column('stop_loss', sa.Numeric(20, 8), nullable=False),
+            sa.Column('targets', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+            sa.Column('status', sa.Enum('OPEN', 'CLOSED', name='usertradestatusenum'), server_default='OPEN', nullable=False),
+            sa.Column('close_price', sa.Numeric(20, 8), nullable=True),
+            sa.Column('pnl_percentage', sa.Numeric(10, 4), nullable=True),
+            sa.Column('source_forwarded_text', sa.Text(), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), 
-                     onupdate=sa.text('now()'), nullable=False),
+            sa.Column('closed_at', sa.DateTime(timezone=True), nullable=True),
         )
-        print("USER_TRADES table created successfully")
-    else:
-        print("USER_TRADES table already exists, adding missing columns...")
-        # Ensure recommendation_id column exists FIRST
-        if not column_exists("user_trades", "recommendation_id"):
-            print("Adding missing recommendation_id column to USER_TRADES...")
-            safe_add_column("user_trades", 
-                sa.Column('recommendation_id', sa.Integer(), nullable=False)
-            )
-        
-        # Add other missing columns
-        other_columns = [
-            sa.Column('position_size_percent', sa.Numeric(5, 2), server_default='100.00', nullable=False),
-            sa.Column('notes', sa.Text(), nullable=True),
-        ]
-        
-        for column_def in other_columns:
-            safe_add_column("user_trades", column_def)
-
-    # Create indexes and foreign keys for user_trades - SAFELY
     safe_create_index("ix_user_trades_user_id", "user_trades", ["user_id"])
     safe_create_index("ix_user_trades_status", "user_trades", ["status"])
-    
-    # Only create recommendation_id index if the column exists
-    if column_exists("user_trades", "recommendation_id"):
-        safe_create_index("ix_user_trades_recommendation_id", "user_trades", ["recommendation_id"])
-    
+    safe_create_index("ix_user_trades_source_recommendation_id", "user_trades", ["source_recommendation_id"])
     safe_create_foreign_key("user_trades", "user_id", "users")
-    safe_create_foreign_key("user_trades", "recommendation_id", "recommendations")
+    safe_create_foreign_key("user_trades", "source_recommendation_id", "recommendations")
 
     # =============================
-    # USER_SETTINGS TABLE
+    # OTHER TABLES
     # =============================
-    print("Setting up USER_SETTINGS table...")
-    if not table_exists("user_settings"):
-        print("Creating USER_SETTINGS table...")
+    print("Setting up other supporting tables...")
+    if not table_exists("published_messages"):
         op.create_table(
-            'user_settings',
+            'published_messages',
             sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
-            sa.Column('user_id', sa.Integer(), nullable=False),
-            sa.Column('default_position_size', sa.Numeric(5, 2), server_default='100.00', nullable=False),
-            sa.Column('auto_copy_trades', sa.Boolean(), server_default=sa.text('false'), nullable=False),
-            sa.Column('notifications_enabled', sa.Boolean(), server_default=sa.text('true'), nullable=False),
-            sa.Column('risk_level', sa.String(50), server_default='MEDIUM', nullable=False),
-            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), 
-                     onupdate=sa.text('now()'), nullable=False),
+            sa.Column('recommendation_id', sa.Integer(), nullable=False),
+            sa.Column('telegram_channel_id', sa.BigInteger(), nullable=False),
+            sa.Column('telegram_message_id', sa.BigInteger(), nullable=False),
         )
-        print("USER_SETTINGS table created successfully")
-    else:
-        print("USER_SETTINGS table already exists")
+    safe_create_index("ix_published_messages_recommendation_id", "published_messages", ["recommendation_id"])
+    safe_create_foreign_key("published_messages", "recommendation_id", "recommendations")
 
-    # Create indexes and foreign keys for user_settings
-    safe_create_index("ix_user_settings_user_id", "user_settings", ["user_id"], unique=True)
-    safe_create_foreign_key("user_settings", "user_id", "users")
+    if not table_exists("recommendation_events"):
+        op.create_table(
+            'recommendation_events',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('recommendation_id', sa.Integer(), nullable=False),
+            sa.Column('event_type', sa.String(50), nullable=False),
+            sa.Column('event_data', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+            sa.Column('event_timestamp', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+        )
+    safe_create_index("ix_recommendation_events_recommendation_id", "recommendation_events", ["recommendation_id"])
+    safe_create_foreign_key("recommendation_events", "recommendation_id", "recommendations")
+
+    if not table_exists("subscriptions"):
+        op.create_table(
+            'subscriptions',
+            sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column('trader_user_id', sa.Integer(), nullable=False),
+            sa.Column('analyst_user_id', sa.Integer(), nullable=False),
+            sa.Column('start_date', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+            sa.Column('end_date', sa.DateTime(timezone=True), nullable=True),
+            sa.Column('is_active', sa.Boolean(), server_default=sa.text('true'), nullable=False),
+        )
+    safe_create_foreign_key("subscriptions", "trader_user_id", "users")
+    safe_create_foreign_key("subscriptions", "analyst_user_id", "users")
+
+    if not table_exists("analyst_stats"):
+        op.create_table(
+            'analyst_stats',
+            sa.Column('analyst_profile_id', sa.Integer(), primary_key=True),
+            sa.Column('win_rate', sa.Numeric(5, 2), nullable=True),
+            sa.Column('total_pnl', sa.Numeric(10, 4), nullable=True),
+            sa.Column('total_trades', sa.Integer(), server_default='0', nullable=False),
+            sa.Column('last_updated', sa.DateTime(timezone=True), server_default=sa.text('now()'), onupdate=sa.text('now()'), nullable=False),
+        )
+    safe_create_foreign_key("analyst_stats", "analyst_profile_id", "analyst_profiles")
 
     print("Schema migration completed successfully!")
 
 
 def downgrade() -> None:
-    """Safe downgrade - only drops new tables, doesn't remove columns"""
-    print("Starting safe downgrade...")
+    """Safe downgrade - drops all tables and enums."""
+    print("Starting full downgrade...")
     
-    # Drop tables in reverse dependency order
     tables_to_drop = [
-        'user_settings',
-        'user_trades', 
-        'published_messages',
-        'recommendations',
-        'channels',
-        'analyst_profiles',
-        'users'
+        'analyst_stats', 'subscriptions', 'recommendation_events', 
+        'published_messages', 'user_trades', 'recommendations', 
+        'channels', 'analyst_profiles', 'users'
     ]
     
     for table_name in tables_to_drop:
         if table_exists(table_name):
-            print(f"Dropping table {table_name}...")
             op.drop_table(table_name)
     
-    # Drop enum types
     enum_types = [
-        'recommendationstatusenum',
-        'ordertypeenum', 
-        'exitstrategyenum',
-        'usertypeenum',
-        'usertradestatusenum'
+        'usertradestatusenum', 'usertypeenum', 'exitstrategyenum',
+        'ordertypeenum', 'recommendationstatusenum'
     ]
     
     for enum_type in enum_types:
         if enum_type_exists(enum_type):
-            print(f"Dropping enum type {enum_type}...")
             op.execute(f'DROP TYPE IF EXISTS {enum_type}')
     
-    print("Downgrade completed successfully!")
+    print("Downgrade completed.")
