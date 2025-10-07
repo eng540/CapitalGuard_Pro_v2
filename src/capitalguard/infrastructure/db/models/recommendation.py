@@ -1,4 +1,4 @@
-# src/capitalguard/infrastructure/db/models/recommendation.py (v3.3 - Final Schema with Shadow Field)
+# src/capitalguard/infrastructure/db/models/recommendation.py (v3.5 - FINAL SCHEMA SYNC)
 import enum
 from datetime import datetime
 from sqlalchemy import (
@@ -8,9 +8,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
-from .auth import User # Import User for relationships
+from .auth import User
 
-# Define Enums directly here for clarity and encapsulation within this module
+# These enums must match the types created in the Alembic script
 class RecommendationStatusEnum(enum.Enum):
     PENDING = "PENDING"
     ACTIVE = "ACTIVE"
@@ -36,7 +36,7 @@ class AnalystProfile(Base):
     public_name = Column(String, nullable=True)
     bio = Column(Text, nullable=True)
     is_public = Column(Boolean, default=False, server_default='false', nullable=False)
-
+    
     user = relationship("User", back_populates="analyst_profile")
     stats = relationship("AnalystStats", back_populates="analyst_profile", uselist=False, cascade="all, delete-orphan")
 
@@ -58,7 +58,7 @@ class Recommendation(Base):
     id = Column(Integer, primary_key=True)
     analyst_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True)
-
+    
     asset = Column(String, nullable=False, index=True)
     side = Column(String, nullable=False)
     entry = Column(Numeric(20, 8), nullable=False)
@@ -67,16 +67,14 @@ class Recommendation(Base):
     status = Column(Enum(RecommendationStatusEnum, name="recommendationstatusenum"), nullable=False, default=RecommendationStatusEnum.PENDING, index=True)
     order_type = Column(Enum(OrderTypeEnum, name="ordertypeenum"), nullable=False, default=OrderTypeEnum.LIMIT)
     exit_strategy = Column(Enum(ExitStrategyEnum, name="exitstrategyenum"), nullable=False, default=ExitStrategyEnum.CLOSE_AT_FINAL_TP)
-
+    
     market = Column(String, nullable=True, default="Futures")
     notes = Column(Text, nullable=True)
-
-    # ✅ CRITICAL FIX: Add the missing is_shadow field
-    is_shadow = Column(Boolean, default=False, server_default='false', nullable=False, index=True)
-
+    
     open_size_percent = Column(Numeric(5, 2), nullable=False, server_default='100.00')
     exit_price = Column(Numeric(20, 8), nullable=True)
-
+    is_shadow = Column(Boolean, default=False, server_default='false', nullable=False)
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     activated_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
@@ -92,20 +90,20 @@ class UserTrade(Base):
     __tablename__ = 'user_trades'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
-
+    
     asset = Column(String, nullable=False, index=True)
     side = Column(String, nullable=False)
     entry = Column(Numeric(20, 8), nullable=False)
     stop_loss = Column(Numeric(20, 8), nullable=False)
     targets = Column(JSONB, nullable=False)
     status = Column(Enum(UserTradeStatus, name="usertradestatus"), nullable=False, default=UserTradeStatus.OPEN, index=True)
-
+    
     close_price = Column(Numeric(20, 8), nullable=True)
     pnl_percentage = Column(Numeric(10, 4), nullable=True)
-
-    source_recommendation_id = Column(Integer, ForeignKey('recommendations.id'), nullable=True, index=True)
+    
+    source_recommendation_id = Column(Integer, ForeignKey('recommendations.id', ondelete="CASCADE"), nullable=False, index=True)
     source_forwarded_text = Column(Text, nullable=True)
-
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     closed_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -136,7 +134,7 @@ class Subscription(Base):
 
 class AnalystStats(Base):
     __tablename__ = 'analyst_stats'
-    analyst_profile_id = Column(Integer, ForeignKey('analyst_profiles.id'), primary_key=True)
+    analyst_profile_id = Column(Integer, ForeignKey('analyst_profiles.id', ondelete="CASCADE"), primary_key=True)
     win_rate = Column(Numeric(5, 2), nullable=True)
     total_pnl = Column(Numeric(10, 4), nullable=True)
     total_trades = Column(Integer, default=0)
