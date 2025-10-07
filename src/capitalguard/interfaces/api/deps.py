@@ -11,7 +11,7 @@ from capitalguard.interfaces.api.security.auth import decode_token
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.analytics_service import AnalyticsService
 
-# --- Security & Auth Dependencies (No changes here) ---
+# --- Security & Auth Dependencies ---
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -72,7 +72,7 @@ def get_analytics_service(request: Request) -> AnalyticsService:
         raise HTTPException(status_code=503, detail="Analytics service is currently unavailable.")
     return service
 
-# --- API Key Dependency (No changes here) ---
+# --- API Key Dependency ---
 
 def require_api_key(x_api_key: str | None = Header(default=None)):
     if settings.API_KEY and x_api_key != settings.API_KEY:
