@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/commands.py (v3.1 - Channel Commands Restored)
+# src/capitalguard/interfaces/telegram/commands.py (v3.2 - All Commands Restored)
 import logging
 from typing import Optional, Tuple
 
@@ -9,8 +9,9 @@ from .helpers import get_service, unit_of_work
 from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.application.services.audit_service import AuditService
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+from capitalguard.infrastructure.db.models import UserType
+from .keyboards import build_open_recs_keyboard
 
 log = logging.getLogger(__name__)
 
@@ -24,8 +25,8 @@ def _extract_forwarded_channel(message) -> Tuple[Optional[int], Optional[str], O
 
 async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: int) -> bool:
     try:
-        # Send a silent message to verify rights without disturbing the channel
-        await context.bot.send_message(chat_id=channel_id, text=".", disable_notification=True)
+        sent_message = await context.bot.send_message(chat_id=channel_id, text="✅ Channel successfully linked.", disable_notification=True)
+        await context.bot.delete_message(chat_id=channel_id, message_id=sent_message.message_id)
         return True
     except Exception as e:
         log.warning("Bot posting rights check failed for channel %s: %s", channel_id, e)
@@ -39,9 +40,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
     await update.message.reply_html("👋 Welcome to the <b>CapitalGuard Bot</b>.\nUse /help for assistance.")
 
 @require_active_user
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Check user type to show appropriate help
-    user_repo = UserRepository(SessionLocal())
+@unit_of_work
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+    user_repo = UserRepository(db_session)
     db_user = user_repo.find_by_telegram_id(update.effective_user.id)
     
     trader_help = (
@@ -53,7 +54,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>--- Analyst Features ---</b>\n"
         "• <code>/newrec</code> — Create a new recommendation.\n"
         "• <code>/channels</code> — View & manage your linked channels.\n"
-        "• <code>/link_channel</code> — Link a new channel.\n\n"
+        "• <code>/link_channel</code> — Link a new channel.\n"
+        "• <code>/toggle_channel &lt;id&gt;</code> — Activate/deactivate a channel.\n\n"
     )
     general_help = (
         "<b>--- General ---</b>\n"
@@ -61,7 +63,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     full_help = "<b>Available Commands:</b>\n\n" + trader_help
-    if db_user and db_user.user_type.name == 'ANALYST':
+    if db_user and db_user.user_type == UserType.ANALYST:
         full_help += analyst_help
     full_help += general_help
     
@@ -98,7 +100,6 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def link_channel_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     msg = update.message
     if not context.user_data.pop(AWAITING_FORWARD_KEY, False):
-        # This forward is not for linking a channel, so ignore it in this handler
         return
 
     user_tg_id = update.effective_user.id
@@ -139,14 +140,39 @@ async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
     lines.append("\nℹ️ To manage: <code>/toggle_channel &lt;id&gt;</code>")
     await update.message.reply_html("\n".join(lines))
 
+@require_active_user
+@require_analyst_user
+@unit_of_work
+async def toggle_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+    if not context.args:
+        await update.message.reply_text("Usage: /toggle_channel <channel_id>")
+        return
+    try:
+        chat_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid ID. Please use the numeric channel ID from /channels.")
+        return
+    user_tg_id = update.effective_user.id
+    user = UserRepository(db_session).find_by_telegram_id(user_tg_id)
+    if not user:
+        await update.message.reply_text("Could not find your user account.")
+        return
+    repo = ChannelRepository(db_session)
+    channels = repo.list_by_analyst(user.id, only_active=False)
+    target = next((c for c in channels if c.telegram_channel_id == chat_id), None)
+    if not target:
+        await update.message.reply_text("Channel not found for your account.")
+        return
+    repo.set_active(user.id, chat_id, not target.is_active)
+    await update.message.reply_text("✅ Channel status has been updated.")
+
 def register_commands(app: Application):
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler(["myportfolio", "open"], open_cmd))
     
-    # Analyst-specific commands
     app.add_handler(CommandHandler("link_channel", link_channel_cmd))
     app.add_handler(CommandHandler("channels", channels_cmd))
+    app.add_handler(CommandHandler("toggle_channel", toggle_channel_cmd))
     
-    # Handler for the channel linking process
-    app.add_handler(MessageHandler(filters.FORWARDED & ~filters.COMMAND, link_channel_forward_handler))
+    app.add_handler(MessageHandler(filters.FORWARDED & ~filters.COMMAND & filters.ChatType.PRIVATE, link_channel_forward_handler))

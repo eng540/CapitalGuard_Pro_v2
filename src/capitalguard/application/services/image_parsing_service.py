@@ -1,4 +1,4 @@
-# src/capitalguard/application/services/image_parsing_service.py (v2.0 - Robust Parser)
+# src/capitalguard/application/services/image_parsing_service.py (v2.1 - Robust & Flexible Parser)
 """
 ImageParsingService - خدمة تحليل الصور والنص لاستخراج بيانات التداول
 """
@@ -53,7 +53,7 @@ class ImageParsingService:
             if not raw_text or len(raw_text.strip()) < 10:
                 return None
                 
-            result = await self._parse_with_regex(raw_text)
+            result = self._parse_key_value_format(raw_text)
             
             if result.success:
                 return {
@@ -65,122 +65,98 @@ class ImageParsingService:
                     'confidence': result.confidence,
                     'parser': result.parser
                 }
+            log.warning(f"Parsing failed for text. Reason: {result.error_message}")
             return None
         except Exception as e:
-            log.error(f"❌ Error extracting trade data: {e}")
+            log.error(f"❌ Error extracting trade data: {e}", exc_info=True)
             return None
         
-    async def _parse_with_regex(self, text: str) -> ParsingResult:
-        """محاولة تحليل النص باستخدام regex patterns متعددة"""
-        cleaned_text = self._clean_text(text)
-        
-        if not cleaned_text:
-            return ParsingResult(success=False, error_message="Empty text after cleaning")
-        
-        # سلسلة من دوال التحليل، من الأكثر تحديدًا إلى الأكثر عمومية
-        parsers = [
-            self._parse_standard_format,
-            self._parse_compact_format,
-            self._parse_simple_format,
-            self._parse_arabic_format
-        ]
-        
-        for parser_func in parsers:
-            try:
-                result = parser_func(cleaned_text)
-                if result.success:
-                    log.info(f"✅ Successfully parsed with {result.parser}")
-                    return result
-            except Exception as e:
-                log.warning(f"Parser {parser_func.__name__} failed: {e}")
-                
-        return ParsingResult(success=False, error_message="No suitable format recognized")
-        
     def _clean_text(self, text: str) -> str:
-        """تنظيف النص وتوحيد التنسيق"""
+        """تنظيف النص مع الحفاظ على بنية الأسطر"""
         if not text:
             return ""
-        text = re.sub(r'[^\w\s\u0600-\u06FF@:.,\d\-+%$]', ' ', text)
-        text = re.sub(r'\s+', ' ', text)
+        # إزالة الأيقونات والرموز غير الضرورية ولكن الحفاظ على # . : / |
+        text = re.sub(r'[^\w\s\u0600-\u06FF@:.,\d\-+%$#/|]', ' ', text)
+        # استبدال فواصل الأسطر المتعددة بواحد
+        text = re.sub(r'(\r\n|\r|\n){2,}', '\n', text)
         return text.strip().upper()
-        
-    def _parse_number(self, num_str: str) -> float:
-        if not num_str: return 0.0
-        num_str = str(num_str).upper().replace(',', '').replace(' ', '')
+
+    def _parse_number(self, num_str: str) -> Optional[float]:
+        if not num_str: return None
+        num_str = str(num_str).strip().upper().replace(',', '')
         multipliers = {'K': 1000, 'M': 1000000, 'B': 1000000000}
-        if num_str and num_str[-1] in multipliers:
-            return float(num_str[:-1]) * multipliers[num_str[-1]]
         try:
+            if num_str and num_str[-1] in multipliers:
+                return float(num_str[:-1]) * multipliers[num_str[-1]]
             return float(num_str)
-        except ValueError:
-            log.warning(f"❌ Cannot parse number: {num_str}")
-            return 0.0
+        except (ValueError, TypeError):
+            log.warning(f"Cannot parse number: '{num_str}'")
+            return None
 
-    def _parse_targets(self, targets_text: str) -> List[Dict[str, float]]:
-        targets = []
-        if not targets_text: return targets
+    def _parse_key_value_format(self, text: str) -> ParsingResult:
+        """المحلل الذكي الجديد الذي يعتمد على الكلمات المفتاحية."""
         
-        # نمط مرن لالتقاط الأهداف
-        pattern = r'(?:TP\d*[:]?|هدف\s*\d*[:]?\s*)?([\d.,]+[KMB]?)(?:[@]?(\d+))?'
+        cleaned_text = self._clean_text(text)
+        lines = cleaned_text.split('\n')
         
-        for match in re.finditer(pattern, targets_text, re.IGNORECASE):
-            price_str, percent_str = match.groups()
-            if price_str:
-                price = self._parse_number(price_str)
-                if price > 0:
-                    percent = float(percent_str) if percent_str else 0.0
-                    targets.append({'price': price, 'close_percent': percent})
-        
-        if targets and all(t['close_percent'] == 0 for t in targets):
-            targets[-1]['close_percent'] = 100.0
+        data = {
+            "asset": None,
+            "side": None,
+            "entry": None,
+            "stop_loss": None,
+            "targets": []
+        }
+
+        # --- Extraction Phase ---
+        for line in lines:
+            # Asset and Side (usually in the header)
+            if not data["asset"] or not data["side"]:
+                asset_match = re.search(r'#?([A-Z0-9/USDT]+)', line)
+                if asset_match:
+                    data["asset"] = asset_match.group(1).replace('/', '')
                 
-        return targets
+                if "LONG" in line or "شراء" in line:
+                    data["side"] = "LONG"
+                elif "SHORT" in line or "بيع" in line:
+                    data["side"] = "SHORT"
 
-    def _parse_standard_format(self, text: str) -> ParsingResult:
-        pattern = r'(\w+)\s+(LONG|SHORT)\s+ENTRY[:]?\s*([\d.,]+[KMB]?)\s+SL[:]?\s*([\d.,]+[KMB]?)\s+(.+)'
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            symbol, side, entry, sl, targets_part = match.groups()
-            targets = self._parse_targets(targets_part)
-            if targets:
-                return ParsingResult(success=True, asset=symbol, side=side, entry=self._parse_number(entry), stop_loss=self._parse_number(sl), targets=targets, confidence='high', parser='regex_standard')
-        return ParsingResult(success=False)
-        
-    def _parse_compact_format(self, text: str) -> ParsingResult:
-        pattern = r'(\w+)\s+(LONG|SHORT)\s+([\d.,]+[KMB]?)\s+([\d.,]+[KMB]?)\s+([\d.,@% ]+)'
-        match = re.search(pattern, text)
-        if match:
-            symbol, side, entry, sl, targets_part = match.groups()
-            targets = self._parse_targets(targets_part)
-            if targets:
-                return ParsingResult(success=True, asset=symbol, side=side, entry=self._parse_number(entry), stop_loss=self._parse_number(sl), targets=targets, confidence='high', parser='regex_compact')
-        return ParsingResult(success=False)
-        
-    def _parse_simple_format(self, text: str) -> ParsingResult:
-        pattern = r'(\w+)\s+(LONG|SHORT)\s+([\d.,]+[KMB]?)\s+([\d.,]+[KMB]?)\s+([\d., ]+)'
-        match = re.search(pattern, text)
-        if match:
-            symbol, side, first_num, second_num, rest = match.groups()
-            entry = self._parse_number(first_num)
-            sl = self._parse_number(second_num)
-            if side == 'LONG' and entry <= sl: entry, sl = sl, entry
-            elif side == 'SHORT' and entry >= sl: entry, sl = sl, entry
-            targets = self._parse_targets(rest)
-            if targets:
-                return ParsingResult(success=True, asset=symbol, side=side, entry=entry, stop_loss=sl, targets=targets, confidence='medium', parser='regex_simple')
-        return ParsingResult(success=False)
-        
-    def _parse_arabic_format(self, text: str) -> ParsingResult:
-        patterns = [
-            r'(\w+)\s+(لونج|لونغ|شراء)\s+دخول[:]?\s*([\d.,]+)\s+وقف[:]?\s*([\d.,]+)\s+(.+)',
-            r'(\w+)\s+(شرت|شورت|بيع)\s+دخول[:]?\s*([\d.,]+)\s+وقف[:]?\s*([\d.,]+)\s+(.+)'
-        ]
-        for i, pattern in enumerate(patterns):
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                side = "LONG" if i == 0 else "SHORT"
-                symbol, _, entry, sl, targets_part = match.groups()
-                targets = self._parse_targets(targets_part)
-                if targets:
-                    return ParsingResult(success=True, asset=symbol, side=side, entry=self._parse_number(entry), stop_loss=self._parse_number(sl), targets=targets, confidence='medium', parser='regex_arabic')
-        return ParsingResult(success=False)
+            # Entry Price
+            entry_match = re.search(r'(?:ENTRY|الدخول)\s*[:]?\s*([\d.,]+[KMB]?)', line, re.IGNORECASE)
+            if entry_match:
+                data["entry"] = self._parse_number(entry_match.group(1))
+
+            # Stop Loss
+            sl_match = re.search(r'(?:STOP|SL|وقف)\s*[:]?\s*([\d.,]+[KMB]?)', line, re.IGNORECASE)
+            if sl_match:
+                data["stop_loss"] = self._parse_number(sl_match.group(1))
+
+            # Targets
+            target_match = re.search(r'(?:TP|TARGET|هدف)\s*(\d+)\s*[:]?\s*([\d.,]+[KMB]?)', line, re.IGNORECASE)
+            if target_match:
+                price = self._parse_number(target_match.group(2))
+                if price:
+                    close_pct = 0.0
+                    close_match = re.search(r'CLOSE\s*(\d+)', line, re.IGNORECASE)
+                    if close_match:
+                        close_pct = float(close_match.group(1))
+                    data["targets"].append({"price": price, "close_percent": close_pct})
+
+        # --- Validation Phase ---
+        if not all([data["asset"], data["side"], data["entry"], data["stop_loss"], data["targets"]]):
+            missing = [k for k, v in data.items() if v is None or v == []]
+            return ParsingResult(success=False, error_message=f"Missing required fields: {missing}")
+
+        # Auto-assign close percentage if none were found
+        if data["targets"] and all(t['close_percent'] == 0 for t in data["targets"]):
+            data["targets"][-1]['close_percent'] = 100.0
+
+        return ParsingResult(
+            success=True,
+            asset=data["asset"],
+            side=data["side"],
+            entry=data["entry"],
+            stop_loss=data["stop_loss"],
+            targets=data["targets"],
+            confidence='high',
+            parser='keyword_extractor'
+        )
