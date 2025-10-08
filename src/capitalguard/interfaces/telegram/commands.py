@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/commands.py (v25.3 - FINAL & CORRECTED)
+# src/capitalguard/interfaces/telegram/commands.py (v25.4 - FINAL & CORRECTED)
 """
 Registers and implements all non-conversational commands for the Telegram bot.
 """
@@ -9,8 +9,9 @@ from typing import Optional, Tuple
 from telegram import Update
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
 
-# ✅ **THE FIX:** The name 'unit_of_work' is now correctly available from the helpers module.
-from .helpers import get_service, uow_transaction as unit_of_work
+# ✅ **THE FIX:** Import the decorator from its definitive source.
+from capitalguard.infrastructure.db.uow import uow_transaction
+from .helpers import get_service
 from .auth import require_active_user, require_analyst_user, get_db_user
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
@@ -23,14 +24,12 @@ log = logging.getLogger(__name__)
 AWAITING_FORWARD_KEY = "awaiting_forward_channel_link"
 
 def _extract_forwarded_channel(message: Update.message) -> Tuple[Optional[int], Optional[str], Optional[str]]:
-    """Safely extracts channel info from a forwarded message."""
     chat_obj = getattr(message, "forward_from_chat", None)
     if chat_obj and getattr(chat_obj, "type", None) == "channel":
         return (int(chat_obj.id), chat_obj.title, chat_obj.username)
     return None, None, None
 
 async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: int) -> bool:
-    """Checks if the bot can post messages to a channel."""
     try:
         sent_message = await context.bot.send_message(chat_id=channel_id, text="✅ Channel link verification successful.")
         await context.bot.delete_message(chat_id=channel_id, message_id=sent_message.message_id)
@@ -39,9 +38,8 @@ async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: i
         log.warning("Bot posting rights check failed for channel %s: %s", channel_id, e)
         return False
 
-@unit_of_work
+@uow_transaction
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    """Handles the /start command, including deep linking for tracking signals."""
     user = update.effective_user
     log.info(f"User {user.id} ({user.username}) initiated /start command.")
     
@@ -50,15 +48,13 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
     if context.args and context.args[0].startswith("track_"):
         try:
             rec_id = int(context.args[0].split('_')[1])
-            log.info(f"User {user.id} is attempting to track signal #{rec_id} via deep link.")
-
             trade_service = get_service(context, "trade_service", TradeService)
             result = await trade_service.create_trade_from_recommendation(str(user.id), rec_id, db_session=db_session)
 
             if result.get('success'):
                 await update.message.reply_html(
                     f"✅ <b>Signal #{result['asset']} has been added to your portfolio!</b>\n\n"
-                    f"Use <code>/myportfolio</code> to view all your tracked trades."
+                    f"Use <code>/myportfolio</code> to view your tracked trades."
                 )
             else:
                 await update.message.reply_html(f"⚠️ Could not track signal: {result.get('error', 'Unknown reason')}")
@@ -74,24 +70,14 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
 
 @require_active_user
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Provides a help message tailored to the user's role."""
     db_user = get_db_user(update, context)
     
-    trader_help = (
-        "<b>--- Trading ---</b>\n"
-        "• <code>/myportfolio</code> — View your open trades.\n"
-        "• Forward any signal message to me to start tracking it!\n\n"
-    )
+    trader_help = "• <code>/myportfolio</code> — View your open trades.\n"
     analyst_help = (
-        "<b>--- Analyst Features ---</b>\n"
         "• <code>/newrec</code> — Create a new recommendation.\n"
         "• <code>/channels</code> — View & manage your linked channels.\n"
-        "• <code>/link_channel</code> — Link a new channel.\n\n"
     )
-    general_help = (
-        "<b>--- General ---</b>\n"
-        "• <code>/help</code> — Show this help message."
-    )
+    general_help = "• <code>/help</code> — Show this help message."
     
     full_help = "<b>Available Commands:</b>\n\n" + trader_help
     if db_user and db_user.user_type == UserType.ANALYST:
@@ -101,9 +87,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(full_help)
 
 @require_active_user
-@unit_of_work
+@uow_transaction
 async def myportfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    """Displays all open positions for the user."""
     trade_service = get_service(context, "trade_service", TradeService)
     price_service = get_service(context, "price_service", PriceService)
     user_telegram_id = str(update.effective_user.id)
@@ -120,17 +105,12 @@ async def myportfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db
 @require_active_user
 @require_analyst_user
 async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Initiates the channel linking process for an analyst."""
     context.user_data[AWAITING_FORWARD_KEY] = True
-    await update.message.reply_html(
-        "<b>🔗 Link a Channel</b>\n"
-        "Please forward a message from the target channel to this chat."
-    )
+    await update.message.reply_html("<b>🔗 Link a Channel</b>\nPlease forward a message from the target channel to this chat.")
 
 @require_active_user
-@unit_of_work
+@uow_transaction
 async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    """Handles forwarded messages for either channel linking or trade tracking."""
     if context.user_data.pop(AWAITING_FORWARD_KEY, False):
         msg = update.message
         user_tg_id = update.effective_user.id
@@ -143,7 +123,7 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         await msg.reply_text(f"⏳ Verifying posting rights in channel '{title}' (ID: {chat_id})...")
         
         if not await _bot_has_post_rights(context, chat_id):
-            await msg.reply_text("❌ Could not post in the channel. Please ensure the bot is an administrator with posting rights and try again.")
+            await msg.reply_text("❌ Could not post in the channel. Please ensure the bot is an administrator with posting rights.")
             return
 
         user = UserRepository(db_session).find_by_telegram_id(user_tg_id)
@@ -156,9 +136,8 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
 
 @require_active_user
 @require_analyst_user
-@unit_of_work
+@uow_transaction
 async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    """Displays a list of all channels linked by the analyst."""
     user_tg_id = update.effective_user.id
     user = UserRepository(db_session).find_by_telegram_id(user_tg_id)
     channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False) if user else []
@@ -177,7 +156,6 @@ async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
     await update.message.reply_html("\n".join(lines))
 
 def register_commands(app: Application):
-    """Registers all command and message handlers defined in this file."""
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler(["myportfolio", "open"], myportfolio_cmd))
