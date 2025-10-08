@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v25.2 - FINAL IMPORT FIX)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v25.2 - FINAL & CORRECTED)
 """
 Implements all conversational flows for the Telegram bot, primarily for creating recommendations.
 This version is hardened against session tampering and state loss.
@@ -15,13 +15,12 @@ from telegram.ext import (
     CallbackQueryHandler, MessageHandler, filters
 )
 
-# ✅ **THE FIX:** Import the missing decorator 'uow_transaction' from its correct location.
+# ✅ **THE FIX:** Import the decorator from the corrected helpers file.
 from .helpers import get_service, unit_of_work, parse_cq_parts
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
     review_final_keyboard, asset_choice_keyboard, side_market_keyboard,
-    market_choice_keyboard, order_type_keyboard, main_creation_keyboard,
-    build_channel_picker_keyboard
+    market_choice_keyboard, order_type_keyboard, main_creation_keyboard
 )
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
 from .auth import require_active_user, require_analyst_user
@@ -29,12 +28,12 @@ from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository
+from capitalguard.infrastructure.db.repository import UserRepository
 
 log = logging.getLogger(__name__)
 
 # Conversation states
-(SELECT_METHOD, AWAIT_TEXT_INPUT, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_NOTES, I_REVIEW, I_CHANNEL_PICKER) = range(9)
+(SELECT_METHOD, AWAIT_TEXT_INPUT, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_REVIEW) = range(7)
 
 def get_user_draft(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
     if 'new_rec_draft' not in context.user_data:
@@ -42,7 +41,7 @@ def get_user_draft(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
     return context.user_data['new_rec_draft']
 
 def clean_user_state(context: ContextTypes.DEFAULT_TYPE):
-    keys_to_pop = ['new_rec_draft', 'last_conv_message', 'channel_picker_selection', 'input_mode']
+    keys_to_pop = ['new_rec_draft', 'last_conv_message', 'input_mode']
     for key in keys_to_pop:
         context.user_data.pop(key, None)
 
