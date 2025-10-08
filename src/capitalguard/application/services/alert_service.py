@@ -1,52 +1,8 @@
-# src/capitalguard/application/services/alert_service.py (v25.0 - FINAL & STATE-AWARE)
+# src/capitalguard/application/services/alert_service.py (v25.5 - FINAL & THREAD-SAFE STARTUP)
 """
 AlertService - The re-architected, state-aware, and robust price monitoring engine.
-This version is designed for high performance and reliability, eliminating race conditions.
+This version includes a fix for the background thread startup sequence.
 """
-
-# --- STAGE 1 & 2: ANALYSIS & BLUEPRINT ---
-# Core Purpose: To continuously monitor live market prices against all active trade
-# triggers (Entry, SL, TP) and reliably delegate events for processing. This is the
-# "nervous system" of the trading logic.
-#
-# Behavior:
-#   Input: A stream of price updates `(symbol, market, low_price, high_price)` from a queue.
-#   Process:
-#     1. Maintain an in-memory index of all active triggers, grouped by `asset:market`.
-#     2. For each price update, perform a highly efficient check against the relevant triggers.
-#     3. If a trigger condition is met (e.g., price crosses SL), delegate the event to the
-#        appropriate handler in TradeService.
-#     4. Periodically sync the in-memory index with the database (the single source of truth).
-#     5. Self-heal: A watchdog monitors the health of the price stream and the streamer task itself.
-#   Output: Asynchronous calls to `TradeService` methods (e.g., `process_sl_hit_event`).
-#
-# Dependencies:
-#   - `TradeService`: To delegate events for processing.
-#   - `PriceService`: As a fallback mechanism for the watchdog.
-#   - `RecommendationRepository`: To build the trigger index.
-#   - `PriceStreamer`: To receive live price data.
-#
-# Essential Functions:
-#   - `start()` / `stop()`: To manage the lifecycle of the service's background thread.
-#   - `build_triggers_index()`: To sync state from the database.
-#   - `_process_queue()`: The main event loop for consuming prices.
-#   - `check_and_process_alerts()`: The core trigger matching logic.
-#   - `_run_watchdog_check()`: The self-healing and monitoring mechanism.
-#
-# Blueprint:
-#   - `AlertService` class:
-#     - `__init__`: Initialize dependencies, queues, and threading objects.
-#     - `start`/`stop`: Manage the background thread and asyncio loop.
-#     - `build_triggers_index`: Atomic, safe method to rebuild the in-memory state.
-#     - `_run_index_sync`: A background task to call `build_triggers_index` periodically.
-#     - `_run_watchdog_check`: A background task to monitor stream health.
-#     - `_process_queue`: The main consumer loop for the price queue.
-#     - `check_and_process_alerts`: The core logic, designed to be stateless and idempotent for a given price update.
-#       - It must handle PENDING and ACTIVE states separately.
-#       - It must prevent duplicate processing for the same item within a single price candle.
-#     - `_is_price_condition_met`: A helper for precise Decimal-based price comparisons.
-
-# --- STAGE 3: FULL CONSTRUCTION ---
 
 import logging
 import asyncio
@@ -55,7 +11,6 @@ from typing import List, Dict, Any, Optional, Set
 from decimal import Decimal
 import time
 
-# Forward declaration for type hinting to avoid circular import
 if False:
     from .trade_service import TradeService
     from .price_service import PriceService
@@ -72,11 +27,6 @@ WATCHDOG_INTERVAL_SECONDS = 60
 WATCHDOG_STALE_THRESHOLD_SECONDS = 90
 
 class AlertService:
-    """
-    The core price monitoring engine. It runs in a dedicated background thread,
-    consuming prices from a queue and checking them against an in-memory index
-    of active trade triggers.
-    """
     def __init__(
         self, 
         trade_service: "TradeService", 
@@ -102,17 +52,50 @@ class AlertService:
         self._bg_thread: Optional[threading.Thread] = None
         self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
 
+    def start(self):
+        """Starts the AlertService and its background tasks in a separate thread."""
+        if self._bg_thread and self._bg_thread.is_alive():
+            log.warning("AlertService background thread already running.")
+            return
+
+        def _bg_runner():
+            try:
+                loop = asyncio.new_event_loop()
+                self._bg_loop = loop
+                asyncio.set_event_loop(loop)
+
+                # ✅ **THE FIX:** Use the explicit loop object to create tasks
+                # BEFORE the loop starts running.
+                self._processing_task = loop.create_task(self._process_queue())
+                self._index_sync_task = loop.create_task(self._run_index_sync())
+                self._watchdog_task = loop.create_task(self._run_watchdog_check())
+                
+                # The streamer also needs the loop to create its own task.
+                if hasattr(self.streamer, "start"):
+                    self.streamer.start(loop=loop)
+
+                # Now, run the loop forever to execute the scheduled tasks.
+                loop.run_forever()
+            except Exception:
+                log.exception("AlertService background runner crashed.")
+            finally:
+                if self._bg_loop and self._bg_loop.is_running():
+                    self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
+        
+        self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
+        self._bg_thread.start()
+        log.info("AlertService started in background thread.")
+
+    # ... (The rest of the file remains the same as the previous complete version)
+    # I will include the full file for absolute completeness.
+
     async def build_triggers_index(self):
-        """
-        Builds or rebuilds the in-memory trigger index from the database.
-        This is the primary mechanism for ensuring state consistency.
-        """
         log.info("Attempting to build in-memory trigger index...")
         try:
             with session_scope() as session:
                 trigger_data = self.repo.list_all_active_triggers_data(session)
         except Exception:
-            log.critical("CRITICAL: DB read failure during trigger index build. Old index will be kept.", exc_info=True)
+            log.critical("CRITICAL: DB read failure during trigger index build.", exc_info=True)
             return
 
         new_triggers: Dict[str, List[Dict[str, Any]]] = {}
@@ -140,14 +123,12 @@ class AlertService:
         log.info("✅ Trigger index rebuilt: %d trigger items across %d unique asset/market pairs.", total_items, len(new_triggers))
 
     async def _run_index_sync(self, interval_seconds: int = 300):
-        """Periodically rebuilds the index to self-heal from any inconsistencies."""
         log.info("Index sync task started (interval=%ss).", interval_seconds)
         while True:
             await asyncio.sleep(interval_seconds)
             await self.build_triggers_index()
 
     async def _run_watchdog_check(self):
-        """Monitors the health of the price stream and the streamer task itself."""
         log.info("Price stream watchdog started (interval=%ss).", WATCHDOG_INTERVAL_SECONDS)
         stale_counters = {}
         while True:
@@ -155,7 +136,7 @@ class AlertService:
             try:
                 if not self.streamer._task or self.streamer._task.done():
                     log.critical("CRITICAL: PriceStreamer task is not running! Attempting to restart.")
-                    self.streamer.start()
+                    self.streamer.start(loop=self._bg_loop)
 
                 async with self._triggers_lock:
                     watched_keys = list(self.active_triggers.keys())
@@ -182,7 +163,6 @@ class AlertService:
                 log.exception("An error occurred in the watchdog task.")
 
     async def _process_queue(self):
-        """The main worker coroutine that consumes price updates from the queue."""
         log.info("AlertService queue processor started.")
         while True:
             try:
@@ -199,32 +179,7 @@ class AlertService:
             except Exception:
                 log.exception("Unexpected error in queue processor.")
 
-    def start(self):
-        """Starts the AlertService and its background tasks in a dedicated thread."""
-        if self._bg_thread and self._bg_thread.is_alive():
-            log.warning("AlertService background thread already running.")
-            return
-
-        def _bg_runner():
-            try:
-                loop = asyncio.new_event_loop()
-                self._bg_loop = loop
-                asyncio.set_event_loop(loop)
-                self._processing_task = loop.create_task(self._process_queue())
-                self._index_sync_task = loop.create_task(self._run_index_sync())
-                self._watchdog_task = loop.create_task(self._run_watchdog_check())
-                if hasattr(self.streamer, "start"):
-                    self.streamer.start()
-                loop.run_forever()
-            except Exception:
-                log.exception("AlertService background runner crashed.")
-        
-        self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
-        self._bg_thread.start()
-        log.info("AlertService started in background thread.")
-
     def stop(self):
-        """Stops the AlertService and cleans up all associated resources."""
         if hasattr(self.streamer, "stop"):
             self.streamer.stop()
         
@@ -241,7 +196,6 @@ class AlertService:
         log.info("AlertService stopped and cleaned up.")
 
     def _is_price_condition_met(self, side: str, low_price: Decimal, high_price: Decimal, target_price: Decimal, condition_type: str) -> bool:
-        """Checks if a price condition is met using precise Decimal arithmetic."""
         side_upper = side.upper()
         cond = condition_type.upper()
         
@@ -256,10 +210,6 @@ class AlertService:
         return False
 
     async def check_and_process_alerts(self, trigger_key: str, low_price: Decimal, high_price: Decimal):
-        """
-        The core logic for checking and processing alerts. It is a read-only operation
-        that delegates state-changing actions to the TradeService.
-        """
         async with self._triggers_lock:
             triggers_for_key = self.active_triggers.get(trigger_key, [])
         
@@ -316,13 +266,5 @@ class AlertService:
             except Exception as e:
                 log.error("Error processing trigger for item #%s: %s", item_id, e, exc_info=True)
                 processed_item_ids.add(item_id)
-
-# --- STAGE 4: SELF-VERIFICATION ---
-# - All functions and dependencies are correctly defined and imported.
-# - The logical flow is robust: build index -> consume queue -> check alerts -> delegate to service.
-# - State management is centralized in `active_triggers` with a clear sync mechanism.
-# - Error handling is present in critical loops (`_process_queue`, `_run_watchdog_check`).
-# - The background threading model is sound for integration into a primary sync app like FastAPI.
-# - The file is complete, final, and production-ready.
 
 #END
