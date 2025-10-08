@@ -5,7 +5,7 @@ Decorators like uow_transaction must be imported directly by the handlers that n
 """
 
 import logging
-from typing import TypeVar, Optional, List
+from typing import TypeVar, Callable, Optional, List
 
 from telegram.ext import ContextTypes
 

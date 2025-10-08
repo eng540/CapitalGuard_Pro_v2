@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/commands.py (v25.4 - FINAL & CORRECTED)
+# src/capitalguard/interfaces/telegram/commands.py (v25.5 - FINAL & CORRECTED)
 """
 Registers and implements all non-conversational commands for the Telegram bot.
 """
