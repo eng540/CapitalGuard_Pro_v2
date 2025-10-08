@@ -1,11 +1,17 @@
-# src/capitalguard/interfaces/telegram/admin_commands.py (v3.0 - Final)
+# src/capitalguard/interfaces/telegram/admin_commands.py (v25.4 - FINAL & CORRECTED)
+"""
+Implements and registers all admin-only commands for the bot.
+"""
+
 import logging
 import os
 
 from telegram import Update
 from telegram.ext import Application, ContextTypes, CommandHandler, filters
 
-from .helpers import unit_of_work
+# ✅ **THE FIX:** Import the decorator from its definitive source, not from helpers.
+from capitalguard.infrastructure.db.uow import uow_transaction
+from .helpers import get_service
 from capitalguard.infrastructure.db.repository import UserRepository
 from capitalguard.infrastructure.db.models import UserType
 
@@ -14,8 +20,9 @@ log = logging.getLogger(__name__)
 ADMIN_USERNAMES = [username.strip() for username in (os.getenv("ADMIN_USERNAMES") or "").split(',') if username]
 admin_filter = filters.User(username=ADMIN_USERNAMES)
 
-@unit_of_work
+@uow_transaction
 async def grant_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+    """Admin Command: Grants a user access to the bot."""
     if not context.args:
         await update.message.reply_text("Usage: /grantaccess <user_id>")
         return
@@ -42,8 +49,9 @@ async def grant_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         log.error(f"Error in grant_access_cmd: {e}", exc_info=True)
         await update.message.reply_text("An error occurred.")
 
-@unit_of_work
+@uow_transaction
 async def make_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+    """Admin Command: Promotes a user to the Analyst role."""
     if not context.args:
         await update.message.reply_text("Usage: /makeanalyst <user_id>")
         return
@@ -71,6 +79,7 @@ async def make_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         await update.message.reply_text("An error occurred.")
 
 def register_admin_commands(app: Application):
+    """Registers all admin-only command handlers."""
     if not ADMIN_USERNAMES:
         log.warning("ADMIN_USERNAMES not set. Admin commands will be unavailable.")
         return
@@ -78,3 +87,5 @@ def register_admin_commands(app: Application):
     app.add_handler(CommandHandler("grantaccess", grant_access_cmd, filters=admin_filter))
     app.add_handler(CommandHandler("makeanalyst", make_analyst_cmd, filters=admin_filter))
     log.info(f"Admin commands registered for users: {ADMIN_USERNAMES}")
+
+#END
