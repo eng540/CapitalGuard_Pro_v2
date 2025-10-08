@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v18.0 - Unified Position Management)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v18.1 - FINAL IMPORT FIX)
 """
 نظام إدارة موحد للوحة التحكم يدعم كلاً من التوصيات والصفقات الشخصية
 Unified position management system supporting both recommendations and personal trades
@@ -19,7 +19,8 @@ from telegram.ext import (
     filters,
 )
 
-from capitalguard.domain.entities import RecommendationStatus, ExitStrategy
+# ✅ FIX: Import the correct class name 'Recommendation'
+from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
 from .helpers import get_service, unit_of_work, parse_tail_int, parse_cq_parts
 from .keyboards import (
     analyst_control_panel_keyboard,
@@ -60,17 +61,16 @@ async def _send_or_edit_position_panel(
     else:  # 'trade'
         position = trade_service.get_user_trade_details(db_session, position_id, str(user_id))
         if position:
-            # تحويل إلى كيان RecommendationEntity للتوافق
-            from capitalguard.domain.entities import RecommendationEntity, RecommendationStatus as RecStatusEntity
+            # تحويل إلى كيان Recommendation للتوافق
             from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
-            position = RecommendationEntity(
+            position = Recommendation(
                 id=position['id'],
                 asset=Symbol(position['asset']),
                 side=Side(position['side']),
                 entry=Price(position['entry']),
                 stop_loss=Price(position['stop_loss']),
                 targets=Targets(position['targets']),
-                status=RecStatusEntity.ACTIVE if position['status'] == 'OPEN' else RecStatusEntity.CLOSED,
+                status=RecommendationStatus.ACTIVE if position['status'] == 'OPEN' else RecommendationStatus.CLOSED,
                 market="Futures",
                 user_id=str(user_id)
             )
