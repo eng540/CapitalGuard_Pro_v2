@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/api/main.py (v25.1 - DECOUPLED STARTUP)
+# src/capitalguard/interfaces/api/main.py (v25.2 - FINAL & DECOUPLED STARTUP)
 """
 The main entry point for the FastAPI application, with a decoupled startup sequence.
 """
@@ -32,13 +32,27 @@ from capitalguard.infrastructure.db.base import get_session
 
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="CapitalGuard Pro API", version="25.1.0-stable")
+app = FastAPI(title="CapitalGuard Pro API", version="25.2.0-stable")
 app.state.ptb_app = None
 app.state.services = None
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Exception while handling an update:", exc_info=context.error)
-    # ... (error handling logic remains the same)
+    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    tb_string = "".join(tb_list)
+    update_str = update.to_dict() if isinstance(update, Update) else str(update)
+    detailed_message = (
+        f"An exception was raised while handling an update\n\n"
+        f"<b>Update:</b>\n<pre>{html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))[:3500]}</pre>\n\n"
+        f"<b>Error:</b>\n<pre>{html.escape(tb_string)}</pre>"
+    )
+    if settings.TELEGRAM_ADMIN_CHAT_ID and app.state.ptb_app:
+        try:
+            await app.state.ptb_app.bot.send_message(
+                chat_id=settings.TELEGRAM_ADMIN_CHAT_ID, text=detailed_message, parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            log.error(f"CRITICAL: Failed to send detailed error report to admin: {e}")
 
 @app.on_event("startup")
 async def on_startup():
@@ -55,7 +69,6 @@ async def on_startup():
     ptb_app.bot_data["services"] = app.state.services
     log.info("✅ All application services built and registered.")
 
-    # ✅ **THE FIX:** Register handlers AFTER services are built and attached.
     register_all_handlers(ptb_app)
     log.info("✅ All Telegram handlers registered.")
 
@@ -95,7 +108,6 @@ async def on_startup():
     
     log.info("🚀 Application startup sequence complete.")
 
-# ... (The rest of the file: shutdown, endpoints, etc., remains the same)
 @app.on_event("shutdown")
 async def on_shutdown():
     log.info("🔌 Application shutdown sequence initiated...")
