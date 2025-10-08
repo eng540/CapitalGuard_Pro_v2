@@ -1,7 +1,7 @@
-# src/capitalguard/boot.py (v25.0 - FINAL & CORRECTED)
+# src/capitalguard/boot.py (v25.1 - DECOUPLED)
 """
 Bootstrap and dependency injection setup for the application.
-This file acts as the Composition Root, creating and wiring all services together.
+This version decouples the boot process from the handler registration.
 """
 
 import os
@@ -20,20 +20,15 @@ from capitalguard.application.services.audit_service import AuditService
 from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository, ChannelRepository
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.infrastructure.execution.binance_exec import BinanceExec, BinanceCreds
-from capitalguard.interfaces.telegram.handlers import register_all_handlers
 
 log = logging.getLogger(__name__)
 
 def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
-    """
-    Builds and wires all application services.
-    This is the central point for dependency injection.
-    """
+    """Builds and wires all application services."""
     log.info("Building application services...")
     services = {}
     
     try:
-        # --- Infrastructure Services ---
         notifier = TelegramNotifier()
         if ptb_app:
             notifier.set_ptb_app(ptb_app)
@@ -42,19 +37,15 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         if not os.getenv("BINANCE_API_KEY"):
             log.warning("⚠️ Binance credentials not found - auto trading disabled")
         
-        # --- Repositories (as classes, to be instantiated with a session) ---
         services['recommendation_repo'] = RecommendationRepository()
         services['user_repo_class'] = UserRepository
         services['channel_repo_class'] = ChannelRepository
 
-        # --- Application Services ---
         services['price_service'] = PriceService()
         services['market_data_service'] = MarketDataService()
         services['analytics_service'] = AnalyticsService(repo=services['recommendation_repo'])
         services['audit_service'] = AuditService(rec_repo=services['recommendation_repo'], user_repo_class=services['user_repo_class'])
         
-        # --- Core Services with Circular Dependency ---
-        # Step 1: Create TradeService without AlertService
         trade_service = TradeService(
             repo=services['recommendation_repo'],
             notifier=services['notifier'],
@@ -63,8 +54,6 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         )
         services['trade_service'] = trade_service
         
-        # Step 2: Create AlertService, injecting the created TradeService
-        # ✅ **THE FIX:** Removed the unexpected 'debounce_seconds' argument.
         alert_service = AlertService(
             trade_service=trade_service,
             price_service=services['price_service'],
@@ -72,7 +61,6 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         )
         services['alert_service'] = alert_service
         
-        # Step 3: Inject AlertService back into TradeService to resolve the circular dependency.
         trade_service.alert_service = alert_service
         
         log.info("✅ All services built successfully.")
@@ -83,32 +71,17 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         raise
 
 def bootstrap_app() -> Optional[Application]:
-    """
-    Bootstraps the entire application, including the Telegram bot.
-    """
+    """Bootstraps the Telegram Application instance, but does NOT register handlers."""
     if not settings.TELEGRAM_BOT_TOKEN:
         log.error("TELEGRAM_BOT_TOKEN not set. Bot cannot start.")
         return None
         
     try:
-        # Enable persistence to survive restarts
         persistence = PicklePersistence(filepath="./telegram_bot_persistence")
-        
         ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
-        
-        # The services are built and attached to the bot_data context here
-        services = build_services(ptb_app)
-        ptb_app.bot_data["services"] = services
-
-        # Register all command, conversation, and callback handlers
-        register_all_handlers(ptb_app)
-        
-        log.info("✅ Telegram bot bootstrapped successfully.")
         return ptb_app
-        
     except Exception as e:
-        log.critical(f"❌ Application bootstrap failed: {e}", exc_info=True)
-        # Re-raise the exception to ensure the FastAPI startup fails clearly
+        log.critical(f"❌ Application bootstrap failed during PTB app creation: {e}", exc_info=True)
         raise
 
 #END
