@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/admin_commands.py (v25.4 - FINAL & CORRECTED)
+# src/capitalguard/interfaces/telegram/admin_commands.py (v25.5 - FINAL & CORRECTED)
 """
 Implements and registers all admin-only commands for the bot.
 """
@@ -9,7 +9,7 @@ import os
 from telegram import Update
 from telegram.ext import Application, ContextTypes, CommandHandler, filters
 
-# ✅ **THE FIX:** Import the decorator from its definitive source, not from helpers.
+# ✅ **THE FIX:** Import the decorator from its definitive source.
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service
 from capitalguard.infrastructure.db.repository import UserRepository
