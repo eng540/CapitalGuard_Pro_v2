@@ -1,12 +1,12 @@
-# src/capitalguard/infrastructure/sched/price_streamer.py (v25.0 - FINAL & CONTEXT-AWARE)
+# src/capitalguard/infrastructure/sched/price_streamer.py (v25.5 - FINAL & THREAD-SAFE STARTUP)
 """
 A dedicated component for streaming live prices from Binance WebSocket.
-This version is context-aware and includes the 'market' in its payload.
+This version is context-aware and includes a fix for starting tasks in a new loop.
 """
 
 import asyncio
 import logging
-from typing import List, Set, Dict
+from typing import List, Set, Dict, Optional
 
 from capitalguard.infrastructure.market.ws_client import BinanceWS
 from capitalguard.infrastructure.db.uow import session_scope
@@ -20,13 +20,10 @@ class PriceStreamer:
         self._repo = repo
         self._ws_client = BinanceWS()
         self._active_symbols_by_market: Dict[str, Set[str]] = {}
-        self._task: asyncio.Task = None
+        self._task: Optional[asyncio.Task] = None
 
     async def _get_symbols_to_watch(self) -> Dict[str, Set[str]]:
-        """
-        Fetches all symbols that need to be watched, but now groups them by market
-        to handle Spot and Futures streams correctly.
-        """
+        """Fetches all symbols to be watched, grouped by market."""
         symbols_by_market: Dict[str, Set[str]] = {"Futures": set(), "Spot": set()}
         with session_scope() as session:
             trigger_items = self._repo.list_all_active_triggers_data(session)
@@ -40,17 +37,10 @@ class PriceStreamer:
         return symbols_by_market
 
     async def _run_stream(self):
-        """
-        The main loop that manages the WebSocket connection.
-        It now handles separate streams if both Spot and Futures symbols are active.
-        """
+        """The main loop that manages the WebSocket connection."""
         while True:
             try:
                 symbols_by_market = await self._get_symbols_to_watch()
-                
-                # For simplicity, we'll focus on a combined stream. A more advanced
-                # version could run multiple streams in parallel for different markets.
-                # We will assume most trades are Futures for now.
                 symbols_to_watch = list(symbols_by_market["Futures"] | symbols_by_market["Spot"])
 
                 if not symbols_to_watch:
@@ -63,10 +53,8 @@ class PriceStreamer:
                 if set(symbols_to_watch) != current_watched_set:
                     self._active_symbols_by_market = symbols_by_market
                     log.info(f"Symbol list changed. Connecting to stream for {len(symbols_to_watch)} symbols.")
-                    # This call is blocking and will run forever until the connection drops
                     await self._ws_client.combined_stream(symbols_to_watch, self._price_handler)
                 else:
-                    # If symbols haven't changed, wait before the next check.
                     await asyncio.sleep(60)
 
             except (asyncio.CancelledError, KeyboardInterrupt):
@@ -74,32 +62,31 @@ class PriceStreamer:
                 break
             except Exception:
                 log.exception("WebSocket stream failed. Reconnecting in 15 seconds...")
-                self._active_symbols_by_market = {} # Force a reconnect with fresh symbols
+                self._active_symbols_by_market = {}
                 await asyncio.sleep(15)
 
     async def _price_handler(self, symbol: str, low_price: float, high_price: float):
-        """
-        Callback for the WebSocket client. It now determines the market and includes it
-        in the queue payload.
-        """
+        """Callback for the WebSocket client, includes market context."""
         try:
-            # ✅ **THE FIX:** Determine the market for the received symbol.
-            market = "Futures" # Default
+            market = "Futures"
             if symbol in self._active_symbols_by_market.get("Spot", set()):
                 market = "Spot"
-            
-            # Put the context-aware payload into the queue.
             await self._queue.put((symbol, market, low_price, high_price))
         except Exception:
             log.exception("Failed to put price update into the queue.")
 
-    def start(self):
-        """Starts the streamer as a background asyncio task."""
-        if self._task is None or self._task.done():
-            log.info("Starting Price Streamer background task.")
-            self._task = asyncio.create_task(self._run_stream())
-        else:
+    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None):
+        """
+        Starts the streamer as a background asyncio task, using an explicit loop if provided.
+        """
+        if self._task and not self._task.done():
             log.warning("Price Streamer task is already running.")
+            return
+        
+        # ✅ **THE FIX:** Use the provided loop to create the task.
+        _loop = loop or asyncio.get_running_loop()
+        log.info("Starting Price Streamer background task.")
+        self._task = _loop.create_task(self._run_stream())
 
     def stop(self):
         """Stops the streamer background task."""
@@ -107,3 +94,5 @@ class PriceStreamer:
             log.info("Stopping Price Streamer background task.")
             self._task.cancel()
         self._task = None
+
+#END```
