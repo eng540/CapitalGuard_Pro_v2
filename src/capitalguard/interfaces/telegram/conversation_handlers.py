@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v15.3.1 - Final Multi-Tenant)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v15.3.2 - db_session Hotfix)
 import logging
 import uuid
 import types
@@ -349,7 +349,8 @@ async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     _clean_conversation_state(context)
     return ConversationHandler.END
 
-async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+@unit_of_work
+async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
     query = update.callback_query
     await query.answer("Processing...")
 
@@ -369,9 +370,11 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     trade_service = get_service(context, "trade_service", TradeService)  
     try:
+        # ✅ FIX: Pass the db_session to the service method
         saved_rec, report = await trade_service.create_and_publish_recommendation_async(  
             user_id=str(query.from_user.id),   
-            target_channel_ids=selected_channels,   
+            target_channel_ids=selected_channels,
+            db_session=db_session, # <-- THE FIX IS HERE
             **draft  
         )  
         if report.get("success"):  
