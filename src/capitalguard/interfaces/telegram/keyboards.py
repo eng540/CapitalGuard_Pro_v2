@@ -1,6 +1,6 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v16.0 - FINAL PRODUCTION READY)
+# src/capitalguard/interfaces/telegram/keyboards.py (v18.0 - FINAL PRODUCTION READY)
 """
-واجهة لوحات المفاتيح للتليجرام - الإصدار النهائي الكامل
+واجهة لوحات المفاتيح للتليجرام - الإصدار النهائي الكامل والمتين
 تدعم اللغة العربية بشكل كامل مع معالجة متقدمة للأخطاء وأداء محسن
 """
 
@@ -20,7 +20,7 @@ MAX_BUTTON_TEXT_LENGTH = 40
 logger = logging.getLogger(__name__)
 
 class StatusIcons:
-    """رموز الحالات المختلفة للتوصيات"""
+    """رموز الحالات المختلفة للتوصيات والصفقات"""
     PENDING = "⏳"
     ACTIVE = "▶️"
     BREAK_EVEN = "🛡️"
@@ -224,7 +224,7 @@ async def build_open_recs_keyboard(
                 button_text = f"{status_icon} {button_text} | نشطة"
 
             # تحديد نوع العنصر وبناء callback_data المناسب
-            is_trade = _get_attr(item, 'is_user_trade', False)
+            is_trade = getattr(item, 'is_user_trade', False)
             item_type = 'trade' if is_trade else 'rec'
             callback_data = f"pos:show_panel:{item_type}:{rec_id}"
 
@@ -564,6 +564,64 @@ def build_admin_panel_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🚪 العودة", callback_data="admin:back")],
     ])
 
+def build_trader_dashboard_keyboard() -> InlineKeyboardMarkup:
+    """بناء لوحة تحكم المتداول"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 صفقاتي المفتوحة", callback_data="trader:open_trades"),
+            InlineKeyboardButton("📈 أداء المحفظة", callback_data="trader:portfolio"),
+        ],
+        [
+            InlineKeyboardButton("🔔 متابعة إشارة", callback_data="trader:track_signal"),
+            InlineKeyboardButton("📋 سجل الصفقات", callback_data="trader:trade_history"),
+        ],
+        [
+            InlineKeyboardButton("⚡ صفقة سريعة", callback_data="trader:quick_trade"),
+            InlineKeyboardButton("⚙️ إعداداتي", callback_data="trader:settings"),
+        ]
+    ])
+
+def build_trade_edit_keyboard(trade_id: int) -> InlineKeyboardMarkup:
+    """بناء لوحة تعديل الصفقة الشخصية"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=f"trade:edit_sl:{trade_id}"),
+            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"trade:edit_tp:{trade_id}"),
+        ],
+        [
+            InlineKeyboardButton("📊 تعديل سعر الدخول", callback_data=f"trade:edit_entry:{trade_id}"),
+            InlineKeyboardButton("🏷️ تعديل الملاحظات", callback_data=f"trade:edit_notes:{trade_id}"),
+        ],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=f"pos:show_panel:trade:{trade_id}")],
+    ])
+
+def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+    """بناء لوحة جني الربح الجزئي"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 جني 25%", callback_data=f"rec:partial_close:{rec_id}:25")],
+        [InlineKeyboardButton("💰 جني 50%", callback_data=f"rec:partial_close:{rec_id}:50")],
+        [InlineKeyboardButton("💰 جني 75%", callback_data=f"rec:partial_close:{rec_id}:75")],
+        [InlineKeyboardButton("✍️ نسبة مخصصة", callback_data=f"rec:partial_close_custom:{rec_id}")],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=f"rec:back_to_main:{rec_id}")],
+    ])
+
+def build_analyst_dashboard_keyboard() -> InlineKeyboardMarkup:
+    """بناء لوحة تحكم المحلل"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 توصياتي النشطة", callback_data="analyst:open_recs"),
+            InlineKeyboardButton("📈 أداء التوصيات", callback_data="analyst:performance"),
+        ],
+        [
+            InlineKeyboardButton("💬 توصية جديدة", callback_data="analyst:new_recommendation"),
+            InlineKeyboardButton("📋 سجل التوصيات", callback_data="analyst:rec_history"),
+        ],
+        [
+            InlineKeyboardButton("📢 إدارة القنوات", callback_data="analyst:manage_channels"),
+            InlineKeyboardButton("⚙️ إعدادات المحلل", callback_data="analyst:settings"),
+        ]
+    ])
+
 # تصدير الدوال الرئيسية
 __all__ = [
     'build_open_recs_keyboard',
@@ -587,6 +645,10 @@ __all__ = [
     'build_settings_keyboard',
     'build_quick_actions_keyboard',
     'build_admin_panel_keyboard',
+    'build_trader_dashboard_keyboard',
+    'build_trade_edit_keyboard',
+    'build_partial_close_keyboard',
+    'build_analyst_dashboard_keyboard',
     'StatusIcons',
     'ButtonTexts'
 ]
