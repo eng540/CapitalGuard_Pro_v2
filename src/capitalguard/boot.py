@@ -1,4 +1,4 @@
-# src/capitalguard/boot.py (v25.1 - DECOUPLED)
+# src/capitalguard/boot.py (v25.2 - FINAL & DECOUPLED)
 """
 Bootstrap and dependency injection setup for the application.
 This version decouples the boot process from the handler registration.
