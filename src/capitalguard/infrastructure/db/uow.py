@@ -1,4 +1,4 @@
-# src/capitalguard/infrastructure/db/uow.py (v25.2 - FINAL & STABLE)
+# src/capitalguard/infrastructure/db/uow.py (v25.5 - FINAL & STABLE)
 """
 Provides a transactional unit of work scope for database operations.
 """
@@ -34,15 +34,12 @@ def uow_transaction(func: Callable) -> Callable:
     """
     @wraps(func)
     async def wrapper(update, context, *args, **kwargs):
-        # This decorator is designed for handlers that need a DB session.
         with session_scope() as session:
             try:
-                # Pass the session as a keyword argument to the decorated function.
                 result = await func(update, context, db_session=session, *args, **kwargs)
                 return result
             except Exception as e:
                 log.error(f"Exception in handler '{func.__name__}', transaction rolled back.", exc_info=True)
-                # Re-raise the exception to be caught by the global error handler.
                 raise e
     return wrapper
 

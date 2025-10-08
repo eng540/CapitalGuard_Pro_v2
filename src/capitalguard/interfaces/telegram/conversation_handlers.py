@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v25.2 - FINAL & CORRECTED)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v25.5 - FINAL & CORRECTED)
 """
 Implements all conversational flows for the Telegram bot, primarily for creating recommendations.
 """
@@ -14,8 +14,9 @@ from telegram.ext import (
     CallbackQueryHandler, MessageHandler, filters
 )
 
-# ✅ **THE FIX:** Import the decorator from the corrected helpers file.
-from .helpers import get_service, uow_transaction as unit_of_work, parse_cq_parts
+# ✅ **THE FIX:** Import the decorator from its definitive source.
+from capitalguard.infrastructure.db.uow import uow_transaction
+from .helpers import get_service, parse_cq_parts
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
     review_final_keyboard, asset_choice_keyboard, side_market_keyboard,
@@ -24,7 +25,6 @@ from .keyboards import (
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
 from .auth import require_active_user, require_analyst_user
 
-from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 
@@ -32,10 +32,6 @@ log = logging.getLogger(__name__)
 
 # Conversation states
 (SELECT_METHOD, AWAIT_TEXT_INPUT, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_REVIEW) = range(7)
-
-# ... (The rest of the file is identical to the one I provided in the previous response,
-# as the only change needed was the import statement which is now correct.)
-# I will include the full file for absolute completeness.
 
 def get_user_draft(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
     if 'new_rec_draft' not in context.user_data:
@@ -67,7 +63,7 @@ async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_T
 
 @require_active_user
 @require_analyst_user
-@unit_of_work
+@uow_transaction
 async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
     clean_user_state(context)
     user, message_obj = _get_user_and_message_from_update(update)
@@ -87,6 +83,10 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
         context.user_data['last_conv_message'] = (update.callback_query.message.chat_id, update.callback_query.message.message_id)
     
     return I_ASSET
+
+# ... (The rest of the file is identical to the one I provided in the previous response)
+# The only change needed was the import statement which is now correct.
+# I will include the full file for absolute completeness.
 
 @require_active_user
 @require_analyst_user
@@ -267,7 +267,7 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             
     return I_REVIEW
 
-@unit_of_work
+@uow_transaction
 async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
     query = update.callback_query
     await query.answer("Processing...")
