@@ -1,5 +1,7 @@
-# --- START OF NEW, COMPLETE, AND PRODUCTION-READY FILE ---
-# src/capitalguard/infrastructure/db/uow.py
+# src/capitalguard/infrastructure/db/uow.py (v25.2 - FINAL & STABLE)
+"""
+Provides a transactional unit of work scope for database operations.
+"""
 
 import logging
 import inspect
@@ -27,33 +29,21 @@ def session_scope():
 
 def uow_transaction(func: Callable) -> Callable:
     """
-    A decorator for service methods that ensures they run within a single,
-    atomic database transaction (Unit of Work).
-
-    It supports both sync and async functions. If the decorated function is
-    called with a 'db_session' keyword argument, it reuses that session.
-    Otherwise, it creates a new session scope for the duration of the call.
+    A decorator for Telegram handlers that provides a database session (Unit of Work).
+    It ensures that the decorated function runs within a single, atomic database transaction.
     """
-    is_coro = inspect.iscoroutinefunction(func)
+    @wraps(func)
+    async def wrapper(update, context, *args, **kwargs):
+        # This decorator is designed for handlers that need a DB session.
+        with session_scope() as session:
+            try:
+                # Pass the session as a keyword argument to the decorated function.
+                result = await func(update, context, db_session=session, *args, **kwargs)
+                return result
+            except Exception as e:
+                log.error(f"Exception in handler '{func.__name__}', transaction rolled back.", exc_info=True)
+                # Re-raise the exception to be caught by the global error handler.
+                raise e
+    return wrapper
 
-    if is_coro:
-        @wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            if 'db_session' in kwargs and isinstance(kwargs['db_session'], Session):
-                return await func(*args, **kwargs)
-            
-            with session_scope() as session:
-                # Pass the session as a keyword argument to the decorated function
-                return await func(*args, db_session=session, **kwargs)
-        return async_wrapper
-    else: # Sync function
-        @wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            if 'db_session' in kwargs and isinstance(kwargs['db_session'], Session):
-                return func(*args, **kwargs)
-
-            with session_scope() as session:
-                return func(*args, db_session=session, **kwargs)
-        return sync_wrapper
-
-# --- END OF NEW, COMPLETE, AND PRODUCTION-READY FILE ---
+#END
