@@ -773,4 +773,443 @@ class TradeService:
                 
             trade.pnl_percentage = pnl_pct
             
-            # إغلاق توص
+            # إغلاق توصية الظل المرتبطة إذا كانت موجودة
+            if trade.source_recommendation_id:
+                shadow_rec = self.repo.get(db_session, trade.source_recommendation_id)
+                if shadow_rec and shadow_rec.status == RecommendationStatusEnum.ACTIVE:
+                    shadow_rec.status = RecommendationStatusEnum.CLOSED
+                    shadow_rec.exit_price = exit_price
+                    shadow_rec.closed_at = datetime.now(timezone.utc)
+                    shadow_rec.updated_at = datetime.now(timezone.utc)
+                    
+                    shadow_event = RecommendationEvent(
+                        recommendation_id=shadow_rec.id,
+                        event_type="SHADOW_CLOSED",
+                        event_data={
+                            "user_trade_id": trade_id,
+                            "exit_price": exit_price,
+                            "closed_by": user_telegram_id
+                        }
+                    )
+                    db_session.add(shadow_event)
+                    
+                    logger.info("تم إغلاق توصية الظل #%s المرتبطة بالصفقة #%s", shadow_rec.id, trade_id)
+            
+            # تحديث فهارس التنبيهات
+            await self.alert_service.build_triggers_index()
+            
+            logger.info("تم إغلاق صفقة المستخدم #%s بسعر %s للمستخدم %s", trade_id, exit_price, user_telegram_id)
+            
+            return {
+                'success': True,
+                'trade_id': trade_id,
+                'asset': trade.asset,
+                'side': trade.side,
+                'pnl_percent': pnl_pct,
+                'status': 'CLOSED'
+            }
+            
+        except Exception as e:
+            logger.error("فشل إغلاق صفقة المستخدم #%s: %s", trade_id, e, exc_info=True)
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    async def update_user_trade_sl_async(self, trade_id: int, user_telegram_id: str, new_sl: float, db_session: Session) -> Dict[str, Any]:
+        """تحديث وقف الخسارة لصفقة مستخدم"""
+        try:
+            user = self._get_user_by_telegram_id(db_session, user_telegram_id)
+            if not user:
+                return {'success': False, 'error': 'المستخدم غير موجود'}
+                
+            trade = db_session.query(UserTrade).filter(
+                UserTrade.id == trade_id,
+                UserTrade.user_id == user.id
+            ).first()
+            
+            if not trade:
+                return {'success': False, 'error': 'الصفقة غير موجودة أو غير مسموح بالوصول'}
+                
+            if trade.status != UserTradeStatus.OPEN:
+                return {'success': False, 'error': 'يمكن تحديث الصفقات المفتوحة فقط'}
+            
+            # التحقق من صحة وقف الخسارة الجديد
+            self._validate_recommendation_data(
+                trade.side, float(trade.entry), new_sl, trade.targets
+            )
+            
+            old_sl = trade.stop_loss
+            trade.stop_loss = new_sl
+            
+            # تحديث توصية الظل المرتبطة إذا كانت موجودة
+            if trade.source_recommendation_id:
+                shadow_rec = self.repo.get(db_session, trade.source_recommendation_id)
+                if shadow_rec and shadow_rec.status == RecommendationStatusEnum.ACTIVE:
+                    shadow_rec.stop_loss = new_sl
+                    shadow_rec.updated_at = datetime.now(timezone.utc)
+                    
+                    shadow_event = RecommendationEvent(
+                        recommendation_id=shadow_rec.id,
+                        event_type="SHADOW_SL_UPDATED",
+                        event_data={
+                            "user_trade_id": trade_id,
+                            "old_sl": float(old_sl),
+                            "new_sl": new_sl,
+                            "updated_by": user_telegram_id
+                        }
+                    )
+                    db_session.add(shadow_event)
+            
+            # تحديث التنبيهات
+            await self.alert_service.build_triggers_index()
+            
+            logger.info("تم تحديث وقف الخسارة للصفقة #%s من %s إلى %s بواسطة %s", 
+                      trade_id, old_sl, new_sl, user_telegram_id)
+            
+            return {
+                'success': True,
+                'trade_id': trade_id,
+                'asset': trade.asset,
+                'old_sl': float(old_sl),
+                'new_sl': new_sl,
+                'status': 'UPDATED'
+            }
+            
+        except Exception as e:
+            logger.error("فشل تحديث وقف الخسارة للصفقة #%s: %s", trade_id, e, exc_info=True)
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    async def update_user_trade_targets_async(self, trade_id: int, user_telegram_id: str, new_targets: List[Dict[str, float]], db_session: Session) -> Dict[str, Any]:
+        """تحديث أهداف صفقة مستخدم"""
+        try:
+            user = self._get_user_by_telegram_id(db_session, user_telegram_id)
+            if not user:
+                return {'success': False, 'error': 'المستخدم غير موجود'}
+                
+            trade = db_session.query(UserTrade).filter(
+                UserTrade.id == trade_id,
+                UserTrade.user_id == user.id
+            ).first()
+            
+            if not trade:
+                return {'success': False, 'error': 'الصفقة غير موجودة أو غير مسموح بالوصول'}
+                
+            if trade.status != UserTradeStatus.OPEN:
+                return {'success': False, 'error': 'يمكن تحديث الصفقات المفتوحة فقط'}
+            
+            # التحقق من صحة الأهداف الجديدة
+            self._validate_recommendation_data(
+                trade.side, float(trade.entry), float(trade.stop_loss), new_targets
+            )
+            
+            old_targets = trade.targets
+            trade.targets = new_targets
+            
+            # تحديث توصية الظل المرتبطة إذا كانت موجودة
+            if trade.source_recommendation_id:
+                shadow_rec = self.repo.get(db_session, trade.source_recommendation_id)
+                if shadow_rec and shadow_rec.status == RecommendationStatusEnum.ACTIVE:
+                    shadow_rec.targets = new_targets
+                    shadow_rec.updated_at = datetime.now(timezone.utc)
+                    
+                    shadow_event = RecommendationEvent(
+                        recommendation_id=shadow_rec.id,
+                        event_type="SHADOW_TARGETS_UPDATED",
+                        event_data={
+                            "user_trade_id": trade_id,
+                            "old_targets": old_targets,
+                            "new_targets": new_targets,
+                            "updated_by": user_telegram_id
+                        }
+                    )
+                    db_session.add(shadow_event)
+            
+            # تحديث التنبيهات
+            await self.alert_service.build_triggers_index()
+            
+            logger.info("تم تحديث أهداف الصفقة #%s بواسطة المستخدم %s", trade_id, user_telegram_id)
+            
+            return {
+                'success': True,
+                'trade_id': trade_id,
+                'asset': trade.asset,
+                'targets_count': len(new_targets),
+                'status': 'UPDATED'
+            }
+            
+        except Exception as e:
+            logger.error("فشل تحديث أهداف الصفقة #%s: %s", trade_id, e, exc_info=True)
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def get_user_trade_details(self, db_session: Session, trade_id: int, user_telegram_id: str) -> Optional[Dict[str, Any]]:
+        """الحصول على تفاصيل صفقة مستخدم محددة"""
+        try:
+            user = self._get_user_by_telegram_id(db_session, user_telegram_id)
+            if not user:
+                return None
+                
+            trade = db_session.query(UserTrade).filter(
+                UserTrade.id == trade_id,
+                UserTrade.user_id == user.id
+            ).first()
+            
+            if not trade:
+                return None
+            
+            # حساب الربح/الخسارة الحالي إذا كانت الصفقة مفتوحة
+            current_pnl = None
+            if trade.status == UserTradeStatus.OPEN:
+                try:
+                    current_price = asyncio.run(self.price_service.get_cached_price(trade.asset, "Futures"))
+                    if current_price:
+                        if trade.side.upper() == "LONG":
+                            current_pnl = ((current_price - float(trade.entry)) / float(trade.entry)) * 100
+                        else:
+                            current_pnl = ((float(trade.entry) - current_price) / float(trade.entry)) * 100
+                except Exception:
+                    pass
+            
+            return {
+                'id': trade.id,
+                'asset': trade.asset,
+                'side': trade.side,
+                'entry': float(trade.entry),
+                'stop_loss': float(trade.stop_loss),
+                'targets': trade.targets,
+                'status': trade.status.value,
+                'current_pnl': current_pnl,
+                'realized_pnl': float(trade.pnl_percentage) if trade.pnl_percentage else None,
+                'close_price': float(trade.close_price) if trade.close_price else None,
+                'created_at': trade.created_at.isoformat(),
+                'closed_at': trade.closed_at.isoformat() if trade.closed_at else None,
+                'source_recommendation_id': trade.source_recommendation_id,
+                'is_shadow_trade': trade.source_recommendation_id is not None
+            }
+            
+        except Exception as e:
+            logger.error("فشل الحصول على تفاصيل الصفقة #%s: %s", trade_id, e, exc_info=True)
+            return None
+
+    async def get_user_portfolio_summary(self, db_session: Session, user_telegram_id: str) -> Dict[str, Any]:
+        """الحصول على ملخص محفظة المستخدم"""
+        try:
+            user = self._get_user_by_telegram_id(db_session, user_telegram_id)
+            if not user:
+                return {'error': 'المستخدم غير موجود'}
+            
+            # الصفقات المفتوحة
+            open_trades = self.repo.get_open_trades_for_trader(db_session, user.id)
+            
+            # الصفقات المغلقة
+            closed_trades = db_session.query(UserTrade).filter(
+                UserTrade.user_id == user.id,
+                UserTrade.status == UserTradeStatus.CLOSED
+            ).all()
+            
+            # حساب الإحصائيات
+            total_trades = len(open_trades) + len(closed_trades)
+            winning_trades = [t for t in closed_trades if t.pnl_percentage and float(t.pnl_percentage) > 0]
+            losing_trades = [t for t in closed_trades if t.pnl_percentage and float(t.pnl_percentage) <= 0]
+            
+            win_rate = (len(winning_trades) / len(closed_trades)) * 100 if closed_trades else 0
+            total_pnl = sum(float(t.pnl_percentage) for t in closed_trades if t.pnl_percentage) if closed_trades else 0
+            avg_win = sum(float(t.pnl_percentage) for t in winning_trades) / len(winning_trades) if winning_trades else 0
+            avg_loss = sum(float(t.pnl_percentage) for t in losing_trades) / len(losing_trades) if losing_trades else 0
+            
+            # الأصول الأكثر تداولاً
+            asset_counts = {}
+            all_trades = open_trades + closed_trades
+            for trade in all_trades:
+                asset_counts[trade.asset] = asset_counts.get(trade.asset, 0) + 1
+            
+            top_assets = sorted(asset_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+            
+            return {
+                'success': True,
+                'user_id': user_telegram_id,
+                'portfolio_summary': {
+                    'total_trades': total_trades,
+                    'open_trades': len(open_trades),
+                    'closed_trades': len(closed_trades),
+                    'winning_trades': len(winning_trades),
+                    'losing_trades': len(losing_trades),
+                    'win_rate': round(win_rate, 2),
+                    'total_pnl': round(total_pnl, 2),
+                    'avg_win': round(avg_win, 2),
+                    'avg_loss': round(avg_loss, 2),
+                    'top_assets': [asset for asset, count in top_assets]
+                },
+                'open_positions': [
+                    {
+                        'id': trade.id,
+                        'asset': trade.asset,
+                        'side': trade.side,
+                        'entry': float(trade.entry),
+                        'current_pnl': await self._calculate_current_pnl(trade)
+                    }
+                    for trade in open_trades
+                ]
+            }
+            
+        except Exception as e:
+            logger.error("فشل الحصول على ملخص محفظة المستخدم %s: %s", user_telegram_id, e, exc_info=True)
+            return {'success': False, 'error': str(e)}
+
+    async def _calculate_current_pnl(self, trade: UserTrade) -> Optional[float]:
+        """حساب الربح/الخسارة الحالي للصفقة"""
+        try:
+            current_price = await self.price_service.get_cached_price(trade.asset, "Futures")
+            if not current_price:
+                return None
+                
+            if trade.side.upper() == "LONG":
+                return ((current_price - float(trade.entry)) / float(trade.entry)) * 100
+            else:
+                return ((float(trade.entry) - current_price) / float(trade.entry)) * 100
+                
+        except Exception:
+            return None
+
+    # ==================== دوال التقرير والإحصائيات ====================
+
+    async def generate_analyst_performance_report(self, db_session: Session, analyst_telegram_id: str, days: int = 30) -> Dict[str, Any]:
+        """إنشاء تقرير أداء للمحلل"""
+        try:
+            user = self._get_user_by_telegram_id(db_session, analyst_telegram_id)
+            if not user or not self._check_analyst_permission(user):
+                return {'success': False, 'error': 'المستخدم غير موجود أو ليس محللاً'}
+            
+            # حساب الفترة الزمنية
+            from_date = datetime.now(timezone.utc) - timedelta(days=days)
+            
+            # التوصيات في الفترة المحددة
+            recommendations = db_session.query(Recommendation).filter(
+                Recommendation.analyst_id == user.id,
+                Recommendation.created_at >= from_date
+            ).all()
+            
+            # الإحصائيات
+            total_recommendations = len(recommendations)
+            active_recommendations = len([r for r in recommendations if r.status == RecommendationStatusEnum.ACTIVE])
+            closed_recommendations = len([r for r in recommendations if r.status == RecommendationStatusEnum.CLOSED])
+            pending_recommendations = len([r for r in recommendations if r.status == RecommendationStatusEnum.PENDING])
+            
+            # التوصيات المغلقة فقط للأداء
+            closed_recs = [r for r in recommendations if r.status == RecommendationStatusEnum.CLOSED and r.exit_price]
+            winning_recs = [r for r in closed_recs if self._is_winning_recommendation(r)]
+            losing_recs = [r for r in closed_recs if not self._is_winning_recommendation(r)]
+            
+            win_rate = (len(winning_recs) / len(closed_recs)) * 100 if closed_recs else 0
+            avg_pnl = sum(self._calculate_recommendation_pnl(r) for r in closed_recs) / len(closed_recs) if closed_recs else 0
+            
+            return {
+                'success': True,
+                'analyst_id': analyst_telegram_id,
+                'period_days': days,
+                'performance_summary': {
+                    'total_recommendations': total_recommendations,
+                    'active_recommendations': active_recommendations,
+                    'closed_recommendations': closed_recommendations,
+                    'pending_recommendations': pending_recommendations,
+                    'winning_recommendations': len(winning_recs),
+                    'losing_recommendations': len(losing_recs),
+                    'win_rate': round(win_rate, 2),
+                    'average_pnl': round(avg_pnl, 2),
+                    'total_pnl': round(sum(self._calculate_recommendation_pnl(r) for r in closed_recs), 2) if closed_recs else 0
+                },
+                'top_performing_assets': self._get_top_performing_assets(closed_recs),
+                'recent_activity': [
+                    {
+                        'id': r.id,
+                        'asset': r.asset,
+                        'side': r.side,
+                        'status': r.status.value,
+                        'created_at': r.created_at.isoformat(),
+                        'pnl': self._calculate_recommendation_pnl(r) if r.exit_price else None
+                    }
+                    for r in recommendations[:10]  # آخر 10 توصيات
+                ]
+            }
+            
+        except Exception as e:
+            logger.error("فشل إنشاء تقرير أداء المحلل %s: %s", analyst_telegram_id, e, exc_info=True)
+            return {'success': False, 'error': str(e)}
+
+    def _is_winning_recommendation(self, recommendation: Recommendation) -> bool:
+        """تحديد إذا كانت التوصية رابحة"""
+        if not recommendation.exit_price:
+            return False
+            
+        entry = float(recommendation.entry)
+        exit_price = float(recommendation.exit_price)
+        
+        if recommendation.side.upper() == "LONG":
+            return exit_price > entry
+        else:
+            return exit_price < entry
+
+    def _calculate_recommendation_pnl(self, recommendation: Recommendation) -> float:
+        """حساب الربح/الخسارة للتوصية"""
+        if not recommendation.exit_price:
+            return 0.0
+            
+        entry = float(recommendation.entry)
+        exit_price = float(recommendation.exit_price)
+        
+        if recommendation.side.upper() == "LONG":
+            return ((exit_price - entry) / entry) * 100
+        else:
+            return ((entry - exit_price) / entry) * 100
+
+    def _get_top_performing_assets(self, recommendations: List[Recommendation]) -> List[Dict[str, Any]]:
+        """الحصول على أفضل الأصول أداءً"""
+        asset_performance = {}
+        
+        for rec in recommendations:
+            if rec.asset not in asset_performance:
+                asset_performance[rec.asset] = {
+                    'total_trades': 0,
+                    'winning_trades': 0,
+                    'total_pnl': 0.0
+                }
+            
+            asset_performance[rec.asset]['total_trades'] += 1
+            pnl = self._calculate_recommendation_pnl(rec)
+            asset_performance[rec.asset]['total_pnl'] += pnl
+            
+            if self._is_winning_recommendation(rec):
+                asset_performance[rec.asset]['winning_trades'] += 1
+        
+        # حساب متوسط الأداء لكل أصل
+        for asset in asset_performance:
+            stats = asset_performance[asset]
+            stats['win_rate'] = (stats['winning_trades'] / stats['total_trades']) * 100 if stats['total_trades'] > 0 else 0
+            stats['avg_pnl'] = stats['total_pnl'] / stats['total_trades'] if stats['total_trades'] > 0 else 0
+        
+        # ترتيب حسب متوسط الربح
+        sorted_assets = sorted(
+            asset_performance.items(),
+            key=lambda x: x[1]['avg_pnl'],
+            reverse=True
+        )[:5]  # أفضل 5 أصول
+        
+        return [
+            {
+                'asset': asset,
+                'total_trades': stats['total_trades'],
+                'win_rate': round(stats['win_rate'], 2),
+                'avg_pnl': round(stats['avg_pnl'], 2)
+            }
+            for asset, stats in sorted_assets
+        ]
+
+
+# تصدير الفئة والثوابت
+__all__ = ['TradeService', 'SYSTEM_USER_ID_FOR_FORWARDING']
