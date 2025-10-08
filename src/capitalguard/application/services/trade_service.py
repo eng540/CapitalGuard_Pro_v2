@@ -1,7 +1,7 @@
-# src/capitalguard/application/services/trade_service.py (v28.0 - FINAL PRODUCTION READY)
+# src/capitalguard/application/services/trade_service.py (v24.0 - FINAL PRODUCTION READY)
 """
 TradeService - الإصدار النهائي الكامل والداعم لتعدد المستخدمين مع منطق "توصية الظل"
-خدمة متكاملة لإدارة التوصيات والصفقات مع دعم كامل للغة العربية ومعالجة الأخطاء المحسنة.
+وجميع وظائف معالجة الأحداث للمحللين والمتداولين.
 """
 
 import logging
@@ -10,6 +10,7 @@ import inspect
 from typing import List, Optional, Tuple, Dict, Any, Set
 from datetime import datetime, timezone
 from decimal import Decimal
+
 from sqlalchemy.orm import Session
 
 from capitalguard.infrastructure.db.uow import session_scope
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 # ثوابت النظام
 SYSTEM_USER_ID_FOR_FORWARDING = 0
 MAX_RETRY_ATTEMPTS = 3
-RETRY_DELAY_BASE = 0.2  # ثواني
+RETRY_DELAY_BASE = 0.2
 
 def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
     """تحويل معرف المستخدم إلى عدد صحيح بشكل آمن"""
@@ -112,13 +113,13 @@ class TradeService:
         return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def notify_card_update(self, rec_entity: RecommendationEntity):
-        """تحديث بطاقة التوصية في القنوات مع معالجة الأخطاء"""
-        messages_to_delete = []
-        
+        """تحديث بطاقة التوصية في القنوات - لا يتم تحديث توصيات الظل"""
+        if getattr(rec_entity, 'is_shadow', False):
+            return  # لا يتم تحديث البطاقات لتوصيات الظل
+
         with session_scope() as session:
             published_messages = self.repo.get_published_messages(session, rec_entity.id)
             if not published_messages:
-                logger.debug("لا توجد رسائل منشورة للتحديث للتوصية #%s", rec_entity.id)
                 return
                 
             logger.info("جاري تحديث %d بطاقة للتوصية #%s", len(published_messages), rec_entity.id)
@@ -138,26 +139,16 @@ class TradeService:
                     )
                     
                 except Exception as e:
-                    error_msg = str(e).lower()
-                    if any(phrase in error_msg for phrase in ["message to edit not found", "message not found"]):
-                        logger.warning("الرسالة %s للتوصية %s غير موجودة - سيتم حذفها", 
-                                     msg_meta.telegram_message_id, rec_entity.id)
-                        messages_to_delete.append(msg_meta)
-                    else:
-                        logger.error("فشل تحديث البطاقة للتوصية %s في القناة %s: %s", 
-                                   rec_entity.id, msg_meta.telegram_channel_id, e, exc_info=True)
-            
-            # حذف الرسائل غير الموجودة
-            for msg in messages_to_delete:
-                try:
-                    session.delete(msg)
-                    session.flush()
-                except Exception:
-                    logger.exception("فشل حذف سجل الرسالة المنشورة %s", getattr(msg, "id", "غير معروف"))
+                    logger.error("فشل تحديث البطاقة للتوصية %s في القناة %s: %s", 
+                               rec_entity.id, msg_meta.telegram_channel_id, e)
 
     def notify_reply(self, rec_id: int, text: str):
-        """إرسال رد على التوصية في القنوات"""
+        """إرسال رد على التوصية في القنوات - لا يتم إرسال ردود لتوصيات الظل"""
         with session_scope() as session:
+            rec = self.repo.get(session, rec_id)
+            if not rec or getattr(rec, 'is_shadow', False):
+                return  # لا يتم إرسال ردود لتوصيات الظل
+
             published_messages = self.repo.get_published_messages(session, rec_id)
             for msg_meta in published_messages:
                 try:
@@ -165,33 +156,16 @@ class TradeService:
                     if not post_fn:
                         logger.error("الدالة post_notification_reply غير متوفرة في الإشعار")
                         continue
-                        
-                    if inspect.iscoroutinefunction(post_fn):
-                        try:
-                            loop = asyncio.get_running_loop()
-                            asyncio.run_coroutine_threadsafe(
-                                post_fn(
-                                    chat_id=msg_meta.telegram_channel_id, 
-                                    message_id=msg_meta.telegram_message_id, 
-                                    text=text
-                                ), 
-                                loop
-                            )
-                        except RuntimeError:
-                            asyncio.run(
-                                post_fn(
-                                    chat_id=msg_meta.telegram_channel_id, 
-                                    message_id=msg_meta.telegram_message_id, 
-                                    text=text
-                                )
-                            )
-                    else:
-                        post_fn(
+                    
+                    # إرسال غير متزامن للردود
+                    asyncio.create_task(
+                        self._call_notifier_maybe_async(
+                            post_fn, 
                             chat_id=msg_meta.telegram_channel_id, 
                             message_id=msg_meta.telegram_message_id, 
                             text=text
                         )
-                        
+                    )
                 except Exception as e:
                     logger.warning("فشل إرسال الرد للتوصية #%s إلى القناة %s: %s", 
                                  rec_id, msg_meta.telegram_channel_id, e)
@@ -202,54 +176,24 @@ class TradeService:
         """التحقق الشامل من صحة بيانات التوصية"""
         side_upper = side.upper()
         
-        # التحقق من الأسعار الإيجابية
-        if entry <= 0 or stop_loss <= 0:
-            raise ValueError("يجب أن تكون أسعار الدخول ووقف الخسارة موجبة")
+        if not all(isinstance(p, (int, float)) and p > 0 for p in [entry, stop_loss]):
+            raise ValueError("يجب أن تكون أسعار الدخول ووقف الخسارة أرقاماً موجبة")
             
-        # التحقق من وجود أهداف صالحة
-        if not targets or not all(t.get('price', 0) > 0 for t in targets):
+        if not targets or not all(isinstance(t.get('price'), (int, float)) and t.get('price', 0) > 0 for t in targets):
             raise ValueError("يجب وجود هدف واحد على الأقل بسعر موجب")
             
-        # التحقق من علاقة السعر لـ LONG
         if side_upper == "LONG" and stop_loss >= entry:
             raise ValueError("لصفقات الشراء، يجب أن يكون وقف الخسارة أقل من سعر الدخول")
             
-        # التحقق من علاقة السعر لـ SHORT  
         if side_upper == "SHORT" and stop_loss <= entry:
             raise ValueError("لصفقات البيع، يجب أن يكون وقف الخسارة أعلى من سعر الدخول")
-            
-        # حساب المخاطرة والمكافأة
-        risk = abs(entry - stop_loss)
-        if risk <= 1e-9:
-            raise ValueError("لا يمكن أن يكون سعر الدخول ووقف الخسارة متساويين")
-            
-        # تحديد سعر الهدف الأول
-        if side_upper == "LONG":
-            first_target_price = min(t['price'] for t in targets)
-        else:
-            first_target_price = max(t['price'] for t in targets)
-            
-        reward = abs(first_target_price - entry)
-        min_acceptable_rr = 0.1
         
-        if (reward / risk) < min_acceptable_rr:
-            raise ValueError(f"نسبة المخاطرة/المكافأة منخفضة جداً: {(reward / risk):.3f}. الحد الأدنى المسموح: {min_acceptable_rr}")
-        
-        # التحقق من تفرد أسعار الأهداف
         target_prices = [t['price'] for t in targets]
-        if len(target_prices) != len(set(target_prices)):
-            raise ValueError("يجب أن تكون أسعار الأهداف فريدة")
+        if side_upper == 'LONG' and any(p <= entry for p in target_prices):
+            raise ValueError("يجب أن تكون جميع أسعار الأهداف أعلى من سعر الدخول لصفقات الشراء")
             
-        # التحقق من ترتيب الأهداف
-        is_long = side_upper == 'LONG'
-        sorted_prices = sorted(target_prices, reverse=not is_long)
-        if target_prices != sorted_prices:
-            raise ValueError("يجب ترتيب الأهداف تصاعدياً لصفقات الشراء وتنازلياً لصفقات البيع")
-            
-        # التحقق من نسب الإغلاق
-        total_close = sum(float(t.get('close_percent', 0)) for t in targets)
-        if total_close > 100.01:
-            raise ValueError("لا يمكن أن يتجاوز مجموع نسب الإغلاق 100%")
+        if side_upper == 'SHORT' and any(p >= entry for p in target_prices):
+            raise ValueError("يجب أن تكون جميع أسعار الأهداف أقل من سعر الدخول لصفقات البيع")
 
     def _convert_enum_to_string(self, value):
         """تحويل القيم التعدادية إلى نص"""
@@ -261,7 +205,7 @@ class TradeService:
 
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, 
                                     user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
-        """نشر التوصية في القنوات المحددة مع تقرير مفصل"""
+        """نشر التوصية في القنوات المحددة"""
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
         
         uid_int = _parse_int_user_id(user_id)
@@ -270,74 +214,53 @@ class TradeService:
             report["failed"].append({"reason": "المستخدم غير موجود"})
             return rec_entity, report
             
-        # الحصول على القنوات المتاحة
         channels_to_publish = ChannelRepository(session).list_by_analyst(user.id, only_active=True)
         if target_channel_ids is not None:
             channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids]
             
         if not channels_to_publish:
-            reason = "لا توجد قنوات نشطة" if target_channel_ids is None else "القنوات المحددة غير نشطة"
+            reason = "لا توجد قنوات نشطة مرتبطة"
             report["failed"].append({"reason": reason})
             return rec_entity, report
 
-        # بناء واجهة البطاقة العامة
         from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
         keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None))
         
-        # النشر في كل قناة
         for channel in channels_to_publish:
-            success = False
-            last_error = None
-            
-            for attempt in range(MAX_RETRY_ATTEMPTS):
-                try:
-                    post_fn = getattr(self.notifier, "post_to_channel", None)
-                    if not post_fn:
-                        raise RuntimeError("دالة النشر غير متوفرة")
-                        
-                    result = await self._call_notifier_maybe_async(
-                        post_fn, channel.telegram_channel_id, rec_entity, keyboard
+            try:
+                post_fn = getattr(self.notifier, "post_to_channel", None)
+                if not post_fn:
+                    raise RuntimeError("دالة النشر غير متوفرة في الإشعار")
+                    
+                result = await self._call_notifier_maybe_async(
+                    post_fn, channel.telegram_channel_id, rec_entity, keyboard
+                )
+                
+                if isinstance(result, tuple) and len(result) == 2:
+                    publication = PublishedMessage(
+                        recommendation_id=rec_entity.id,
+                        telegram_channel_id=result[0],
+                        telegram_message_id=result[1]
                     )
+                    session.add(publication)
+                    report["success"].append({
+                        "channel_id": channel.telegram_channel_id, 
+                        "message_id": result[1]
+                    })
+                else:
+                    raise RuntimeError(f"نوع الاستجابة غير مدعوم: {type(result)}")
                     
-                    if isinstance(result, tuple) and len(result) == 2:
-                        publication = PublishedMessage(
-                            recommendation_id=rec_entity.id,
-                            telegram_channel_id=result[0],
-                            telegram_message_id=result[1]
-                        )
-                        session.add(publication)
-                        report["success"].append({
-                            "channel_id": channel.telegram_channel_id, 
-                            "message_id": result[1]
-                        })
-                        success = True
-                        break
-                    else:
-                        raise RuntimeError(f"نوع الاستجابة غير مدعوم: {type(result)}")
-                        
-                except Exception as e:
-                    last_error = e
-                    logger.warning("محاولة النشر %d فشلت للقناة %s: %s", 
-                                 attempt + 1, channel.telegram_channel_id, e)
-                    await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
-                    
-            if not success:
-                error_msg = str(last_error) if last_error else "خطأ غير معروف"
+            except Exception as e:
                 report["failed"].append({
                     "channel_id": channel.telegram_channel_id, 
-                    "reason": error_msg
+                    "reason": str(e)
                 })
 
-        # حفظ سجلات النشر
-        try:
-            session.flush()
-        except Exception:
-            logger.exception("فشل حفظ سجلات الرسائل المنشورة")
-            
+        session.flush()
         return rec_entity, report
 
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
-        """إنشاء توصية جديدة ونشرها - الإصدار النهائي"""
+        """إنشاء توصية جديدة ونشرها"""
         uid_int = _parse_int_user_id(user_id)
         user = UserRepository(db_session).find_by_telegram_id(uid_int)
         if not user or not self._check_analyst_permission(user):
@@ -349,9 +272,7 @@ class TradeService:
         market = kwargs.get('market', 'Futures')
         
         # معالجة نوع الطلب
-        order_type_input = kwargs['order_type']
-        order_type_str = self._convert_enum_to_string(order_type_input)
-        order_type_enum = OrderType(order_type_str)
+        order_type_enum = OrderType(self._convert_enum_to_string(kwargs['order_type']))
         
         # تحديد الحالة بناءً على نوع الطلب
         status, final_entry = RecommendationStatusEnum.PENDING, kwargs['entry']
@@ -373,12 +294,11 @@ class TradeService:
             entry=final_entry,
             stop_loss=kwargs['stop_loss'],
             targets=targets_list,
-            order_type=order_type_str,
-            status=self._convert_enum_to_string(status),
+            order_type=order_type_enum,
+            status=status,
             market=market,
             notes=kwargs.get('notes'),
-            exit_strategy=self._convert_enum_to_string(kwargs.get('exit_strategy', ExitStrategy.CLOSE_AT_FINAL_TP)),
-            open_size_percent=100.0,
+            exit_strategy=ExitStrategyEnum[self._convert_enum_to_string(kwargs.get('exit_strategy', ExitStrategy.CLOSE_AT_FINAL_TP))],
             is_shadow=False,
             activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None
         )
@@ -387,7 +307,7 @@ class TradeService:
         db_session.flush()
 
         # تسجيل الحدث
-        event_type = "CREATED_ACTIVE" if rec_orm.status == RecommendationStatusEnum.ACTIVE.value else "CREATED_PENDING"
+        event_type = "CREATED_ACTIVE" if rec_orm.status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING"
         new_event = RecommendationEvent(
             recommendation_id=rec_orm.id, 
             event_type=event_type, 
@@ -400,7 +320,7 @@ class TradeService:
 
         # تحويل إلى كيان وتحديث التنبيهات
         created_rec_entity = self.repo._to_entity(rec_orm)
-        await self.alert_service.update_triggers_for_recommendation(created_rec_entity.id)
+        await self.alert_service.update_triggers_for_item(created_rec_entity.id, is_user_trade=False)
         
         # النشر في القنوات
         final_rec, report = await self._publish_recommendation(
@@ -409,8 +329,95 @@ class TradeService:
         
         return final_rec, report
 
+    def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str, **filters) -> List[Any]:
+        """الحصول على جميع الصفقات المفتوحة للمستخدم"""
+        user = self._get_user_by_telegram_id(db_session, user_telegram_id)
+        if not user: 
+            return []
+        
+        open_positions = []
+        
+        # المحللون يرون توصياتهم الرسمية + صفقاتهم الشخصية
+        if user.user_type == UserType.ANALYST:
+            recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id)
+            for rec in recs_orm:
+                rec_entity = self.repo._to_entity(rec)
+                if rec_entity:
+                    setattr(rec_entity, 'is_user_trade', False)
+                    open_positions.append(rec_entity)
+
+        # جميع المستخدمين (بما في ذلك المحللون) يمكن أن يكون لديهم صفقات شخصية
+        trades_orm = self.repo.get_open_trades_for_trader(db_session, user.id)
+        for trade in trades_orm:
+            trade_entity = RecommendationEntity(
+                id=trade.id,
+                asset=Symbol(trade.asset),
+                side=Side(trade.side),
+                entry=Price(float(trade.entry)),
+                stop_loss=Price(float(trade.stop_loss)),
+                targets=Targets(trade.targets),
+                status=RecommendationStatusEntity.ACTIVE,
+                order_type=OrderType.MARKET,
+                user_id=str(user.telegram_user_id),
+                created_at=trade.created_at
+            )
+            setattr(trade_entity, 'is_user_trade', True)
+            open_positions.append(trade_entity)
+            
+        # ترتيب جميع الصفقات حسب تاريخ الإنشاء
+        open_positions.sort(key=lambda p: p.created_at, reverse=True)
+        return open_positions
+
+    def get_position_details_for_user(self, db_session: Session, user_telegram_id: str, position_type: str, position_id: int) -> Optional[RecommendationEntity]:
+        """
+        الحصول على تفاصيل صفقة محددة (سواء كانت توصية أو صفقة شخصية)
+        وإرجاعها ككيان RecommendationEntity موحد.
+        """
+        user = self._get_user_by_telegram_id(db_session, user_telegram_id)
+        if not user:
+            return None
+
+        if position_type == 'rec':
+            # إنها توصية محلل
+            if not self._check_analyst_permission(user): 
+                return None  # المتداولون لا يمكنهم إدارة التوصيات الرسمية
+                
+            rec_orm = self.repo.get(db_session, position_id)
+            if not rec_orm or not self._check_recommendation_ownership(rec_orm, user.id):
+                return None
+                
+            rec_entity = self.repo._to_entity(rec_orm)
+            if rec_entity:
+                setattr(rec_entity, 'is_user_trade', False)
+            return rec_entity
+        
+        elif position_type == 'trade':
+            # إنها صفقة شخصية للمستخدم
+            trade_orm = self.repo.get_user_trade_by_id(db_session, position_id)
+            if not trade_orm or not self._check_trade_ownership(trade_orm, user.id):
+                return None
+            
+            trade_entity = RecommendationEntity(
+                id=trade_orm.id,
+                asset=Symbol(trade_orm.asset),
+                side=Side(trade_orm.side),
+                entry=Price(float(trade_orm.entry)),
+                stop_loss=Price(float(trade_orm.stop_loss)),
+                targets=Targets(trade_orm.targets),
+                status=RecommendationStatusEntity.ACTIVE if trade_orm.status == UserTradeStatus.OPEN else RecommendationStatusEntity.CLOSED,
+                order_type=OrderType.MARKET,
+                user_id=str(user.telegram_user_id),
+                created_at=trade_orm.created_at,
+                closed_at=trade_orm.closed_at,
+                exit_price=float(trade_orm.close_price) if trade_orm.close_price else None
+            )
+            setattr(trade_entity, 'is_user_trade', True)
+            return trade_entity
+            
+        return None
+
     def get_recommendation_for_user(self, db_session: Session, rec_id: int, user_telegram_id: str) -> Optional[RecommendationEntity]:
-        """الحصول على توصية محددة للمستخدم مع التحقق من الصلاحية"""
+        """الحصول على توصية محددة للمستخدم (للمحللين فقط)"""
         user = self._get_user_by_telegram_id(db_session, user_telegram_id)
         if not user:
             return None
@@ -422,19 +429,6 @@ class TradeService:
             return self.repo._to_entity(rec_orm)
         
         return None
-
-    def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str, **filters) -> List[Any]:
-        """الحصول على جميع الصفقات المفتوحة للمستخدم"""
-        user = self._get_user_by_telegram_id(db_session, user_telegram_id)
-        if not user:
-            return []
-        
-        if user.user_type == UserType.ANALYST:
-            recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id)
-            return [self.repo._to_entity(r) for r in recs_orm]
-        else:
-            trades_orm = self.repo.get_open_trades_for_trader(db_session, user.id)
-            return trades_orm
 
     def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
         """الحصول على أحدث الأصول التي تداولها المستخدم"""
@@ -450,6 +444,8 @@ class TradeService:
             assets = list(set([t.asset for t in trades]))[:limit]
             
         return assets if assets else ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"]
+
+    # ==================== إدارة التوصيات - المحللين فقط ====================
 
     async def cancel_pending_recommendation_manual(self, rec_id: int, user_telegram_id: str, db_session: Session) -> RecommendationEntity:
         """إلغاء توصية معلقة يدوياً"""
@@ -580,7 +576,7 @@ class TradeService:
         # تحديث الواجهة والتنبيهات
         rec_entity = self.repo._to_entity(rec_orm)
         await self.notify_card_update(rec_entity)
-        await self.alert_service.update_triggers_for_recommendation(rec_id)
+        await self.alert_service.update_triggers_for_item(rec_id, is_user_trade=False)
         
         logger.info("تم تحديث وقف الخسارة للتوصية #%s من %s إلى %s بواسطة %s", 
                   rec_id, old_sl, new_sl, user_telegram_id)
@@ -623,58 +619,10 @@ class TradeService:
         # تحديث الواجهة والتنبيهات
         rec_entity = self.repo._to_entity(rec_orm)
         await self.notify_card_update(rec_entity)
-        await self.alert_service.update_triggers_for_recommendation(rec_id)
+        await self.alert_service.update_triggers_for_item(rec_id, is_user_trade=False)
         
         logger.info("تم تحديث الأهداف للتوصية #%s بواسطة المستخدم %s", rec_id, user_telegram_id)
         return rec_entity
-
-    # ==================== معالجة الأحداث التلقائية ====================
-
-    async def process_activation_event(self, rec_id: int):
-        """معالجة حدث تفعيل التوصية تلقائياً"""
-        with session_scope() as session:
-            rec_orm = self.repo.get_for_update(session, rec_id)
-            if not rec_orm or rec_orm.status != RecommendationStatusEnum.PENDING:
-                return
-                
-            rec_orm.status = RecommendationStatusEnum.ACTIVE
-            rec_orm.activated_at = datetime.now(timezone.utc)
-            rec_orm.updated_at = datetime.now(timezone.utc)
-            
-            event = RecommendationEvent(
-                recommendation_id=rec_id,
-                event_type="ACTIVATED_AUTO",
-                event_data={"activated_at": rec_orm.activated_at.isoformat()}
-            )
-            session.add(event)
-            
-            rec_entity = self.repo._to_entity(rec_orm)
-            await self.notify_card_update(rec_entity)
-            
-            logger.info("تم التفعيل التلقائي للتوصية #%s", rec_id)
-
-    async def process_invalidation_event(self, rec_id: int):
-        """معالجة حدث إلغاء التوصية تلقائياً"""
-        with session_scope() as session:
-            rec_orm = self.repo.get_for_update(session, rec_id)
-            if not rec_orm or rec_orm.status != RecommendationStatusEnum.PENDING:
-                return
-                
-            rec_orm.status = RecommendationStatusEnum.CLOSED
-            rec_orm.closed_at = datetime.now(timezone.utc)
-            rec_orm.updated_at = datetime.now(timezone.utc)
-            
-            event = RecommendationEvent(
-                recommendation_id=rec_id,
-                event_type="INVALIDATED_AUTO",
-                event_data={"invalidated_at": rec_orm.closed_at.isoformat()}
-            )
-            session.add(event)
-            
-            rec_entity = self.repo._to_entity(rec_orm)
-            await self.notify_card_update(rec_entity)
-            
-            logger.info("تم الإلغاء التلقائي للتوصية #%s (وصول وقف الخسارة قبل الدخول)", rec_id)
 
     # ==================== منطق توصية الظل ====================
 
@@ -816,137 +764,63 @@ class TradeService:
                 'error': str(e)
             }
 
-    async def update_user_trade_sl_async(self, trade_id: int, user_telegram_id: str, new_sl: float, db_session: Session) -> Dict[str, Any]:
-        """تحديث وقف الخسارة لصفقة مستخدم"""
-        try:
-            user = self._get_user_by_telegram_id(db_session, user_telegram_id)
-            if not user:
-                return {'success': False, 'error': 'المستخدم غير موجود'}
-                
-            trade = db_session.query(UserTrade).filter(
-                UserTrade.id == trade_id,
-                UserTrade.user_id == user.id
-            ).first()
-            
-            if not trade:
-                return {'success': False, 'error': 'الصفقة غير موجودة أو غير مسموح بالوصول'}
-                
-            if trade.status != UserTradeStatus.OPEN:
-                return {'success': False, 'error': 'يمكن تحديث الصفقات المفتوحة فقط'}
-            
-            # التحقق من صحة وقف الخسارة الجديد
-            self._validate_recommendation_data(
-                trade.side, float(trade.entry), new_sl, trade.targets
-            )
-            
-            old_sl = trade.stop_loss
-            trade.stop_loss = new_sl
-            
-            # تحديث توصية الظل المرتبطة إذا كانت موجودة
-            if trade.source_recommendation_id:
-                shadow_rec = self.repo.get(db_session, trade.source_recommendation_id)
-                if shadow_rec and shadow_rec.status == RecommendationStatusEnum.ACTIVE:
-                    shadow_rec.stop_loss = new_sl
-                    shadow_rec.updated_at = datetime.now(timezone.utc)
-                    
-                    shadow_event = RecommendationEvent(
-                        recommendation_id=shadow_rec.id,
-                        event_type="SHADOW_SL_UPDATED",
-                        event_data={
-                            "user_trade_id": trade_id,
-                            "old_sl": float(old_sl),
-                            "new_sl": new_sl,
-                            "updated_by": user_telegram_id
-                        }
-                    )
-                    db_session.add(shadow_event)
-            
-            # تحديث التنبيهات
-            await self.alert_service.build_triggers_index()
-            
-            logger.info("تم تحديث وقف الخسارة للصفقة #%s من %s إلى %s بواسطة %s", 
-                      trade_id, old_sl, new_sl, user_telegram_id)
-            
-            return {
-                'success': True,
-                'trade_id': trade_id,
-                'asset': trade.asset,
-                'old_sl': float(old_sl),
-                'new_sl': new_sl,
-                'status': 'UPDATED'
-            }
-            
-        except Exception as e:
-            logger.error("فشل تحديث وقف الخسارة للصفقة #%s: %s", trade_id, e, exc_info=True)
-            return {
-                'success': False,
-                'error': str(e)
-            }
+    # ==================== معالجة أحداث التداول ====================
 
-    async def update_user_trade_targets_async(self, trade_id: int, user_telegram_id: str, new_targets: List[Dict[str, float]], db_session: Session) -> Dict[str, Any]:
-        """تحديث أهداف صفقة مستخدم"""
-        try:
-            user = self._get_user_by_telegram_id(db_session, user_telegram_id)
+    async def process_user_trade_tp_hit_event(self, trade_id: int, user_id: str, target_index: int, price: float):
+        """معالجة حدث وصول الهدف لصفقة مستخدم"""
+        with session_scope() as session:
+            logger.info("معالجة وصول الهدف TP%s للصفقة #%s بسعر %s", target_index, trade_id, price)
+            
+            user = self._get_user_by_telegram_id(session, user_id)
             if not user:
-                return {'success': False, 'error': 'المستخدم غير موجود'}
-                
-            trade = db_session.query(UserTrade).filter(
-                UserTrade.id == trade_id,
-                UserTrade.user_id == user.id
-            ).first()
-            
-            if not trade:
-                return {'success': False, 'error': 'الصفقة غير موجودة أو غير مسموح بالوصول'}
-                
-            if trade.status != UserTradeStatus.OPEN:
-                return {'success': False, 'error': 'يمكن تحديث الصفقات المفتوحة فقط'}
-            
-            # التحقق من صحة الأهداف الجديدة
-            self._validate_recommendation_data(
-                trade.side, float(trade.entry), float(trade.stop_loss), new_targets
+                logger.error("المستخدم غير موجود للمستخدم %s أثناء معالجة حدث الهدف", user_id)
+                return
+
+            trade = self.repo.get_user_trade_by_id(session, trade_id)
+            if not trade or not self._check_trade_ownership(trade, user.id) or trade.status != UserTradeStatus.OPEN:
+                logger.warning("الصفقة #%s غير موجودة أو لا يملكها المستخدم أو غير مفتوحة. تخطي حدث الهدف", trade_id)
+                return
+
+            # التحقق إذا كان الهدف النهائي
+            is_final_target = (target_index == len(trade.targets))
+            if is_final_target:
+                await self.close_user_trade_async(trade_id, user_id, price, db_session=session)
+                notification_text = f"✅ صفقتك المتابعة للأصل #{trade.asset} وصلت للهدف النهائي وتم إغلاقها!"
+            else:
+                notification_text = f"🎯 صفقتك المتابعة للأصل #{trade.asset} وصلت الهدف TP{target_index} عند {price}!"
+
+            # إرسال إشعار للمستخدم
+            await self._call_notifier_maybe_async(
+                self.notifier.send_private_text, 
+                chat_id=int(user_id), 
+                text=notification_text
             )
+
+    async def process_user_trade_sl_hit_event(self, trade_id: int, user_id: str, price: float):
+        """معالجة حدث وصول وقف الخسارة لصفقة مستخدم"""
+        with session_scope() as session:
+            logger.info("معالجة وصول وقف الخسارة للصفقة #%s بسعر %s", trade_id, price)
             
-            old_targets = trade.targets
-            trade.targets = new_targets
+            user = self._get_user_by_telegram_id(session, user_id)
+            if not user:
+                logger.error("المستخدم غير موجود للمستخدم %s أثناء معالجة حدث وقف الخسارة", user_id)
+                return
+
+            trade = self.repo.get_user_trade_by_id(session, trade_id)
+            if not trade or not self._check_trade_ownership(trade, user.id) or trade.status != UserTradeStatus.OPEN:
+                logger.warning("الصفقة #%s غير موجودة أو لا يملكها المستخدم أو غير مفتوحة. تخطي حدث وقف الخسارة", trade_id)
+                return
+
+            await self.close_user_trade_async(trade_id, user_id, price, db_session=session)
+            notification_text = f"🛑 صفقتك المتابعة للأصل #{trade.asset} وصلت وقف الخسارة وتم إغلاقها."
             
-            # تحديث توصية الظل المرتبطة إذا كانت موجودة
-            if trade.source_recommendation_id:
-                shadow_rec = self.repo.get(db_session, trade.source_recommendation_id)
-                if shadow_rec and shadow_rec.status == RecommendationStatusEnum.ACTIVE:
-                    shadow_rec.targets = new_targets
-                    shadow_rec.updated_at = datetime.now(timezone.utc)
-                    
-                    shadow_event = RecommendationEvent(
-                        recommendation_id=shadow_rec.id,
-                        event_type="SHADOW_TARGETS_UPDATED",
-                        event_data={
-                            "user_trade_id": trade_id,
-                            "old_targets": old_targets,
-                            "new_targets": new_targets,
-                            "updated_by": user_telegram_id
-                        }
-                    )
-                    db_session.add(shadow_event)
-            
-            # تحديث التنبيهات
-            await self.alert_service.build_triggers_index()
-            
-            logger.info("تم تحديث أهداف الصفقة #%s بواسطة المستخدم %s", trade_id, user_telegram_id)
-            
-            return {
-                'success': True,
-                'trade_id': trade_id,
-                'asset': trade.asset,
-                'targets_count': len(new_targets),
-                'status': 'UPDATED'
-            }
-            
-        except Exception as e:
-            logger.error("فشل تحديث أهداف الصفقة #%s: %s", trade_id, e, exc_info=True)
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            await self._call_notifier_maybe_async(
+                self.notifier.send_private_text, 
+                chat_id=int(user_id), 
+                text=notification_text
+            )
+
+    # ==================== دوال إضافية للواجهة ====================
 
     def get_user_trade_details(self, db_session: Session, trade_id: int, user_telegram_id: str) -> Optional[Dict[str, Any]]:
         """الحصول على تفاصيل صفقة مستخدم محددة"""
@@ -1076,139 +950,6 @@ class TradeService:
                 
         except Exception:
             return None
-
-    # ==================== دوال التقرير والإحصائيات ====================
-
-    async def generate_analyst_performance_report(self, db_session: Session, analyst_telegram_id: str, days: int = 30) -> Dict[str, Any]:
-        """إنشاء تقرير أداء للمحلل"""
-        try:
-            user = self._get_user_by_telegram_id(db_session, analyst_telegram_id)
-            if not user or not self._check_analyst_permission(user):
-                return {'success': False, 'error': 'المستخدم غير موجود أو ليس محللاً'}
-            
-            # حساب الفترة الزمنية
-            from_date = datetime.now(timezone.utc) - timedelta(days=days)
-            
-            # التوصيات في الفترة المحددة
-            recommendations = db_session.query(Recommendation).filter(
-                Recommendation.analyst_id == user.id,
-                Recommendation.created_at >= from_date
-            ).all()
-            
-            # الإحصائيات
-            total_recommendations = len(recommendations)
-            active_recommendations = len([r for r in recommendations if r.status == RecommendationStatusEnum.ACTIVE])
-            closed_recommendations = len([r for r in recommendations if r.status == RecommendationStatusEnum.CLOSED])
-            pending_recommendations = len([r for r in recommendations if r.status == RecommendationStatusEnum.PENDING])
-            
-            # التوصيات المغلقة فقط للأداء
-            closed_recs = [r for r in recommendations if r.status == RecommendationStatusEnum.CLOSED and r.exit_price]
-            winning_recs = [r for r in closed_recs if self._is_winning_recommendation(r)]
-            losing_recs = [r for r in closed_recs if not self._is_winning_recommendation(r)]
-            
-            win_rate = (len(winning_recs) / len(closed_recs)) * 100 if closed_recs else 0
-            avg_pnl = sum(self._calculate_recommendation_pnl(r) for r in closed_recs) / len(closed_recs) if closed_recs else 0
-            
-            return {
-                'success': True,
-                'analyst_id': analyst_telegram_id,
-                'period_days': days,
-                'performance_summary': {
-                    'total_recommendations': total_recommendations,
-                    'active_recommendations': active_recommendations,
-                    'closed_recommendations': closed_recommendations,
-                    'pending_recommendations': pending_recommendations,
-                    'winning_recommendations': len(winning_recs),
-                    'losing_recommendations': len(losing_recs),
-                    'win_rate': round(win_rate, 2),
-                    'average_pnl': round(avg_pnl, 2),
-                    'total_pnl': round(sum(self._calculate_recommendation_pnl(r) for r in closed_recs), 2) if closed_recs else 0
-                },
-                'top_performing_assets': self._get_top_performing_assets(closed_recs),
-                'recent_activity': [
-                    {
-                        'id': r.id,
-                        'asset': r.asset,
-                        'side': r.side,
-                        'status': r.status.value,
-                        'created_at': r.created_at.isoformat(),
-                        'pnl': self._calculate_recommendation_pnl(r) if r.exit_price else None
-                    }
-                    for r in recommendations[:10]  # آخر 10 توصيات
-                ]
-            }
-            
-        except Exception as e:
-            logger.error("فشل إنشاء تقرير أداء المحلل %s: %s", analyst_telegram_id, e, exc_info=True)
-            return {'success': False, 'error': str(e)}
-
-    def _is_winning_recommendation(self, recommendation: Recommendation) -> bool:
-        """تحديد إذا كانت التوصية رابحة"""
-        if not recommendation.exit_price:
-            return False
-            
-        entry = float(recommendation.entry)
-        exit_price = float(recommendation.exit_price)
-        
-        if recommendation.side.upper() == "LONG":
-            return exit_price > entry
-        else:
-            return exit_price < entry
-
-    def _calculate_recommendation_pnl(self, recommendation: Recommendation) -> float:
-        """حساب الربح/الخسارة للتوصية"""
-        if not recommendation.exit_price:
-            return 0.0
-            
-        entry = float(recommendation.entry)
-        exit_price = float(recommendation.exit_price)
-        
-        if recommendation.side.upper() == "LONG":
-            return ((exit_price - entry) / entry) * 100
-        else:
-            return ((entry - exit_price) / entry) * 100
-
-    def _get_top_performing_assets(self, recommendations: List[Recommendation]) -> List[Dict[str, Any]]:
-        """الحصول على أفضل الأصول أداءً"""
-        asset_performance = {}
-        
-        for rec in recommendations:
-            if rec.asset not in asset_performance:
-                asset_performance[rec.asset] = {
-                    'total_trades': 0,
-                    'winning_trades': 0,
-                    'total_pnl': 0.0
-                }
-            
-            asset_performance[rec.asset]['total_trades'] += 1
-            pnl = self._calculate_recommendation_pnl(rec)
-            asset_performance[rec.asset]['total_pnl'] += pnl
-            
-            if self._is_winning_recommendation(rec):
-                asset_performance[rec.asset]['winning_trades'] += 1
-        
-        # حساب متوسط الأداء لكل أصل
-        for asset in asset_performance:
-            stats = asset_performance[asset]
-            stats['win_rate'] = (stats['winning_trades'] / stats['total_trades']) * 100 if stats['total_trades'] > 0 else 0
-            stats['avg_pnl'] = stats['total_pnl'] / stats['total_trades'] if stats['total_trades'] > 0 else 0
-        
-        # ترتيب حسب متوسط الربح
-        sorted_assets = sorted(
-            asset_performance.items(),
-            key=lambda x: x[1]['avg_pnl'],
-            reverse=True
-        )[:5]  # أفضل 5 أصول
-        
-        return [
-            {
-                'asset': asset,
-                'total_trades': stats['total_trades'],
-                'win_rate': round(stats['win_rate'], 2),
-                'avg_pnl': round(stats['avg_pnl'], 2)
-            }
-            for asset, stats in sorted_assets
-        ]
 
 
 # تصدير الفئة والثوابت
