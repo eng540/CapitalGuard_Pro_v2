@@ -1,7 +1,7 @@
-# src/capitalguard/interfaces/telegram/helpers.py (v25.3 - FINAL & CORRECTED)
+# src/capitalguard/interfaces/telegram/helpers.py (v25.4 - FINAL & DECOUPLED)
 """
-Provides helper functions and decorators for Telegram handlers, including service
-access and database transaction management.
+Provides helper functions for Telegram handlers, primarily for service access.
+The uow_transaction decorator is now imported directly by handlers that need it.
 """
 
 import logging
@@ -9,16 +9,11 @@ from typing import TypeVar, Callable, Optional, List
 
 from telegram.ext import ContextTypes
 
-# ✅ **THE FIX:** Import the decorator from its definitive source.
-from capitalguard.infrastructure.db.uow import uow_transaction
-
 log = logging.getLogger(__name__)
 T = TypeVar('T')
 
 def get_service(context: ContextTypes.DEFAULT_TYPE, service_name: str, service_type: type[T]) -> T:
-    """
-    A robust service getter that retrieves a service from the bot_data context.
-    """
+    """A robust service getter that retrieves a service from the bot_data context."""
     try:
         service = context.bot_data['services'][service_name]
         if not isinstance(service, service_type):
