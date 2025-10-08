@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v25.3 - FINAL & CORRECTED)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v25.4 - FINAL & CORRECTED)
 """
 Implements all callback query handlers for managing existing recommendations and trades.
 """
@@ -18,8 +18,9 @@ from telegram.ext import (
 )
 
 from capitalguard.domain.entities import RecommendationStatus
-# ✅ **THE FIX:** Import the decorator from its correct, definitive source.
-from .helpers import get_service, uow_transaction as unit_of_work, parse_tail_int, parse_cq_parts
+# ✅ **THE FIX:** Import the decorator from its definitive source.
+from capitalguard.infrastructure.db.uow import uow_transaction
+from .helpers import get_service, parse_tail_int, parse_cq_parts
 from .keyboards import (
     analyst_control_panel_keyboard,
     build_open_recs_keyboard,
@@ -29,7 +30,6 @@ from .keyboards import (
     analyst_edit_menu_keyboard
 )
 from .ui_texts import build_trade_card_text
-from .parsers import parse_number, parse_targets_list
 from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
@@ -78,7 +78,7 @@ async def _send_or_edit_position_panel(
         if "Message is not modified" not in str(e):
             log.warning(f"Failed to edit message for position panel: {e}")
 
-@unit_of_work
+@uow_transaction
 async def show_position_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     """Handles callbacks to show the main management panel for a position."""
     query = update.callback_query
@@ -99,7 +99,7 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
         position_id, user_id, position_type
     )
 
-@unit_of_work
+@uow_transaction
 async def navigate_open_positions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     """Handles pagination for the list of open positions."""
     query = update.callback_query
@@ -187,7 +187,7 @@ async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TY
         parse_mode=ParseMode.HTML
     )
 
-@unit_of_work
+@uow_transaction
 async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     """A single, robust handler for all text inputs that are replies to bot prompts."""
     if not update.message or not context.user_data: return
