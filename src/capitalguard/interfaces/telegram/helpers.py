@@ -1,11 +1,11 @@
-# src/capitalguard/interfaces/telegram/helpers.py (v25.4 - FINAL & DECOUPLED)
+# src/capitalguard/interfaces/telegram/helpers.py (v25.5 - FINAL & DECOUPLED)
 """
 Provides helper functions for Telegram handlers, primarily for service access.
-The uow_transaction decorator is now imported directly by handlers that need it.
+Decorators like uow_transaction must be imported directly by the handlers that need them.
 """
 
 import logging
-from typing import TypeVar, Callable, Optional, List
+from typing import TypeVar, Optional, List
 
 from telegram.ext import ContextTypes
 
