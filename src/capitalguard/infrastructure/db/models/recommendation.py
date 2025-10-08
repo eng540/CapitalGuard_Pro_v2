@@ -1,6 +1,9 @@
-# src/capitalguard/infrastructure/db/models/recommendation.py (v3.5 - FINAL SCHEMA SYNC)
+# src/capitalguard/infrastructure/db/models/recommendation.py (v25.0 - FINAL & UNIFIED)
+"""
+SQLAlchemy ORM models related to recommendations, user trades, and their lifecycle.
+"""
+
 import enum
-from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, DateTime, Boolean,
     ForeignKey, Enum, Text, BigInteger, Numeric, func
@@ -8,9 +11,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
-from .auth import User
 
-# These enums must match the types created in the Alembic script
+# --- ENUMERATIONS (Must match domain enums) ---
+
 class RecommendationStatusEnum(enum.Enum):
     PENDING = "PENDING"
     ACTIVE = "ACTIVE"
@@ -28,6 +31,8 @@ class ExitStrategyEnum(enum.Enum):
 class UserTradeStatus(enum.Enum):
     OPEN = "OPEN"
     CLOSED = "CLOSED"
+
+# --- TABLES ---
 
 class AnalystProfile(Base):
     __tablename__ = 'analyst_profiles'
@@ -57,13 +62,14 @@ class Recommendation(Base):
     __tablename__ = 'recommendations'
     id = Column(Integer, primary_key=True)
     analyst_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
-    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True)
+    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True) # For context, can be null
     
     asset = Column(String, nullable=False, index=True)
     side = Column(String, nullable=False)
     entry = Column(Numeric(20, 8), nullable=False)
     stop_loss = Column(Numeric(20, 8), nullable=False)
     targets = Column(JSONB, nullable=False)
+    
     status = Column(Enum(RecommendationStatusEnum, name="recommendationstatusenum"), nullable=False, default=RecommendationStatusEnum.PENDING, index=True)
     order_type = Column(Enum(OrderTypeEnum, name="ordertypeenum"), nullable=False, default=OrderTypeEnum.LIMIT)
     exit_strategy = Column(Enum(ExitStrategyEnum, name="exitstrategyenum"), nullable=False, default=ExitStrategyEnum.CLOSE_AT_FINAL_TP)
@@ -73,23 +79,26 @@ class Recommendation(Base):
     
     open_size_percent = Column(Numeric(5, 2), nullable=False, server_default='100.00')
     exit_price = Column(Numeric(20, 8), nullable=True)
-    is_shadow = Column(Boolean, default=False, server_default='false', nullable=False)
+    is_shadow = Column(Boolean, default=False, server_default='false', nullable=False, index=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     activated_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
+    # --- Relationships ---
     analyst = relationship("User", back_populates="created_recommendations")
     channel = relationship("Channel", back_populates="recommendations")
-    events = relationship("RecommendationEvent", back_populates="recommendation", cascade="all, delete-orphan")
-    followed_trades = relationship("UserTrade", back_populates="source_recommendation")
+    events = relationship("RecommendationEvent", back_populates="recommendation", cascade="all, delete-orphan", lazy="selectin")
+    user_trades = relationship("UserTrade", back_populates="source_recommendation", cascade="all, delete-orphan")
     published_messages = relationship("PublishedMessage", back_populates="recommendation", cascade="all, delete-orphan")
 
 class UserTrade(Base):
     __tablename__ = 'user_trades'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
+    
+    source_recommendation_id = Column(Integer, ForeignKey('recommendations.id', ondelete="SET NULL"), nullable=True, index=True)
     
     asset = Column(String, nullable=False, index=True)
     side = Column(String, nullable=False)
@@ -101,14 +110,12 @@ class UserTrade(Base):
     close_price = Column(Numeric(20, 8), nullable=True)
     pnl_percentage = Column(Numeric(10, 4), nullable=True)
     
-    source_recommendation_id = Column(Integer, ForeignKey('recommendations.id', ondelete="CASCADE"), nullable=False, index=True)
-    source_forwarded_text = Column(Text, nullable=True)
-    
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     closed_at = Column(DateTime(timezone=True), nullable=True)
 
+    # --- Relationships ---
     user = relationship("User", back_populates="user_trades")
-    source_recommendation = relationship("Recommendation", back_populates="followed_trades")
+    source_recommendation = relationship("Recommendation", back_populates="user_trades")
 
 class RecommendationEvent(Base):
     __tablename__ = 'recommendation_events'
@@ -129,8 +136,7 @@ class Subscription(Base):
     end_date = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
 
-    trader = relationship("User", foreign_keys=[trader_user_id], back_populates="subscriptions_as_trader")
-    analyst = relationship("User", foreign_keys=[analyst_user_id], back_populates="subscriptions_as_analyst")
+    # Relationships defined in User model via back_populates
 
 class AnalystStats(Base):
     __tablename__ = 'analyst_stats'
