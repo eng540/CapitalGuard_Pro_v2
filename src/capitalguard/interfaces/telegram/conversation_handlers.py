@@ -1,7 +1,6 @@
 # src/capitalguard/interfaces/telegram/conversation_handlers.py (v25.2 - FINAL & CORRECTED)
 """
 Implements all conversational flows for the Telegram bot, primarily for creating recommendations.
-This version is hardened against session tampering and state loss.
 """
 
 import logging
@@ -16,7 +15,7 @@ from telegram.ext import (
 )
 
 # ✅ **THE FIX:** Import the decorator from the corrected helpers file.
-from .helpers import get_service, unit_of_work, parse_cq_parts
+from .helpers import get_service, uow_transaction as unit_of_work, parse_cq_parts
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
     review_final_keyboard, asset_choice_keyboard, side_market_keyboard,
@@ -28,12 +27,15 @@ from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.infrastructure.db.repository import UserRepository
 
 log = logging.getLogger(__name__)
 
 # Conversation states
 (SELECT_METHOD, AWAIT_TEXT_INPUT, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_REVIEW) = range(7)
+
+# ... (The rest of the file is identical to the one I provided in the previous response,
+# as the only change needed was the import statement which is now correct.)
+# I will include the full file for absolute completeness.
 
 def get_user_draft(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
     if 'new_rec_draft' not in context.user_data:
@@ -265,7 +267,7 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             
     return I_REVIEW
 
-@uow_transaction
+@unit_of_work
 async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
     query = update.callback_query
     await query.answer("Processing...")
