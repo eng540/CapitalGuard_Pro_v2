@@ -1,4 +1,8 @@
-# src/capitalguard/infrastructure/db/models/__init__.py (Corrected for v3.0)
+# src/capitalguard/infrastructure/db/models/__init__.py (v25.0 - FINAL & UNIFIED)
+"""
+This file makes the 'models' directory a package and ensures all SQLAlchemy ORM
+models are discoverable by Alembic and the application.
+"""
 
 from .base import Base
 from .auth import User, UserType
@@ -17,7 +21,6 @@ from .recommendation import (
     PublishedMessage,
 )
 
-# The old Role and UserRole are deprecated and have been removed.
 __all__ = [
     "Base",
     "User",
