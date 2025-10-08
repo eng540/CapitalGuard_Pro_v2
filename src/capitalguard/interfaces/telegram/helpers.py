@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/helpers.py (v25.2 - FINAL & STABLE)
+# src/capitalguard/interfaces/telegram/helpers.py (v25.3 - FINAL & CORRECTED)
 """
 Provides helper functions and decorators for Telegram handlers, including service
 access and database transaction management.
@@ -9,7 +9,7 @@ from typing import TypeVar, Callable, Optional, List
 
 from telegram.ext import ContextTypes
 
-# ✅ **THE FIX:** Import uow_transaction from its definitive source.
+# ✅ **THE FIX:** Import the decorator from its definitive source.
 from capitalguard.infrastructure.db.uow import uow_transaction
 
 log = logging.getLogger(__name__)
