@@ -29,7 +29,6 @@ from .keyboards import (
     build_exit_strategy_keyboard,
     build_close_options_keyboard,
     build_user_trade_control_keyboard,
-    public_channel_keyboard,
 )
 from .ui_texts import build_trade_card_text
 from .parsers import parse_number, parse_targets_list
@@ -40,7 +39,6 @@ from capitalguard.application.services.price_service import PriceService
 log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
-PUBLIC_UPDATE_COOLDOWN = 15
 
 # ==================== دوال مساعدة محسنة ====================
 
