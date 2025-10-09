@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/ui_texts.py (v25.8 - ENHANCED)
+# -src/capitalguard/interfaces/telegram/ui_texts.py (v25.8 - ENHANCED)
 """
 Contains helper functions for building the text content of Telegram messages.
 This version ensures all financial calculations are type-safe and includes
