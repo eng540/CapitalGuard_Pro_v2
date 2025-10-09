@@ -1,6 +1,7 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v25.6 - FINAL & STATE-SAFE)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v25.7 - FINAL & STATE-SAFE)
 """
 Implements all callback query handlers for managing existing recommendations and trades.
+This version ensures correct decorator order and state-safe database access.
 """
 
 import logging
