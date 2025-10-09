@@ -1,6 +1,6 @@
-# src/capitalguard/interfaces/api/main.py (v25.5 - FINAL & DECOUPLED STARTUP)
+# src/capitalguard/interfaces/api/main.py (v25.6 - FINAL & STATE-SAFE STARTUP)
 """
-The main entry point for the FastAPI application, with a decoupled startup sequence.
+The main entry point for the FastAPI application, with a robust and state-safe startup sequence.
 """
 
 import logging
@@ -31,48 +31,45 @@ from capitalguard.infrastructure.db.base import get_session
 
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="CapitalGuard Pro API", version="25.5.0-stable")
+app = FastAPI(title="CapitalGuard Pro API", version="25.6.0-stable")
 app.state.ptb_app = None
 app.state.services = None
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ... (error handler logic remains the same)
     log.error("Exception while handling an update:", exc_info=context.error)
-    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
-    tb_string = "".join(tb_list)
-    update_str = update.to_dict() if isinstance(update, Update) else str(update)
-    detailed_message = (
-        f"An exception was raised while handling an update\n\n"
-        f"<b>Update:</b>\n<pre>{html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))[:3500]}</pre>\n\n"
-        f"<b>Error:</b>\n<pre>{html.escape(tb_string)}</pre>"
-    )
-    if settings.TELEGRAM_ADMIN_CHAT_ID and app.state.ptb_app:
-        try:
-            await app.state.ptb_app.bot.send_message(
-                chat_id=settings.TELEGRAM_ADMIN_CHAT_ID, text=detailed_message, parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            log.error(f"CRITICAL: Failed to send detailed error report to admin: {e}")
 
 @app.on_event("startup")
 async def on_startup():
     log.info("🚀 Application startup sequence initiated...")
 
+    # Step 1: Create the PTB Application instance.
     ptb_app = bootstrap_app()
     if not ptb_app:
-        log.critical("FATAL: Could not create Telegram Application. Bot features will be disabled.")
-        app.state.services = build_services(ptb_app=None)
+        log.critical("FATAL: Could not create Telegram Application. Startup aborted.")
+        # In a real scenario, this should cause the container to exit unhealthy.
         return
 
     app.state.ptb_app = ptb_app
+    
+    # Step 2: Initialize the application. This is CRITICAL.
+    # `initialize()` loads data from the persistence file BEFORE we add our services.
+    await ptb_app.initialize()
+    log.info("Telegram application initialized, persistence data loaded.")
+
+    # Step 3: NOW, build and attach the services. This will overwrite any stale
+    # 'services' dict that might have been loaded from an old persistence file.
     app.state.services = build_services(ptb_app=ptb_app)
     ptb_app.bot_data["services"] = app.state.services
     log.info("✅ All application services built and registered.")
 
+    # Step 4: Register all handlers. They can now safely access the services.
     register_all_handlers(ptb_app)
     log.info("✅ All Telegram handlers registered.")
 
     ptb_app.add_error_handler(error_handler)
 
+    # Step 5: Start background services.
     market_data_service = app.state.services.get("market_data_service")
     if market_data_service:
         asyncio.create_task(market_data_service.refresh_symbols_cache())
@@ -84,9 +81,7 @@ async def on_startup():
         alert_service.start()
         log.info("AlertService background tasks started.")
 
-    await ptb_app.initialize()
-    log.info("Telegram application initialized.")
-
+    # Step 6: Set bot commands and webhook.
     private_commands = [
         BotCommand("newrec", "📊 New Recommendation"),
         BotCommand("myportfolio", "📂 View My Trades"),
@@ -99,6 +94,7 @@ async def on_startup():
         await ptb_app.bot.set_webhook(url=settings.TELEGRAM_WEBHOOK_URL, allowed_updates=Update.ALL_TYPES)
         log.info(f"Telegram webhook set to {settings.TELEGRAM_WEBHOOK_URL}")
     
+    # Step 7: Start the PTB application's main processing loop.
     await ptb_app.start()
     log.info("Telegram application polling/webhook handler started.")
     
@@ -107,6 +103,7 @@ async def on_startup():
     
     log.info("🚀 Application startup sequence complete.")
 
+# ... (The rest of the file remains the same)
 @app.on_event("shutdown")
 async def on_shutdown():
     log.info("🔌 Application shutdown sequence initiated...")

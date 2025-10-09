@@ -1,8 +1,6 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v25.5 - FINAL & STATE-SAFE)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v25.6 - FINAL & STATE-SAFE)
 """
 Implements all callback query handlers for managing existing recommendations and trades.
-This file is responsible for the interactive management panels and workflows that
-happen after a position is created.
 """
 
 import logging
@@ -125,6 +123,7 @@ async def navigate_open_positions_handler(update: Update, context: ContextTypes.
         parse_mode=ParseMode.HTML
     )
 
+@uow_transaction
 @require_active_user
 @require_analyst_user
 async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
@@ -138,6 +137,7 @@ async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_
     keyboard = build_close_options_keyboard(rec_id)
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
+@uow_transaction
 @require_active_user
 @require_analyst_user
 async def close_with_manual_price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
@@ -158,6 +158,7 @@ async def close_with_manual_price_handler(update: Update, context: ContextTypes.
         parse_mode=ParseMode.HTML
     )
 
+@uow_transaction
 @require_active_user
 @require_analyst_user
 async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
@@ -170,6 +171,7 @@ async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     await query.edit_message_reply_markup(reply_markup=keyboard)
 
+@uow_transaction
 @require_active_user
 @require_analyst_user
 async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):

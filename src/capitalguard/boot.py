@@ -1,7 +1,7 @@
-# src/capitalguard/boot.py (v25.5 - FINAL & DECOUPLED)
+# src/capitalguard/boot.py (v25.6 - FINAL & STATE-SAFE)
 """
 Bootstrap and dependency injection setup for the application.
-This file acts as the Composition Root, creating and wiring all services together.
+This version ensures services are correctly injected and are not overwritten by the persistence layer.
 """
 
 import os
@@ -30,7 +30,6 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     services = {}
     
     try:
-        # --- Infrastructure Services ---
         notifier = TelegramNotifier()
         if ptb_app:
             notifier.set_ptb_app(ptb_app)
@@ -39,19 +38,16 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         if not os.getenv("BINANCE_API_KEY"):
             log.warning("⚠️ Binance credentials not found - auto trading disabled")
         
-        # --- Repositories (as classes, to be instantiated with a session) ---
         services['recommendation_repo'] = RecommendationRepository()
         services['user_repo_class'] = UserRepository
         services['channel_repo_class'] = ChannelRepository
 
-        # --- Application Services ---
         services['price_service'] = PriceService()
         services['market_data_service'] = MarketDataService()
         services['analytics_service'] = AnalyticsService(repo=services['recommendation_repo'])
         services['audit_service'] = AuditService(rec_repo=services['recommendation_repo'], user_repo_class=services['user_repo_class'])
         services['image_parsing_service'] = ImageParsingService()
         
-        # --- Core Services with Circular Dependency ---
         trade_service = TradeService(
             repo=services['recommendation_repo'],
             notifier=services['notifier'],
@@ -77,7 +73,10 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         raise
 
 def bootstrap_app() -> Optional[Application]:
-    """Bootstraps the Telegram Application instance, but does NOT register handlers."""
+    """
+    Bootstraps the Telegram Application instance.
+    It creates the application with persistence, but does NOT build or attach services yet.
+    """
     if not settings.TELEGRAM_BOT_TOKEN:
         log.error("TELEGRAM_BOT_TOKEN not set. Bot cannot start.")
         return None

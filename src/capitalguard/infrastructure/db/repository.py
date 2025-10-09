@@ -1,7 +1,6 @@
 # src/capitalguard/infrastructure/db/repository.py (v25.6 - FINAL & COMPLETE)
 """
 The Repository layer, implementing the data access ports defined in the domain.
-This is the ONLY place where the application interacts with SQLAlchemy ORM models.
 """
 
 import logging
@@ -15,8 +14,6 @@ from capitalguard.domain.entities import (
     RecommendationStatus as RecommendationStatusEntity,
     OrderType as OrderTypeEntity,
     ExitStrategy as ExitStrategyEntity,
-    UserTrade as UserTradeEntity,
-    UserTradeStatus as UserTradeStatusEntity,
     UserType as UserTypeEntity
 )
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
@@ -74,7 +71,6 @@ class ChannelRepository:
         return query.order_by(Channel.created_at.desc()).all()
     
     def add(self, analyst_id: int, telegram_channel_id: int, **kwargs) -> Channel:
-        # This method should be more robust, but for now, it's functional.
         new_channel = Channel(
             analyst_id=analyst_id,
             telegram_channel_id=telegram_channel_id,
@@ -90,46 +86,32 @@ class RecommendationRepository:
     
     @staticmethod
     def _to_entity(row: Recommendation) -> Optional[RecommendationEntity]:
-        if not row: 
-            return None
-        
+        if not row: return None
         try:
             targets_data = row.targets or []
             formatted_targets = [
                 {'price': Decimal(t['price']), 'close_percent': t.get('close_percent', 0)}
                 for t in targets_data
             ]
-
             return RecommendationEntity(
-                id=row.id,
-                analyst_id=row.analyst_id,
-                asset=Symbol(row.asset),
-                side=Side(row.side),
-                entry=Price(row.entry),
-                stop_loss=Price(row.stop_loss),
-                targets=Targets(formatted_targets),
-                order_type=OrderTypeEntity(row.order_type.value),
-                status=RecommendationStatusEntity(row.status.value),
-                market=row.market,
-                notes=row.notes,
-                created_at=row.created_at,
-                updated_at=row.updated_at,
+                id=row.id, analyst_id=row.analyst_id, asset=Symbol(row.asset),
+                side=Side(row.side), entry=Price(row.entry), stop_loss=Price(row.stop_loss),
+                targets=Targets(formatted_targets), order_type=OrderTypeEntity(row.order_type.value),
+                status=RecommendationStatusEntity(row.status.value), market=row.market,
+                notes=row.notes, created_at=row.created_at, updated_at=row.updated_at,
                 exit_price=float(row.exit_price) if row.exit_price is not None else None,
-                activated_at=row.activated_at,
-                closed_at=row.closed_at,
+                activated_at=row.activated_at, closed_at=row.closed_at,
                 exit_strategy=ExitStrategyEntity(row.exit_strategy.value),
-                open_size_percent=float(row.open_size_percent),
-                is_shadow=row.is_shadow,
+                open_size_percent=float(row.open_size_percent), is_shadow=row.is_shadow,
                 events=list(row.events)
             )
         except Exception as e:
-            logger.error("Error translating Recommendation ORM to entity for ID %s: %s", row.id, e, exc_info=True)
+            logger.error("Error translating ORM to entity for ID %s: %s", row.id, e, exc_info=True)
             return None
 
     def get(self, session: Session, rec_id: int) -> Optional[Recommendation]:
         return session.query(Recommendation).options(
-            joinedload(Recommendation.analyst), 
-            selectinload(Recommendation.events)
+            joinedload(Recommendation.analyst), selectinload(Recommendation.events)
         ).filter(Recommendation.id == rec_id).first()
 
     def get_for_update(self, session: Session, rec_id: int) -> Optional[Recommendation]:
@@ -143,7 +125,6 @@ class RecommendationRepository:
         ).filter(
             Recommendation.status.in_([RecommendationStatusEnum.PENDING, RecommendationStatusEnum.ACTIVE])
         ).all()
-
         trigger_data = []
         for rec in active_recs:
             is_user_trade = rec.is_shadow
@@ -152,23 +133,12 @@ class RecommendationRepository:
                 user_id_for_trigger = rec.user_trades[0].user.telegram_user_id
             elif not is_user_trade and rec.analyst:
                 user_id_for_trigger = rec.analyst.telegram_user_id
-
-            if user_id_for_trigger is None:
-                logger.warning("Could not determine user for trigger from recommendation #%s. Skipping.", rec.id)
-                continue
-
+            if user_id_for_trigger is None: continue
             trigger_data.append({
-                "id": rec.id,
-                "user_id": str(user_id_for_trigger),
-                "asset": rec.asset,
-                "side": rec.side,
-                "entry": rec.entry,
-                "stop_loss": rec.stop_loss,
-                "targets": rec.targets,
-                "status": rec.status,
-                "order_type": rec.order_type,
-                "market": rec.market,
-                "is_user_trade": is_user_trade,
+                "id": rec.id, "user_id": str(user_id_for_trigger), "asset": rec.asset,
+                "side": rec.side, "entry": rec.entry, "stop_loss": rec.stop_loss,
+                "targets": rec.targets, "status": rec.status, "order_type": rec.order_type,
+                "market": rec.market, "is_user_trade": is_user_trade,
                 "processed_events": {e.event_type for e in rec.events},
             })
         return trigger_data

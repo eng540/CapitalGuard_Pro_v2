@@ -1,7 +1,8 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v25.5 - FINAL & STATE-SAFE)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v25.6 - FINAL & STATE-SAFE)
 """
 Implements all conversational flows for the Telegram bot, primarily for creating recommendations.
-This version is hardened against session tampering and state loss.
+This version is hardened against session tampering and state loss by using user-specific,
+persistent storage (`context.user_data`) for all conversation state.
 """
 
 import logging
@@ -25,9 +26,9 @@ from .keyboards import (
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
 from .auth import require_active_user, require_analyst_user
 
+from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.application.services.market_data_service import MarketDataService
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def get_user_draft(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
     return context.user_data['new_rec_draft']
 
 def clean_user_state(context: ContextTypes.DEFAULT_TYPE):
-    """Cleans up all conversation-related keys from user_data."""
+    """Cleans up all conversation-related keys from user_data to prevent state leakage."""
     keys_to_pop = ['new_rec_draft', 'last_conv_message', 'input_mode']
     for key in keys_to_pop:
         context.user_data.pop(key, None)
