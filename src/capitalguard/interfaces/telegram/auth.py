@@ -1,7 +1,8 @@
 # src/capitalguard/interfaces/telegram/auth.py (v25.7 - FINAL & STATE-SAFE)
 """
-Authentication and authorization decorators for Telegram handlers.
-This version enforces the correct decorator order and state management.
+Authentication and authorization decorators and helpers for Telegram handlers.
+This version implements a stateless approach to handling user objects to prevent
+DetachedInstanceError after persistence rehydration.
 """
 
 import logging
@@ -46,14 +47,14 @@ def get_db_user(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) 
 
 def require_active_user(func: Callable) -> Callable:
     """
-    Decorator that checks if the user has an active account.
+    Decorator for simple CommandHandlers. Checks if the user has an active account.
     It MUST be placed below @uow_transaction.
     """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         db_session = kwargs.get('db_session')
         if not db_session:
-            log.critical("FATAL: @require_active_user was called without a db_session. Ensure @uow_transaction is the top decorator.")
+            log.critical("FATAL: @require_active_user used without @uow_transaction. Cannot get a DB session.")
             raise RuntimeError("@require_active_user must be used with @uow_transaction.")
 
         db_user = get_db_user(update, context, db_session)
@@ -110,6 +111,8 @@ def require_channel_subscription(func: Callable) -> Callable:
             else:
                 raise ValueError(f"User is not a member, status: {member.status}")
         except Exception:
+            log.info(f"User {user.id} blocked from command due to not being in channel {channel_id_str}.")
+            
             channel_link = settings.TELEGRAM_CHANNEL_INVITE_LINK
             message = "⚠️ <b>Subscription Required</b>\n\nTo use this bot, you must first be a member of our channel."
             
