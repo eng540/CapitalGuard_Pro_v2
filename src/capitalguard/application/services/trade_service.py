@@ -1,8 +1,8 @@
-# src/capitalguard/application/services/trade_service.py (v25.7 - FINAL & COMPLETE)
+# src/capitalguard/application/services/trade_service.py (v25.8 - FINAL & UOW-COMPLIANT)
 """
 TradeService - The re-architected, event-driven, and robust core of the system.
-This version is designed for reliability, atomicity, and extensibility, and includes
-all necessary helper methods that were previously missing.
+This version ensures strict compliance with the Unit of Work pattern, preventing
+nested transactions and ensuring all operations within a service call are atomic.
 """
 
 import logging
@@ -14,7 +14,9 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+# ✅ **THE FIX: Import the necessary UoW components correctly**
 from capitalguard.infrastructure.db.uow import uow_transaction
+from capitalguard.infrastructure.db.database import session_scope
 from capitalguard.infrastructure.db.models import (
     PublishedMessage, Recommendation, RecommendationEvent, User,
     RecommendationStatusEnum, UserTrade, UserTradeStatus, OrderTypeEnum, ExitStrategyEnum
@@ -71,41 +73,47 @@ class TradeService:
             return await fn(*args, **kwargs)
         return await asyncio.to_thread(fn, *args, **kwargs)
 
-    async def notify_card_update(self, rec_entity: RecommendationEntity):
+    async def notify_card_update(self, rec_entity: RecommendationEntity, db_session: Session):
         """Sends an update to all published Telegram messages for a recommendation."""
-        if rec_entity.is_shadow: return
-        with session_scope() as session:
-            published_messages = self.repo.get_published_messages(session, rec_entity.id)
-            if not published_messages: return
-            for msg_meta in published_messages:
-                try:
-                    await self._call_notifier_maybe_async(
-                        self.notifier.edit_recommendation_card_by_ids, 
-                        channel_id=msg_meta.telegram_channel_id, 
-                        message_id=msg_meta.telegram_message_id, 
-                        rec=rec_entity
-                    )
-                except Exception as e:
-                    logger.error("Failed to update card for rec %s in channel %s: %s", 
-                               rec_entity.id, msg_meta.telegram_channel_id, e)
+        if rec_entity.is_shadow: 
+            return
 
-    def notify_reply(self, rec_id: int, text: str):
+        # ✅ **UOW-COMPLIANT: Use the passed session instead of creating a new one**
+        published_messages = self.repo.get_published_messages(db_session, rec_entity.id)
+        if not published_messages: 
+            return
+        
+        for msg_meta in published_messages:
+            try:
+                await self._call_notifier_maybe_async(
+                    self.notifier.edit_recommendation_card_by_ids, 
+                    channel_id=msg_meta.telegram_channel_id, 
+                    message_id=msg_meta.telegram_message_id, 
+                    rec=rec_entity
+                )
+            except Exception as e:
+                logger.error("Failed to update card for rec %s in channel %s: %s", 
+                           rec_entity.id, msg_meta.telegram_channel_id, e)
+
+    def notify_reply(self, rec_id: int, text: str, db_session: Session):
         """Posts a reply to all published messages for a recommendation."""
-        with session_scope() as session:
-            rec = self.repo.get(session, rec_id)
-            if not rec or rec.is_shadow: return
-            published_messages = self.repo.get_published_messages(session, rec_id)
-            for msg_meta in published_messages:
-                try:
-                    asyncio.create_task(self._call_notifier_maybe_async(
-                        self.notifier.post_notification_reply, 
-                        chat_id=msg_meta.telegram_channel_id, 
-                        message_id=msg_meta.telegram_message_id, 
-                        text=text
-                    ))
-                except Exception as e:
-                    logger.warning("Failed to send reply for rec #%s to channel %s: %s", 
-                                 rec_id, msg_meta.telegram_channel_id, e)
+        # ✅ **UOW-COMPLIANT: This method uses the session passed to it**
+        rec = self.repo.get(db_session, rec_id)
+        if not rec or rec.is_shadow: 
+            return
+
+        published_messages = self.repo.get_published_messages(db_session, rec_id)
+        for msg_meta in published_messages:
+            try:
+                asyncio.create_task(self._call_notifier_maybe_async(
+                    self.notifier.post_notification_reply, 
+                    chat_id=msg_meta.telegram_channel_id, 
+                    message_id=msg_meta.telegram_message_id, 
+                    text=text
+                ))
+            except Exception as e:
+                logger.warning("Failed to send reply for rec #%s to channel %s: %s", 
+                             rec_id, msg_meta.telegram_channel_id, e)
 
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
         """Fortified validation logic using Decimal for precision."""
@@ -282,8 +290,8 @@ class TradeService:
         
         await self.alert_service.build_triggers_index()
         rec_entity = self.repo._to_entity(rec)
-        self.notify_reply(rec.id, f"❌ Signal #{rec.asset} was invalidated (SL hit before entry).")
-        await self.notify_card_update(rec_entity)
+        self.notify_reply(rec.id, f"❌ Signal #{rec.asset} was invalidated (SL hit before entry).", db_session=db_session)
+        await self.notify_card_update(rec_entity, db_session=db_session)
 
     @uow_transaction
     async def process_activation_event(self, item_id: int, db_session: Session):
@@ -298,8 +306,8 @@ class TradeService:
 
         await self.alert_service.build_triggers_index()
         rec_entity = self.repo._to_entity(rec)
-        self.notify_reply(rec.id, f"▶️ Signal #{rec.asset} is now ACTIVE!")
-        await self.notify_card_update(rec_entity)
+        self.notify_reply(rec.id, f"▶️ Signal #{rec.asset} is now ACTIVE!", db_session=db_session)
+        await self.notify_card_update(rec_entity, db_session=db_session)
 
     @uow_transaction
     async def process_sl_hit_event(self, item_id: int, price: Decimal, db_session: Session):
@@ -315,8 +323,8 @@ class TradeService:
 
         await self.alert_service.build_triggers_index()
         rec_entity = self.repo._to_entity(rec)
-        self.notify_reply(rec.id, f"🛑 Signal #{rec.asset} hit Stop Loss at {price}.")
-        await self.notify_card_update(rec_entity)
+        self.notify_reply(rec.id, f"🛑 Signal #{rec.asset} hit Stop Loss at {price}.", db_session=db_session)
+        await self.notify_card_update(rec_entity, db_session=db_session)
 
     @uow_transaction
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal, db_session: Session):
@@ -330,8 +338,8 @@ class TradeService:
         
         await self.alert_service.build_triggers_index()
         rec_entity = self.repo._to_entity(rec)
-        self.notify_reply(rec.id, f"🎯 Signal #{rec.asset} hit TP{target_index} at {price}!")
-        await self.notify_card_update(rec_entity)
+        self.notify_reply(rec.id, f"🎯 Signal #{rec.asset} hit TP{target_index} at {price}!", db_session=db_session)
+        await self.notify_card_update(rec_entity, db_session=db_session)
 
     def _get_or_create_system_user(self, db_session: Session) -> User:
         """Finds or creates a system user for automated tasks."""
@@ -350,7 +358,8 @@ class TradeService:
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
         """Gets all open positions (both recommendations and trades) for a user."""
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
-        if not user: return []
+        if not user: 
+            return []
         
         open_positions = []
         
@@ -380,19 +389,24 @@ class TradeService:
     def get_position_details_for_user(self, db_session: Session, user_telegram_id: str, position_type: str, position_id: int) -> Optional[RecommendationEntity]:
         """Gets the detailed entity for a single position, handling permissions."""
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
-        if not user: return None
+        if not user: 
+            return None
 
         if position_type == 'rec':
-            if user.user_type != UserType.ANALYST: return None
+            if user.user_type != UserType.ANALYST: 
+                return None
             rec_orm = self.repo.get(db_session, position_id)
-            if not rec_orm or rec_orm.analyst_id != user.id: return None
+            if not rec_orm or rec_orm.analyst_id != user.id: 
+                return None
             rec_entity = self.repo._to_entity(rec_orm)
-            if rec_entity: setattr(rec_entity, 'is_user_trade', False)
+            if rec_entity: 
+                setattr(rec_entity, 'is_user_trade', False)
             return rec_entity
         
         elif position_type == 'trade':
             trade_orm = self.repo.get_user_trade_by_id(db_session, position_id)
-            if not trade_orm or trade_orm.user_id != user.id: return None
+            if not trade_orm or trade_orm.user_id != user.id: 
+                return None
             
             trade_entity = RecommendationEntity(
                 id=trade_orm.id, asset=Symbol(trade_orm.asset), side=Side(trade_orm.side),
