@@ -1,54 +1,9 @@
-# src/capitalguard/application/services/trade_service.py (v25.6 - FINAL & COMPLETE)
+# src/capitalguard/application/services/trade_service.py (v25.7 - FINAL & COMPLETE)
 """
 TradeService - The re-architected, event-driven, and robust core of the system.
 This version is designed for reliability, atomicity, and extensibility, and includes
 all necessary helper methods that were previously missing.
 """
-
-# --- STAGE 1 & 2: ANALYSIS & BLUEPRINT ---
-# Core Purpose: To be the single entry point for all business operations related to the
-# lifecycle of recommendations and user trades. It encapsulates and protects the core
-# business logic of the application.
-#
-# Behavior:
-#   Input: A request from an interface layer (e.g., Telegram handler, API endpoint)
-#          with user context and data.
-#   Process:
-#     1. Authorize the action (e.g., is the user an analyst?).
-#     2. Validate the business rules (e.g., is the SL valid for a LONG trade?).
-#     3. Perform the state change within a single atomic database transaction (@uow_transaction).
-#        - Modify the state of the ORM model.
-#        - Create a corresponding `RecommendationEvent` to log the change.
-#     4. After the transaction commits, trigger side effects (e.g., notify Telegram,
-#        request an `AlertService` index rebuild).
-#   Output: A domain entity representing the new state of the object.
-#
-# Dependencies:
-#   - `RecommendationRepository`: To interact with the database.
-#   - `Notifier`: To send messages to external systems (Telegram).
-#   - `MarketDataService`, `PriceService`: To fetch market data.
-#   - `AlertService`: To signal that the monitoring index needs to be updated.
-#
-# Essential Functions:
-#   - `create_and_publish_recommendation_async`: The main entry point for new signals.
-#   - `create_trade_from_forwarding`: Handles the "track forwarded signal" feature.
-#   - `create_trade_from_recommendation`: Handles the "deep link tracking" feature.
-#   - `get_recent_assets_for_user`: The previously missing helper function. CRITICAL FIX.
-#   - Event Processors (`process_activation_event`, etc.): Atomic state change handlers.
-#   - User-facing management functions (`cancel_pending...`, `close_recommendation...`, etc.).
-#
-# Blueprint:
-#   - `TradeService` class:
-#     - `__init__`: Initialize dependencies.
-#     - Helper methods (`_call_notifier...`, `_get_or_create_system_user`).
-#     - Core `_validate_recommendation_data` method with strict business rules.
-#     - Public methods for creating trades/recommendations.
-#     - Public methods for processing events triggered by `AlertService`.
-#     - Public methods for handling manual user actions.
-#     - Public read-only methods for fetching data (`get_open_positions...`, `get_recent_assets...`).
-#     - All write operations MUST be decorated with `@uow_transaction`.
-
-# --- STAGE 3: FULL CONSTRUCTION ---
 
 import logging
 import asyncio
