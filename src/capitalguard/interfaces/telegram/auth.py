@@ -1,8 +1,7 @@
-# src/capitalguard/interfaces/telegram/auth.py (v25.6 - FINAL & STATE-SAFE)
+# src/capitalguard/interfaces/telegram/auth.py (v25.7 - FINAL & STATE-SAFE)
 """
 Authentication and authorization decorators for Telegram handlers.
-This version implements a stateless approach to handling user objects to prevent
-DetachedInstanceError after persistence rehydration.
+This version enforces the correct decorator order and state management.
 """
 
 import logging
@@ -21,21 +20,19 @@ log = logging.getLogger(__name__)
 
 def get_db_user(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> User:
     """
-    A state-safe helper to retrieve a user object.
-    It NEVER stores the ORM object in context.user_data. It only stores the ID.
-    It relies on the calling handler (decorated with @uow_transaction) to provide a live session.
+    A state-safe helper to retrieve a user object using a provided live session.
+    It only caches the user's DB ID in the context for the duration of the update.
     """
     user = update.effective_user
     if not user:
         return None
 
-    # Check if we have a cached ID from a previous run in the same update cycle
     if 'db_user_id' in context.user_data:
         user_id = context.user_data['db_user_id']
-        # ✅ **THE FIX:** This call will now succeed because find_by_id exists.
-        return UserRepository(db_session).find_by_id(user_id)
+        db_user = UserRepository(db_session).find_by_id(user_id)
+        if db_user:
+            return db_user
 
-    # If not cached, find or create the user in the DB
     db_user = UserRepository(db_session).find_or_create(
         telegram_id=user.id,
         first_name=user.first_name,
@@ -43,7 +40,6 @@ def get_db_user(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) 
     )
     
     if db_user:
-        # Cache the ID for this update cycle, NOT the full object
         context.user_data['db_user_id'] = db_user.id
     
     return db_user
@@ -51,13 +47,13 @@ def get_db_user(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) 
 def require_active_user(func: Callable) -> Callable:
     """
     Decorator that checks if the user has an active account.
-    It MUST be used on a function that is already decorated with @uow_transaction.
+    It MUST be placed below @uow_transaction.
     """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         db_session = kwargs.get('db_session')
         if not db_session:
-            log.critical("FATAL: @require_active_user used without @uow_transaction. Cannot get a DB session.")
+            log.critical("FATAL: @require_active_user was called without a db_session. Ensure @uow_transaction is the top decorator.")
             raise RuntimeError("@require_active_user must be used with @uow_transaction.")
 
         db_user = get_db_user(update, context, db_session)
@@ -78,7 +74,7 @@ def require_active_user(func: Callable) -> Callable:
 def require_analyst_user(func: Callable) -> Callable:
     """
     Decorator that checks if the user has the ANALYST role.
-    Must be used on a function decorated with @require_active_user.
+    Must be placed below @require_active_user.
     """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
@@ -97,7 +93,7 @@ def require_analyst_user(func: Callable) -> Callable:
     return wrapper
 
 def require_channel_subscription(func: Callable) -> Callable:
-    """Decorator that enforces channel subscription before executing a command."""
+    """Decorator that enforces channel subscription."""
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         channel_id_str = settings.TELEGRAM_CHAT_ID
