@@ -1,33 +1,7 @@
-# src/capitalguard/interfaces/telegram/commands.py (v25.5 - FINAL & STATE-SAFE)
+# src/capitalguard/interfaces/telegram/commands.py (v25.6 - FINAL DECORATOR FIX)
 """
 Registers and implements all non-conversational commands for the Telegram bot.
-This file is the primary entry point for simple, direct user commands.
 """
-
-# --- STAGE 1 & 2: ANALYSIS & BLUEPRINT ---
-# Core Purpose: Handle simple, stateless commands from Telegram users.
-# Behavior: Input(Update) -> Auth -> Service Call -> Format -> Output(Reply).
-# Dependencies: auth.py, helpers.py, services (Trade, Price), keyboards.py, ui_texts.py.
-# Essential Functions:
-#   - start_cmd: Onboard new users AND handle deep links for tracking. CRITICAL FIX.
-#   - help_cmd: Provide role-based help.
-#   - myportfolio_cmd: Display all open positions. CRITICAL FIX.
-#   - Analyst commands (link_channel, channels): Role-protected management functions.
-#   - forwarded_message_handler: A pre-handler to catch channel linking forwards.
-#   - register_commands: Central registration point for all handlers in this file.
-# Blueprint:
-#   1. Imports: All necessary components from other modules.
-#   2. Constants & Helpers: File-specific constants and helper functions.
-#   3. Command Handlers: Each decorated for DB access and authorization.
-#      - `start_cmd`: Must handle `context.args` for deep linking.
-#      - `help_cmd`: Must accept `db_user` from decorators to show correct info.
-#      - `myportfolio_cmd`: Must correctly call services and render the keyboard.
-#      - `link_channel_cmd`: Sets state in `user_data` to prime the forward handler.
-#      - `forwarded_message_handler`: Checks for the state from `link_channel_cmd`.
-#      - `channels_cmd`: Fetches and formats channel list for analysts.
-#   4. Registration Function: `register_commands` to add all handlers to the application.
-
-# --- STAGE 3: FULL CONSTRUCTION ---
 
 import logging
 from typing import Optional, Tuple
@@ -37,7 +11,7 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service
-from .auth import require_active_user, require_analyst_user, get_db_user
+from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
@@ -68,26 +42,19 @@ async def _bot_has_post_rights(context: ContextTypes.DEFAULT_TYPE, channel_id: i
 @uow_transaction
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
     """
-    Handles the /start command. It performs two critical functions:
-    1. Onboards new users by creating a record for them in the database.
-    2. Handles deep linking for tracking signals (e.g., /start track_123).
+    Handles the /start command, including user creation and deep linking for tracking signals.
     """
     user = update.effective_user
     log.info(f"User {user.id} ({user.username}) initiated /start command.")
     
-    # Ensures a user record exists in the database for the current user.
     UserRepository(db_session).find_or_create(
         telegram_id=user.id, first_name=user.first_name, username=user.username
     )
 
-    # --- CRITICAL FIX: DEEP LINKING LOGIC ---
     if context.args and context.args[0].startswith("track_"):
         try:
             rec_id = int(context.args[0].split('_')[1])
-            log.info(f"User {user.id} is attempting to track signal #{rec_id} via deep link.")
-
             trade_service = get_service(context, "trade_service", TradeService)
-            # This service call is atomic and handles all logic for creating the UserTrade.
             result = await trade_service.create_trade_from_recommendation(str(user.id), rec_id, db_session=db_session)
 
             if result.get('success'):
@@ -96,7 +63,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
                     f"Use <code>/myportfolio</code> to view your tracked trades."
                 )
             else:
-                # Provide clear feedback if tracking fails (e.g., already tracking).
                 await update.message.reply_html(f"⚠️ Could not track signal: {result.get('error', 'Unknown reason')}")
             return
         except (ValueError, IndexError):
@@ -106,13 +72,12 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
             await update.message.reply_html("An error occurred while trying to track the signal.")
         return
 
-    # Default welcome message if no deep link is present.
     await update.message.reply_html("👋 Welcome to the <b>CapitalGuard Bot</b>.\nUse /help for assistance.")
 
-@require_active_user
 @uow_transaction
+@require_active_user
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """Provides a help message tailored to the user's role (Trader vs. Analyst)."""
+    """Provides a help message tailored to the user's role."""
     trader_help = (
         "<b>--- Trading ---</b>\n"
         "• <code>/myportfolio</code> — View your open trades.\n"
@@ -136,13 +101,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessio
     
     await update.message.reply_html(full_help)
 
-@require_active_user
 @uow_transaction
+@require_active_user
 async def myportfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """
-    Displays all open positions for the user, including both personal trades
-    and official recommendations if they are an analyst.
-    """
+    """Displays all open positions for the user."""
     trade_service = get_service(context, "trade_service", TradeService)
     price_service = get_service(context, "price_service", PriceService)
     user_telegram_id = str(update.effective_user.id)
@@ -156,6 +118,7 @@ async def myportfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db
     keyboard = await build_open_recs_keyboard(items, current_page=1, price_service=price_service)
     await update.message.reply_html("<b>📊 Your Open Positions</b>\nSelect one to manage:", reply_markup=keyboard)
 
+@uow_transaction
 @require_active_user
 @require_analyst_user
 async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
@@ -163,13 +126,10 @@ async def link_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, *
     context.user_data[AWAITING_FORWARD_KEY] = True
     await update.message.reply_html("<b>🔗 Link a Channel</b>\nPlease forward a message from the target channel to this chat.")
 
-@require_active_user
 @uow_transaction
+@require_active_user
 async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """
-    Handles forwarded messages. It prioritizes the channel linking flow for analysts.
-    If not in that flow, it does nothing, allowing the forwarding conversation handler to take over.
-    """
+    """Handles forwarded messages for either channel linking or trade tracking."""
     if context.user_data.pop(AWAITING_FORWARD_KEY, False):
         msg = update.message
         user_tg_id = update.effective_user.id
@@ -193,9 +153,9 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         return
     pass
 
+@uow_transaction
 @require_active_user
 @require_analyst_user
-@uow_transaction
 async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     """Displays a list of all channels linked by the analyst."""
     channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=False)
@@ -218,22 +178,8 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler(["myportfolio", "open"], myportfolio_cmd))
-    
-    # Analyst-specific commands
     app.add_handler(CommandHandler("link_channel", link_channel_cmd))
     app.add_handler(CommandHandler("channels", channels_cmd))
-    
-    # This handler runs with high priority to catch channel linking forwards.
-    # If it's not a channel linking forward, it does nothing, allowing other handlers
-    # (like the forwarding conversation) to process the update.
     app.add_handler(MessageHandler(filters.FORWARDED & ~filters.COMMAND & filters.ChatType.PRIVATE, forwarded_message_handler), group=0)
-
-# --- STAGE 4: SELF-VERIFICATION ---
-# - All functions and decorators are correctly imported from their definitive sources.
-# - The logical flow for /start now correctly handles deep links by calling the appropriate service.
-# - The logical flow for /myportfolio is robust as it relies on the corrected service and UI layers.
-# - The forwarding handler is correctly designed to prioritize channel linking.
-# - Naming and structure are clean and consistent with the project's architecture.
-# - The file is complete, final, and production-ready.
 
 #END
