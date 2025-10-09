@@ -1,4 +1,4 @@
-# src/capitalguard/application/services/alert_service.py (v25.5 - FINAL & THREAD-SAFE STARTUP)
+# src/capitalguard/application/services/alert_service.py (v25.7 - FINAL & THREAD-SAFE)
 """
 AlertService - The re-architected, state-aware, and robust price monitoring engine.
 This version includes a fix for the background thread startup sequence.
@@ -15,7 +15,6 @@ if False:
     from .trade_service import TradeService
     from .price_service import PriceService
 
-from capitalguard.domain.entities import RecommendationStatus
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
@@ -64,17 +63,13 @@ class AlertService:
                 self._bg_loop = loop
                 asyncio.set_event_loop(loop)
 
-                # ✅ **THE FIX:** Use the explicit loop object to create tasks
-                # BEFORE the loop starts running.
                 self._processing_task = loop.create_task(self._process_queue())
                 self._index_sync_task = loop.create_task(self._run_index_sync())
                 self._watchdog_task = loop.create_task(self._run_watchdog_check())
                 
-                # The streamer also needs the loop to create its own task.
                 if hasattr(self.streamer, "start"):
                     self.streamer.start(loop=loop)
 
-                # Now, run the loop forever to execute the scheduled tasks.
                 loop.run_forever()
             except Exception:
                 log.exception("AlertService background runner crashed.")
@@ -85,9 +80,6 @@ class AlertService:
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
         log.info("AlertService started in background thread.")
-
-    # ... (The rest of the file remains the same as the previous complete version)
-    # I will include the full file for absolute completeness.
 
     async def build_triggers_index(self):
         log.info("Attempting to build in-memory trigger index...")
