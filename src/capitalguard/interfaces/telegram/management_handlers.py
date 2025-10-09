@@ -1,6 +1,8 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v25.4 - FINAL & CORRECTED)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v25.5 - FINAL & STATE-SAFE)
 """
 Implements all callback query handlers for managing existing recommendations and trades.
+This file is responsible for the interactive management panels and workflows that
+happen after a position is created.
 """
 
 import logging
@@ -18,7 +20,6 @@ from telegram.ext import (
 )
 
 from capitalguard.domain.entities import RecommendationStatus
-# ✅ **THE FIX:** Import the decorator from its definitive source.
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service, parse_tail_int, parse_cq_parts
 from .keyboards import (
@@ -79,7 +80,8 @@ async def _send_or_edit_position_panel(
             log.warning(f"Failed to edit message for position panel: {e}")
 
 @uow_transaction
-async def show_position_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+@require_active_user
+async def show_position_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
     """Handles callbacks to show the main management panel for a position."""
     query = update.callback_query
     await query.answer()
@@ -100,7 +102,8 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
     )
 
 @uow_transaction
-async def navigate_open_positions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+@require_active_user
+async def navigate_open_positions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
     """Handles pagination for the list of open positions."""
     query = update.callback_query
     await query.answer()
@@ -124,7 +127,7 @@ async def navigate_open_positions_handler(update: Update, context: ContextTypes.
 
 @require_active_user
 @require_analyst_user
-async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
     """Displays the close options menu (Market vs. Manual)."""
     query = update.callback_query
     await query.answer()
@@ -137,7 +140,7 @@ async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_
 
 @require_active_user
 @require_analyst_user
-async def close_with_manual_price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def close_with_manual_price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
     """Initiates the manual close workflow by asking for a price."""
     query = update.callback_query
     rec_id = parse_tail_int(query.data)
@@ -157,7 +160,7 @@ async def close_with_manual_price_handler(update: Update, context: ContextTypes.
 
 @require_active_user
 @require_analyst_user
-async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
     """Displays the edit menu (SL vs. TP)."""
     query = update.callback_query
     rec_id = parse_tail_int(query.data)
@@ -169,7 +172,7 @@ async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 @require_active_user
 @require_analyst_user
-async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
     """Initiates the SL edit workflow."""
     query = update.callback_query
     rec_id = parse_tail_int(query.data)
@@ -188,7 +191,7 @@ async def start_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 @uow_transaction
-async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
     """A single, robust handler for all text inputs that are replies to bot prompts."""
     if not update.message or not context.user_data: return
     
