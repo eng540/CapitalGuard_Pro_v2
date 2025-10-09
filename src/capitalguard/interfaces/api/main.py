@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/api/main.py (v25.2 - FINAL & DECOUPLED STARTUP)
+# src/capitalguard/interfaces/api/main.py (v25.5 - FINAL & DECOUPLED STARTUP)
 """
 The main entry point for the FastAPI application, with a decoupled startup sequence.
 """
@@ -18,7 +18,6 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 from capitalguard.config import settings
-# ✅ **THE FIX:** Import handlers separately, not from boot.
 from capitalguard.boot import bootstrap_app, build_services
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
 from capitalguard.interfaces.api.deps import get_trade_service, get_analytics_service, require_api_key
@@ -32,7 +31,7 @@ from capitalguard.infrastructure.db.base import get_session
 
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="CapitalGuard Pro API", version="25.2.0-stable")
+app = FastAPI(title="CapitalGuard Pro API", version="25.5.0-stable")
 app.state.ptb_app = None
 app.state.services = None
 
