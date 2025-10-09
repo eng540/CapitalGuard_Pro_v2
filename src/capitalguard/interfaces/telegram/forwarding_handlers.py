@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/forwarding_handlers.py (v25.5 - FINAL & CORRECTED)
+# src/capitalguard/interfaces/telegram/forwarding_handlers.py (v25.7 - FINAL & CONVERSATION-SAFE)
 """
 Handles the conversation flow for parsing a forwarded message and creating a
 personal user trade for tracking.
@@ -16,10 +16,9 @@ from telegram.ext import (
     ConversationHandler
 )
 
-# ✅ **THE FIX:** Import the decorator from its definitive source.
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service
-from .auth import require_active_user
+from .auth import get_db_user # Import the helper, not the decorator
 from capitalguard.application.services.image_parsing_service import ImageParsingService
 from capitalguard.application.services.trade_service import TradeService
 
@@ -27,9 +26,15 @@ log = logging.getLogger(__name__)
 
 AWAITING_CONFIRMATION = 1
 
-@require_active_user
-async def forwarding_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
-    """Entry point for the forwarding conversation. Parses the message."""
+@uow_transaction
+async def forwarding_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
+    """Entry point for the forwarding conversation, with manual auth checks."""
+    # ✅ **THE FIX:** Manual authorization check.
+    db_user = get_db_user(update, context, db_session)
+    if not db_user or not db_user.is_active:
+        await update.message.reply_html("🚫 <b>Access Denied</b>\nYour account is not active.")
+        return ConversationHandler.END
+
     message = update.message
     log.info(f"🔄 Processing forwarded message from user {update.effective_user.id}")
     
@@ -135,4 +140,4 @@ def create_forwarding_conversation_handler():
         per_chat=True,
     )
 
-#END```
+#END
