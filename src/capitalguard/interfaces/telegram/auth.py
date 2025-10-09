@@ -13,7 +13,6 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from capitalguard.infrastructure.db.repository import UserRepository
-from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.models import User, UserType
 from .keyboards import build_subscription_keyboard
 from capitalguard.config import settings
@@ -30,13 +29,13 @@ def get_db_user(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) 
     if not user:
         return None
 
-    # Check if we have a cached ID from a previous run in the same update
+    # Check if we have a cached ID from a previous run in the same update cycle
     if 'db_user_id' in context.user_data:
         user_id = context.user_data['db_user_id']
-        # Fetch the user with the CURRENT session
+        # Fetch the user with the CURRENT session to ensure it's "live"
         return UserRepository(db_session).find_by_id(user_id)
 
-    # If not cached, find or create the user
+    # If not cached for this update, find or create the user in the DB
     db_user = UserRepository(db_session).find_or_create(
         telegram_id=user.id,
         first_name=user.first_name,
@@ -44,7 +43,7 @@ def get_db_user(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) 
     )
     
     if db_user:
-        # Cache the ID for this update cycle, NOT the object
+        # Cache the ID for this update cycle, NOT the full object
         context.user_data['db_user_id'] = db_user.id
     
     return db_user
@@ -56,7 +55,7 @@ def require_active_user(func: Callable) -> Callable:
     """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        # This assumes 'db_session' is passed by @uow_transaction
+        # This decorator assumes 'db_session' is being passed by @uow_transaction.
         db_session = kwargs.get('db_session')
         if not db_session:
             log.critical("FATAL: @require_active_user used without @uow_transaction. Cannot get a DB session.")
@@ -73,7 +72,7 @@ def require_active_user(func: Callable) -> Callable:
                 await update.callback_query.answer("🚫 Access Denied: Account not active.", show_alert=True)
             return
         
-        # Pass the live, session-bound user object to the handler
+        # Pass the live, session-bound user object to the decorated handler
         kwargs['db_user'] = db_user
         return await func(update, context, *args, **kwargs)
     return wrapper
@@ -81,7 +80,7 @@ def require_active_user(func: Callable) -> Callable:
 def require_analyst_user(func: Callable) -> Callable:
     """
     Decorator that checks if the user has the ANALYST role.
-    Must be used on a function decorated with @uow_transaction and @require_active_user.
+    Must be used on a function already decorated with @require_active_user.
     """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
@@ -100,12 +99,15 @@ def require_analyst_user(func: Callable) -> Callable:
         return await func(update, context, *args, **kwargs)
     return wrapper
 
-# Note: require_channel_subscription does not need db_user, so it can remain as is.
 def require_channel_subscription(func: Callable) -> Callable:
+    """
+    Decorator that enforces channel subscription before executing a command.
+    """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         channel_id_str = settings.TELEGRAM_CHAT_ID
         if not channel_id_str:
+            # If not configured, skip the check
             return await func(update, context, *args, **kwargs)
 
         user = update.effective_user
@@ -118,6 +120,8 @@ def require_channel_subscription(func: Callable) -> Callable:
             else:
                 raise ValueError(f"User is not a member, status: {member.status}")
         except Exception:
+            log.info(f"User {user.id} blocked from command due to not being in channel {channel_id_str}.")
+            
             channel_link = settings.TELEGRAM_CHANNEL_INVITE_LINK
             message = "⚠️ <b>Subscription Required</b>\n\nTo use this bot, you must first be a member of our channel."
             
@@ -128,7 +132,10 @@ def require_channel_subscription(func: Callable) -> Callable:
                     disable_web_page_preview=True
                 )
             elif update.callback_query:
-                await update.callback_query.answer("Please subscribe to our main channel first.", show_alert=True)
+                await update.callback_query.answer(
+                    "Please subscribe to our main channel first.",
+                    show_alert=True
+                )
             return
     return wrapper
 
