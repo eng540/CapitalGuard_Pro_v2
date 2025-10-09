@@ -25,11 +25,10 @@ from capitalguard.application.services.trade_service import TradeService
 
 log = logging.getLogger(__name__)
 
-# Conversation states
 AWAITING_CONFIRMATION = 1
 
 @require_active_user
-async def forwarding_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def forwarding_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
     """Entry point for the forwarding conversation. Parses the message."""
     message = update.message
     log.info(f"🔄 Processing forwarded message from user {update.effective_user.id}")
@@ -77,7 +76,7 @@ async def forwarding_entry_point(update: Update, context: ContextTypes.DEFAULT_T
     return AWAITING_CONFIRMATION
 
 @uow_transaction
-async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> int:
+async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
     """Handles the confirmation to add the parsed trade to the user's portfolio."""
     query = update.callback_query
     await query.answer()
@@ -136,4 +135,4 @@ def create_forwarding_conversation_handler():
         per_chat=True,
     )
 
-#END
+#END```
