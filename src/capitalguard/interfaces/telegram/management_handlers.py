@@ -181,4 +181,4 @@ def register_management_handlers(application: Application):
     
     # The handler for processing text replies to the bot's modification prompts.
     # It has a high priority (group=1) to catch replies before other general message handlers.
-    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler), group=1)```
+    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler), group=1)
