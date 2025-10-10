@@ -2,10 +2,10 @@
 """
 Parsers for converting structured user text input from conversations into data.
 
-This module is kept separate to maintain a clear separation of concerns. It is
-responsible only for parsing structured inputs that are expected from known
-conversation steps (e.g., a reply containing only prices). For unstructured
-text analysis (e.g., from forwarded messages), the ImageParsingService should be used.
+This module is kept separate to maintain a clear separation of concerns,
+handling only structured inputs from known conversation steps (e.g., a reply
+containing only prices). For unstructured text analysis (e.g., from forwarded
+messages), the ImageParsingService should be used.
 
 This is a complete, final, and production-ready file.
 """

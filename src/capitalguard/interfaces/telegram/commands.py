@@ -50,9 +50,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
         try:
             rec_id = int(context.args[0].split('_')[1])
             trade_service = get_service(context, "trade_service", TradeService)
-            # This is a fire-and-forget action from the user's perspective.
-            # We must pass the db_session explicitly because this is not a decorated service call.
-            result = await trade_service.create_trade_from_recommendation(str(user.id), rec_id, db_session=db_session)
+            # We must pass the db_session explicitly because the service method is decorated.
+            result = await trade_service.create_trade_from_recommendation(user_id=str(user.id), rec_id=rec_id, db_session=db_session)
 
             if result.get('success'):
                 await update.message.reply_html(

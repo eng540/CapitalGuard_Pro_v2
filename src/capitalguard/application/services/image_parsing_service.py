@@ -1,7 +1,10 @@
 # src/capitalguard/application/services/image_parsing_service.py (v3.3 - COMPLETE, FINAL & STABLE)
 """
 A unified, intelligent, and robust parsing engine for all forms of text-based trade data.
+
 This version fixes a fatal startup crash caused by a typo in the maketrans arguments.
+This service is responsible for handling unstructured text, such as forwarded
+messages, by using flexible pattern matching and contextual analysis.
 
 This is a complete, final, and production-ready file.
 """
@@ -52,7 +55,7 @@ class ImageParsingService:
         self.ASSET_BLACKLIST = {'ACTIVE', 'SIGNAL', 'PERFORMANCE', 'ENTRY', 'STOP', 'PLAN', 'EXIT', 'NOTES', 'LONG', 'SHORT'}
         
         # ✅ THE FIX: Corrected the target string to have a length of 10, matching the source string.
-        # The duplicate '4' has been removed.
+        # The duplicate '4' has been removed, and the missing '5' has been added.
         self._AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
         
         # Suffix multipliers for parsing numbers like "50k".
@@ -91,11 +94,11 @@ class ImageParsingService:
 
     # --- INTERNAL HELPER & PARSING METHODS ---
 
-    def _normalize_text(self, s: str) -> str:
+    def _clean_text(self, text: str) -> str:
         """Normalizes and cleans text to prepare it for parsing."""
-        if not s:
+        if not text:
             return ""
-        s = unicodedata.normalize("NFKC", s)
+        s = unicodedata.normalize("NFKC", text)
         s = s.translate(self._AR_TO_EN_DIGITS)
         s = s.replace("،", ",")
         # Remove unsupported characters, preserving essential ones for parsing.

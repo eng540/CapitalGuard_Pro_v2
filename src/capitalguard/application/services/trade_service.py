@@ -187,7 +187,6 @@ class TradeService:
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user: return {'success': False, 'error': 'User not found'}
         system_user = self._get_or_create_system_user(db_session)
-        # Convert prices to string for JSON serialization, as per db engine setup
         targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0)} for t in trade_data['targets']]
         shadow_rec = Recommendation(
             analyst_id=system_user.id, asset=trade_data['asset'], side=trade_data['side'],

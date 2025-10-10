@@ -48,6 +48,7 @@ def clean_user_state(context: ContextTypes.DEFAULT_TYPE):
 
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the new recommendation conversation after performing an authorization check."""
+    # Manual auth check is required for conversation entry points.
     with session_scope() as db_session:
         db_user = get_db_user(update, context, db_session)
         if not db_user or not db_user.is_active or db_user.user_type != UserType.ANALYST:
@@ -59,6 +60,7 @@ async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_T
         "🚀 <b>New Recommendation</b>\nChoose your preferred input method:",
         reply_markup=main_creation_keyboard()
     )
+    # Store message details to allow editing it later.
     context.user_data['last_conv_message'] = (sent_message.chat_id, sent_message.message_id)
     return SELECT_METHOD
 
@@ -67,6 +69,7 @@ async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_T
 async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles the 'Interactive' button press and shows the asset selection step."""
     with session_scope() as db_session:
+        # Perform auth check again in case the conversation timed out and was re-entered.
         db_user = get_db_user(update, context, db_session)
         if not db_user or not db_user.is_active or db_user.user_type != UserType.ANALYST:
             return ConversationHandler.END
@@ -101,7 +104,7 @@ async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     else:
         asset = (update.message.text or "").strip().upper()
         try: await update.message.delete()
-        except Exception: pass
+        except Exception: pass # Ignore if message can't be deleted
 
     market_data_service = get_service(context, "market_data_service", MarketDataService)
     if not market_data_service.is_valid_symbol(asset, draft.get('market', 'Futures')):
@@ -216,7 +219,7 @@ def register_conversation_handlers(app: Application):
             I_SIDE_MARKET: [CallbackQueryHandler(side_chosen, pattern="^side_")],
             I_ORDER_TYPE: [CallbackQueryHandler(order_type_chosen, pattern="^type_")],
             I_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received)],
-            I_REVIEW: [CallbackQueryHandler(publish_handler, pattern="^rec:publish"), CallbackQueryHandler(cancel_conv_handler, pattern="^rec:cancel")],
+            I_REVIEW: [CallbackQueryHandler(publish_handler, pattern=r"^rec:publish"), CallbackQueryHandler(cancel_conv_handler, pattern=r"^rec:cancel")],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conv_handler),
@@ -225,7 +228,7 @@ def register_conversation_handlers(app: Application):
             CommandHandler("help", help_cmd),
         ],
         name="recommendation_creation",
-        persistent=True,
+        persistent=True, # Allows conversation state to survive bot restarts
         per_user=True,
         per_chat=True,
     )
