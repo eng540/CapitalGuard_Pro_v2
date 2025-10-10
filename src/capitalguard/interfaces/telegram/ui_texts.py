@@ -1,7 +1,7 @@
-# src/capitalguard/interfaces/telegram/ui_texts.py (v25.9 - FINAL & CORRECTED)
+# src/capitalguard/interfaces/telegram/ui_texts.py (v25.9 - COMPLETE, FINAL & PRODUCTION-READY)
 """
 Contains helper functions for building the text content of Telegram messages.
-This version fixes a critical TypeError in the builder invocation logic.
+This is a complete, final, and production-ready file.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from decimal import Decimal, InvalidOperation
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.domain.value_objects import Target
 
-# Constants remain the same
 _STATUS_MAP = {
     RecommendationStatus.PENDING: "⏳ PENDING",
     RecommendationStatus.ACTIVE: "⚡️ ACTIVE",
@@ -109,36 +108,19 @@ def _build_summary_section(rec: Recommendation) -> str:
     ])
 
 def build_trade_card_text(rec: Recommendation) -> str:
-    """The main function to generate the text for any recommendation or trade card."""
     header = _build_header(rec)
     parts = [header]
-
-    # ✅ THE FIX: All builders now consistently accept the 'rec' object.
     section_builders = {
-        RecommendationStatus.PENDING: [
-            _build_performance_section,
-            _build_exit_plan_section
-        ],
-        RecommendationStatus.ACTIVE: [
-            _build_live_price_section,
-            _build_performance_section,
-            _build_exit_plan_section
-        ],
-        RecommendationStatus.CLOSED: [
-            _build_summary_section
-        ]
+        RecommendationStatus.PENDING: [_build_performance_section, _build_exit_plan_section],
+        RecommendationStatus.ACTIVE: [_build_live_price_section, _build_performance_section, _build_exit_plan_section],
+        RecommendationStatus.CLOSED: [_build_summary_section]
     }
-    
-    builders = section_builders.get(rec.status, [])
-    for builder in builders:
-        section = builder(rec) # ✅ THE FIX: Always pass 'rec' to the builder.
-        if section: parts.append(section)
-
+    for builder in section_builders.get(rec.status, []):
+        if section := builder(rec): parts.append(section)
     if rec.notes: parts.append(f"\n📝 <b>Notes:</b> <i>{rec.notes}</i>")
     return "\n".join(filter(None, parts))
 
 def build_review_text_with_price(draft: dict, preview_price: Optional[float]) -> str:
-    # This function remains unchanged as it's correct.
     asset, side, market = draft.get("asset", "N/A"), draft.get("side", "N/A"), draft.get("market", "Futures")
     entry, sl = draft.get("entry", Decimal(0)), draft.get("stop_loss", Decimal(0))
     raw_tps = draft.get("targets", [])
@@ -148,9 +130,8 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
         pct_value = _pct(entry, price, side)
         close_percent = t.get('close_percent', 0)
         suffix = f" (Close {close_percent:.0f}%)" if 0 < close_percent < 100 else ""
-        if close_percent == 100 and i == len(raw_tps): suffix = "" # Don't show for final 100%
+        if close_percent == 100 and i == len(raw_tps): suffix = ""
         target_lines.append(f"  • TP{i}: <code>{_format_price(price)}</code> ({_format_pnl(pct_value)}){suffix}")
-        
     base_text = (
         f"📝 <b>REVIEW RECOMMENDATION</b>\n"
         f"─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
@@ -159,7 +140,6 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
         f"🛑 Stop: <code>{_format_price(sl)}</code>\n"
         f"🎯 Targets:\n" + "\n".join(target_lines) + "\n"
     )
-    if preview_price is not None:
-        base_text += f"\n💹 Current Price: <code>{_format_price(preview_price)}</code>"
+    if preview_price is not None: base_text += f"\n💹 Current Price: <code>{_format_price(preview_price)}</code>"
     base_text += "\n\nReady to publish?"
     return base_text
