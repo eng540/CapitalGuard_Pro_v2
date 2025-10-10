@@ -1,10 +1,7 @@
-# src/capitalguard/application/services/image_parsing_service.py (v3.2 - COMPLETE, FINAL & PRODUCTION-READY)
+# src/capitalguard/application/services/image_parsing_service.py (v3.3 - COMPLETE, FINAL & STABLE)
 """
 A unified, intelligent, and robust parsing engine for all forms of text-based trade data.
-
-This service is responsible for handling unstructured text, such as forwarded
-messages, by using flexible pattern matching and contextual analysis. It is
-kept separate from the simple conversation parsers to isolate its complexity.
+This version fixes a fatal startup crash caused by a typo in the maketrans arguments.
 
 This is a complete, final, and production-ready file.
 """
@@ -54,8 +51,10 @@ class ImageParsingService:
         # A blacklist of common words that might be mistaken for an asset symbol.
         self.ASSET_BLACKLIST = {'ACTIVE', 'SIGNAL', 'PERFORMANCE', 'ENTRY', 'STOP', 'PLAN', 'EXIT', 'NOTES', 'LONG', 'SHORT'}
         
-        # Pre-compiled translation table for performance.
-        self._AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "01234456789")
+        # ✅ THE FIX: Corrected the target string to have a length of 10, matching the source string.
+        # The duplicate '4' has been removed.
+        self._AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+        
         # Suffix multipliers for parsing numbers like "50k".
         self._SUFFIXES = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
 
@@ -92,15 +91,18 @@ class ImageParsingService:
 
     # --- INTERNAL HELPER & PARSING METHODS ---
 
-    def _clean_text(self, text: str) -> str:
+    def _normalize_text(self, s: str) -> str:
         """Normalizes and cleans text to prepare it for parsing."""
-        if not text:
+        if not s:
             return ""
+        s = unicodedata.normalize("NFKC", s)
+        s = s.translate(self._AR_TO_EN_DIGITS)
+        s = s.replace("،", ",")
         # Remove unsupported characters, preserving essential ones for parsing.
-        text = re.sub(r'[^\w\s\u0600-\u06FF@:.,\d\-+%$#/|]', ' ', text, flags=re.UNICODE)
+        s = re.sub(r'[^\w\s\u0600-\u06FF@:.,\d\-+%$#/|]', ' ', s, flags=re.UNICODE)
         # Normalize multiple newlines into a single one.
-        text = re.sub(r'(\r\n|\r|\n){2,}', '\n', text)
-        return text.strip().upper()
+        s = re.sub(r'(\r\n|\r|\n){2,}', '\n', s)
+        return s.strip().upper()
 
     def _parse_one_number(self, token: str) -> Optional[float]:
         """Parses a single numeric token, supporting suffixes."""
@@ -154,9 +156,7 @@ class ImageParsingService:
         
         full_text_for_targets = cleaned_text.replace('\n', ' ')
         
-        # Iterate through patterns to find all potential values
         for key, pattern in patterns.items():
-            # Search line by line first for better accuracy
             for line in cleaned_text.split('\n'):
                 if not (line := line.strip()): continue
                 if match := pattern.search(line):
@@ -164,7 +164,6 @@ class ImageParsingService:
                     if key == 'entry' and data['entry'] is None: data['entry'] = self._parse_one_number(value_str)
                     elif key == 'stop_loss' and data['stop_loss'] is None: data['stop_loss'] = self._parse_one_number(value_str)
             
-            # If targets not found line-by-line, search the whole text block
             if key == 'targets' and not data['targets']:
                  if match := pattern.search(full_text_for_targets):
                     value_str = match.group(1)
@@ -173,17 +172,15 @@ class ImageParsingService:
                         if price := self._parse_one_number(price_str):
                             data['targets'].append({"price": price, "close_percent": float(close_pct_str) if close_pct_str else 0.0})
 
-        # --- Validation and Finalization ---
         if not all([asset, side, data["entry"], data["stop_loss"], data["targets"]]):
             missing = [k for k, v in {**{"asset": asset, "side": side}, **data}.items() if v is None or not v]
             return ParsingResult(success=False, error_message=f"Missing required fields: {missing}")
 
-        # Auto-assign close percentage if none were found
         if data["targets"] and all(t['close_percent'] == 0 for t in data["targets"]):
             data["targets"][-1]['close_percent'] = 100.0
 
         return ParsingResult(
             success=True, asset=asset, side=side, entry=data["entry"],
             stop_loss=data["stop_loss"], targets=data["targets"],
-            confidence='high', parser='unified_flexible_v3.2'
+            confidence='high', parser='unified_flexible_v3.3'
         )
