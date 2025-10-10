@@ -187,7 +187,6 @@ class TradeService:
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user: return {'success': False, 'error': 'User not found'}
         system_user = self._get_or_create_system_user(db_session)
-        # Convert prices to string for JSON serialization, as per db engine setup
         targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0)} for t in trade_data['targets']]
         shadow_rec = Recommendation(
             analyst_id=system_user.id, asset=trade_data['asset'], side=trade_data['side'],
@@ -201,6 +200,23 @@ class TradeService:
             user_id=trader_user.id, source_recommendation_id=shadow_rec.id, asset=trade_data['asset'], side=trade_data['side'],
             entry=Decimal(str(trade_data['entry'])), stop_loss=Decimal(str(trade_data['stop_loss'])),
             targets=targets_for_db, status=UserTradeStatus.OPEN
+        )
+        db_session.add(new_trade); db_session.flush()
+        await self.alert_service.build_triggers_index()
+        return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
+
+    @uow_transaction
+    async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
+        trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not trader_user: return {'success': False, 'error': 'User not found'}
+        rec_orm = self.repo.get(db_session, rec_id)
+        if not rec_orm: return {'success': False, 'error': 'Recommendation not found'}
+        existing_trade = db_session.query(UserTrade).filter(UserTrade.user_id == trader_user.id, UserTrade.source_recommendation_id == rec_id).first()
+        if existing_trade: return {'success': False, 'error': 'You are already tracking this signal.'}
+        new_trade = UserTrade(
+            user_id=trader_user.id, source_recommendation_id=rec_orm.id,
+            asset=rec_orm.asset, side=rec_orm.side, entry=rec_orm.entry,
+            stop_loss=rec_orm.stop_loss, targets=rec_orm.targets, status=UserTradeStatus.OPEN
         )
         db_session.add(new_trade); db_session.flush()
         await self.alert_service.build_triggers_index()
@@ -354,13 +370,15 @@ class TradeService:
         elif position_type == 'trade':
             trade_orm = self.repo.get_user_trade_by_id(db_session, position_id)
             if not trade_orm or trade_orm.user_id != user.id: return None
-            return RecommendationEntity(
+            trade_entity = RecommendationEntity(
                 id=trade_orm.id, asset=Symbol(trade_orm.asset), side=Side(trade_orm.side), entry=Price(trade_orm.entry),
                 stop_loss=Price(trade_orm.stop_loss), targets=Targets(trade_orm.targets),
                 status=RecommendationStatusEntity.ACTIVE if trade_orm.status == UserTradeStatus.OPEN else RecommendationStatusEntity.CLOSED,
                 order_type=OrderType.MARKET, created_at=trade_orm.created_at, closed_at=trade_orm.closed_at,
                 exit_price=float(trade_orm.close_price) if trade_orm.close_price else None
             )
+            setattr(trade_entity, 'is_user_trade', True)
+            return trade_entity
         return None
 
     def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
