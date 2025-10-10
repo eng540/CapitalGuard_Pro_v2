@@ -16,7 +16,7 @@ from telegram.ext import Application, MessageHandler, CallbackQueryHandler, Cont
 
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service
-from .auth import require_active_user, get_db_user
+from .auth import require_active_user
 from capitalguard.application.services.image_parsing_service import ImageParsingService
 from capitalguard.application.services.trade_service import TradeService
 
