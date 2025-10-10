@@ -1,28 +1,28 @@
-# src/capitalguard/interfaces/telegram/commands.py (v26.5 - COMPLETE, FINAL & FIXED)
+# src/capitalguard/interfaces/telegram/commands.py (v26.6 - COMPLETE, FINAL & ARCHITECTURALLY-CORRECT)
 """
-Registers and implements all simple, non-conversational commands and simple message handlers.
-This version includes all necessary imports to prevent startup crashes.
+Registers and implements all simple, non-conversational commands for the bot.
+This version has been cleaned and refactored to only contain simple command logic,
+adhering to the principle of single responsibility.
 """
 
 import logging
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-# ✅ THE FIX: Added missing imports for all required handlers.
-from telegram.ext import (Application, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters)
+from telegram import Update
+from telegram.ext import (Application, ContextTypes, CommandHandler)
 
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service
+# ✅ Correctly importing all necessary decorators
 from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.application.services.image_parsing_service import ImageParsingService
-from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository
 from capitalguard.infrastructure.db.models import UserType
 from .keyboards import build_open_recs_keyboard
 
 log = logging.getLogger(__name__)
 
-# --- Standard Command Handlers ---
+# --- Command Handlers ---
 
 @uow_transaction
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
@@ -94,6 +94,7 @@ async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
         username_str = f"(@{ch.username})" if ch.username else "(Private Channel)"
         lines.append(f"• <b>{ch.title or 'Untitled'}</b> {username_str}\n  ID: <code>{ch.telegram_channel_id}</code> | Status: {status_icon}")
     await update.message.reply_html("\n".join(lines))
+
 
 # --- Registration ---
 
