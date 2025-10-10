@@ -1,7 +1,7 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v26.0 - FINAL & FEATURE-COMPLETE)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v26.1 - COMPLETE, FINAL & PRODUCTION-READY)
 """
 Implements all callback query handlers for managing existing recommendations and trades.
-This version includes the full implementation for editing SL/TP and closing trades.
+This is a complete, final, and production-ready file.
 """
 
 import logging
@@ -28,26 +28,30 @@ log = logging.getLogger(__name__)
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 
 async def _send_or_edit_position_panel(context: ContextTypes.DEFAULT_TYPE, db_session, chat_id: int, message_id: int, position_id: int, user_id: int, position_type: str):
+    """Unified and robust function to render the management panel for any position type."""
     trade_service = get_service(context, "trade_service", TradeService)
-    position = trade_service.get_position_details_for_user(db_session, str(user_id), position_type, position_id)
-    if not position:
-        await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Position not found or access denied.")
-        return
-    
-    price_service = get_service(context, "price_service", PriceService)
-    live_price = await price_service.get_cached_price(position.asset.value, position.market, force_refresh=True)
-    if live_price: setattr(position, "live_price", live_price)
-    
-    text = build_trade_card_text(position)
-    is_trade = getattr(position, 'is_user_trade', False)
-    
-    if is_trade: keyboard = build_user_trade_control_keyboard(position_id)
-    else: keyboard = analyst_control_panel_keyboard(position) if position.status != RecommendationStatus.CLOSED else None
-
     try:
+        position = trade_service.get_position_details_for_user(db_session, str(user_id), position_type, position_id)
+        if not position:
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Position not found or access denied.")
+            return
+
+        price_service = get_service(context, "price_service", PriceService)
+        live_price = await price_service.get_cached_price(position.asset.value, position.market, force_refresh=True)
+        if live_price: setattr(position, "live_price", live_price)
+
+        text = build_trade_card_text(position)
+        is_trade = getattr(position, 'is_user_trade', False)
+        
+        if is_trade: keyboard = build_user_trade_control_keyboard(position_id)
+        else: keyboard = analyst_control_panel_keyboard(position) if position.status != RecommendationStatus.CLOSED else None
+
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except BadRequest as e:
         if "Message is not modified" not in str(e): log.warning(f"Failed to edit panel: {e}")
+    except Exception as e:
+        log.error(f"Error rendering position panel for pos_id={position_id}: {e}", exc_info=True)
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ An error occurred while loading position details.")
 
 @uow_transaction
 @require_active_user
@@ -119,22 +123,19 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
             await trade_service.update_sl_for_user_async(position_id, user_id, Decimal(user_input), db_session=db_session)
         elif action == "edit_tp":
             targets_list = parse_targets_list(user_input.split())
-            if not targets_list: raise ValueError("Invalid targets format.")
+            if not targets_list: raise ValueError("Invalid targets format. Please provide at least one target.")
             new_targets_decimal = [{'price': Decimal(str(t['price'])), 'close_percent': t['close_percent']} for t in targets_list]
             await trade_service.update_targets_for_user_async(position_id, user_id, new_targets_decimal, db_session=db_session)
         
-        await _send_or_edit_position_panel(context, db_session, chat_id, message_id, position_id, update.effective_user.id, 'rec')
     except (InvalidOperation, ValueError, RuntimeError) as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ Invalid Input or Action Failed: {e}", reply_to_message_id=message_id)
-        # Restore state to allow user to try again
-        context.user_data[AWAITING_INPUT_KEY] = state
+        await context.bot.send_message(chat_id=chat_id, text=f"❌ Invalid Input or Action Failed: {e}. Please try again.", reply_to_message_id=message_id)
+        context.user_data[AWAITING_INPUT_KEY] = state # Restore state to allow user to retry
     except Exception as e:
         log.error(f"Error processing input for {action} on #{position_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id=chat_id, text=f"❌ An unexpected error occurred: {e}", reply_to_message_id=message_id)
 
 def register_management_handlers(application: Application):
     application.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=r"^open_nav:page:"))
-    application.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=r"^pos:show_panel:"))
-    application.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=r"^rec:back_to_main:"))
+    application.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=r"^(pos:show_panel:|rec:back_to_main:)"))
     application.add_handler(CallbackQueryHandler(unified_management_handler, pattern=r"^rec:(edit_menu|close_menu|edit_sl|edit_tp|close_manual)"))
     application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler), group=1)
