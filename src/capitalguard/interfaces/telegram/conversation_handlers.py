@@ -1,8 +1,8 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v26.6 - COMPLETE, FINAL & FIXED)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v26.7 - COMPLETE, FINAL & UOW-COMPLIANT)
 """
 Implements the conversational flow for creating a new recommendation (/newrec).
-This version fixes a critical TypeError by generating and passing the required
-'review_token' to the final keyboard, ensuring the review step functions correctly.
+This version fixes a critical TypeError in the final publish step by correctly
+calling the decorated service method without redundant arguments.
 """
 
 import logging
@@ -55,6 +55,7 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
         if not db_user or not db_user.is_active or db_user.user_type != UserType.ANALYST: return ConversationHandler.END
         trade_service = get_service(context, "trade_service", TradeService)
         recent_assets = trade_service.get_recent_assets_for_user(db_session, str(update.effective_user.id))
+
     message_obj = update.callback_query.message
     await update.callback_query.answer()
     sent_message = await message_obj.edit_text("<b>Step 1/4: Asset</b>\nSelect or type the asset symbol (e.g., BTCUSDT).", reply_markup=asset_choice_keyboard(recent_assets), parse_mode='HTML')
@@ -125,18 +126,13 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.callback_query.message if update.callback_query else update.message
     draft = get_user_draft(context)
-    
-    # ✅ THE FIX: Generate a unique token for this review session.
     review_token = str(uuid.uuid4())
     context.user_data['review_token'] = review_token
-    
     price_service = get_service(context, "price_service", PriceService)
     preview_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"))
     review_text = build_review_text_with_price(draft, preview_price)
     target_chat_id, target_message_id = context.user_data.get('last_conv_message', (message.chat_id, message.message_id))
-
     try:
-        # ✅ THE FIX: Pass the generated token to the keyboard function.
         sent_message = await context.bot.edit_message_text(chat_id=target_chat_id, message_id=target_message_id, text=review_text, reply_markup=review_final_keyboard(review_token), parse_mode='HTML')
         if update.message: await update.message.delete()
     except BadRequest:
@@ -149,7 +145,6 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
     query = update.callback_query
     await query.answer("Publishing...")
     
-    # Security check for the token
     token_in_callback = query.data.split(':')[-1]
     if context.user_data.get('review_token') != token_in_callback:
         await query.edit_message_text("❌ Stale action. Please start a new recommendation.")
@@ -159,7 +154,8 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
     draft = get_user_draft(context)
     trade_service = get_service(context, "trade_service", TradeService)
     try:
-        rec, report = await trade_service.create_and_publish_recommendation_async(str(query.from_user.id), db_session, **draft)
+        # ✅ THE FIX: Call the decorated service method WITHOUT passing 'db_session' explicitly.
+        rec, report = await trade_service.create_and_publish_recommendation_async(str(query.from_user.id), **draft)
         if report.get("success"): await query.message.edit_text(f"✅ Recommendation #{rec.id} for <b>{rec.asset.value}</b> published.", parse_mode='HTML')
         else: await query.message.edit_text(f"⚠️ Rec #{rec.id} saved, but publishing failed: {report.get('failed', [{}])[0].get('reason')}", parse_mode='HTML')
     except Exception as e:
