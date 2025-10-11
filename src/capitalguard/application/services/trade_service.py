@@ -1,8 +1,8 @@
-# src/capitalguard/application/services/trade_service.py (v27.5 - Final & Complete)
+# src/capitalguard/application/services/trade_service.py (v27.6 - Idempotency & Final)
 """
 TradeService - This is the final, complete, and reliable version. It includes
-full implementations for all management features like partial profit taking and
-exit strategies, with robust event logging and state management.
+full implementations for all management features and robust idempotency checks
+to prevent unnecessary database commits and "message not modified" errors.
 """
 
 import logging
@@ -171,6 +171,28 @@ class TradeService:
         await self.alert_service.build_triggers_index()
         return final_rec, report
 
+    async def create_trade_from_forwarding(self, user_id: str, trade_data: Dict[str, Any], db_session: Session) -> Dict[str, Any]:
+        trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not trader_user: return {'success': False, 'error': 'User not found'}
+        system_user = self._get_or_create_system_user(db_session)
+        targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0)} for t in trade_data['targets']]
+        shadow_rec = Recommendation(
+            analyst_id=system_user.id, asset=trade_data['asset'], side=trade_data['side'],
+            entry=Decimal(str(trade_data['entry'])), stop_loss=Decimal(str(trade_data['stop_loss'])),
+            targets=targets_for_db, status=RecommendationStatusEnum.ACTIVE, 
+            order_type=OrderTypeEnum.MARKET, is_shadow=True,
+            notes="Shadow rec from forwarded trade.", activated_at=datetime.now(timezone.utc)
+        )
+        db_session.add(shadow_rec); db_session.flush()
+        new_trade = UserTrade(
+            user_id=trader_user.id, source_recommendation_id=shadow_rec.id, asset=trade_data['asset'], side=trade_data['side'],
+            entry=Decimal(str(trade_data['entry'])), stop_loss=Decimal(str(trade_data['stop_loss'])),
+            targets=targets_for_db, status=UserTradeStatus.OPEN
+        )
+        db_session.add(new_trade); db_session.flush()
+        await self.alert_service.build_triggers_index()
+        return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
+
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user: return {'success': False, 'error': 'User not found'}
@@ -282,7 +304,7 @@ class TradeService:
     async def process_invalidation_event(self, item_id: int):
         with session_scope() as db_session:
             rec = self.repo.get_for_update(db_session, item_id)
-            if not rec or rec.status != RecommendationStatusEnum.PENDING: return
+            if not rec or rec.status != RecommendationStatusEnum.PENDING: return # Idempotency check
             rec.status = RecommendationStatusEnum.CLOSED
             rec.closed_at = datetime.now(timezone.utc)
             db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="INVALIDATED", event_data={"reason": "SL hit before entry"}))
@@ -292,7 +314,7 @@ class TradeService:
     async def process_activation_event(self, item_id: int):
         with session_scope() as db_session:
             rec = self.repo.get_for_update(db_session, item_id)
-            if not rec or rec.status != RecommendationStatusEnum.PENDING: return
+            if not rec or rec.status != RecommendationStatusEnum.PENDING: return # Idempotency check
             rec.status = RecommendationStatusEnum.ACTIVE
             rec.activated_at = datetime.now(timezone.utc)
             db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="ACTIVATED"))
@@ -302,7 +324,7 @@ class TradeService:
     async def process_sl_hit_event(self, item_id: int, price: Decimal):
         with session_scope() as db_session:
             rec = self.repo.get_for_update(db_session, item_id)
-            if not rec or rec.status != RecommendationStatusEnum.ACTIVE: return
+            if not rec or rec.status != RecommendationStatusEnum.ACTIVE: return # Idempotency check
             rec.status = RecommendationStatusEnum.CLOSED
             rec.closed_at = datetime.now(timezone.utc)
             rec.exit_price = price
@@ -313,9 +335,15 @@ class TradeService:
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
         with session_scope() as db_session:
             rec_orm = self.repo.get_for_update(db_session, item_id)
-            if not rec_orm or rec_orm.status != RecommendationStatusEnum.ACTIVE: return
+            if not rec_orm or rec_orm.status != RecommendationStatusEnum.ACTIVE: return # Idempotency check
 
             event_type = f"TP{target_index}_HIT"
+            
+            # Check if event already exists (Idempotency check for TP hits)
+            if any(e.event_type == event_type for e in rec_orm.events):
+                logger.warning(f"Skipping TP hit for Rec #{item_id}: Event {event_type} already processed.")
+                return
+
             db_session.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type=event_type, event_data={"price": float(price)}))
             self.notify_reply(rec_orm.id, f"🎯 Signal #{rec_orm.asset} hit TP{target_index} at {price}!", db_session=db_session)
             
