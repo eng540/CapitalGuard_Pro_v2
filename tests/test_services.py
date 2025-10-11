@@ -1,36 +1,12 @@
+# --- START OF FILE: tests/test_services.py ---
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from decimal import Decimal
+from unittest.mock import MagicMock, ANY
+from types import SimpleNamespace
+from datetime import datetime
 
 from capitalguard.application.services.trade_service import TradeService
-from capitalguard.domain.entities import UserType, RecommendationStatus
-from capitalguard.infrastructure.db.models import User
-
-# This suite tests the TradeService in isolation.
-
-@pytest.fixture
-def mock_market_data_service() -> MagicMock:
-    return MagicMock()
-
-@pytest.fixture
-def mock_price_service() -> MagicMock:
-    service = MagicMock()
-    service.get_cached_price = AsyncMock(return_value=Decimal("50000.0"))
-    return service
-
-@pytest.fixture
-def mock_alert_service() -> MagicMock:
-    service = MagicMock()
-    service.build_triggers_index = AsyncMock()
-    return service
-
-@pytest.fixture
-def mock_notifier() -> MagicMock:
-    notifier = MagicMock()
-    notifier.post_to_channel = AsyncMock(return_value=(12345, 67890))
-    # Add a mock for the bot_username attribute
-    notifier.bot_username = "test_bot"
-    return notifier
+from capitalguard.domain.entities import Recommendation
+from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
 
 @pytest.fixture
 def mock_repo() -> MagicMock:
@@ -38,85 +14,121 @@ def mock_repo() -> MagicMock:
     return MagicMock()
 
 @pytest.fixture
-def trade_service(
-    mock_repo: MagicMock,
-    mock_notifier: MagicMock,
-    mock_market_data_service: MagicMock,
-    mock_price_service: MagicMock,
-    mock_alert_service: MagicMock
-) -> TradeService:
-    """Provides a TradeService instance with mocked dependencies."""
-    service = TradeService(
-        repo=mock_repo,
-        notifier=mock_notifier,
-        market_data_service=mock_market_data_service,
-        price_service=mock_price_service
-    )
-    service.alert_service = mock_alert_service
-    return service
-
-@pytest.fixture
-def mock_db_session() -> MagicMock:
-    """Provides a MagicMock for the database session."""
+def mock_notifier() -> MagicMock:
+    """A mock for the NotifierPort."""
     return MagicMock()
 
-@pytest.mark.asyncio
-async def test_create_and_publish_happy_path(trade_service: TradeService, mock_notifier: AsyncMock, mock_db_session: MagicMock):
+@pytest.fixture
+def trade_service(mock_repo: MagicMock, mock_notifier: MagicMock) -> TradeService:
+    """Provides a TradeService instance with mocked dependencies."""
+    return TradeService(repo=mock_repo, notifier=notifier)
+
+def test_create_and_publish_happy_path(trade_service: TradeService, mock_repo: MagicMock, mock_notifier: MagicMock):
+    """
+    Tests the successful creation flow:
+    1. Card is posted to Telegram.
+    2. Recommendation is saved to the database.
+    3. Card is edited with the new ID.
+    """
     # Arrange
-    mock_user = User(id=1, telegram_user_id=111, user_type=UserType.ANALYST)
-    mock_channel = MagicMock()
-    mock_channel.telegram_channel_id = 12345
+    # Mock the return value of the notifier when it posts the initial card
+    mock_notifier.post_recommendation_card.return_value = (12345, 67890)  # (channel_id, message_id)
     
-    # Since the service now calls repositories directly, we patch them.
-    with patch('capitalguard.application.services.trade_service.UserRepository') as mock_user_repo:
-        mock_user_repo.return_value.find_by_telegram_id.return_value = mock_user
-        with patch('capitalguard.application.services.trade_service.ChannelRepository') as mock_channel_repo:
-            mock_channel_repo.return_value.list_by_analyst.return_value = [mock_channel]
-            # Mock the method that returns the entity from the ORM object
-            trade_service.repo._to_entity = MagicMock(return_value=MagicMock(status=RecommendationStatus.ACTIVE, asset=MagicMock(value="BTCUSDT"), id=99, is_shadow=False))
+    # Mock the return value of the repository after saving
+    # The saved object must have an `id` attribute for the final edit step
+    saved_rec_mock = Recommendation(
+        id=99, asset=Symbol("BTCUSDT"), side=Side("LONG"), entry=Price(50000),
+        stop_loss=Price(49000), targets=Targets([51000]), channel_id=12345, message_id=67890
+    )
+    mock_repo.add.return_value = saved_rec_mock
 
-            kwargs = {
-                "asset": "BTCUSDT", "side": "LONG", "entry": "50000",
-                "stop_loss": "49000", "targets": [{"price": "51000"}],
-                "order_type": "MARKET"
-            }
-
-            # Act
-            rec_entity, report = await trade_service.create_and_publish_recommendation_async(
-                user_id="111",
-                db_session=mock_db_session,
-                **kwargs
-            )
+    # Act
+    result = trade_service.create_and_publish_recommendation(
+        asset="BTCUSDT", side="LONG", market="Futures", entry=50000,
+        stop_loss=49000, targets=[51000], notes="Test", user_id="test_user"
+    )
 
     # Assert
-    assert rec_entity is not None
-    assert report["success"]
-    mock_db_session.add.assert_called()
-    mock_db_session.flush.assert_called()
-    mock_notifier.post_to_channel.assert_called_once()
-    trade_service.alert_service.build_triggers_index.assert_called_once()
+    # 1. Verify that the notifier was called to post the initial card
+    mock_notifier.post_recommendation_card.assert_called_once()
+    
+    # 2. Verify that the repository was called to save the recommendation
+    mock_repo.add.assert_called_once()
+    
+    # 3. Verify that the notifier was called AGAIN to edit the card with the final ID
+    mock_notifier.edit_recommendation_card.assert_called_once_with(saved_rec_mock)
+    
+    # 4. Check the final result
+    assert result.id == 99
+    assert result.channel_id == 12345
 
-@pytest.mark.asyncio
-async def test_create_fails_if_user_is_not_analyst(trade_service: TradeService, mock_db_session: MagicMock):
+def test_create_fails_if_telegram_post_fails(trade_service: TradeService, mock_repo: MagicMock, mock_notifier: MagicMock):
+    """
+    Tests that if posting to Telegram fails, the recommendation is NOT saved to the DB.
+    """
     # Arrange
-    mock_user = User(id=1, telegram_user_id=222, user_type=UserType.TRADER)
-    
-    with patch('capitalguard.application.services.trade_service.UserRepository') as mock_user_repo:
-        mock_user_repo.return_value.find_by_telegram_id.return_value = mock_user
+    mock_notifier.post_recommendation_card.return_value = None
 
-        kwargs = {
-            "asset": "BTCUSDT", "side": "LONG", "entry": "50000",
-            "stop_loss": "49000", "targets": [{"price": "51000"}],
-            "order_type": "LIMIT"
-        }
+    # Act & Assert
+    with pytest.raises(RuntimeError, match="Could not publish to Telegram"):
+        trade_service.create_and_publish_recommendation(
+            asset="ETHUSDT", side="SHORT", market="Spot", entry=3000,
+            stop_loss=3100, targets=[2900], notes=None, user_id="test_user"
+        )
     
-        # Act & Assert
-        with pytest.raises(ValueError, match="Only analysts can create recommendations"):
-            await trade_service.create_and_publish_recommendation_async(
-                user_id="222",
-                db_session=mock_db_session,
-                **kwargs
-            )
+    # Ensure that the database was never touched
+    mock_repo.add.assert_not_called()
+
+def test_close_recommendation_flow(trade_service: TradeService, mock_repo: MagicMock, mock_notifier: MagicMock):
+    """
+    Tests the successful closing flow:
+    1. Gets the recommendation from the repo.
+    2. Updates its state.
+    3. Saves the update to the repo.
+    4. Edits the Telegram card to show it's closed.
+    """
+    # Arrange
+    rec_id = 101
+    exit_price = 50500.0
     
-    trade_service.notifier.post_to_channel.assert_not_called()
-    trade_service.alert_service.build_triggers_index.assert_not_called()
+    # Mock the recommendation object that the repo will return
+    open_rec = Recommendation(
+        id=rec_id, asset=Symbol("BTCUSDT"), side=Side("LONG"), entry=Price(50000),
+        stop_loss=Price(49000), targets=Targets([51000]), status="OPEN"
+    )
+    mock_repo.get.return_value = open_rec
+    
+    # The `repo.update` method should return the updated object
+    mock_repo.update.return_value = open_rec 
+
+    # Act
+    result = trade_service.close(rec_id, exit_price)
+
+    # Assert
+    # 1. Verify it fetched the correct recommendation
+    mock_repo.get.assert_called_once_with(rec_id)
+    
+    # 2. Check that the object's state was changed correctly
+    assert result.status == "CLOSED"
+    assert result.exit_price == exit_price
+    assert isinstance(result.closed_at, datetime)
+    
+    # 3. Verify it saved the changes
+    mock_repo.update.assert_called_once_with(open_rec)
+    
+    # 4. Verify it notified the channel by editing the card
+    mock_notifier.edit_recommendation_card.assert_called_once_with(open_rec)
+
+def test_close_non_existent_recommendation_raises_error(trade_service: TradeService, mock_repo: MagicMock):
+    """
+    Tests that closing a recommendation that doesn't exist raises a ValueError.
+    """
+    # Arrange
+    rec_id = 404
+    mock_repo.get.return_value = None
+
+    # Act & Assert
+    with pytest.raises(ValueError, match="Recommendation 404 not found"):
+        trade_service.close(rec_id, 3000.0)
+
+# --- END OF FILE ---
