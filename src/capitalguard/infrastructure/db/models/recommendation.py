@@ -1,9 +1,9 @@
-# src/capitalguard/infrastructure/db/models/recommendation.py (v25.0 - FINAL & UNIFIED)
+# src/capitalguard/infrastructure/db/models/recommendation.py (v25.1 - Enum Unification)
 """
 SQLAlchemy ORM models related to recommendations, user trades, and their lifecycle.
+This version removes redundant Enum definitions and imports them from the domain layer.
 """
 
-import enum
 from sqlalchemy import (
     Column, Integer, String, DateTime, Boolean,
     ForeignKey, Enum, Text, BigInteger, Numeric, func
@@ -12,25 +12,14 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
 
-# --- ENUMERATIONS (Must match domain enums) ---
+# ✅ THE DEFINITIVE FIX: Import all Enums from the single source of truth in the domain layer.
+from capitalguard.domain.entities import (
+    RecommendationStatus as RecommendationStatusEnum,
+    OrderType as OrderTypeEnum,
+    ExitStrategy as ExitStrategyEnum,
+    UserTradeStatus
+)
 
-class RecommendationStatusEnum(enum.Enum):
-    PENDING = "PENDING"
-    ACTIVE = "ACTIVE"
-    CLOSED = "CLOSED"
-
-class OrderTypeEnum(enum.Enum):
-    MARKET = "MARKET"
-    LIMIT = "LIMIT"
-    STOP_MARKET = "STOP_MARKET"
-
-class ExitStrategyEnum(enum.Enum):
-    CLOSE_AT_FINAL_TP = "CLOSE_AT_FINAL_TP"
-    MANUAL_CLOSE_ONLY = "MANUAL_CLOSE_ONLY"
-
-class UserTradeStatus(enum.Enum):
-    OPEN = "OPEN"
-    CLOSED = "CLOSED"
 
 # --- TABLES ---
 
