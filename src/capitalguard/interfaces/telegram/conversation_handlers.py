@@ -1,8 +1,8 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v26.7 - COMPLETE, FINAL & UOW-COMPLIANT)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v26.8 - Auth & Consistency Fix)
 """
 Implements the conversational flow for creating a new recommendation (/newrec).
-This version fixes a critical TypeError in the final publish step by correctly
-calling the decorated service method without redundant arguments.
+This version fixes a critical permission error by replacing manual auth checks
+with the standard, robust decorator chain, ensuring architectural consistency.
 """
 
 import logging
@@ -15,11 +15,12 @@ from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import (Application, ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler, MessageHandler, filters)
 from telegram.error import BadRequest
 
-from capitalguard.infrastructure.db.uow import uow_transaction, session_scope
+from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service
 from .ui_texts import build_review_text_with_price
 from .keyboards import (main_creation_keyboard, asset_choice_keyboard, side_market_keyboard, order_type_keyboard, review_final_keyboard)
-from .auth import get_db_user
+# ✅ THE FIX: Import all necessary decorators to enforce consistent authorization.
+from .auth import require_active_user, require_analyst_user
 from capitalguard.infrastructure.db.models import UserType
 from .parsers import parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
@@ -38,23 +39,25 @@ def clean_user_state(context: ContextTypes.DEFAULT_TYPE):
     for key in ['new_rec_draft', 'last_conv_message', 'review_token']:
         context.user_data.pop(key, None)
 
-async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    with session_scope() as db_session:
-        db_user = get_db_user(update, context, db_session)
-        if not db_user or not db_user.is_active or db_user.user_type != UserType.ANALYST:
-            await update.message.reply_html("🚫 <b>Permission Denied:</b> This command is for active analysts only.")
-            return ConversationHandler.END
+# ✅ THE FIX: Replaced the inconsistent manual auth check with the standard decorator chain.
+# This ensures that permission logic is centralized and reliable across all commands.
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
+    # The decorators now handle all permission checks before this function is even called.
     clean_user_state(context)
     sent_message = await update.message.reply_html("🚀 <b>New Recommendation</b>\nChoose an input method:", reply_markup=main_creation_keyboard())
     context.user_data['last_conv_message'] = (sent_message.chat_id, sent_message.message_id)
     return SELECT_METHOD
 
-async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    with session_scope() as db_session:
-        db_user = get_db_user(update, context, db_session)
-        if not db_user or not db_user.is_active or db_user.user_type != UserType.ANALYST: return ConversationHandler.END
-        trade_service = get_service(context, "trade_service", TradeService)
-        recent_assets = trade_service.get_recent_assets_for_user(db_session, str(update.effective_user.id))
+# This handler also needs the decorators to ensure a user who drops and restarts the conversation is still authorized.
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
+    trade_service = get_service(context, "trade_service", TradeService)
+    recent_assets = trade_service.get_recent_assets_for_user(db_session, str(update.effective_user.id))
 
     message_obj = update.callback_query.message
     await update.callback_query.answer()

@@ -1,7 +1,7 @@
-# src/capitalguard/interfaces/telegram/ui_texts.py (v25.9 - COMPLETE, FINAL & PRODUCTION-READY)
+# src/capitalguard/interfaces/telegram/ui_texts.py (v26.0 - Formatting Fix)
 """
 Contains helper functions for building the text content of Telegram messages.
-This is a complete, final, and production-ready file.
+This version fixes the formatting of Decimal objects to remove trailing zeros.
 """
 
 from __future__ import annotations
@@ -25,7 +25,11 @@ def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
 
 def _format_price(price: Any) -> str:
     price_dec = _to_decimal(price)
-    return f"{price_dec:g}" if price_dec.is_finite() else "N/A"
+    if not price_dec.is_finite():
+        return "N/A"
+    # ✅ THE FIX: Use .normalize() to strip trailing zeros from the Decimal object
+    # before applying the general-purpose 'g' formatter. This ensures clean output.
+    return f"{price_dec.normalize():g}"
 
 def _pct(entry: Any, target_price: Any, side: str) -> float:
     entry_dec, target_dec = _to_decimal(entry), _to_decimal(target_price)
