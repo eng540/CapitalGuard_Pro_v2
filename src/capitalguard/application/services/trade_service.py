@@ -1,7 +1,7 @@
-# src/capitalguard/application/services/trade_service.py (v26.4 - Enum Comparison Fix)
+# src/capitalguard/application/services/trade_service.py (v26.5 - Duplicate Tracking Fix)
 """
-TradeService - This version fixes the critical permission bug by ensuring
-the comparison logic uses the correct, unified Enum type.
+TradeService - This version includes a fix to prevent duplicate tracking of the
+same recommendation by a user.
 """
 
 import logging
@@ -139,8 +139,6 @@ class TradeService:
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         
-        # ✅ THE DEFINITIVE FIX: Compare the user's role (which is now a unified Enum object)
-        # with the same unified Enum type. This comparison will now work correctly.
         if not user or user.user_type != UserType.ANALYST: 
             raise ValueError("Only analysts can create recommendations.")
         
@@ -168,7 +166,6 @@ class TradeService:
         await self.alert_service.build_triggers_index()
         return final_rec, report
 
-    # ... (rest of the file is unchanged)
     async def create_trade_from_forwarding(self, user_id: str, trade_data: Dict[str, Any], db_session: Session) -> Dict[str, Any]:
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user: return {'success': False, 'error': 'User not found'}
@@ -196,8 +193,17 @@ class TradeService:
         if not trader_user: return {'success': False, 'error': 'User not found'}
         rec_orm = self.repo.get(db_session, rec_id)
         if not rec_orm: return {'success': False, 'error': 'Recommendation not found'}
-        existing_trade = db_session.query(UserTrade).filter(UserTrade.user_id == trader_user.id, UserTrade.source_recommendation_id == rec_id).first()
+        
+        # ✅ THE FIX: The query was correct, but it needs to check for OPEN trades specifically.
+        # A user should be able to re-track a signal if they previously closed their own trade.
+        existing_trade = db_session.query(UserTrade).filter(
+            UserTrade.user_id == trader_user.id, 
+            UserTrade.source_recommendation_id == rec_id,
+            UserTrade.status == UserTradeStatus.OPEN
+        ).first()
+
         if existing_trade: return {'success': False, 'error': 'You are already tracking this signal.'}
+        
         new_trade = UserTrade(
             user_id=trader_user.id, source_recommendation_id=rec_orm.id,
             asset=rec_orm.asset, side=rec_orm.side, entry=rec_orm.entry,
@@ -207,6 +213,7 @@ class TradeService:
         await self.alert_service.build_triggers_index()
         return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
         
+    # ... (rest of the file is unchanged)
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")

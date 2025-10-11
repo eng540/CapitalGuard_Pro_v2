@@ -1,8 +1,8 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v26.8 - Auth & Consistency Fix)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v26.9 - State & Persistence Fix)
 """
 Implements the conversational flow for creating a new recommendation (/newrec).
-This version fixes a critical permission error by replacing manual auth checks
-with the standard, robust decorator chain, ensuring architectural consistency.
+This version fixes unresponsive buttons by disabling ConversationHandler persistence,
+which was causing state mismatches between user_data and bot_data after restarts.
 """
 
 import logging
@@ -19,7 +19,6 @@ from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service
 from .ui_texts import build_review_text_with_price
 from .keyboards import (main_creation_keyboard, asset_choice_keyboard, side_market_keyboard, order_type_keyboard, review_final_keyboard)
-# ✅ THE FIX: Import all necessary decorators to enforce consistent authorization.
 from .auth import require_active_user, require_analyst_user
 from capitalguard.infrastructure.db.models import UserType
 from .parsers import parse_number, parse_targets_list
@@ -39,19 +38,15 @@ def clean_user_state(context: ContextTypes.DEFAULT_TYPE):
     for key in ['new_rec_draft', 'last_conv_message', 'review_token']:
         context.user_data.pop(key, None)
 
-# ✅ THE FIX: Replaced the inconsistent manual auth check with the standard decorator chain.
-# This ensures that permission logic is centralized and reliable across all commands.
 @uow_transaction
 @require_active_user
 @require_analyst_user
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
-    # The decorators now handle all permission checks before this function is even called.
     clean_user_state(context)
     sent_message = await update.message.reply_html("🚀 <b>New Recommendation</b>\nChoose an input method:", reply_markup=main_creation_keyboard())
     context.user_data['last_conv_message'] = (sent_message.chat_id, sent_message.message_id)
     return SELECT_METHOD
 
-# This handler also needs the decorators to ensure a user who drops and restarts the conversation is still authorized.
 @uow_transaction
 @require_active_user
 @require_analyst_user
@@ -195,7 +190,10 @@ def register_conversation_handlers(app: Application):
             CommandHandler("help", help_cmd),
         ],
         name="recommendation_creation",
-        persistent=True,
+        # ✅ THE FIX: Disable persistence for this handler. This is the most robust way
+        # to prevent state mismatches between user_data and bot_data after a restart.
+        # The conversation is short-lived and does not need to survive restarts.
+        persistent=False,
         per_user=True,
         per_chat=True,
     )

@@ -1,8 +1,8 @@
-# src/capitalguard/interfaces/telegram/ui_texts.py (v26.1 - Target Formatting Fix)
+# src/capitalguard/interfaces/telegram/ui_texts.py (v26.2 - Scientific Notation Fix)
 """
 Contains helper functions for building the text content of Telegram messages.
-This version fixes the logic for displaying target statuses (hit, next, pending)
-and correctly shows partial close percentages.
+This version fixes the formatting of large numbers to prevent them from being
+displayed in scientific notation.
 """
 
 from __future__ import annotations
@@ -28,7 +28,9 @@ def _format_price(price: Any) -> str:
     price_dec = _to_decimal(price)
     if not price_dec.is_finite():
         return "N/A"
-    return f"{price_dec.normalize():g}"
+    # ✅ THE FIX: Use 'f' format specifier to force standard decimal notation,
+    # then combine with normalize() to remove trailing zeros.
+    return f"{price_dec.normalize():f}"
 
 def _pct(entry: Any, target_price: Any, side: str) -> float:
     entry_dec, target_dec = _to_decimal(entry), _to_decimal(target_price)
@@ -94,48 +96,31 @@ def _build_performance_section(rec: Recommendation) -> str:
     ])
 
 def _build_exit_plan_section(rec: Recommendation) -> str:
-    # ✅ THE FIX: Complete rewrite of this function for correctness.
     lines = ["\n🎯 <b>EXIT PLAN</b>"]
     entry_price = rec.entry.value
-    
-    # 1. Find which targets have been hit by checking the event log.
     hit_targets = set()
     if rec.events:
         for event in rec.events:
             if event.event_type.startswith("TP") and event.event_type.endswith("_HIT"):
                 try:
-                    # Extracts the number from "TP1_HIT"
                     target_num = int(event.event_type[2:-4])
                     hit_targets.add(target_num)
                 except (ValueError, IndexError):
                     continue
-
-    # 2. Find the next logical target.
     next_tp_index = -1
     for i in range(1, len(rec.targets.values) + 1):
         if i not in hit_targets:
             next_tp_index = i
             break
-
-    # 3. Build the display lines with correct icons and partial close info.
     for i, target in enumerate(rec.targets.values, start=1):
         pct_value = _pct(entry_price, target.price.value, rec.side.value)
-        
-        if i in hit_targets:
-            icon = "✅"
-        elif i == next_tp_index:
-            icon = "🚀"
-        else:
-            icon = "⏳"
-            
+        if i in hit_targets: icon = "✅"
+        elif i == next_tp_index: icon = "🚀"
+        else: icon = "⏳"
         line = f"  • {icon} TP{i}: <code>{_format_price(target.price.value)}</code> ({_format_pnl(pct_value)})"
-        
-        # Add partial close info if it's defined and meaningful.
         if 0 < target.close_percent < 100:
             line += f" | Close {target.close_percent:.0f}%"
-            
         lines.append(line)
-        
     return "\n".join(lines)
 
 def _build_summary_section(rec: Recommendation) -> str:
