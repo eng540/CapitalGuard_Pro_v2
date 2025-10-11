@@ -1,8 +1,8 @@
-# src/capitalguard/application/services/trade_service.py (v27.3 - Final & Complete)
+# src/capitalguard/application/services/trade_service.py (v27.5 - Final & Complete)
 """
 TradeService - This is the final, complete, and reliable version. It includes
 full implementations for all management features like partial profit taking and
-exit strategies.
+exit strategies, with robust event logging and state management.
 """
 
 import logging
@@ -105,7 +105,6 @@ class TradeService:
             ))
 
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
-        # ... (validation logic is sound and remains unchanged)
         side_upper = side.upper()
         if not all(isinstance(p, Decimal) and p > Decimal(0) for p in [entry, stop_loss]): raise ValueError("Entry and Stop Loss must be positive.")
         if not targets or not all(isinstance(t.get('price'), Decimal) and t.get('price', Decimal(0)) > Decimal(0) for t in targets): raise ValueError("At least one valid target is required.")
@@ -123,7 +122,31 @@ class TradeService:
         sorted_prices = sorted(target_prices, reverse=(side_upper == 'SHORT'))
         if target_prices != sorted_prices: raise ValueError("Targets must be in ascending order for LONGs and descending for SHORTs.")
 
-    # ... (create_and_publish, create_trade_from_forwarding, etc. remain unchanged)
+    async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
+        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
+        user = UserRepository(session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not user:
+            report["failed"].append({"reason": "User not found"})
+            return rec_entity, report
+        channels_to_publish = ChannelRepository(session).list_by_analyst(user.id, only_active=True)
+        if target_channel_ids: channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids]
+        if not channels_to_publish:
+            report["failed"].append({"reason": "No active channels linked."})
+            return rec_entity, report
+        from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
+        keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None))
+        for channel in channels_to_publish:
+            try:
+                result = await self._call_notifier_maybe_async(self.notifier.post_to_channel, channel.telegram_channel_id, rec_entity, keyboard)
+                if isinstance(result, tuple) and len(result) == 2:
+                    session.add(PublishedMessage(recommendation_id=rec_entity.id, telegram_channel_id=result[0], telegram_message_id=result[1]))
+                    report["success"].append({"channel_id": channel.telegram_channel_id, "message_id": result[1]})
+                else: raise RuntimeError(f"Notifier returned unsupported type: {type(result)}")
+            except Exception as e:
+                report["failed"].append({"channel_id": channel.telegram_channel_id, "reason": str(e)})
+        session.flush()
+        return rec_entity, report
+
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user or user.user_type != UserType.ANALYST: raise ValueError("Only analysts can create recommendations.")
@@ -148,6 +171,51 @@ class TradeService:
         await self.alert_service.build_triggers_index()
         return final_rec, report
 
+    async def create_trade_from_forwarding(self, user_id: str, trade_data: Dict[str, Any], db_session: Session) -> Dict[str, Any]:
+        trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not trader_user: return {'success': False, 'error': 'User not found'}
+        system_user = self._get_or_create_system_user(db_session)
+        targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0)} for t in trade_data['targets']]
+        shadow_rec = Recommendation(
+            analyst_id=system_user.id, asset=trade_data['asset'], side=trade_data['side'],
+            entry=Decimal(str(trade_data['entry'])), stop_loss=Decimal(str(trade_data['stop_loss'])),
+            targets=targets_for_db, status=RecommendationStatusEnum.ACTIVE, 
+            order_type=OrderTypeEnum.MARKET, is_shadow=True,
+            notes="Shadow rec from forwarded trade.", activated_at=datetime.now(timezone.utc)
+        )
+        db_session.add(shadow_rec); db_session.flush()
+        new_trade = UserTrade(
+            user_id=trader_user.id, source_recommendation_id=shadow_rec.id, asset=trade_data['asset'], side=trade_data['side'],
+            entry=Decimal(str(trade_data['entry'])), stop_loss=Decimal(str(trade_data['stop_loss'])),
+            targets=targets_for_db, status=UserTradeStatus.OPEN
+        )
+        db_session.add(new_trade); db_session.flush()
+        await self.alert_service.build_triggers_index()
+        return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
+
+    async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
+        trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not trader_user: return {'success': False, 'error': 'User not found'}
+        rec_orm = self.repo.get(db_session, rec_id)
+        if not rec_orm: return {'success': False, 'error': 'Recommendation not found'}
+        
+        existing_trade = db_session.query(UserTrade).filter(
+            UserTrade.user_id == trader_user.id, 
+            UserTrade.source_recommendation_id == rec_id,
+            UserTrade.status == UserTradeStatus.OPEN
+        ).first()
+
+        if existing_trade: return {'success': False, 'error': 'You are already tracking this signal.'}
+        
+        new_trade = UserTrade(
+            user_id=trader_user.id, source_recommendation_id=rec_orm.id,
+            asset=rec_orm.asset, side=rec_orm.side, entry=rec_orm.entry,
+            stop_loss=rec_orm.stop_loss, targets=rec_orm.targets, status=UserTradeStatus.OPEN
+        )
+        db_session.add(new_trade); db_session.flush()
+        await self.alert_service.build_triggers_index()
+        return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
+        
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
@@ -201,7 +269,6 @@ class TradeService:
         await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True)
         return self.repo._to_entity(rec_orm)
 
-    # ✅ NEW: Full implementation for partial profit taking.
     async def take_partial_profit_async(self, rec_id: int, user_id: str, close_percent: Decimal, price: Decimal, db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
@@ -231,10 +298,9 @@ class TradeService:
             logger.info(f"Position #{rec_id} fully closed via partial profits. Closing recommendation.")
             return await self.close_recommendation_async(rec_id, user_id, price, db_session)
         else:
-            await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False) # No need to rebuild alerts for partial close
+            await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False)
             return self.repo._to_entity(rec_orm)
 
-    # ... (event processing methods are unchanged)
     async def process_invalidation_event(self, item_id: int):
         with session_scope() as db_session:
             rec = self.repo.get_for_update(db_session, item_id)
@@ -268,14 +334,37 @@ class TradeService:
 
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
         with session_scope() as db_session:
-            rec = self.repo.get_for_update(db_session, item_id)
-            if not rec or rec.status != RecommendationStatusEnum.ACTIVE: return
-            event_type = f"TP{target_index}_HIT"
-            db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type=event_type, event_data={"price": float(price)}))
-            self.notify_reply(rec.id, f"🎯 Signal #{rec.asset} hit TP{target_index} at {price}!", db_session=db_session)
-            await self._commit_and_dispatch(db_session, rec)
+            rec_orm = self.repo.get_for_update(db_session, item_id)
+            if not rec_orm or rec_orm.status != RecommendationStatusEnum.ACTIVE: return
 
-    # ... (read-only and helper methods are unchanged)
+            event_type = f"TP{target_index}_HIT"
+            db_session.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type=event_type, event_data={"price": float(price)}))
+            self.notify_reply(rec_orm.id, f"🎯 Signal #{rec_orm.asset} hit TP{target_index} at {price}!", db_session=db_session)
+            
+            target_info = rec_orm.targets[target_index - 1]
+            close_percent = Decimal(str(target_info.get("close_percent", 0)))
+
+            if close_percent > 0:
+                logger.info(f"Auto partial profit triggered for rec #{item_id} at TP{target_index}.")
+                pnl_on_part = _pct(rec_orm.entry, price, rec_orm.side)
+                rec_orm.open_size_percent = Decimal(str(rec_orm.open_size_percent)) - close_percent
+                event_data = {
+                    "price": float(price), "closed_percent": float(close_percent), 
+                    "remaining_percent": float(rec_orm.open_size_percent), "pnl_on_part": pnl_on_part
+                }
+                db_session.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type="PARTIAL_PROFIT_AUTO", event_data=event_data))
+                self.notify_reply(rec_orm.id, f"💰 Auto partial profit on #{rec_orm.asset}. Closed {close_percent:g}% at {price:g} ({pnl_on_part:+.2f}%).", db_session)
+
+            is_final_tp = (target_index == len(rec_orm.targets))
+            if (rec_orm.exit_strategy == ExitStrategyEnum.CLOSE_AT_FINAL_TP and is_final_tp) or rec_orm.open_size_percent < Decimal('0.1'):
+                rec_orm.status = RecommendationStatusEnum.CLOSED
+                rec_orm.closed_at = datetime.now(timezone.utc)
+                rec_orm.exit_price = price
+                db_session.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type="AUTO_CLOSE_FINAL_TP"))
+                self.notify_reply(rec_orm.id, f"✅ Signal #{rec_orm.asset} auto-closed at final TP.", db_session)
+
+            await self._commit_and_dispatch(db_session, rec_orm)
+
     def _get_or_create_system_user(self, db_session: Session) -> User:
         system_user = db_session.query(User).filter(User.telegram_user_id == -1).first()
         if not system_user:
