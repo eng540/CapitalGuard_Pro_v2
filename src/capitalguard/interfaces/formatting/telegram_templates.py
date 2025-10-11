@@ -1,3 +1,5 @@
+#--- START OF FILE CapitalGuard_Pro_v2-main/src/capitalguard/interfaces/formatting/telegram_templates.py ---
+```python
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 from typing import List, Optional
