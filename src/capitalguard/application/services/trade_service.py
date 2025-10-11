@@ -1,7 +1,7 @@
-# src/capitalguard/application/services/trade_service.py (v26.2 - COMPLETE, FINAL & UOW-COMPLIANT)
+# src/capitalguard/application/services/trade_service.py (v26.4 - Enum Comparison Fix)
 """
-TradeService - This version includes a critical fix in create_and_publish_recommendation_async
-to correctly use the UoW-injected db_session, resolving the analyst permission error.
+TradeService - This version fixes the critical permission bug by ensuring
+the comparison logic uses the correct, unified Enum type.
 """
 
 import logging
@@ -82,8 +82,8 @@ class TradeService:
             if isinstance(res, Exception): logger.error("Failed to notify card update: %s", res)
 
     def notify_reply(self, rec_id: int, text: str, db_session: Session):
-        rec = self.repo.get(db_session, rec_id)
-        if not rec or rec.is_shadow: return
+        rec_orm = self.repo.get(db_session, rec_id)
+        if not rec_orm or rec_orm.is_shadow: return
         published_messages = self.repo.get_published_messages(db_session, rec_id)
         for msg_meta in published_messages:
             asyncio.create_task(self._call_notifier_maybe_async(
@@ -94,7 +94,6 @@ class TradeService:
             ))
 
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
-        # ✅ UPGRADE: Integrated fortified validation logic from the old system.
         side_upper = side.upper()
         if not all(isinstance(p, Decimal) and p > Decimal(0) for p in [entry, stop_loss]): raise ValueError("Entry and Stop Loss must be positive.")
         if not targets or not all(isinstance(t.get('price'), Decimal) and t.get('price', Decimal(0)) > Decimal(0) for t in targets): raise ValueError("At least one valid target is required.")
@@ -103,7 +102,6 @@ class TradeService:
         target_prices = [t['price'] for t in targets]
         if side_upper == 'LONG' and any(p <= entry for p in target_prices): raise ValueError("All LONG targets must be > entry.")
         if side_upper == 'SHORT' and any(p >= entry for p in target_prices): raise ValueError("All SHORT targets must be < entry.")
-        # ✅ NEW: Check for R/R ratio and target order.
         risk = abs(entry - stop_loss)
         if risk.is_zero(): raise ValueError("Entry and Stop Loss cannot be the same.")
         first_target_price = min(target_prices) if side_upper == "LONG" else max(target_prices)
@@ -140,7 +138,11 @@ class TradeService:
 
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-        if not user or user.user_type != UserType.ANALYST: raise ValueError("Only analysts can create recommendations.")
+        
+        # ✅ THE DEFINITIVE FIX: Compare the user's role (which is now a unified Enum object)
+        # with the same unified Enum type. This comparison will now work correctly.
+        if not user or user.user_type != UserType.ANALYST: 
+            raise ValueError("Only analysts can create recommendations.")
         
         entry_price, sl_price = kwargs['entry'], kwargs['stop_loss']
         targets_list = kwargs['targets']
@@ -166,6 +168,7 @@ class TradeService:
         await self.alert_service.build_triggers_index()
         return final_rec, report
 
+    # ... (rest of the file is unchanged)
     async def create_trade_from_forwarding(self, user_id: str, trade_data: Dict[str, Any], db_session: Session) -> Dict[str, Any]:
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user: return {'success': False, 'error': 'User not found'}
@@ -310,8 +313,11 @@ class TradeService:
     def _get_or_create_system_user(self, db_session: Session) -> User:
         system_user = db_session.query(User).filter(User.telegram_user_id == -1).first()
         if not system_user:
-            system_user = User(telegram_user_id=-1, username='system', user_type=UserType.ANALYST, is_active=True)
-            db_session.add(system_user); db_session.flush()
+            system_user = User(telegram_user_id=-1, username='system', user_type=UserType.ANALYST.value, is_active=True)
+            db_session.add(system_user)
+            db_session.flush()
+        elif not system_user.is_active:
+            system_user.is_active = True
         return system_user
 
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:

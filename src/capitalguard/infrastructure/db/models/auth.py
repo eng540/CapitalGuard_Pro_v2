@@ -1,24 +1,24 @@
-# src/capitalguard/infrastructure/db/models/auth.py (v25.0 - FINAL & UNIFIED)
+# src/capitalguard/infrastructure/db/models/auth.py (v25.1 - Enum Unification)
 """
 SQLAlchemy ORM models for authentication and user management.
+This version removes the redundant Enum definition and imports it from the domain,
+establishing a single source of truth and fixing the permission bug.
 """
 
-import enum
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum, BigInteger, func
 from sqlalchemy.orm import relationship
 from .base import Base
 
-# This Enum must match the one in domain/entities.py
-class UserType(enum.Enum):
-    TRADER = 'TRADER'
-    ANALYST = 'ANALYST'
+# ✅ THE DEFINITIVE FIX: Import the Enum from the single source of truth in the domain layer.
+from capitalguard.domain.entities import UserType
 
 class User(Base):
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     telegram_user_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    # ✅ THE DEFINITIVE FIX: Use the imported Enum directly.
     user_type = Column(Enum(UserType), nullable=False, default=UserType.TRADER, server_default='TRADER')
     
     username = Column(String, nullable=True)
