@@ -1,8 +1,8 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v26.4 - COMPLETE, FINAL & HARDENED)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v27.0 - Full Interactivity Fix)
 """
 Implements all callback query handlers for managing existing recommendations and trades.
-This version includes a critical fix to prevent crashes on unexpected user replies and
-ensures all user inputs are parsed correctly using the Decimal-aware parser.
+This version fixes dead buttons and reply handling by registering all necessary handlers
+and adjusting handler priorities.
 """
 
 import logging
@@ -12,12 +12,12 @@ from decimal import Decimal, InvalidOperation
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
-from telegram.ext import (Application, CallbackQueryHandler, MessageHandler, ContextTypes, filters)
+from telegram.ext import (Application, CallbackQueryHandler, MessageHandler, ContextTypes, filters, ConversationHandler)
 
 from capitalguard.domain.entities import RecommendationStatus
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service, parse_tail_int, parse_cq_parts
-from .keyboards import (analyst_control_panel_keyboard, build_open_recs_keyboard, build_user_trade_control_keyboard, build_close_options_keyboard, analyst_edit_menu_keyboard)
+from .keyboards import (analyst_control_panel_keyboard, build_open_recs_keyboard, build_user_trade_control_keyboard, build_close_options_keyboard, analyst_edit_menu_keyboard, build_exit_strategy_keyboard, build_partial_close_keyboard)
 from .ui_texts import build_trade_card_text
 from .auth import require_active_user, require_analyst_user
 from .parsers import parse_number, parse_targets_list
@@ -27,6 +27,7 @@ from capitalguard.application.services.price_service import PriceService
 log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
+(AWAIT_PARTIAL_PERCENT) = range(1)
 
 async def _send_or_edit_position_panel(context: ContextTypes.DEFAULT_TYPE, db_session, chat_id: int, message_id: int, position_id: int, user_id: int, position_type: str):
     trade_service = get_service(context, "trade_service", TradeService)
@@ -88,26 +89,29 @@ async def _prompt_for_input(query: Update.callback_query, context: ContextTypes.
 @uow_transaction
 @require_active_user
 @require_analyst_user
-async def unified_management_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
+async def unified_management_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
     query = update.callback_query
     await query.answer()
     parts = parse_cq_parts(query.data)
-    action, rec_id_str = parts[1], parts[2]
-    rec_id = int(rec_id_str)
+    action = parts[1]
+    rec_id = int(parts[2])
     
     if action == "edit_menu": await query.edit_message_reply_markup(reply_markup=analyst_edit_menu_keyboard(rec_id))
     elif action == "close_menu": await query.edit_message_reply_markup(reply_markup=build_close_options_keyboard(rec_id))
+    elif action == "strategy_menu": 
+        rec = TradeService(None,None,None,None).repo.get(db_session, rec_id) # Simplified for keyboard
+        if rec: await query.edit_message_reply_markup(reply_markup=build_exit_strategy_keyboard(rec))
+    elif action == "close_partial": await query.edit_message_reply_markup(reply_markup=build_partial_close_keyboard(rec_id))
     elif action == "edit_sl": await _prompt_for_input(query, context, "edit_sl", f"✏️ Reply to this message with the new Stop Loss for #{rec_id}.")
     elif action == "edit_tp": await _prompt_for_input(query, context, "edit_tp", f"🎯 Reply with the new list of targets for #{rec_id} (e.g., 50k 52k@50).")
     elif action == "close_manual": await _prompt_for_input(query, context, "close_manual", f"✍️ Reply with the final closing price for #{rec_id}.")
 
 @uow_transaction
 async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    # ✅ THE FIX: Harden the handler against unexpected replies by checking for user_data.
     if not context.user_data: return
         
     if not (state := context.user_data.pop(AWAITING_INPUT_KEY, None)) or not (orig_msg := state.get("original_message")) or not update.message.reply_to_message or update.message.reply_to_message.message_id != orig_msg.message_id:
-        if state: context.user_data[AWAITING_INPUT_KEY] = state # Put it back if the check failed but state existed
+        if state: context.user_data[AWAITING_INPUT_KEY] = state
         return
 
     action, position_id = state["action"], state["rec_id"]
@@ -140,7 +144,12 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await context.bot.send_message(chat_id=chat_id, text=f"❌ An unexpected internal error occurred: {e}", reply_to_message_id=message_id)
 
 def register_management_handlers(application: Application):
+    # ✅ THE FIX: Register all missing callback handlers.
     application.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=r"^open_nav:page:"))
     application.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=r"^(pos:show_panel:|rec:back_to_main:)"))
-    application.add_handler(CallbackQueryHandler(unified_management_handler, pattern=r"^rec:(edit_menu|close_menu|edit_sl|edit_tp|close_manual)"))
-    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler), group=1)
+    
+    # Unified handler for buttons that open sub-menus or prompt for input
+    application.add_handler(CallbackQueryHandler(unified_management_handler, pattern=r"^rec:(edit_menu|close_menu|strategy_menu|close_partial|edit_sl|edit_tp|close_manual)"))
+    
+    # ✅ THE FIX: Remove group=1 to give the reply handler default priority, preventing conflicts.
+    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler))
