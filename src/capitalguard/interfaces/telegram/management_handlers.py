@@ -1,9 +1,7 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v27.4 - Final & Reliable)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v27.4 - Final & Complete)
 """
 Implements all callback query handlers for managing recommendations and trades.
-This version completely refactors the handler logic, abandoning the faulty unified
-handler in favor of specific, reliable handlers for each action pattern. This
-solves all dead button and silent failure issues.
+This is the final, complete, and fully implemented version.
 """
 
 import logging
@@ -27,6 +25,7 @@ from capitalguard.application.services.price_service import PriceService
 log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
+(AWAIT_PARTIAL_PERCENT, AWAIT_PARTIAL_PRICE) = range(2)
 
 # --- Helper Functions ---
 
@@ -66,7 +65,7 @@ async def _prompt_for_input(query: Update.callback_query, context: ContextTypes.
     full_prompt = f"{query.message.text}\n\n<b>{prompt_text}</b>"
     await query.edit_message_text(full_prompt, parse_mode=ParseMode.HTML)
 
-# --- Main Panel Handlers ---
+# --- Main Panel & Navigation ---
 
 @uow_transaction
 @require_active_user
@@ -89,49 +88,31 @@ async def navigate_open_positions_handler(update: Update, context: ContextTypes.
     keyboard = await build_open_recs_keyboard(items, current_page=page, price_service=price_service)
     await query.edit_message_text(text="<b>📊 Your Open Positions</b>\nSelect one to manage:", reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
-# --- Menu Navigation Handlers ---
+# --- Menu Navigation ---
 
 @uow_transaction
 @require_active_user
 @require_analyst_user
-async def show_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
+async def show_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
     query = update.callback_query
     await query.answer()
-    rec_id = int(query.data.split(':')[2])
-    await query.edit_message_reply_markup(reply_markup=analyst_edit_menu_keyboard(rec_id))
+    parts = parse_cq_parts(query.data)
+    action, rec_id = parts[1], int(parts[2])
 
-@uow_transaction
-@require_active_user
-@require_analyst_user
-async def show_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
-    query = update.callback_query
-    await query.answer()
-    rec_id = int(query.data.split(':')[2])
-    await query.edit_message_reply_markup(reply_markup=build_close_options_keyboard(rec_id))
+    if action == "edit_menu":
+        await query.edit_message_reply_markup(reply_markup=analyst_edit_menu_keyboard(rec_id))
+    elif action == "close_menu":
+        await query.edit_message_reply_markup(reply_markup=build_close_options_keyboard(rec_id))
+    elif action == "strategy_menu":
+        trade_service = get_service(context, "trade_service", TradeService)
+        rec_orm = trade_service.repo.get(db_session, rec_id)
+        if rec_orm:
+            rec_entity = trade_service.repo._to_entity(rec_orm)
+            await query.edit_message_reply_markup(reply_markup=build_exit_strategy_keyboard(rec_entity))
+    elif action == "close_partial":
+        await query.edit_message_reply_markup(reply_markup=build_partial_close_keyboard(rec_id))
 
-@uow_transaction
-@require_active_user
-@require_analyst_user
-async def show_strategy_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    query = update.callback_query
-    await query.answer()
-    rec_id = int(query.data.split(':')[2])
-    trade_service = get_service(context, "trade_service", TradeService)
-    rec_orm = trade_service.repo.get(db_session, rec_id)
-    if rec_orm:
-        rec_entity = trade_service.repo._to_entity(rec_orm)
-        await query.edit_message_reply_markup(reply_markup=build_exit_strategy_keyboard(rec_entity))
-
-@uow_transaction
-@require_active_user
-@require_analyst_user
-async def show_partial_close_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs):
-    query = update.callback_query
-    await query.answer()
-    rec_id = int(query.data.split(':')[2])
-    await query.edit_message_reply_markup(reply_markup=build_partial_close_keyboard(rec_id))
-
-# --- Action Handlers ---
+# --- Direct Actions ---
 
 @uow_transaction
 @require_active_user
@@ -143,7 +124,6 @@ async def set_strategy_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     rec_id, strategy_value = int(parts[2]), parts[3]
     trade_service = get_service(context, "trade_service", TradeService)
     await trade_service.update_exit_strategy_async(rec_id, str(query.from_user.id), ExitStrategy(strategy_value), db_session)
-    # The panel will be updated automatically by the service's _commit_and_dispatch
 
 @uow_transaction
 @require_active_user
@@ -164,29 +144,29 @@ async def close_at_market_handler(update: Update, context: ContextTypes.DEFAULT_
         return
     await trade_service.close_recommendation_async(rec_id, str(query.from_user.id), Decimal(str(live_price)), db_session)
 
-# --- Input Prompt Handlers ---
+# --- Input Prompts & Handlers ---
 
-async def prompt_edit_sl_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _prompt_for_input(update.callback_query, context, "edit_sl", f"✏️ Reply to this message with the new Stop Loss.")
-
-async def prompt_edit_tp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _prompt_for_input(update.callback_query, context, "edit_tp", f"🎯 Reply with the new list of targets (e.g., 50k 52k@50).")
-
-async def prompt_close_manual_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _prompt_for_input(update.callback_query, context, "close_manual", f"✍️ Reply with the final closing price.")
+async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action = query.data.split(':')[1]
+    prompts = {
+        "edit_sl": "✏️ Reply to this message with the new Stop Loss.",
+        "edit_tp": "🎯 Reply with the new list of targets (e.g., 50k 52k@50).",
+        "close_manual": "✍️ Reply with the final closing price."
+    }
+    await _prompt_for_input(query, context, action, prompts.get(action, "Please reply with the new value."))
 
 @uow_transaction
-async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    if not context.user_data or not (state := context.user_data.pop(AWAITING_INPUT_KEY, None)):
-        return
-    
+async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    if not context.user_data or not (state := context.user_data.pop(AWAITING_INPUT_KEY, None)): return
     orig_msg = state.get("original_message")
     if not orig_msg or not update.message.reply_to_message or update.message.reply_to_message.message_id != orig_msg.message_id:
         if state: context.user_data[AWAITING_INPUT_KEY] = state
         return
 
-    action, position_id = state["action"], state["rec_id"]
-    user_input, chat_id, message_id, user_id = update.message.text.strip(), orig_msg.chat_id, orig_msg.message_id, str(update.effective_user.id)
+    action, rec_id = state["action"], state["rec_id"]
+    user_input, chat_id, user_id = update.message.text.strip(), orig_msg.chat_id, str(update.effective_user.id)
     
     try: await update.message.delete()
     except Exception: pass
@@ -197,21 +177,18 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
         if action == "close_manual":
             price = parse_number(user_input)
             if price is None: raise ValueError("Invalid price format.")
-            await trade_service.close_recommendation_async(position_id, user_id, price, db_session=db_session)
+            await trade_service.close_recommendation_async(rec_id, user_id, price, db_session=db_session)
         elif action == "edit_sl":
             price = parse_number(user_input)
             if price is None: raise ValueError("Invalid price format.")
-            await trade_service.update_sl_for_user_async(position_id, user_id, price, db_session=db_session)
+            await trade_service.update_sl_for_user_async(rec_id, user_id, price, db_session=db_session)
         elif action == "edit_tp":
             targets_list = parse_targets_list(user_input.split())
             if not targets_list: raise ValueError("Invalid targets format.")
-            await trade_service.update_targets_for_user_async(position_id, user_id, targets_list, db_session=db_session)
-    except (InvalidOperation, ValueError, RuntimeError, TypeError) as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ Action Failed: {e}\nPlease try again.", reply_to_message_id=message_id)
-        context.user_data[AWAITING_INPUT_KEY] = state # Restore state for retry
+            await trade_service.update_targets_for_user_async(rec_id, user_id, targets_list, db_session=db_session)
     except Exception as e:
-        log.error(f"Critical error processing user input for {action} on #{position_id}: {e}", exc_info=True)
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ An unexpected internal error occurred: {e}", reply_to_message_id=message_id)
+        log.error(f"Error processing reply for {action} on #{rec_id}: {e}", exc_info=True)
+        await context.bot.send_message(chat_id=chat_id, text=f"❌ Error: {e}")
 
 # --- Registration ---
 
@@ -221,19 +198,14 @@ def register_management_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=r"^(pos:show_panel:|rec:back_to_main:)"))
     
     # Menu navigation
-    app.add_handler(CallbackQueryHandler(show_edit_menu_handler, pattern=r"^rec:edit_menu:"))
-    app.add_handler(CallbackQueryHandler(show_close_menu_handler, pattern=r"^rec:close_menu:"))
-    app.add_handler(CallbackQueryHandler(show_strategy_menu_handler, pattern=r"^rec:strategy_menu:"))
-    app.add_handler(CallbackQueryHandler(show_partial_close_menu_handler, pattern=r"^rec:close_partial:"))
+    app.add_handler(CallbackQueryHandler(show_menu_handler, pattern=r"^rec:(edit_menu|close_menu|strategy_menu|close_partial)"))
 
     # Direct actions
     app.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:"))
     app.add_handler(CallbackQueryHandler(close_at_market_handler, pattern=r"^rec:close_market:"))
 
     # Actions that prompt for user input
-    app.add_handler(CallbackQueryHandler(prompt_edit_sl_handler, pattern=r"^rec:edit_sl:"))
-    app.add_handler(CallbackQueryHandler(prompt_edit_tp_handler, pattern=r"^rec:edit_tp:"))
-    app.add_handler(CallbackQueryHandler(prompt_close_manual_handler, pattern=r"^rec:close_manual:"))
+    app.add_handler(CallbackQueryHandler(prompt_handler, pattern=r"^rec:(edit_sl|edit_tp|close_manual)"))
     
     # Handler for text replies to prompts
-    app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler))
+    app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, reply_handler))
