@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capitalguard"
+version = "2.0.0"
+authors = [
+  { name="The Guardian", email="guardian@capitalguard.pro" },
+]
+description = "CapitalGuard Pro Trading Signal Management System"
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

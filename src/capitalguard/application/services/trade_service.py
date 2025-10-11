@@ -154,10 +154,10 @@ class TradeService:
         session.flush()
         return rec_entity, report
 
-    @uow_transaction
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-        if not user or user.user_type != UserType.ANALYST: raise ValueError("Only analysts can create recommendations.")
+        if not user or user.user_type != UserType.ANALYST:
+            raise ValueError("Only analysts can create recommendations.")
         entry_price, sl_price = Decimal(str(kwargs['entry'])), Decimal(str(kwargs['stop_loss']))
         targets_list = [{'price': Decimal(str(t['price'])), 'close_percent': t.get('close_percent', 0)} for t in kwargs['targets']]
         asset, side, market = kwargs['asset'].strip().upper(), kwargs['side'].upper(), kwargs.get('market', 'Futures')

@@ -26,28 +26,44 @@ log = logging.getLogger(__name__)
 
 @uow_transaction
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """
+    Handles the /start command. It ensures a user is created and active in the
+    database, then greets them. It also handles deep-linking for tracking signals.
+    """
     user = update.effective_user
     log.info(f"User {user.id} ({user.username or 'NoUsername'}) initiated /start command.")
-    UserRepository(db_session).find_or_create(telegram_id=user.id, first_name=user.first_name, username=user.username)
 
+    # ✅ THE FIX: Call the enhanced find_or_create to ensure the user is registered
+    # and active in the database from their very first interaction. This prevents
+    # downstream errors where a user object might be None.
+    db_user = UserRepository(db_session).find_or_create(
+        telegram_id=user.id,
+        first_name=user.first_name,
+        username=user.username
+    )
+
+    # Deep-linking logic for tracking a recommendation via a "start?track_ID" link
     if context.args and context.args[0].startswith("track_"):
         try:
             rec_id = int(context.args[0].split('_')[1])
             trade_service = get_service(context, "trade_service", TradeService)
-            result = await trade_service.create_trade_from_recommendation(str(user.id), rec_id, db_session=db_session)
+            # We now pass the confirmed db_user object, which is guaranteed to exist.
+            result = await trade_service.create_trade_from_recommendation(str(db_user.telegram_user_id), rec_id, db_session=db_session)
+
             if result.get('success'):
                 await update.message.reply_html(f"✅ <b>Signal tracking confirmed!</b>\nSignal for <b>{result['asset']}</b> has been added to your portfolio.\n\nUse <code>/myportfolio</code> to view your trades.")
             else:
                 await update.message.reply_html(f"⚠️ Could not track signal: {result.get('error', 'Unknown')}")
-            return
+            return # End execution after handling deep link
         except (ValueError, IndexError):
             await update.message.reply_html("Invalid tracking link.")
+            return
         except Exception as e:
             log.error(f"Error handling deep link for user {user.id}: {e}", exc_info=True)
-            await update.message.reply_html("An error occurred.")
-        return
+            await update.message.reply_html("An error occurred while processing the tracking link.")
+            return
 
-    await update.message.reply_html("👋 Welcome to the <b>CapitalGuard Bot</b>.\nUse /help for assistance.")
+    await update.message.reply_html(f"👋 Welcome, {user.first_name}! You are now registered.\nUse /help for assistance.")
 
 @uow_transaction
 @require_active_user

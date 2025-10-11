@@ -21,10 +21,13 @@ ADMIN_USERNAMES = [username.strip() for username in (os.getenv("ADMIN_USERNAMES"
 admin_filter = filters.User(username=ADMIN_USERNAMES)
 
 @uow_transaction
-async def grant_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    """Admin Command: Grants a user access to the bot."""
+async def promote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+    """
+    Admin Command: Promotes a user to the Analyst role, giving them the ability
+    to create recommendations.
+    """
     if not context.args:
-        await update.message.reply_text("Usage: /grantaccess <user_id>")
+        await update.message.reply_text("Usage: /promote <user_id>")
         return
     try:
         target_user_id = int(context.args[0])
@@ -32,51 +35,30 @@ async def grant_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         target_user = user_repo.find_by_telegram_id(target_user_id)
         
         if not target_user:
-            await update.message.reply_text(f"User with ID {target_user_id} not found.")
-            return
-            
-        if target_user.is_active:
-            await update.message.reply_text(f"User {target_user_id} already has active access.")
-            return
-
-        target_user.is_active = True
-        await update.message.reply_text(f"✅ Access granted to user {target_user_id}.")
-        log.info(f"Admin {update.effective_user.username} granted access to user {target_user_id}.")
-
-    except (ValueError, IndexError):
-        await update.message.reply_text("Invalid User ID format.")
-    except Exception as e:
-        log.error(f"Error in grant_access_cmd: {e}", exc_info=True)
-        await update.message.reply_text("An error occurred.")
-
-@uow_transaction
-async def make_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
-    """Admin Command: Promotes a user to the Analyst role."""
-    if not context.args:
-        await update.message.reply_text("Usage: /makeanalyst <user_id>")
-        return
-    try:
-        target_user_id = int(context.args[0])
-        user_repo = UserRepository(db_session)
-        target_user = user_repo.find_by_telegram_id(target_user_id)
-        
-        if not target_user:
-            await update.message.reply_text(f"User with ID {target_user_id} not found.")
+            await update.message.reply_text(f"User with ID {target_user_id} not found. They must /start the bot first.")
             return
         
         if target_user.user_type == UserType.ANALYST:
-            await update.message.reply_text(f"User {target_user_id} is already an analyst.")
+            await update.message.reply_text(f"User {target_user_id} is already an Analyst.")
             return
 
         target_user.user_type = UserType.ANALYST
+        # ✅ THE FIX: Provide clear, actionable feedback to the admin and the user.
         await update.message.reply_text(f"✅ User {target_user_id} has been promoted to Analyst.")
         log.info(f"Admin {update.effective_user.username} promoted user {target_user_id} to Analyst.")
 
+        # Notify the user they have been promoted
+        await context.bot.send_message(
+            chat_id=target_user_id,
+            text="🎉 Congratulations! You have been promoted to an **Analyst**. You can now use the `/newrec` command to create recommendations.",
+            parse_mode="Markdown"
+        )
+
     except (ValueError, IndexError):
-        await update.message.reply_text("Invalid User ID format.")
+        await update.message.reply_text("Invalid User ID format. Please provide a valid integer ID.")
     except Exception as e:
-        log.error(f"Error in make_analyst_cmd: {e}", exc_info=True)
-        await update.message.reply_text("An error occurred.")
+        log.error(f"Error in promote_cmd: {e}", exc_info=True)
+        await update.message.reply_text("An unexpected error occurred.")
 
 def register_admin_commands(app: Application):
     """Registers all admin-only command handlers."""
@@ -84,8 +66,9 @@ def register_admin_commands(app: Application):
         log.warning("ADMIN_USERNAMES not set. Admin commands will be unavailable.")
         return
     
-    app.add_handler(CommandHandler("grantaccess", grant_access_cmd, filters=admin_filter))
-    app.add_handler(CommandHandler("makeanalyst", make_analyst_cmd, filters=admin_filter))
+    # ✅ THE FIX: Register the new /promote command and remove the obsolete ones.
+    # This keeps the admin interface clean and aligned with the new user management workflow.
+    app.add_handler(CommandHandler("promote", promote_cmd, filters=admin_filter))
     log.info(f"Admin commands registered for users: {ADMIN_USERNAMES}")
 
 #END
