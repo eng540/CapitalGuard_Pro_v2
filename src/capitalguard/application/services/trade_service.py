@@ -1,7 +1,10 @@
-# src/capitalguard/application/services/trade_service.py (v26.5 - Duplicate Tracking Fix)
+# src/capitalguard/application/services/trade_service.py (v27.0 - Observer Pattern Refactor)
 """
-TradeService - This version includes a fix to prevent duplicate tracking of the
-same recommendation by a user.
+TradeService - This version introduces a major architectural refactor by implementing
+a simplified Observer Pattern. A central helper method, `_commit_and_dispatch`, is now
+the single point responsible for committing changes and dispatching crucial updates
+(alert index rebuild, notifier), eliminating code duplication and preventing developers
+from forgetting these critical side effects.
 """
 
 import logging
@@ -59,6 +62,21 @@ class TradeService:
         self.market_data_service = market_data_service
         self.price_service = price_service
         self.alert_service: "AlertService" = None
+
+    # ✅ NEW: Central dispatcher method (Observer Pattern)
+    async def _commit_and_dispatch(self, db_session: Session, rec_orm: Recommendation):
+        """
+        The single source of truth for committing recommendation changes and dispatching updates.
+        This prevents developers from forgetting to call notifications or alert index rebuilds.
+        """
+        db_session.commit()
+        
+        # Dispatch alert service update
+        await self.alert_service.build_triggers_index()
+        
+        # Dispatch notifier update
+        updated_entity = self.repo._to_entity(rec_orm)
+        await self.notify_card_update(updated_entity, db_session)
 
     async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
         if inspect.iscoroutinefunction(fn):
@@ -194,8 +212,6 @@ class TradeService:
         rec_orm = self.repo.get(db_session, rec_id)
         if not rec_orm: return {'success': False, 'error': 'Recommendation not found'}
         
-        # ✅ THE FIX: The query was correct, but it needs to check for OPEN trades specifically.
-        # A user should be able to re-track a signal if they previously closed their own trade.
         existing_trade = db_session.query(UserTrade).filter(
             UserTrade.user_id == trader_user.id, 
             UserTrade.source_recommendation_id == rec_id,
@@ -213,7 +229,6 @@ class TradeService:
         await self.alert_service.build_triggers_index()
         return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
         
-    # ... (rest of the file is unchanged)
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
@@ -225,11 +240,10 @@ class TradeService:
         old_sl, rec_orm.stop_loss = rec_orm.stop_loss, new_sl
         db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="SL_UPDATED", event_data={"old": float(old_sl), "new": float(new_sl)}))
         
-        updated_entity = self.repo._to_entity(rec_orm)
-        await self.alert_service.build_triggers_index()
-        self.notify_reply(rec_id, f"⚠️ Stop Loss for #{updated_entity.asset.value} updated to {new_sl:g}.", db_session)
-        await self.notify_card_update(updated_entity, db_session)
-        return updated_entity
+        self.notify_reply(rec_id, f"⚠️ Stop Loss for #{rec_orm.asset} updated to {new_sl:g}.", db_session)
+        # ✅ REFACTOR: Delegate commit and dispatch to the central method.
+        await self._commit_and_dispatch(db_session, rec_orm)
+        return self.repo._to_entity(rec_orm)
 
     async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, Any]], db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
@@ -242,11 +256,10 @@ class TradeService:
         old_targets, rec_orm.targets = rec_orm.targets, [{'price': str(t['price']), 'close_percent': t['close_percent']} for t in new_targets]
         db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="TP_UPDATED", event_data={"old": old_targets, "new": rec_orm.targets}))
         
-        updated_entity = self.repo._to_entity(rec_orm)
-        await self.alert_service.build_triggers_index()
-        self.notify_reply(rec_id, f"🎯 Targets for #{updated_entity.asset.value} have been updated.", db_session)
-        await self.notify_card_update(updated_entity, db_session)
-        return updated_entity
+        self.notify_reply(rec_id, f"🎯 Targets for #{rec_orm.asset} have been updated.", db_session)
+        # ✅ REFACTOR: Delegate commit and dispatch to the central method.
+        await self._commit_and_dispatch(db_session, rec_orm)
+        return self.repo._to_entity(rec_orm)
 
     async def close_recommendation_async(self, rec_id: int, user_id: str, exit_price: Decimal, db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
@@ -259,11 +272,10 @@ class TradeService:
         rec_orm.status, rec_orm.exit_price, rec_orm.closed_at = RecommendationStatusEnum.CLOSED, exit_price, datetime.now(timezone.utc)
         db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="MANUAL_CLOSE", event_data={"price": float(exit_price)}))
 
-        updated_entity = self.repo._to_entity(rec_orm)
-        await self.alert_service.build_triggers_index()
-        self.notify_reply(rec_id, f"✅ Signal #{updated_entity.asset.value} manually closed at {exit_price:g}.", db_session)
-        await self.notify_card_update(updated_entity, db_session)
-        return updated_entity
+        self.notify_reply(rec_id, f"✅ Signal #{rec_orm.asset} manually closed at {exit_price:g}.", db_session)
+        # ✅ REFACTOR: Delegate commit and dispatch to the central method.
+        await self._commit_and_dispatch(db_session, rec_orm)
+        return self.repo._to_entity(rec_orm)
 
     async def process_invalidation_event(self, item_id: int):
         with session_scope() as db_session:
@@ -272,11 +284,8 @@ class TradeService:
             rec.status = RecommendationStatusEnum.CLOSED
             rec.closed_at = datetime.now(timezone.utc)
             db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="INVALIDATED", event_data={"reason": "SL hit before entry"}))
-            db_session.commit()
-            rec_entity = self.repo._to_entity(rec)
             self.notify_reply(rec.id, f"❌ Signal #{rec.asset} was invalidated (SL hit before entry).", db_session=db_session)
-            await self.notify_card_update(rec_entity, db_session=db_session)
-        await self.alert_service.build_triggers_index()
+            await self._commit_and_dispatch(db_session, rec)
 
     async def process_activation_event(self, item_id: int):
         with session_scope() as db_session:
@@ -285,11 +294,8 @@ class TradeService:
             rec.status = RecommendationStatusEnum.ACTIVE
             rec.activated_at = datetime.now(timezone.utc)
             db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="ACTIVATED"))
-            db_session.commit()
-            rec_entity = self.repo._to_entity(rec)
             self.notify_reply(rec.id, f"▶️ Signal #{rec.asset} is now ACTIVE!", db_session=db_session)
-            await self.notify_card_update(rec_entity, db_session=db_session)
-        await self.alert_service.build_triggers_index()
+            await self._commit_and_dispatch(db_session, rec)
 
     async def process_sl_hit_event(self, item_id: int, price: Decimal):
         with session_scope() as db_session:
@@ -299,11 +305,8 @@ class TradeService:
             rec.closed_at = datetime.now(timezone.utc)
             rec.exit_price = price
             db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="SL_HIT", event_data={"price": float(price)}))
-            db_session.commit()
-            rec_entity = self.repo._to_entity(rec)
             self.notify_reply(rec.id, f"🛑 Signal #{rec.asset} hit Stop Loss at {price}.", db_session=db_session)
-            await self.notify_card_update(rec_entity, db_session=db_session)
-        await self.alert_service.build_triggers_index()
+            await self._commit_and_dispatch(db_session, rec)
 
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
         with session_scope() as db_session:
@@ -311,11 +314,8 @@ class TradeService:
             if not rec or rec.status != RecommendationStatusEnum.ACTIVE: return
             event_type = f"TP{target_index}_HIT"
             db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type=event_type, event_data={"price": float(price)}))
-            db_session.commit()
-            rec_entity = self.repo._to_entity(rec)
             self.notify_reply(rec.id, f"🎯 Signal #{rec.asset} hit TP{target_index} at {price}!", db_session=db_session)
-            await self.notify_card_update(rec_entity, db_session=db_session)
-        await self.alert_service.build_triggers_index()
+            await self._commit_and_dispatch(db_session, rec)
 
     def _get_or_create_system_user(self, db_session: Session) -> User:
         system_user = db_session.query(User).filter(User.telegram_user_id == -1).first()
@@ -327,6 +327,7 @@ class TradeService:
             system_user.is_active = True
         return system_user
 
+    # ... (read-only methods like get_open_positions_for_user remain unchanged)
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
         if not user: return []
