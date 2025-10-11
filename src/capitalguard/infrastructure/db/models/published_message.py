@@ -33,4 +33,4 @@ class PublishedMessage(Base):
             f"<PublishedMessage(id={self.id}, rec_id={self.recommendation_id}, "
             f"channel_id={self.telegram_channel_id}, msg_id={self.telegram_message_id})>"
         )
-# --- END OF NEW FILE ---```
+# --- END OF NEW FILE ---
