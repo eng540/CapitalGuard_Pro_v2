@@ -1,13 +1,14 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v27.4 - Final & Complete)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v27.5 - Final & Complete)
 """
 Implements all callback query handlers for managing recommendations and trades.
-This is the final, complete, and fully implemented version.
+This is the final, complete, and fully implemented version with specific,
+reliable handlers for each action.
 """
 
 import logging
 from decimal import Decimal, InvalidOperation
 
-from telegram import Update
+from telegram import Update, ReplyKeyboardRemove
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import (Application, CallbackQueryHandler, MessageHandler, ContextTypes, filters, ConversationHandler, CommandHandler)
@@ -15,7 +16,7 @@ from telegram.ext import (Application, CallbackQueryHandler, MessageHandler, Con
 from capitalguard.domain.entities import RecommendationStatus, ExitStrategy
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service, parse_tail_int, parse_cq_parts
-from .keyboards import (analyst_control_panel_keyboard, build_open_recs_keyboard, build_user_trade_control_keyboard, build_close_options_keyboard, analyst_edit_menu_keyboard, build_exit_strategy_keyboard, build_partial_close_keyboard, confirm_close_keyboard)
+from .keyboards import (analyst_control_panel_keyboard, build_open_recs_keyboard, build_user_trade_control_keyboard, build_close_options_keyboard, analyst_edit_menu_keyboard, build_exit_strategy_keyboard, build_partial_close_keyboard)
 from .ui_texts import build_trade_card_text
 from .auth import require_active_user, require_analyst_user
 from .parsers import parse_number, parse_targets_list
@@ -32,7 +33,8 @@ AWAITING_INPUT_KEY = "awaiting_user_input_for"
 async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     query = update.callback_query
     parts = parse_cq_parts(query.data)
-    position_type, position_id = parts[2], int(parts[3])
+    position_id = int(parts[-1])
+    position_type = parts[2] if len(parts) > 3 else 'rec'
     
     trade_service = get_service(context, "trade_service", TradeService)
     position = trade_service.get_position_details_for_user(db_session, str(query.from_user.id), position_type, position_id)
@@ -140,9 +142,32 @@ async def close_at_market_handler(update: Update, context: ContextTypes.DEFAULT_
     price_service = get_service(context, "price_service", PriceService)
     live_price = await price_service.get_cached_price(rec_entity.asset.value, rec_entity.market, force_refresh=True)
     if live_price is None:
-        await query.edit_message_text(f"❌ Could not fetch market price for {rec_entity.asset.value}.")
+        await query.answer(f"❌ Could not fetch market price for {rec_entity.asset.value}.", show_alert=True)
         return
     await trade_service.close_recommendation_async(rec_id, str(query.from_user.id), Decimal(str(live_price)), db_session)
+
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def partial_close_fixed_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    query = update.callback_query
+    await query.answer("Fetching price and taking partial profit...")
+    parts = parse_cq_parts(query.data)
+    rec_id, percent_to_close = int(parts[2]), Decimal(parts[3])
+    
+    trade_service = get_service(context, "trade_service", TradeService)
+    price_service = get_service(context, "price_service", PriceService)
+    
+    rec_orm = trade_service.repo.get(db_session, rec_id)
+    if not rec_orm: return
+    rec_entity = trade_service.repo._to_entity(rec_orm)
+    
+    live_price = await price_service.get_cached_price(rec_entity.asset.value, rec_entity.market, force_refresh=True)
+    if live_price is None:
+        await query.answer(f"❌ Could not fetch market price for {rec_entity.asset.value}.", show_alert=True)
+        return
+        
+    await trade_service.take_partial_profit_async(rec_id, str(query.from_user.id), percent_to_close, Decimal(str(live_price)), db_session)
 
 # --- Input Prompts & Handlers ---
 
@@ -159,7 +184,8 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @uow_transaction
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    if not context.user_data or not (state := context.user_data.pop(AWAITING_INPUT_KEY, None)): return
+    if not context.user_data or not (state := context.user_data.pop(AWAITING_INPUT_KEY, None)):
+        return
     orig_msg = state.get("original_message")
     if not orig_msg or not update.message.reply_to_message or update.message.reply_to_message.message_id != orig_msg.message_id:
         if state: context.user_data[AWAITING_INPUT_KEY] = state
@@ -203,6 +229,7 @@ def register_management_handlers(app: Application):
     # Direct actions
     app.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:"))
     app.add_handler(CallbackQueryHandler(close_at_market_handler, pattern=r"^rec:close_market:"))
+    app.add_handler(CallbackQueryHandler(partial_close_fixed_handler, pattern=r"^rec:partial_close:"))
 
     # Actions that prompt for user input
     app.add_handler(CallbackQueryHandler(prompt_handler, pattern=r"^rec:(edit_sl|edit_tp|close_manual)"))
