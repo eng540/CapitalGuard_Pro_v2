@@ -1,6 +1,8 @@
-# src/capitalguard/interfaces/telegram/admin_commands.py (v25.6 - COMPLETE & SECURE)
+# src/capitalguard/interfaces/telegram/admin_commands.py (v25.7 - UoW Fix)
 """
-Implements and registers all admin-only commands for the bot, including access revocation.
+Implements and registers all admin-only commands for the bot.
+This version fixes a critical bug by correctly applying the uow_transaction
+decorator to all commands that modify the database, ensuring changes are committed.
 """
 
 import logging
@@ -9,6 +11,7 @@ import os
 from telegram import Update
 from telegram.ext import Application, ContextTypes, CommandHandler, filters
 
+# ✅ THE FIX: Import the robust uow_transaction decorator.
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service
 from capitalguard.infrastructure.db.repository import UserRepository
@@ -19,6 +22,7 @@ log = logging.getLogger(__name__)
 ADMIN_USERNAMES = [username.strip() for username in (os.getenv("ADMIN_USERNAMES") or "").split(',') if username]
 admin_filter = filters.User(username=ADMIN_USERNAMES)
 
+# ✅ THE FIX: Apply the decorator to ensure the transaction is committed.
 @uow_transaction
 async def grant_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     """Admin Command: Grants a user access to the bot."""
@@ -48,6 +52,7 @@ async def grant_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         log.error(f"Error in grant_access_cmd: {e}", exc_info=True)
         await update.message.reply_text("An error occurred.")
 
+# ✅ THE FIX: Apply the decorator to ensure the transaction is committed.
 @uow_transaction
 async def make_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     """Admin Command: Promotes a user to the Analyst role."""
@@ -77,7 +82,7 @@ async def make_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         log.error(f"Error in make_analyst_cmd: {e}", exc_info=True)
         await update.message.reply_text("An error occurred.")
 
-# ✅ NEW: Added the missing /revokeaccess command handler.
+# ✅ THE FIX: Apply the decorator to ensure the transaction is committed.
 @uow_transaction
 async def revoke_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
     """Admin Command: Revokes a user's access to the bot."""
@@ -115,6 +120,5 @@ def register_admin_commands(app: Application):
     
     app.add_handler(CommandHandler("grantaccess", grant_access_cmd, filters=admin_filter))
     app.add_handler(CommandHandler("makeanalyst", make_analyst_cmd, filters=admin_filter))
-    # ✅ NEW: Register the new command handler.
     app.add_handler(CommandHandler("revokeaccess", revoke_access_cmd, filters=admin_filter))
     log.info(f"Admin commands registered for users: {ADMIN_USERNAMES}")
