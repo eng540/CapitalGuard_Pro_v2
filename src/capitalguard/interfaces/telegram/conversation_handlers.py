@@ -20,7 +20,7 @@ from .ui_texts import build_review_text_with_price
 from .keyboards import (main_creation_keyboard, asset_choice_keyboard, side_market_keyboard, order_type_keyboard, review_final_keyboard)
 from .auth import get_db_user
 from capitalguard.infrastructure.db.models import UserType
-from .parsers import parse_targets_list
+from .parsers import parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.market_data_service import MarketDataService
@@ -106,9 +106,8 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     draft, tokens = get_user_draft(context), (update.message.text or "").strip().split()
     try:
         trade_service = get_service(context, "trade_service", TradeService)
-        # The parser now returns Decimal, so no need for str() or Decimal() casts here.
         if draft['order_type'] == 'MARKET':
-            if len(tokens) < 2: raise ValueError("MARKET format: STOP then TARGETS...")
+            if len(tokens) < 2: raise ValueError("MARKET format requires: STOP then at least one TARGET.")
             stop_loss, targets = parse_number(tokens[0]), parse_targets_list(tokens[1:])
             price_service = get_service(context, "price_service", PriceService)
             live_price_float = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"), True)
@@ -117,7 +116,7 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             trade_service._validate_recommendation_data(draft["side"], live_price, stop_loss, targets)
             draft.update({"entry": live_price, "stop_loss": stop_loss, "targets": targets})
         else: # LIMIT or STOP_MARKET
-            if len(tokens) < 3: raise ValueError("LIMIT/STOP format: ENTRY, STOP, then TARGETS...")
+            if len(tokens) < 3: raise ValueError("LIMIT/STOP format requires: ENTRY, STOP, then at least one TARGET.")
             entry, stop_loss = parse_number(tokens[0]), parse_number(tokens[1])
             targets = parse_targets_list(tokens[2:])
             trade_service._validate_recommendation_data(draft["side"], entry, stop_loss, targets)

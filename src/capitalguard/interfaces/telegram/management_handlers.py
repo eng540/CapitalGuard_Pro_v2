@@ -1,8 +1,8 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v26.3 - COMPLETE, FINAL & HARDENED)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v26.4 - COMPLETE, FINAL & HARDENED)
 """
 Implements all callback query handlers for managing existing recommendations and trades.
-This version includes a critical fix to prevent crashes on unexpected user replies,
-making the handler robust against AttributeError.
+This version includes a critical fix to prevent crashes on unexpected user replies and
+ensures all user inputs are parsed correctly using the Decimal-aware parser.
 """
 
 import logging
@@ -20,7 +20,7 @@ from .helpers import get_service, parse_tail_int, parse_cq_parts
 from .keyboards import (analyst_control_panel_keyboard, build_open_recs_keyboard, build_user_trade_control_keyboard, build_close_options_keyboard, analyst_edit_menu_keyboard)
 from .ui_texts import build_trade_card_text
 from .auth import require_active_user, require_analyst_user
-from .parsers import parse_targets_list
+from .parsers import parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 
@@ -104,11 +104,10 @@ async def unified_management_handler(update: Update, context: ContextTypes.DEFAU
 @uow_transaction
 async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
     # ✅ THE FIX: Harden the handler against unexpected replies by checking for user_data.
-    if not context.user_data:
-        return
+    if not context.user_data: return
         
     if not (state := context.user_data.pop(AWAITING_INPUT_KEY, None)) or not (orig_msg := state.get("original_message")) or not update.message.reply_to_message or update.message.reply_to_message.message_id != orig_msg.message_id:
-        if state: context.user_data[AWAITING_INPUT_KEY] = state # Put it back if the check failed
+        if state: context.user_data[AWAITING_INPUT_KEY] = state # Put it back if the check failed but state existed
         return
 
     action, position_id = state["action"], state["rec_id"]
@@ -121,16 +120,20 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
     
     try:
         if action == "close_manual":
-            await trade_service.close_recommendation_async(position_id, user_id, parse_number(user_input), db_session=db_session)
+            price = parse_number(user_input)
+            if price is None: raise ValueError("Invalid price format.")
+            await trade_service.close_recommendation_async(position_id, user_id, price, db_session=db_session)
         elif action == "edit_sl":
-            await trade_service.update_sl_for_user_async(position_id, user_id, parse_number(user_input), db_session=db_session)
+            price = parse_number(user_input)
+            if price is None: raise ValueError("Invalid price format.")
+            await trade_service.update_sl_for_user_async(position_id, user_id, price, db_session=db_session)
         elif action == "edit_tp":
             targets_list = parse_targets_list(user_input.split())
             if not targets_list: raise ValueError("Invalid targets format. Please provide at least one target.")
             await trade_service.update_targets_for_user_async(position_id, user_id, targets_list, db_session=db_session)
         
     except (InvalidOperation, ValueError, RuntimeError, TypeError) as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ **Invalid Input:** {e}\nPlease try again.", reply_to_message_id=message_id)
+        await context.bot.send_message(chat_id=chat_id, text=f"❌ **Action Failed:** {e}\nPlease try again.", reply_to_message_id=message_id)
         context.user_data[AWAITING_INPUT_KEY] = state
     except Exception as e:
         log.error(f"Critical error processing user input for {action} on #{position_id}: {e}", exc_info=True)
