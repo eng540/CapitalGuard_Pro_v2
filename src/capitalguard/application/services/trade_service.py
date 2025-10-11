@@ -1,9 +1,7 @@
-# src/capitalguard/application/services/trade_service.py (v26.1 - COMPLETE, FINAL, PRODUCTION-READY & FEATURE-COMPLETE)
+# src/capitalguard/application/services/trade_service.py (v26.2 - COMPLETE, FINAL & UOW-COMPLIANT)
 """
-TradeService - The re-architected, event-driven, and robust core of the system.
-This version includes a full suite of modification methods (SL, TP, Close),
-correctly handles transaction scopes for all call origins, and is presented
-as a complete, final file ready for production deployment.
+TradeService - This version includes a critical fix in create_and_publish_recommendation_async
+to correctly use the UoW-injected db_session, resolving the analyst permission error.
 """
 
 import logging
@@ -49,10 +47,6 @@ def _parse_int_user_id(user_id: Optional[str]) -> Optional[int]:
         return None
 
 class TradeService:
-    """
-    The primary application service for managing the lifecycle of recommendations and user trades.
-    """
-    
     def __init__(
         self,
         repo: RecommendationRepository,
@@ -67,20 +61,14 @@ class TradeService:
         self.alert_service: "AlertService" = None
 
     async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
-        """Safely calls a function that might be sync or async."""
         if inspect.iscoroutinefunction(fn):
             return await fn(*args, **kwargs)
         return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def notify_card_update(self, rec_entity: RecommendationEntity, db_session: Session):
-        """Sends an update to all published Telegram messages for a recommendation."""
-        if rec_entity.is_shadow: 
-            return
-
+        if rec_entity.is_shadow: return
         published_messages = self.repo.get_published_messages(db_session, rec_entity.id)
-        if not published_messages: 
-            return
-        
+        if not published_messages: return
         tasks = [
             self._call_notifier_maybe_async(
                 self.notifier.edit_recommendation_card_by_ids, 
@@ -91,15 +79,11 @@ class TradeService:
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for res in results:
-            if isinstance(res, Exception):
-                logger.error("Failed to notify card update: %s", res)
+            if isinstance(res, Exception): logger.error("Failed to notify card update: %s", res)
 
     def notify_reply(self, rec_id: int, text: str, db_session: Session):
-        """Posts a reply to all published messages for a recommendation."""
         rec = self.repo.get(db_session, rec_id)
-        if not rec or rec.is_shadow: 
-            return
-
+        if not rec or rec.is_shadow: return
         published_messages = self.repo.get_published_messages(db_session, rec_id)
         for msg_meta in published_messages:
             asyncio.create_task(self._call_notifier_maybe_async(
@@ -110,24 +94,16 @@ class TradeService:
             ))
 
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
-        """Fortified validation logic using Decimal for precision."""
         side_upper = side.upper()
-        if not all(isinstance(p, Decimal) and p > Decimal(0) for p in [entry, stop_loss]):
-            raise ValueError("Entry and Stop Loss prices must be positive numbers.")
-        if not targets or not all(isinstance(t.get('price'), Decimal) and t.get('price', Decimal(0)) > Decimal(0) for t in targets):
-            raise ValueError("At least one valid target with a positive price is required.")
-        if side_upper == "LONG" and stop_loss >= entry:
-            raise ValueError("For LONG trades, Stop Loss must be < Entry Price.")
-        if side_upper == "SHORT" and stop_loss <= entry:
-            raise ValueError("For SHORT trades, Stop Loss must be > Entry Price.")
+        if not all(isinstance(p, Decimal) and p > Decimal(0) for p in [entry, stop_loss]): raise ValueError("Entry and Stop Loss must be positive.")
+        if not targets or not all(isinstance(t.get('price'), Decimal) and t.get('price', Decimal(0)) > Decimal(0) for t in targets): raise ValueError("At least one valid target is required.")
+        if side_upper == "LONG" and stop_loss >= entry: raise ValueError("For LONG, SL must be < Entry.")
+        if side_upper == "SHORT" and stop_loss <= entry: raise ValueError("For SHORT, SL must be > Entry.")
         target_prices = [t['price'] for t in targets]
-        if side_upper == 'LONG' and any(p <= entry for p in target_prices):
-            raise ValueError("All target prices must be above entry for a LONG trade.")
-        if side_upper == 'SHORT' and any(p >= entry for p in target_prices):
-            raise ValueError("All target prices must be below entry for a SHORT trade.")
+        if side_upper == 'LONG' and any(p <= entry for p in target_prices): raise ValueError("All LONG targets must be > entry.")
+        if side_upper == 'SHORT' and any(p >= entry for p in target_prices): raise ValueError("All SHORT targets must be < entry.")
 
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_id: str, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
-        """Handles the logic of publishing a recommendation to the relevant channels."""
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
         user = UserRepository(session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user:
@@ -138,10 +114,8 @@ class TradeService:
         if not channels_to_publish:
             report["failed"].append({"reason": "No active channels linked."})
             return rec_entity, report
-        
         from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
         keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None))
-        
         for channel in channels_to_publish:
             try:
                 result = await self._call_notifier_maybe_async(self.notifier.post_to_channel, channel.telegram_channel_id, rec_entity, keyboard)
@@ -158,8 +132,9 @@ class TradeService:
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user or user.user_type != UserType.ANALYST: raise ValueError("Only analysts can create recommendations.")
-        entry_price, sl_price = Decimal(str(kwargs['entry'])), Decimal(str(kwargs['stop_loss']))
-        targets_list = [{'price': Decimal(str(t['price'])), 'close_percent': t.get('close_percent', 0)} for t in kwargs['targets']]
+        
+        entry_price, sl_price = kwargs['entry'], kwargs['stop_loss']
+        targets_list = kwargs['targets']
         asset, side, market = kwargs['asset'].strip().upper(), kwargs['side'].upper(), kwargs.get('market', 'Futures')
         order_type_enum = OrderTypeEnum[kwargs['order_type'].upper()]
         
