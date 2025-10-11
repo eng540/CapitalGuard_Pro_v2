@@ -1,5 +1,4 @@
-#--- START OF FILE CapitalGuard_Pro_v2-main/src/capitalguard/infrastructure/db/repository.py ---
-```python
+#--- START OF FILE CapitalGuard_Pro_v2-main/src/capitalguard/infrastructure/db/repository.py 
 """
 Repository layer — provides clean data access abstractions.
 Fully synchronized with Alembic baseline schema (20251007_v3_baseline).
