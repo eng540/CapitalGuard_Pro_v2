@@ -77,7 +77,7 @@ async def confirm_parsed_trade_callback(update: Update, context: ContextTypes.DE
 
     trade_service = get_service(context, "trade_service", TradeService)
     # ✅ THE FIX: Call the decorated service method WITHOUT passing 'db_session' explicitly.
-    result = await trade_service.create_trade_from_forwarding(user_id=str(db_user.telegram_user_id), trade_data=trade_data)
+    result = await trade_service.create_trade_from_forwarding(user_id=str(db_user.telegram_user_id), trade_data=trade_data, db_session=db_session)
 
     if result.get('success'):
         await query.edit_message_text(f"✅ <b>Trade #{result['trade_id']} for {result['asset']}</b> has been added to your portfolio!", parse_mode='HTML')
