@@ -35,10 +35,10 @@ def parse_number(token: str) -> Optional[Decimal]:
     except (InvalidOperation, TypeError):
         return None
 
-def parse_targets_list(tokens: List[str]) -> List[Dict[str, Decimal]]:
+def parse_targets_list(tokens: List[str]) -> List[Dict[str, any]]:
     """
     Parses a list of string tokens into a structured list of take-profit targets,
-    returning Decimal objects for prices.
+    returning Decimal objects for prices and float for percentages.
     """
     parsed_targets = []
     for token in tokens:
@@ -53,15 +53,13 @@ def parse_targets_list(tokens: List[str]) -> List[Dict[str, Decimal]]:
             price_str, close_pct_str = parts[0], parts[1]
 
         price = parse_number(price_str)
-        # Close percent can remain float as it's for calculation, not storage precision.
         close_pct = parse_number(close_pct_str) if close_pct_str else Decimal('0')
         
         if price is not None and close_pct is not None:
             parsed_targets.append({"price": price, "close_percent": float(close_pct)})
 
     if not parsed_targets and tokens:
-        # This handles the case where simple numbers were provided but not parsed.
-        # It's a fallback to ensure simple lists like "10 11 12" work.
+        # This fallback ensures simple lists like "10 11 12" work reliably.
         for token in tokens:
             if price := parse_number(token):
                 parsed_targets.append({"price": price, "close_percent": 0.0})
