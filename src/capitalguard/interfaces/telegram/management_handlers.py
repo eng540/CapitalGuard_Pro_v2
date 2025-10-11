@@ -1,7 +1,7 @@
 # src/capitalguard/interfaces/telegram/management_handlers.py (v27.6 - Final Reliability Patch)
 """
-Implements all callback query handlers. This is the definitive, complete, and
-fully implemented version with robust error handling and flexible callback parsing
+Implements all callback query handlers for managing recommendations and trades.
+This is the final, complete, and fully implemented version with robust error handling and flexible callback parsing
 to fix all previously identified bugs like IndexError and "message not modified" spam.
 """
 
@@ -26,6 +26,7 @@ from capitalguard.application.services.price_service import PriceService
 log = logging.getLogger(__name__)
 
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
+(AWAIT_PARTIAL_PERCENT, AWAIT_PARTIAL_PRICE) = range(2)
 
 # --- Helper Functions ---
 
@@ -33,14 +34,12 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     parts = parse_cq_parts(query.data)
     
-    # ✅ THE FIX: Make the data parsing flexible to handle different callback patterns.
+    # ✅ THE FIX: Flexible parsing for pos:show_panel:type:id OR rec:back_to_main:id
     try:
         if parts[1] == "back_to_main":
-            # Pattern: rec:back_to_main:id
             position_id = int(parts[2])
             position_type = 'rec'
         else:
-            # Pattern: pos:show_panel:type:id
             position_type, position_id = parts[2], int(parts[3])
     except (IndexError, ValueError):
         log.error(f"Could not parse position info from callback data: {query.data}")
@@ -73,9 +72,15 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
         # ✅ THE FIX: Gracefully handle the "message is not modified" error.
         if "Message is not modified" in str(e):
             log.debug(f"Ignoring 'message not modified' for rec #{position_id}")
-            await query.answer() # Still answer the query to remove the loading icon
+            await query.answer()
         else:
             log.warning(f"Failed to edit panel message: {e}")
+
+async def _prompt_for_input(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, action: str, prompt_text: str):
+    rec_id = int(query.data.split(':')[2])
+    context.user_data[AWAITING_INPUT_KEY] = {"action": action, "rec_id": rec_id, "original_message": query.message}
+    full_prompt = f"{query.message.text}\n\n<b>{prompt_text}</b>"
+    await query.edit_message_text(full_prompt, parse_mode=ParseMode.HTML)
 
 # --- Main Panel & Navigation ---
 
