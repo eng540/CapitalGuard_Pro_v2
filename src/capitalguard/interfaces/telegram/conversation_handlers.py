@@ -1,41 +1,42 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v26.9 - State & Persistence Fix)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v27.0 - Full Interactivity Fix)
 """
-Implements the conversational flow for creating a new recommendation (/newrec).
-This version fixes unresponsive buttons by disabling ConversationHandler persistence,
-which was causing state mismatches between user_data and bot_data after restarts.
+Implements the conversational flow for creating a new recommendation.
+This version fixes dead buttons (Add Notes, Choose Channels) by correctly
+registering their handlers within the conversation states.
 """
 
 import logging
 import asyncio
 import uuid
 from decimal import Decimal, InvalidOperation
-from typing import Dict, Any
+from typing import Dict, Any, Set
 
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import (Application, ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler, MessageHandler, filters)
 from telegram.error import BadRequest
 
 from capitalguard.infrastructure.db.uow import uow_transaction
-from .helpers import get_service
+from .helpers import get_service, parse_cq_parts
 from .ui_texts import build_review_text_with_price
-from .keyboards import (main_creation_keyboard, asset_choice_keyboard, side_market_keyboard, order_type_keyboard, review_final_keyboard)
+from .keyboards import (main_creation_keyboard, asset_choice_keyboard, side_market_keyboard, order_type_keyboard, review_final_keyboard, build_channel_picker_keyboard)
 from .auth import require_active_user, require_analyst_user
 from capitalguard.infrastructure.db.models import UserType
 from .parsers import parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.market_data_service import MarketDataService
+from capitalguard.infrastructure.db.repository import ChannelRepository
 from .commands import start_cmd, myportfolio_cmd, help_cmd
 
 log = logging.getLogger(__name__)
 
-(SELECT_METHOD, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_REVIEW) = range(6)
+(SELECT_METHOD, I_ASSET, I_SIDE_MARKET, I_ORDER_TYPE, I_PRICES, I_REVIEW, I_NOTES, I_CHANNEL_PICKER) = range(8)
 
 def get_user_draft(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
     return context.user_data.setdefault('new_rec_draft', {})
 
 def clean_user_state(context: ContextTypes.DEFAULT_TYPE):
-    for key in ['new_rec_draft', 'last_conv_message', 'review_token']:
+    for key in ['new_rec_draft', 'last_conv_message', 'review_token', 'channel_picker_selection']:
         context.user_data.pop(key, None)
 
 @uow_transaction
@@ -60,6 +61,7 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
     context.user_data['last_conv_message'] = (sent_message.chat_id, sent_message.message_id)
     return I_ASSET
 
+# ... (asset_chosen, side_chosen, order_type_chosen, prices_received are unchanged)
 async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     draft, message_obj = get_user_draft(context), update.callback_query.message if update.callback_query else update.message
     asset = ""
@@ -124,19 +126,76 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.callback_query.message if update.callback_query else update.message
     draft = get_user_draft(context)
-    review_token = str(uuid.uuid4())
+    review_token = context.user_data.get('review_token') or str(uuid.uuid4())
     context.user_data['review_token'] = review_token
+    
     price_service = get_service(context, "price_service", PriceService)
     preview_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"))
     review_text = build_review_text_with_price(draft, preview_price)
+    
     target_chat_id, target_message_id = context.user_data.get('last_conv_message', (message.chat_id, message.message_id))
+    
     try:
         sent_message = await context.bot.edit_message_text(chat_id=target_chat_id, message_id=target_message_id, text=review_text, reply_markup=review_final_keyboard(review_token), parse_mode='HTML')
         if update.message: await update.message.delete()
     except BadRequest:
         sent_message = await context.bot.send_message(chat_id=target_chat_id, text=review_text, reply_markup=review_final_keyboard(review_token), parse_mode='HTML')
+    
     context.user_data['last_conv_message'] = (sent_message.chat_id, sent_message.message_id)
     return I_REVIEW
+
+@uow_transaction
+async def add_notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(f"{query.message.text}\n\n✍️ Please send your notes for this recommendation.", parse_mode='HTML')
+    return I_NOTES
+
+async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    draft = get_user_draft(context)
+    draft['notes'] = update.message.text.strip()
+    await update.message.delete()
+    # Create a dummy update to re-enter the review screen
+    dummy_update = Update(update.update_id, message=context.user_data['last_conv_message'])
+    return await show_review_card(dummy_update, context)
+
+@uow_transaction
+async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    user = UserRepository(db_session).find_by_telegram_id(query.from_user.id)
+    all_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False)
+    
+    selected_ids: Set[int] = context.user_data.setdefault('channel_picker_selection', {ch.telegram_channel_id for ch in all_channels if ch.is_active})
+    
+    keyboard = build_channel_picker_keyboard(context.user_data['review_token'], all_channels, selected_ids)
+    await query.edit_message_text("📢 Select channels for publication:", reply_markup=keyboard)
+    return I_CHANNEL_PICKER
+
+@uow_transaction
+async def channel_picker_logic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    parts = parse_cq_parts(query.data)
+    action, token = parts[1], parts[2]
+    
+    selected_ids: Set[int] = context.user_data.get('channel_picker_selection', set())
+    
+    if action == "toggle":
+        channel_id, page = int(parts[3]), int(parts[4])
+        if channel_id in selected_ids: selected_ids.remove(channel_id)
+        else: selected_ids.add(channel_id)
+    
+    page = int(parts[-1]) if action in ("toggle", "nav") else 1
+    
+    user = UserRepository(db_session).find_by_telegram_id(query.from_user.id)
+    all_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False)
+    
+    keyboard = build_channel_picker_keyboard(token, all_channels, selected_ids, page=page)
+    await query.edit_message_reply_markup(reply_markup=keyboard)
+    return I_CHANNEL_PICKER
 
 @uow_transaction
 async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
@@ -150,6 +209,8 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
         return ConversationHandler.END
         
     draft = get_user_draft(context)
+    draft['target_channel_ids'] = context.user_data.get('channel_picker_selection')
+    
     trade_service = get_service(context, "trade_service", TradeService)
     try:
         rec, report = await trade_service.create_and_publish_recommendation_async(user_id=str(query.from_user.id), db_session=db_session, **draft)
@@ -181,7 +242,19 @@ def register_conversation_handlers(app: Application):
             I_SIDE_MARKET: [CallbackQueryHandler(side_chosen, pattern="^side_")],
             I_ORDER_TYPE: [CallbackQueryHandler(order_type_chosen, pattern="^type_")],
             I_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received)],
-            I_REVIEW: [CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"), CallbackQueryHandler(cancel_conv_handler, pattern=r"^rec:cancel")],
+            I_REVIEW: [
+                # ✅ THE FIX: Register the missing handlers for the review screen buttons.
+                CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
+                CallbackQueryHandler(choose_channels_handler, pattern=r"^rec:choose_channels:"),
+                CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
+                CallbackQueryHandler(cancel_conv_handler, pattern=r"^rec:cancel")
+            ],
+            I_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)],
+            I_CHANNEL_PICKER: [
+                CallbackQueryHandler(channel_picker_logic_handler, pattern=r"^pubsel:"),
+                CallbackQueryHandler(show_review_card, pattern=r"^pubsel:back:"),
+                CallbackQueryHandler(publish_handler, pattern=r"^pubsel:confirm:")
+            ],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conv_handler),
@@ -190,9 +263,6 @@ def register_conversation_handlers(app: Application):
             CommandHandler("help", help_cmd),
         ],
         name="recommendation_creation",
-        # ✅ THE FIX: Disable persistence for this handler. This is the most robust way
-        # to prevent state mismatches between user_data and bot_data after a restart.
-        # The conversation is short-lived and does not need to survive restarts.
         persistent=False,
         per_user=True,
         per_chat=True,
