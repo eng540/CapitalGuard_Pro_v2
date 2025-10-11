@@ -1,7 +1,7 @@
-# src/capitalguard/application/services/alert_service.py (v25.7 - FINAL & THREAD-SAFE)
+# src/capitalguard/application/services/alert_service.py (v25.8 - Threading & Loop Fix)
 """
-AlertService - The re-architected, state-aware, and robust price monitoring engine.
-This version includes a fix for the background thread startup sequence.
+AlertService - This version includes a critical fix to the background thread startup
+sequence, ensuring the PriceStreamer's asyncio task is created on the correct event loop.
 """
 
 import logging
@@ -68,6 +68,8 @@ class AlertService:
                 self._watchdog_task = loop.create_task(self._run_watchdog_check())
                 
                 if hasattr(self.streamer, "start"):
+                    # ✅ THE FIX: Explicitly pass the newly created event loop to the streamer's start method.
+                    # This ensures the streamer's asyncio task is created in the context of this background thread.
                     self.streamer.start(loop=loop)
 
                 loop.run_forever()
@@ -258,5 +260,3 @@ class AlertService:
             except Exception as e:
                 log.error("Error processing trigger for item #%s: %s", item_id, e, exc_info=True)
                 processed_item_ids.add(item_id)
-
-#END
