@@ -18,7 +18,6 @@ sentry-sdk==2.8.0
 alembic==1.13.2
 websockets==12.0
 pytest==8.3.2
-pytest-asyncio==0.23.7
 pydantic-settings==2.3.4
 supervisor==4.2.5
 # --- END OF FILE ---

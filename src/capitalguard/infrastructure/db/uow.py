@@ -36,6 +36,7 @@ def uow_transaction(func: Callable) -> Callable:
     async def wrapper(update, context, *args, **kwargs):
         with session_scope() as session:
             try:
+                # ✅ THE FIX: Pass the session as 'db_session' to the decorated handler.
                 result = await func(update, context, db_session=session, *args, **kwargs)
                 return result
             except Exception as e:

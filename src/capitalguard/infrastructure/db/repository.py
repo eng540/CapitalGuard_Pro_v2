@@ -1,3 +1,5 @@
+#--- START OF FILE CapitalGuard_Pro_v2-main/src/capitalguard/infrastructure/db/repository.py ---
+```python
 """
 Repository layer — provides clean data access abstractions.
 Fully synchronized with Alembic baseline schema (20251007_v3_baseline).
@@ -41,31 +43,21 @@ class UserRepository:
         return self.session.query(User).filter(User.id == user_id).first()
 
     def find_or_create(self, telegram_id: int, **kwargs) -> User:
-        """
-        Finds a user by their Telegram ID. If they don't exist, a new, active
-        user with the TRADER role is created. This ensures every user interacting
-        with the bot has a valid, active record in the database.
-        """
         user = self.find_by_telegram_id(telegram_id)
         if user:
-            # Update user's name/username if they have changed it on Telegram
             if kwargs.get("first_name") and user.first_name != kwargs["first_name"]:
                 user.first_name = kwargs["first_name"]
             if kwargs.get("username") and user.username != kwargs["username"]:
                 user.username = kwargs["username"]
             return user
 
-        # ✅ THE FIX: New users are now active by default with the TRADER role.
-        # This ensures any user can interact with the bot immediately after /start.
-        # The previous `is_active=False` was the root cause of the failure, as
-        # it created a user who was then blocked by the `@require_active_user` decorator.
         logger.info("Creating new user for telegram_id=%s", telegram_id)
         new_user = User(
             telegram_user_id=telegram_id,
             first_name=kwargs.get("first_name"),
             username=kwargs.get("username"),
-            is_active=True,  # New users are active by default.
-            user_type=UserType.TRADER,  # New users are always Traders by default (Least Privilege).
+            is_active=False,
+            user_type=kwargs.get("user_type", UserType.TRADER),
         )
         self.session.add(new_user)
         self.session.flush()
@@ -92,14 +84,12 @@ class ChannelRepository:
             .one_or_none()
         )
 
-    def find_all_by_analyst(self, analyst_id: int) -> List[Channel]:
+    def list_by_analyst(self, analyst_id: int, only_active: bool = True) -> List[Channel]:
         """Return all channels linked to the specified analyst."""
-        return (
-            self.session.query(Channel)
-            .filter(Channel.analyst_id == analyst_id)
-            .order_by(Channel.created_at.desc())
-            .all()
-        )
+        query = self.session.query(Channel).filter(Channel.analyst_id == analyst_id)
+        if only_active:
+            query = query.filter(Channel.is_active == True)
+        return query.order_by(Channel.created_at.desc()).all()
 
     def add(self, analyst_id: int, telegram_channel_id: int, username: Optional[str], title: Optional[str]) -> Channel:
         """Create a new channel record."""
@@ -246,5 +236,14 @@ class RecommendationRepository:
 
     def get_user_trade_by_id(self, session: Session, trade_id: int) -> Optional[UserTrade]:
         return session.query(UserTrade).filter(UserTrade.id == trade_id).first()
+    
+    def get_events_for_recommendation(self, session: Session, rec_id: int) -> List[RecommendationEvent]:
+        """
+        ✅ NEW: Fetches all event records for a specific recommendation,
+        ordered by timestamp.
+        """
+        return session.query(RecommendationEvent).filter(
+            RecommendationEvent.recommendation_id == rec_id
+        ).order_by(RecommendationEvent.event_timestamp.asc()).all()
 
 # END

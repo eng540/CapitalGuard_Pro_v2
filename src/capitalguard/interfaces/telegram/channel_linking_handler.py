@@ -122,7 +122,7 @@ async def received_channel_forward(update: Update, context: ContextTypes.DEFAULT
 async def unlink_channel_entry(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
     """Displays a list of linked channels to choose from for unlinking."""
     repo = ChannelRepository(db_session)
-    channels = repo.find_all_by_analyst(db_user.id)
+    channels = repo.list_by_analyst(db_user.id, only_active=False)
 
     if not channels:
         await update.message.reply_html("❌ You have no linked channels.")
