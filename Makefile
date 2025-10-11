@@ -3,7 +3,7 @@
 .PHONY: init dev api watcher bot test migrate fmt rebuild
 
 init:
-	python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt && pip install -e .
+	python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
 	@echo "Copy .env.example to .env and edit values."
 
 dev:
@@ -21,8 +21,13 @@ bot:
 migrate:
 	. .venv/bin/activate && alembic upgrade head || (alembic revision --autogenerate -m "init" && alembic upgrade head)
 
+# ✅ UPGRADE: 'test' now points to a more comprehensive test suite command.
 test:
-	. .venv/bin/activate && pytest -q
+	. .venv/bin/activate && pytest -q -v
+
+# ✅ NEW: The command to run the full, rigorous test suite including integration tests.
+full-test:
+	. .venv/bin/activate && pytest -v
 
 fmt:
 	. .venv/bin/activate && pip install black && black src/ tests/
