@@ -13,7 +13,9 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.uow import uow_transaction, session_scope
+# ✅ THE FIX: The uow_transaction decorator is REMOVED from this file.
+# It belongs in the interface layer (handlers), not the application service layer.
+from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.models import (
     PublishedMessage, Recommendation, RecommendationEvent, User,
     RecommendationStatusEnum, UserTrade, UserTradeStatus, OrderTypeEnum, ExitStrategyEnum
@@ -128,7 +130,9 @@ class TradeService:
         session.flush()
         return rec_entity, report
 
-    @uow_transaction
+    # ✅ THE FIX: Removed the incorrect @uow_transaction decorator.
+    # This method now correctly expects the calling handler to manage the transaction
+    # and provide an active `db_session`.
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user or user.user_type != UserType.ANALYST: raise ValueError("Only analysts can create recommendations.")
@@ -157,7 +161,7 @@ class TradeService:
         await self.alert_service.build_triggers_index()
         return final_rec, report
 
-    @uow_transaction
+    # ✅ THE FIX: Removed the incorrect @uow_transaction decorator.
     async def create_trade_from_forwarding(self, user_id: str, trade_data: Dict[str, Any], db_session: Session) -> Dict[str, Any]:
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user: return {'success': False, 'error': 'User not found'}
@@ -180,7 +184,7 @@ class TradeService:
         await self.alert_service.build_triggers_index()
         return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
 
-    @uow_transaction
+    # ✅ THE FIX: Removed the incorrect @uow_transaction decorator.
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user: return {'success': False, 'error': 'User not found'}
@@ -197,7 +201,7 @@ class TradeService:
         await self.alert_service.build_triggers_index()
         return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
         
-    @uow_transaction
+    # ✅ THE FIX: Removed the incorrect @uow_transaction decorator.
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
@@ -215,7 +219,7 @@ class TradeService:
         await self.notify_card_update(updated_entity, db_session)
         return updated_entity
 
-    @uow_transaction
+    # ✅ THE FIX: Removed the incorrect @uow_transaction decorator.
     async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, Any]], db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
@@ -233,7 +237,7 @@ class TradeService:
         await self.notify_card_update(updated_entity, db_session)
         return updated_entity
 
-    @uow_transaction
+    # ✅ THE FIX: Removed the incorrect @uow_transaction decorator.
     async def close_recommendation_async(self, rec_id: int, user_id: str, exit_price: Decimal, db_session: Session) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
