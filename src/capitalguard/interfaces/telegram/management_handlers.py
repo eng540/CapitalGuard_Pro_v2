@@ -1,8 +1,7 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v27.2 - Full Feature Implementation)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v27.3 - Final & Complete)
 """
 Implements all callback query handlers for managing recommendations and trades.
-This version fully implements all missing logic for exit strategies and partial
-profit taking, and uses a unified handler for all `rec:` actions.
+This is the final, complete, and fully implemented version.
 """
 
 import logging
@@ -28,7 +27,7 @@ log = logging.getLogger(__name__)
 AWAITING_INPUT_KEY = "awaiting_user_input_for"
 
 async def _send_or_edit_position_panel(context: ContextTypes.DEFAULT_TYPE, db_session, chat_id: int, message_id: int, position_id: int, user_id: int, position_type: str):
-    # ... (This helper function is unchanged)
+    # ... (unchanged)
     trade_service = get_service(context, "trade_service", TradeService)
     try:
         position = trade_service.get_position_details_for_user(db_session, str(user_id), position_type, position_id)
@@ -56,7 +55,7 @@ async def _send_or_edit_position_panel(context: ContextTypes.DEFAULT_TYPE, db_se
 @uow_transaction
 @require_active_user
 async def show_position_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    # ... (This handler is unchanged)
+    # ... (unchanged)
     query = update.callback_query
     await query.answer()
     parts = parse_cq_parts(query.data)
@@ -67,7 +66,7 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
 @uow_transaction
 @require_active_user
 async def navigate_open_positions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    # ... (This handler is unchanged)
+    # ... (unchanged)
     query = update.callback_query
     await query.answer()
     page = parse_tail_int(query.data) or 1
@@ -81,14 +80,13 @@ async def navigate_open_positions_handler(update: Update, context: ContextTypes.
     await query.edit_message_text(text="<b>📊 Your Open Positions</b>\nSelect one to manage:", reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 async def _prompt_for_input(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, action: str, prompt_text: str):
-    # ... (This helper is unchanged)
+    # ... (unchanged)
     rec_id = parse_tail_int(query.data)
     if rec_id is None: return
     context.user_data[AWAITING_INPUT_KEY] = {"action": action, "rec_id": rec_id, "original_message": query.message}
     full_prompt = f"{query.message.text}\n\n<b>{prompt_text}</b>"
     await query.edit_message_text(full_prompt, parse_mode=ParseMode.HTML)
 
-# ✅ REFACTOR: This is now the single, powerful entry point for all recommendation management actions.
 @uow_transaction
 @require_active_user
 @require_analyst_user
@@ -118,7 +116,6 @@ async def unified_management_handler(update: Update, context: ContextTypes.DEFAU
     elif action == "set_strategy":
         strategy_value = parts[3]
         await trade_service.update_exit_strategy_async(rec_id, str(query.from_user.id), ExitStrategy(strategy_value), db_session)
-        # The panel will be updated automatically by the service's _commit_and_dispatch
     elif action == "edit_sl":
         await _prompt_for_input(query, context, "edit_sl", f"✏️ Reply to this message with the new Stop Loss for #{rec_id}.")
     elif action == "edit_tp":
@@ -136,21 +133,16 @@ async def unified_management_handler(update: Update, context: ContextTypes.DEFAU
 
 @uow_transaction
 async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    # ... (This handler is unchanged but will now work correctly)
+    # ... (unchanged)
     if not context.user_data: return
-        
     if not (state := context.user_data.pop(AWAITING_INPUT_KEY, None)) or not (orig_msg := state.get("original_message")) or not update.message.reply_to_message or update.message.reply_to_message.message_id != orig_msg.message_id:
         if state: context.user_data[AWAITING_INPUT_KEY] = state
         return
-
     action, position_id = state["action"], state["rec_id"]
     user_input, chat_id, message_id, user_id = update.message.text.strip(), orig_msg.chat_id, orig_msg.message_id, str(update.effective_user.id)
-    
     try: await update.message.delete()
     except Exception: pass
-
     trade_service = get_service(context, "trade_service", TradeService)
-    
     try:
         if action == "close_manual":
             price = parse_number(user_input)
@@ -162,9 +154,8 @@ async def unified_reply_handler(update: Update, context: ContextTypes.DEFAULT_TY
             await trade_service.update_sl_for_user_async(position_id, user_id, price, db_session=db_session)
         elif action == "edit_tp":
             targets_list = parse_targets_list(user_input.split())
-            if not targets_list: raise ValueError("Invalid targets format. Please provide at least one target.")
+            if not targets_list: raise ValueError("Invalid targets format.")
             await trade_service.update_targets_for_user_async(position_id, user_id, targets_list, db_session=db_session)
-        
     except (InvalidOperation, ValueError, RuntimeError, TypeError) as e:
         await context.bot.send_message(chat_id=chat_id, text=f"❌ **Action Failed:** {e}\nPlease try again.", reply_to_message_id=message_id)
         context.user_data[AWAITING_INPUT_KEY] = state
@@ -179,8 +170,6 @@ def register_management_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=r"^open_nav:page:"))
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=r"^(pos:show_panel:|rec:back_to_main:)"))
     
-    # Add the unified handler. This now covers all buttons like strategy, partial close, etc.
     app.add_handler(unified_handler)
     
-    # The reply handler now has default priority and will work correctly.
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, unified_reply_handler))
