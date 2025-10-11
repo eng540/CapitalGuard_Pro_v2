@@ -1,4 +1,4 @@
-# src/capitalguard/infrastructure/sched/price_streamer.py (v25.5 - FINAL & THREAD-SAFE STARTUP)
+# src/capitalguard/infrastructure/sched/price_streamer.py (v25.6 - Loop-Aware Startup)
 """
 A dedicated component for streaming live prices from Binance WebSocket.
 This version is context-aware and includes a fix for starting tasks in a new loop.
@@ -83,7 +83,8 @@ class PriceStreamer:
             log.warning("Price Streamer task is already running.")
             return
         
-        # ✅ **THE FIX:** Use the provided loop to create the task.
+        # ✅ THE FIX: Use the provided loop from the background thread to create the task.
+        # If no loop is provided, it falls back to the current running loop.
         _loop = loop or asyncio.get_running_loop()
         log.info("Starting Price Streamer background task.")
         self._task = _loop.create_task(self._run_stream())
@@ -94,5 +95,3 @@ class PriceStreamer:
             log.info("Stopping Price Streamer background task.")
             self._task.cancel()
         self._task = None
-
-#END```
