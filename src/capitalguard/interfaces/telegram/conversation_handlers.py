@@ -111,7 +111,7 @@ async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             live_price = Decimal(str(live_price_float))
             trade_service._validate_recommendation_data(draft["side"], live_price, stop_loss, targets)
             draft.update({"entry": live_price, "stop_loss": stop_loss, "targets": targets})
-        else:
+        else: # LIMIT or STOP_MARKET
             if len(tokens) < 3: raise ValueError("LIMIT/STOP format: ENTRY, STOP, then TARGETS...")
             entry, stop_loss = parse_number(tokens[0]), parse_number(tokens[1])
             targets = parse_targets_list(tokens[2:])
@@ -154,8 +154,7 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
     draft = get_user_draft(context)
     trade_service = get_service(context, "trade_service", TradeService)
     try:
-        # ✅ THE FIX: Call the decorated service method WITHOUT passing 'db_session' explicitly.
-        rec, report = await trade_service.create_and_publish_recommendation_async(str(query.from_user.id), **draft)
+        rec, report = await trade_service.create_and_publish_recommendation_async(user_id=str(query.from_user.id), db_session=db_session, **draft)
         if report.get("success"): await query.message.edit_text(f"✅ Recommendation #{rec.id} for <b>{rec.asset.value}</b> published.", parse_mode='HTML')
         else: await query.message.edit_text(f"⚠️ Rec #{rec.id} saved, but publishing failed: {report.get('failed', [{}])[0].get('reason')}", parse_mode='HTML')
     except Exception as e:
