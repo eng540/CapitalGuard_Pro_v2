@@ -171,28 +171,6 @@ class TradeService:
         await self.alert_service.build_triggers_index()
         return final_rec, report
 
-    async def create_trade_from_forwarding(self, user_id: str, trade_data: Dict[str, Any], db_session: Session) -> Dict[str, Any]:
-        trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-        if not trader_user: return {'success': False, 'error': 'User not found'}
-        system_user = self._get_or_create_system_user(db_session)
-        targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0)} for t in trade_data['targets']]
-        shadow_rec = Recommendation(
-            analyst_id=system_user.id, asset=trade_data['asset'], side=trade_data['side'],
-            entry=Decimal(str(trade_data['entry'])), stop_loss=Decimal(str(trade_data['stop_loss'])),
-            targets=targets_for_db, status=RecommendationStatusEnum.ACTIVE, 
-            order_type=OrderTypeEnum.MARKET, is_shadow=True,
-            notes="Shadow rec from forwarded trade.", activated_at=datetime.now(timezone.utc)
-        )
-        db_session.add(shadow_rec); db_session.flush()
-        new_trade = UserTrade(
-            user_id=trader_user.id, source_recommendation_id=shadow_rec.id, asset=trade_data['asset'], side=trade_data['side'],
-            entry=Decimal(str(trade_data['entry'])), stop_loss=Decimal(str(trade_data['stop_loss'])),
-            targets=targets_for_db, status=UserTradeStatus.OPEN
-        )
-        db_session.add(new_trade); db_session.flush()
-        await self.alert_service.build_triggers_index()
-        return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
-
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user: return {'success': False, 'error': 'User not found'}
