@@ -3,7 +3,7 @@
 .PHONY: init dev api watcher bot test migrate fmt rebuild
 
 init:
-	python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+	python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt && pip install -e .
 	@echo "Copy .env.example to .env and edit values."
 
 dev:

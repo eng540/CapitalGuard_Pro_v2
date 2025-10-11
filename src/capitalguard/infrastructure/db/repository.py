@@ -41,21 +41,31 @@ class UserRepository:
         return self.session.query(User).filter(User.id == user_id).first()
 
     def find_or_create(self, telegram_id: int, **kwargs) -> User:
+        """
+        Finds a user by their Telegram ID. If they don't exist, a new, active
+        user with the TRADER role is created. This ensures every user interacting
+        with the bot has a valid, active record in the database.
+        """
         user = self.find_by_telegram_id(telegram_id)
         if user:
+            # Update user's name/username if they have changed it on Telegram
             if kwargs.get("first_name") and user.first_name != kwargs["first_name"]:
                 user.first_name = kwargs["first_name"]
             if kwargs.get("username") and user.username != kwargs["username"]:
                 user.username = kwargs["username"]
             return user
 
+        # ✅ THE FIX: New users are now active by default with the TRADER role.
+        # This ensures any user can interact with the bot immediately after /start.
+        # The previous `is_active=False` was the root cause of the failure, as
+        # it created a user who was then blocked by the `@require_active_user` decorator.
         logger.info("Creating new user for telegram_id=%s", telegram_id)
         new_user = User(
             telegram_user_id=telegram_id,
             first_name=kwargs.get("first_name"),
             username=kwargs.get("username"),
-            is_active=False,
-            user_type=kwargs.get("user_type", UserType.TRADER),
+            is_active=True,  # New users are active by default.
+            user_type=UserType.TRADER,  # New users are always Traders by default (Least Privilege).
         )
         self.session.add(new_user)
         self.session.flush()
