@@ -1,4 +1,4 @@
-# src/capitalguard/application/services/trade_service.py (v28.1 - Final & Production Ready)
+# src/capitalguard/application/services/trade_service.py (v28.4 - Final & Production Ready)
 """
 TradeService - This is the definitive, feature-complete, and reliable version.
 It includes full, intelligent implementations for all management features like
@@ -262,35 +262,41 @@ class TradeService:
         await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True)
         return self.repo._to_entity(rec_orm)
 
-    async def take_partial_profit_async(self, rec_id: int, user_id: str, close_percent: Decimal, price: Decimal, db_session: Session) -> RecommendationEntity:
+    async def partial_close_async(self, rec_id: int, user_id: str, close_percent: Decimal, price: Decimal, db_session: Session, triggered_by: str = "MANUAL") -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         if not rec_orm: raise ValueError(f"Recommendation #{rec_id} not found.")
         if rec_orm.analyst_id != user.id: raise ValueError("Access denied.")
-        if rec_orm.status != RecommendationStatusEnum.ACTIVE: raise ValueError("Partial profit can only be taken on active recommendations.")
+        if rec_orm.status != RecommendationStatusEnum.ACTIVE: raise ValueError("Partial close can only be performed on active recommendations.")
         
         current_open_percent = Decimal(str(rec_orm.open_size_percent))
         actual_close_percent = min(close_percent, current_open_percent)
 
-        if not (Decimal(0) < actual_close_percent <= current_open_percent + Decimal('0.1')):
+        if not (Decimal(0) < actual_close_percent):
             raise ValueError(f"Invalid percentage. Open position is {current_open_percent:.2f}%.")
 
         rec_orm.open_size_percent = current_open_percent - actual_close_percent
         pnl_on_part = _pct(rec_orm.entry, price, rec_orm.side)
         
+        event_type = "PARTIAL_CLOSE_AUTO" if triggered_by == "AUTO" else "PARTIAL_CLOSE_MANUAL"
         event_data = {
             "price": float(price), 
             "closed_percent": float(actual_close_percent), 
             "remaining_percent": float(rec_orm.open_size_percent), 
             "pnl_on_part": pnl_on_part
         }
-        db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="PARTIAL_PROFIT_MANUAL", event_data=event_data))
+        db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type=event_type, event_data=event_data))
         
-        self.notify_reply(rec_id, f"💰 Partial profit taken on #{rec_orm.asset}. Closed {actual_close_percent:g}% at {price:g} ({pnl_on_part:+.2f}%). Remaining: {rec_orm.open_size_percent:g}%", db_session)
+        if pnl_on_part >= 0:
+            notif_text = f"💰 Partial Close (Profit) on #{rec_orm.asset}. Closed {actual_close_percent:g}% at {price:g} ({pnl_on_part:+.2f}%)."
+        else:
+            notif_text = f"⚠️ Partial Close (Loss Mgt) on #{rec_orm.asset}. Closed {actual_close_percent:g}% at {price:g} ({pnl_on_part:+.2f}%)."
+        notif_text += f"\nRemaining: {rec_orm.open_size_percent:g}%"
+        self.notify_reply(rec_id, notif_text, db_session)
 
         if rec_orm.open_size_percent < Decimal('0.1'):
-            logger.info(f"Position #{rec_id} fully closed via partial profits. Closing recommendation.")
+            logger.info(f"Position #{rec_id} fully closed via partial close. Closing recommendation.")
             return await self.close_recommendation_async(rec_id, user_id, price, db_session, reason="PARTIAL_CLOSE_FINAL")
         else:
             await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False)
@@ -337,19 +343,8 @@ class TradeService:
             close_percent = Decimal(str(target_info.get("close_percent", 0)))
 
             if close_percent > 0:
-                current_open_percent = Decimal(str(rec_orm.open_size_percent))
-                actual_close_percent = min(close_percent, current_open_percent)
-                
-                if actual_close_percent > 0:
-                    logger.info(f"Auto partial profit triggered for rec #{item_id} at TP{target_index}.")
-                    pnl_on_part = _pct(rec_orm.entry, price, rec_orm.side)
-                    rec_orm.open_size_percent = current_open_percent - actual_close_percent
-                    event_data = {
-                        "price": float(price), "closed_percent": float(actual_close_percent), 
-                        "remaining_percent": float(rec_orm.open_size_percent), "pnl_on_part": pnl_on_part
-                    }
-                    db_session.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type="PARTIAL_PROFIT_AUTO", event_data=event_data))
-                    self.notify_reply(rec_orm.id, f"💰 Auto partial profit on #{rec_orm.asset}. Closed {actual_close_percent:g}% at {price:g} ({pnl_on_part:+.2f}%). Remaining: {rec_orm.open_size_percent:g}%", db_session)
+                await self.partial_close_async(rec_orm.id, str(rec_orm.analyst.telegram_user_id), close_percent, price, db_session, triggered_by="AUTO")
+                rec_orm = self.repo.get_for_update(db_session, item_id)
 
             is_final_tp = (target_index == len(rec_orm.targets))
             if (rec_orm.exit_strategy == ExitStrategyEnum.CLOSE_AT_FINAL_TP and is_final_tp) or rec_orm.open_size_percent < Decimal('0.1'):
