@@ -1,8 +1,8 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v27.6 - Final Reliability Patch)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v28.0 - Final & Complete)
 """
 Implements all callback query handlers for managing recommendations and trades.
-This is the final, complete, and fully implemented version with robust error handling and flexible callback parsing
-to fix all previously identified bugs like IndexError and "message not modified" spam.
+This is the final, complete, and fully implemented version with specific,
+reliable handlers for each action and a full conversation for partial profit.
 """
 
 import logging
@@ -19,7 +19,7 @@ from .helpers import get_service, parse_tail_int, parse_cq_parts
 from .keyboards import (analyst_control_panel_keyboard, build_open_recs_keyboard, build_user_trade_control_keyboard, build_close_options_keyboard, analyst_edit_menu_keyboard, build_exit_strategy_keyboard, build_partial_close_keyboard)
 from .ui_texts import build_trade_card_text
 from .auth import require_active_user, require_analyst_user
-from .parsers import parse_number, parse_targets_list
+from .parsers import parse_number
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 
@@ -34,7 +34,6 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     parts = parse_cq_parts(query.data)
     
-    # ✅ THE FIX: Flexible parsing for pos:show_panel:type:id OR rec:back_to_main:id
     try:
         if parts[1] == "back_to_main":
             position_id = int(parts[2])
@@ -69,9 +68,7 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
     try:
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except BadRequest as e:
-        # ✅ THE FIX: Gracefully handle the "message is not modified" error.
         if "Message is not modified" in str(e):
-            log.debug(f"Ignoring 'message not modified' for rec #{position_id}")
             await query.answer()
         else:
             log.warning(f"Failed to edit panel message: {e}")
@@ -231,23 +228,79 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
         log.error(f"Error processing reply for {action} on #{rec_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id=chat_id, text=f"❌ Error: {e}")
 
+# --- Partial Close Conversation ---
+
+async def partial_close_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    rec_id = int(query.data.split(':')[2])
+    context.user_data['partial_close_rec_id'] = rec_id
+    await query.edit_message_text(f"{query.message.text}\n\n<b>💰 Please send the percentage of the position you want to close (e.g., 25.5).</b>", parse_mode=ParseMode.HTML)
+    return AWAIT_PARTIAL_PERCENT
+
+async def partial_close_percent_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        percent = parse_number(update.message.text)
+        if percent is None or not (0 < percent <= 100):
+            raise ValueError("Percentage must be a number between 0 and 100.")
+        context.user_data['partial_close_percent'] = percent
+        await update.message.reply_html(f"✅ Percentage: {percent:g}%\n\n<b>Now, please send the price at which you took profit.</b>")
+        return AWAIT_PARTIAL_PRICE
+    except (ValueError) as e:
+        await update.message.reply_text(f"❌ Invalid value: {e}. Please try again or /cancel.")
+        return AWAIT_PARTIAL_PERCENT
+
+@uow_transaction
+async def partial_close_price_received(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
+    try:
+        price = parse_number(update.message.text)
+        if price is None: raise ValueError("Invalid price format.")
+        
+        percent = context.user_data['partial_close_percent']
+        rec_id = context.user_data['partial_close_rec_id']
+        user_id = str(update.effective_user.id)
+        
+        trade_service = get_service(context, "trade_service", TradeService)
+        await trade_service.take_partial_profit_async(rec_id, user_id, percent, price, db_session)
+        
+    except (ValueError) as e:
+        await update.message.reply_text(f"❌ Invalid value: {e}. Please try again or /cancel.")
+        return AWAIT_PARTIAL_PRICE
+    except Exception as e:
+        log.error(f"Error in partial profit flow for rec #{context.user_data.get('partial_close_rec_id')}: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ An unexpected error occurred: {e}")
+    
+    for key in ('partial_close_rec_id', 'partial_close_percent'):
+        context.user_data.pop(key, None)
+    return ConversationHandler.END
+
+async def partial_close_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ('partial_close_rec_id', 'partial_close_percent'):
+        context.user_data.pop(key, None)
+    await update.message.reply_text("Partial profit operation cancelled.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
 # --- Registration ---
 
 def register_management_handlers(app: Application):
-    # Main navigation
     app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=r"^open_nav:page:"))
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=r"^(pos:show_panel:|rec:back_to_main:)"))
-    
-    # Menu navigation
     app.add_handler(CallbackQueryHandler(show_menu_handler, pattern=r"^rec:(edit_menu|close_menu|strategy_menu|close_partial)"))
-
-    # Direct actions
     app.add_handler(CallbackQueryHandler(set_strategy_handler, pattern=r"^rec:set_strategy:"))
     app.add_handler(CallbackQueryHandler(close_at_market_handler, pattern=r"^rec:close_market:"))
     app.add_handler(CallbackQueryHandler(partial_close_fixed_handler, pattern=r"^rec:partial_close:"))
-
-    # Actions that prompt for user input
     app.add_handler(CallbackQueryHandler(prompt_handler, pattern=r"^rec:(edit_sl|edit_tp|close_manual)"))
-    
-    # Handler for text replies to prompts
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, reply_handler))
+
+    partial_close_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(partial_close_custom_start, pattern=r"^rec:partial_close_custom:")],
+        states={
+            AWAIT_PARTIAL_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, partial_close_percent_received)],
+            AWAIT_PARTIAL_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, partial_close_price_received)],
+        },
+        fallbacks=[CommandHandler("cancel", partial_close_cancel)],
+        name="partial_profit_conversation",
+        per_user=True,
+        per_chat=True,
+    )
+    app.add_handler(partial_close_conv)
