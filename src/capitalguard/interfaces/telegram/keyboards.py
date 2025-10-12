@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v28.4 - Final & Complete Restoration)
+# src/capitalguard/interfaces/telegram/keyboards.py (v28.2 - Final & Production Ready)
 """
 Contains all keyboard generation logic for the Telegram interface.
 This is the definitive, complete, and fully restored version, including all
