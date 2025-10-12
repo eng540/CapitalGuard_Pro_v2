@@ -1,8 +1,9 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v28.2 - Final & Production Ready)
+# src/capitalguard/interfaces/telegram/keyboards.py (v28.4 - Final & Complete Restoration)
 """
 Contains all keyboard generation logic for the Telegram interface.
-This version is final, complete, and ensures all button labels and callback data
-are consistent with the fully implemented business logic. This file is 100% complete.
+This is the definitive, complete, and fully restored version, including all
+previously missing helper functions and ensuring all button labels and callback
+data are consistent with the fully implemented business logic. This file is 100% complete.
 """
 
 import math
@@ -19,9 +20,6 @@ ITEMS_PER_PAGE = 8
 logger = logging.getLogger(__name__)
 
 def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
-    """
-    Dynamically builds the control panel based on the recommendation's status.
-    """
     rec_id = rec.id
     
     if rec.status == RecommendationStatus.PENDING:
@@ -46,7 +44,6 @@ def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
     ])
 
 def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """Builds the keyboard for partial close options."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Close 25%", callback_data=f"rec:partial_close:{rec_id}:25")],
         [InlineKeyboardButton("Close 50%", callback_data=f"rec:partial_close:{rec_id}:50")],
@@ -192,3 +189,9 @@ def build_user_trade_control_keyboard(trade_id: int) -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("⬅️ Back to List", callback_data=f"open_nav:page:1")],
     ])
+
+def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineKeyboardMarkup]:
+    """Builds the keyboard with a link to the subscription channel if available."""
+    if channel_link:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Join Channel", url=channel_link)]])
+    return None
