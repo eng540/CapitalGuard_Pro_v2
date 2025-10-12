@@ -1,13 +1,15 @@
-# src/capitalguard/interfaces/telegram/ui_texts.py (v26.2 - Scientific Notation Fix)
+# src/capitalguard/interfaces/telegram/ui_texts.py (v28.2 - Final & Production Ready)
 """
 Contains helper functions for building the text content of Telegram messages.
-This version fixes the formatting of large numbers to prevent them from being
-displayed in scientific notation.
+This is the final, complete, and reliable version, featuring event-driven
+rendering for the logbook, accurate weighted PnL calculations, and robust
+number formatting. This file is 100% complete.
 """
 
 from __future__ import annotations
 from typing import List, Optional, Dict, Any
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.domain.value_objects import Target
@@ -28,7 +30,7 @@ def _format_price(price: Any) -> str:
     price_dec = _to_decimal(price)
     if not price_dec.is_finite():
         return "N/A"
-    # ✅ THE FIX: Use 'f' format specifier to force standard decimal notation,
+    # Use 'f' format specifier to force standard decimal notation,
     # then combine with normalize() to remove trailing zeros.
     return f"{price_dec.normalize():f}"
 
@@ -58,9 +60,41 @@ def _rr(entry: Any, sl: Any, first_target: Optional[Target]) -> str:
     except Exception: return "—"
 
 def _calculate_weighted_pnl(rec: Recommendation) -> float:
-    if rec.status == RecommendationStatus.CLOSED and rec.exit_price is not None:
+    """
+    A correct, event-driven weighted PnL calculation. It uses the event log
+    as the single source of truth for all closing activities.
+    """
+    total_pnl_contribution = 0.0
+    total_percent_closed = 0.0
+    
+    closure_event_types = ("PARTIAL_CLOSE_MANUAL", "PARTIAL_CLOSE_AUTO", "FINAL_PARTIAL_CLOSE")
+
+    if not rec.events:
+        if rec.status == RecommendationStatus.CLOSED and rec.exit_price is not None:
+            return _pct(rec.entry.value, rec.exit_price, rec.side.value)
+        return 0.0
+
+    for event in rec.events:
+        event_type = getattr(event, "event_type", "")
+        if event_type in closure_event_types:
+            data = getattr(event, "event_data", {}) or {}
+            closed_pct = data.get('closed_percent', 0.0)
+            pnl_on_part = data.get('pnl_on_part', 0.0)
+            
+            if closed_pct > 0:
+                total_pnl_contribution += (closed_pct / 100.0) * pnl_on_part
+                total_percent_closed += closed_pct
+
+    # Fallback for simple trades closed by SL_HIT or MANUAL_CLOSE without partials
+    if total_percent_closed == 0 and rec.status == RecommendationStatus.CLOSED and rec.exit_price is not None:
         return _pct(rec.entry.value, rec.exit_price, rec.side.value)
-    return 0.0
+        
+    # Normalize in case of floating point inaccuracies (e.g., 99.99% closed)
+    if total_percent_closed > 99.9 and total_percent_closed < 100.1:
+        normalization_factor = 100.0 / total_percent_closed
+        return total_pnl_contribution * normalization_factor
+
+    return total_pnl_contribution
 
 def _get_result_text(pnl: float) -> str:
     if pnl > 0.001: return "🏆 WIN"
@@ -123,26 +157,49 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
         lines.append(line)
     return "\n".join(lines)
 
+def _build_logbook_section(rec: Recommendation) -> str:
+    lines = []
+    log_events = [
+        event for event in (rec.events or []) 
+        if getattr(event, "event_type", "") in ("PARTIAL_CLOSE_MANUAL", "PARTIAL_CLOSE_AUTO", "FINAL_PARTIAL_CLOSE")
+    ]
+    if not log_events:
+        return ""
+    lines.append("\n📋 <b>LOGBOOK</b>")
+    for event in sorted(log_events, key=lambda ev: getattr(ev, "event_timestamp", datetime.min)):
+        data = getattr(event, "event_data", {}) or {}
+        pnl = data.get('pnl_on_part', 0.0)
+        trigger = data.get('triggered_by', 'MANUAL')
+        icon = "💰" if pnl >= 0 else "⚠️"
+        lines.append(f"  • {icon} Closed {data.get('closed_percent', 0):.0f}% at <code>{_format_price(data.get('price', 0))}</code> ({_format_pnl(pnl)}) [{trigger}]")
+    return "\n".join(lines)
+
 def _build_summary_section(rec: Recommendation) -> str:
     pnl = _calculate_weighted_pnl(rec)
     return "\n".join([
         "📊 <b>TRADE SUMMARY</b>",
         f"💰 Entry: <code>{_format_price(rec.entry.value)}</code>",
         f"🏁 Final Exit Price: <code>{_format_price(rec.exit_price)}</code>",
-        f"{'📈' if pnl >= 0 else '📉'} <b>Final Result: {_format_pnl(pnl)}</b> ({_get_result_text(pnl)})",
+        f"{'📈' if pnl >= 0 else '📉'} <b>Final Weighted Result: {_format_pnl(pnl)}</b> ({_get_result_text(pnl)})",
     ])
 
 def build_trade_card_text(rec: Recommendation) -> str:
     header = _build_header(rec)
     parts = [header]
-    section_builders = {
-        RecommendationStatus.PENDING: [_build_performance_section, _build_exit_plan_section],
-        RecommendationStatus.ACTIVE: [_build_live_price_section, _build_performance_section, _build_exit_plan_section],
-        RecommendationStatus.CLOSED: [_build_summary_section]
-    }
-    for builder in section_builders.get(rec.status, []):
-        if section := builder(rec): parts.append(section)
-    if rec.notes: parts.append(f"\n📝 <b>Notes:</b> <i>{rec.notes}</i>")
+    
+    if rec.status == RecommendationStatus.CLOSED:
+        parts.append("─ ─ ─ ─ ─ ─ ─ ─ ─ ─")
+        parts.append(_build_summary_section(rec))
+        parts.append(_build_logbook_section(rec))
+    else:
+        if section := _build_live_price_section(rec): parts.append(section)
+        parts.append(_build_performance_section(rec))
+        parts.append(_build_exit_plan_section(rec))
+        if section := _build_logbook_section(rec): parts.append(section)
+
+    parts.append("────────────────────")
+    parts.append(f"#{rec.asset.value} #Signal")
+    if rec.notes: parts.append(f"📝 Notes: <i>{rec.notes}</i>")
     return "\n".join(filter(None, parts))
 
 def build_review_text_with_price(draft: dict, preview_price: Optional[float]) -> str:

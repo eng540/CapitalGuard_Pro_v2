@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v28.0 - Final & Complete)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v28.1 - Final & Complete)
 """
 Implements all callback query handlers for managing recommendations and trades.
 This is the final, complete, and fully implemented version with specific,
@@ -179,7 +179,7 @@ async def partial_close_fixed_handler(update: Update, context: ContextTypes.DEFA
         await query.answer(f"❌ Could not fetch market price for {rec_entity.asset.value}.", show_alert=True)
         return
         
-    await trade_service.take_partial_profit_async(rec_id, str(query.from_user.id), percent_to_close, Decimal(str(live_price)), db_session)
+    await trade_service.partial_close_async(rec_id, str(query.from_user.id), percent_to_close, Decimal(str(live_price)), db_session)
 
 # --- Input Prompts & Handlers ---
 
@@ -244,7 +244,7 @@ async def partial_close_percent_received(update: Update, context: ContextTypes.D
         if percent is None or not (0 < percent <= 100):
             raise ValueError("Percentage must be a number between 0 and 100.")
         context.user_data['partial_close_percent'] = percent
-        await update.message.reply_html(f"✅ Percentage: {percent:g}%\n\n<b>Now, please send the price at which you took profit.</b>")
+        await update.message.reply_html(f"✅ Percentage: {percent:g}%\n\n<b>Now, please send the price at which you are closing.</b>")
         return AWAIT_PARTIAL_PRICE
     except (ValueError) as e:
         await update.message.reply_text(f"❌ Invalid value: {e}. Please try again or /cancel.")
@@ -261,7 +261,7 @@ async def partial_close_price_received(update: Update, context: ContextTypes.DEF
         user_id = str(update.effective_user.id)
         
         trade_service = get_service(context, "trade_service", TradeService)
-        await trade_service.take_partial_profit_async(rec_id, user_id, percent, price, db_session)
+        await trade_service.partial_close_async(rec_id, user_id, percent, price, db_session)
         
     except (ValueError) as e:
         await update.message.reply_text(f"❌ Invalid value: {e}. Please try again or /cancel.")
@@ -277,7 +277,7 @@ async def partial_close_price_received(update: Update, context: ContextTypes.DEF
 async def partial_close_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     for key in ('partial_close_rec_id', 'partial_close_percent'):
         context.user_data.pop(key, None)
-    await update.message.reply_text("Partial profit operation cancelled.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("Partial close operation cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 # --- Registration ---
