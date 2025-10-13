@@ -1,7 +1,8 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v18.0 - FINAL PRODUCTION READY)
+# src/capitalguard/interfaces/telegram/keyboards.py (v19.0 - FINAL PRODUCTION COMPLETE MATCH for v28.7)
 """
 واجهة لوحات المفاتيح للتليجرام - الإصدار النهائي الكامل والمتين
-تدعم اللغة العربية بشكل كامل مع معالجة متقدمة للأخطاء وأداء محسن
+متوافق تماماً مع TradeService v28.7 و management_handlers v28.1
+يدعم اللغة العربية بشكل كامل مع معالجة متقدمة للأخطاء وأداء محسن.
 """
 
 import math
@@ -46,7 +47,10 @@ class ButtonTexts:
     DELETE = "🗑️ حذف"
 
 def _get_attr(obj: Any, attr: str, default: Any = None) -> Any:
-    """الحصول على خاصية بشكل آمن مع دعم الكائنات والقواميس والقيم المتداخلة"""
+    """
+    الحصول على خاصية بشكل آمن مع دعم الكائنات والقواميس والقيم المتداخلة.
+    - يدعم إرجاع .value إذا كانت الخاصية كائن Enum-like.
+    """
     try:
         if hasattr(obj, attr):
             val = getattr(obj, attr)
@@ -61,7 +65,7 @@ def _get_attr(obj: Any, attr: str, default: Any = None) -> Any:
         return default
 
 def _safe_get_display_id(item: Any) -> int:
-    """الحصول على معرف العرض بشكل آمن"""
+    """الحصول على معرف العرض بشكل آمن (يدعم حقول بديلة مثل analyst_rec_id)"""
     display_id = _get_attr(item, "analyst_rec_id")
     if display_id is None:
         display_id = _get_attr(item, "id", 0)
@@ -98,33 +102,33 @@ def _determine_status_icon(item: Any, live_price: Optional[float] = None) -> str
         if is_shadow:
             return StatusIcons.SHADOW
         
-        # التعامل مع الحالات المختلفة
+        # استخرج قيمة الحالة بشكل آمن
         status_value = status.value if hasattr(status, 'value') else status
-        
+
+        # حالة معلقة
         if status_value == RecommendationStatus.PENDING.value:
             return StatusIcons.PENDING
-        
-        elif status_value == RecommendationStatus.ACTIVE.value:
+
+        # حالة نشطة - احسب PnL عند توفر السعر
+        if status_value == RecommendationStatus.ACTIVE.value:
             if entry > 0 and stop_loss > 0 and abs(entry - stop_loss) < 0.0001:
                 return StatusIcons.BREAK_EVEN
-            
             if live_price is not None and entry > 0:
                 pnl = _pct(entry, float(live_price), side)
                 return StatusIcons.PROFIT if pnl >= 0 else StatusIcons.LOSS
-            
             return StatusIcons.ACTIVE
-        
-        # التعامل مع حالة صفقة المستخدم
-        elif status in ['OPEN', 'CLOSED']:
-            if status == 'OPEN' and live_price is not None and entry > 0:
+
+        # دعم حالات صفقة المستخدم (قد تكون نصية أو Enums حسب النوع)
+        if status_value in ['OPEN', 'CLOSED', 'OPEN.value', 'CLOSED.value']:
+            if status_value == 'OPEN' and live_price is not None and entry > 0:
                 pnl = _pct(entry, float(live_price), side)
                 return StatusIcons.PROFIT if pnl >= 0 else StatusIcons.LOSS
-            elif status == 'CLOSED':
+            if status_value == 'CLOSED':
                 return StatusIcons.CLOSED
             return StatusIcons.ACTIVE
-        
+
         return StatusIcons.ACTIVE
-        
+
     except Exception as e:
         logger.error("خطأ في تحديد رمز الحالة: %s", e, exc_info=True)
         return StatusIcons.ERROR
@@ -136,8 +140,8 @@ def _build_navigation_buttons(
     show_page_info: bool = True
 ) -> List[List[InlineKeyboardButton]]:
     """دالة مساعدة لبناء أزرار التنقل"""
-    nav_buttons = []
-    page_nav_row = []
+    nav_buttons: List[List[InlineKeyboardButton]] = []
+    page_nav_row: List[InlineKeyboardButton] = []
     
     if current_page > 1:
         page_nav_row.append(InlineKeyboardButton(
@@ -176,17 +180,18 @@ async def build_open_recs_keyboard(
         paginated_items = items[start_index: start_index + ITEMS_PER_PAGE]
 
         # تجهيز طلبات الأسعار الجماعية
-        price_requests = []
+        price_requests: List[Tuple[str, str]] = []
         for item in paginated_items:
             asset = _safe_get_asset(item)
             market = _safe_get_market(item)
             price_requests.append((asset, market))
         
         # الحصول على الأسعار بشكل جماعي (إذا كانت الخدمة تدعمه)
-        prices_map = {}
+        prices_map: Dict[str, Optional[float]] = {}
         try:
             if hasattr(price_service, 'get_batch_prices'):
                 prices_list = await price_service.get_batch_prices(price_requests)
+                # افترض أن get_batch_prices يعيد قائمة من الأسعار متوافقة بالترتيب
                 prices_map = dict(zip([asset for asset, _ in price_requests], prices_list))
             else:
                 # الرجوع إلى الطلبات الفردية
@@ -217,11 +222,11 @@ async def build_open_recs_keyboard(
                 pnl = _pct(entry, float(live_price), side)
                 button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%"
             elif status_value in [RecommendationStatus.PENDING.value, 'PENDING']:
-                button_text = f"{status_icon} {button_text} | معلقة"
+                button_text = f"{status_icon} {button_text} | معلق"
             elif status_value in ['CLOSED']:
-                button_text = f"{status_icon} {button_text} | مغلقة"
+                button_text = f"{status_icon} {button_text} | مغلق"
             else:
-                button_text = f"{status_icon} {button_text} | نشطة"
+                button_text = f"{status_icon} {button_text} | نشط"
 
             # تحديد نوع العنصر وبناء callback_data المناسب
             is_trade = getattr(item, 'is_user_trade', False)
@@ -257,7 +262,7 @@ def main_creation_keyboard() -> InlineKeyboardMarkup:
 
 def public_channel_keyboard(rec_id: int, bot_username: str) -> InlineKeyboardMarkup:
     """بناء لوحة المفاتيح لرسالة القناة العامة"""
-    buttons = []
+    buttons: List[InlineKeyboardButton] = []
     
     if bot_username:
         buttons.append(InlineKeyboardButton(
@@ -283,14 +288,15 @@ def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
         ])
     
     # لوحة المفاتيح الافتراضية للتوصيات النشطة
-    keyboard = [
+    keyboard: List[List[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec_id}"),
             InlineKeyboardButton("✏️ تعديل", callback_data=f"rec:edit_menu:{rec_id}"),
         ],
         [
             InlineKeyboardButton("📈 استراتيجية الخروج", callback_data=f"rec:strategy_menu:{rec_id}"),
-            InlineKeyboardButton("💰 جني ربح جزئي", callback_data=f"rec:close_partial:{rec_id}"),
+            # الان تسميات محايدة: إغلاق جزئي بدلاً من "جني ربح" لتغطي الربح/الخسارة/تخفيف
+            InlineKeyboardButton("💰 إغلاق جزئي", callback_data=f"rec:close_partial:{rec_id}"),
         ],
         [InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_menu:{rec_id}")],
         [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=f"open_nav:page:1")],
@@ -334,7 +340,7 @@ def build_exit_strategy_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
     if current_strategy == ExitStrategy.MANUAL_CLOSE_ONLY: 
         manual_close_text = f"✅ {manual_close_text}"
 
-    keyboard = [
+    keyboard: List[List[InlineKeyboardButton]] = [
         [InlineKeyboardButton(
             auto_close_text, 
             callback_data=f"rec:set_strategy:{rec_id}:{ExitStrategy.CLOSE_AT_FINAL_TP.value}"
@@ -381,7 +387,7 @@ def asset_choice_keyboard(recent_assets: List[str]) -> InlineKeyboardMarkup:
         ]])
     
     buttons = [InlineKeyboardButton(asset, callback_data=f"asset_{asset}") for asset in recent_assets]
-    keyboard_layout = [buttons[i: i + 3] for i in range(0, len(buttons), 3)]
+    keyboard_layout: List[List[InlineKeyboardButton]] = [buttons[i: i + 3] for i in range(0, len(buttons), 3)]
     keyboard_layout.append([
         InlineKeyboardButton("✍️ اكتب أصلاً جديدًا", callback_data="asset_new")
     ])
@@ -596,11 +602,15 @@ def build_trade_edit_keyboard(trade_id: int) -> InlineKeyboardMarkup:
     ])
 
 def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """بناء لوحة جني الربح الجزئي"""
+    """
+    بناء لوحة إغلاق جزئي محايدة:
+    - تستخدم callback_data: rec:partial_close:<rec_id>:<percent>
+    - ولخيار مخصص: rec:partial_close_custom:<rec_id>
+    """
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💰 جني 25%", callback_data=f"rec:partial_close:{rec_id}:25")],
-        [InlineKeyboardButton("💰 جني 50%", callback_data=f"rec:partial_close:{rec_id}:50")],
-        [InlineKeyboardButton("💰 جني 75%", callback_data=f"rec:partial_close:{rec_id}:75")],
+        [InlineKeyboardButton("💰 إغلاق 25%", callback_data=f"rec:partial_close:{rec_id}:25")],
+        [InlineKeyboardButton("💰 إغلاق 50%", callback_data=f"rec:partial_close:{rec_id}:50")],
+        [InlineKeyboardButton("💰 إغلاق 75%", callback_data=f"rec:partial_close:{rec_id}:75")],
         [InlineKeyboardButton("✍️ نسبة مخصصة", callback_data=f"rec:partial_close_custom:{rec_id}")],
         [InlineKeyboardButton(ButtonTexts.BACK, callback_data=f"rec:back_to_main:{rec_id}")],
     ])
