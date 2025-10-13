@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v28.1 - Final & Complete)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v28.2 - Final & Complete)
 """
 Implements all callback query handlers for managing recommendations and trades.
 This is the final, complete, and fully implemented version with specific,
