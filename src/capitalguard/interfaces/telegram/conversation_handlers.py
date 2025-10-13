@@ -1,8 +1,8 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v27.0 - Full Interactivity Fix)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v28.2 - Final & Complete)
 """
 Implements the conversational flow for creating a new recommendation.
-This version fixes dead buttons (Add Notes, Choose Channels) by correctly
-registering their handlers within the conversation states.
+This is the final, complete, and fully implemented version with stateless
+conversation handling and robust, decorator-based authorization.
 """
 
 import logging
@@ -25,7 +25,7 @@ from .parsers import parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.market_data_service import MarketDataService
-from capitalguard.infrastructure.db.repository import ChannelRepository
+from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository
 from .commands import start_cmd, myportfolio_cmd, help_cmd
 
 log = logging.getLogger(__name__)
@@ -61,7 +61,6 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
     context.user_data['last_conv_message'] = (sent_message.chat_id, sent_message.message_id)
     return I_ASSET
 
-# ... (asset_chosen, side_chosen, order_type_chosen, prices_received are unchanged)
 async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     draft, message_obj = get_user_draft(context), update.callback_query.message if update.callback_query else update.message
     asset = ""
@@ -243,7 +242,6 @@ def register_conversation_handlers(app: Application):
             I_ORDER_TYPE: [CallbackQueryHandler(order_type_chosen, pattern="^type_")],
             I_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received)],
             I_REVIEW: [
-                # ✅ THE FIX: Register the missing handlers for the review screen buttons.
                 CallbackQueryHandler(publish_handler, pattern=r"^rec:publish:"),
                 CallbackQueryHandler(choose_channels_handler, pattern=r"^rec:choose_channels:"),
                 CallbackQueryHandler(add_notes_handler, pattern=r"^rec:add_notes:"),
