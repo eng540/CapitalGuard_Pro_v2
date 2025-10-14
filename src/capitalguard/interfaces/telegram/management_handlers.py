@@ -809,7 +809,7 @@ def register_management_handlers(app: Application):
         name="partial_profit_conversation",
         per_user=True,
         per_chat=True,
-        per_message=false,
+        per_message=False,
     )
     app.add_handler(partial_close_conv)
     
