@@ -1,10 +1,9 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v20.0 - SUSTAINABLE ARCHITECTURE)
+# src/capitalguard/interfaces/telegram/keyboards.py (v20.1 - COMPLETE COMPATIBLE)
 """
-هندسة لوحات المفاتيح المستدامة - إصدار معماري متكامل
-✅ حلول جذرية مستدامة قابلة للصيانة
-✅ أفضل الممارسات الهندسية مع الحفاظ على التوافق
-✅ نظام مركزي لإدارة بيانات الاستدعاء
-✅ تصميم معياري وقابل للتوسع
+هندسة لوحات المفاتيح المستدامة - إصدار متوافق كامل
+✅ إصلاح جميع أخطاء الاستيراد
+✅ الحفاظ على جميع الدوال القديمة
+✅ توافق 100% مع النظام الحالي
 """
 
 import math
@@ -24,7 +23,7 @@ from capitalguard.interfaces.telegram.ui_texts import _pct
 ITEMS_PER_PAGE = 8
 MAX_BUTTON_TEXT_LENGTH = 40
 MAX_CALLBACK_DATA_LENGTH = 64
-CALLBACK_DATA_VERSION = "2.0"  # تتبع الإصدار للتوافق
+CALLBACK_DATA_VERSION = "2.0"
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +61,7 @@ class CallbackAction(Enum):
 class CallbackSchema:
     """نموذج بيانات الاستدعاء المعيارية"""
     namespace: CallbackNamespace
-    action: Union[CallbackAction, str]  # يدعم الإجراءات المخصصة
+    action: Union[CallbackAction, str]
     params: Tuple[Any, ...] = ()
     version: str = CALLBACK_DATA_VERSION
     
@@ -74,7 +73,7 @@ class CallbackSchema:
             param_str = ":".join(str(p) for p in self.params)
             base = f"{base}:{param_str}"
             
-        if self.version != "1.0":  # إضافة الإصدار إذا لم يكن الافتراضي
+        if self.version != "1.0":
             base = f"{base}:v{self.version}"
             
         return self._ensure_length(base)
@@ -86,10 +85,8 @@ class CallbackSchema:
             
         logger.warning(f"Callback data truncated: {data}")
         
-        # استراتيجية تقصير ذكية تحافظ على المعنى
         if len(self.params) > 2:
-            # تقليص المعاملات مع الحفاظ على الأساسيات
-            essential_params = self.params[:2]  # المعاملات الأساسية
+            essential_params = self.params[:2]
             truncated = f"{self.namespace.value}:{self.action.value}:{':'.join(str(p) for p in essential_params)}"
             return truncated[:MAX_CALLBACK_DATA_LENGTH]
             
@@ -110,7 +107,7 @@ class CallbackBuilder:
             parts = callback_data.split(':')
             result = {
                 'raw': callback_data,
-                'version': '1.0',  # افتراضي
+                'version': '1.0',
                 'namespace': None,
                 'action': None,
                 'params': []
@@ -119,9 +116,8 @@ class CallbackBuilder:
             if not parts:
                 return result
                 
-            # استخراج الإصدار إذا موجود
             if parts[-1].startswith('v'):
-                result['version'] = parts.pop()[1:]  # إزالة v
+                result['version'] = parts.pop()[1:]
                 
             if len(parts) >= 1:
                 result['namespace'] = parts[0]
@@ -188,12 +184,16 @@ def _safe_get_asset(item: Any) -> str:
     asset = _get_attr(item, 'asset', 'UNKNOWN')
     return asset.value if hasattr(asset, 'value') else str(asset)
 
+def _safe_get_market(item: Any) -> str:
+    """الحصول على السوق بشكل آمن"""
+    return str(_get_attr(item, 'market', 'Futures'))
+
 def _truncate_text(text: str, max_length: int = MAX_BUTTON_TEXT_LENGTH) -> str:
     """تقصير النص مع الحفاظ على المعنى"""
     return text if len(text) <= max_length else text[:max_length-3] + "..."
 
 def _create_short_token(full_token: str, length: int = 10) -> str:
-    """إنشاء token مختصر باستخدام hash للتمييز"""
+    """إنشاء token مختصر"""
     if len(full_token) <= length:
         return full_token
     return hashlib.md5(full_token.encode()).hexdigest()[:length]
@@ -211,7 +211,6 @@ class StatusDeterminer:
             side = _get_attr(item, 'side')
             entry = float(_get_attr(item, 'entry', 0))
             
-            # التحقق من صفقة الظل
             if _get_attr(item, 'is_shadow', False):
                 return StatusIcons.SHADOW
             
@@ -223,7 +222,6 @@ class StatusDeterminer:
             if status_value == RecommendationStatus.ACTIVE.value:
                 return StatusDeterminer._analyze_active_status(item, live_price, entry, side)
 
-            # دعم صفقات المستخدم
             if status_value in ['OPEN', 'OPEN.value']:
                 return StatusDeterminer._analyze_user_trade_status(item, live_price, entry, side)
                 
@@ -321,162 +319,7 @@ class KeyboardFactory:
         """إنشاء لوحة مفاتيح"""
         return InlineKeyboardMarkup(rows)
 
-class RecommendationKeyboards:
-    """لوحات مفاتيح التوصيات"""
-    
-    @staticmethod
-    def control_panel(rec: Recommendation) -> InlineKeyboardMarkup:
-        """لوحة تحكم التوصية"""
-        rec_id = rec.id
-        
-        if rec.status == RecommendationStatus.PENDING:
-            return KeyboardFactory.create_keyboard([
-                KeyboardFactory.create_row([
-                    KeyboardFactory.create_button(
-                        "❌ إلغاء التوصية",
-                        CallbackSchema(CallbackNamespace.RECOMMENDATION, "cancel_pending", (rec_id,))
-                    )
-                ]),
-                KeyboardFactory.create_row([
-                    KeyboardFactory.create_button(
-                        ButtonTexts.BACK_TO_LIST,
-                        CallbackSchema(CallbackNamespace.NAVIGATION, CallbackAction.SHOW, ("1",))
-                    )
-                ])
-            ])
-        
-        # لوحة التحكم النشطة
-        rows = [
-            KeyboardFactory.create_row([
-                KeyboardFactory.create_button(
-                    "🔄 تحديث السعر",
-                    CallbackSchema(CallbackNamespace.RECOMMENDATION, CallbackAction.UPDATE, ("private", rec_id))
-                ),
-                KeyboardFactory.create_button(
-                    "✏️ تعديل",
-                    CallbackSchema(CallbackNamespace.RECOMMENDATION, "edit_menu", (rec_id,))
-                )
-            ]),
-            KeyboardFactory.create_row([
-                KeyboardFactory.create_button(
-                    "📈 استراتيجية الخروج",
-                    CallbackSchema(CallbackNamespace.RECOMMENDATION, "strategy_menu", (rec_id,))
-                ),
-                KeyboardFactory.create_button(
-                    "💰 إغلاق جزئي",
-                    CallbackSchema(CallbackNamespace.RECOMMENDATION, CallbackAction.PARTIAL, (rec_id,))
-                )
-            ]),
-            KeyboardFactory.create_row([
-                KeyboardFactory.create_button(
-                    "❌ إغلاق كلي",
-                    CallbackSchema(CallbackNamespace.RECOMMENDATION, "close_menu", (rec_id,))
-                )
-            ]),
-            KeyboardFactory.create_row([
-                KeyboardFactory.create_button(
-                    ButtonTexts.BACK_TO_LIST,
-                    CallbackSchema(CallbackNamespace.NAVIGATION, CallbackAction.SHOW, ("1",))
-                )
-            ])
-        ]
-        
-        return KeyboardFactory.create_keyboard(rows)
-
-class ChannelSelectionKeyboards:
-    """لوحات اختيار القنوات"""
-    
-    @staticmethod
-    def build_selector(
-        review_token: str,
-        channels: Iterable[dict],
-        selected_ids: Set[int],
-        page: int = 1,
-        per_page: int = 5
-    ) -> InlineKeyboardMarkup:
-        """بناء لوحة اختيار القنوات"""
-        ch_list = list(channels)
-        total = len(ch_list)
-        page = max(page, 1)
-        start = (page - 1) * per_page
-        page_items = ch_list[start:start + per_page]
-        
-        short_token = _create_short_token(review_token)
-        rows = []
-        
-        # أزرار القنوات
-        for channel in page_items:
-            channel_id = int(_get_attr(channel, 'telegram_channel_id', 0))
-            label = ChannelSelectionKeyboards._get_channel_label(channel)
-            is_selected = channel_id in selected_ids
-            
-            rows.append([KeyboardFactory.create_button(
-                f"{'✅' if is_selected else '☑️'} {label}",
-                CallbackSchema(
-                    CallbackNamespace.PUBLICATION, 
-                    CallbackAction.TOGGLE, 
-                    (short_token, channel_id, page)
-                )
-            )])
-        
-        # الترقيم
-        total_pages = max(1, math.ceil(total / per_page))
-        pagination_rows = NavigationBuilder.build_pagination(
-            page, total_pages, CallbackNamespace.PUBLICATION, (short_token,)
-        )
-        rows.extend(pagination_rows)
-        
-        # أزرار التحكم
-        rows.append([
-            KeyboardFactory.create_button(
-                "🚀 نشر المحدد",
-                CallbackSchema(CallbackNamespace.PUBLICATION, CallbackAction.CONFIRM, (short_token,))
-            ),
-            KeyboardFactory.create_button(
-                ButtonTexts.BACK,
-                CallbackSchema(CallbackNamespace.PUBLICATION, CallbackAction.BACK, (short_token,))
-            )
-        ])
-        
-        return KeyboardFactory.create_keyboard(rows)
-    
-    @staticmethod
-    def _get_channel_label(channel: dict) -> str:
-        """الحصول على تسمية القناة"""
-        title = _get_attr(channel, 'title')
-        username = _get_attr(channel, 'username')
-        channel_id = _get_attr(channel, 'telegram_channel_id')
-        
-        if title:
-            return _truncate_text(title)
-        elif username:
-            return f"@{username}"
-        else:
-            return str(channel_id)
-
-# ==================== COMPATIBILITY ADAPTERS ====================
-
-class LegacyAdapter:
-    """محول التوافق مع الإصدارات السابقة"""
-    
-    @staticmethod
-    def convert_legacy_patterns(callback_data: str) -> str:
-        """تحويل أنماط الإصدارات القديمة إلى الجديدة"""
-        legacy_mappings = {
-            'pubsel:': f'{CallbackNamespace.PUBLICATION.value}:',
-            'open_nav:': f'{CallbackNamespace.NAVIGATION.value}:',
-            'pos:show_panel:': f'{CallbackNamespace.POSITION.value}:{CallbackAction.SHOW.value}:'
-        }
-        
-        for old, new in legacy_mappings.items():
-            if callback_data.startswith(old):
-                return callback_data.replace(old, new, 1)
-                
-        return callback_data
-
-# ==================== PUBLIC INTERFACE (MAINTAINING COMPATIBILITY) ====================
-
-# الدوال العامة تحافظ على نفس التوقيعات للتوافق الكامل
+# ==================== COMPATIBILITY LAYER - ALL ORIGINAL FUNCTIONS ====================
 
 async def build_open_recs_keyboard(
     items: List[Any],
@@ -492,7 +335,15 @@ async def build_open_recs_keyboard(
         paginated_items = items[start_index:start_index + ITEMS_PER_PAGE]
         
         # جلب الأسعار
-        prices_map = await _fetch_prices(paginated_items, price_service)
+        prices_map = {}
+        try:
+            for item in paginated_items:
+                asset = _safe_get_asset(item)
+                market = _safe_get_market(item)
+                price = await price_service.get_cached_price(asset, market)
+                prices_map[asset] = price
+        except Exception as e:
+            logger.warning(f"Price fetch failed: {e}")
         
         # بناء الأزرار
         for item in paginated_items:
@@ -509,74 +360,52 @@ async def build_open_recs_keyboard(
             status_icon = StatusDeterminer.determine_icon(item, live_price)
             
             # إضافة معلومات الأداء
-            button_text = _enhance_button_text(button_text, status_icon, status, live_price, entry, side)
+            status_value = status.value if hasattr(status, 'value') else status
             
+            if status_value in [RecommendationStatus.ACTIVE.value, 'ACTIVE', 'OPEN'] and live_price is not None and entry > 0:
+                pnl = _pct(entry, float(live_price), side)
+                button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%"
+            elif status_value in [RecommendationStatus.PENDING.value, 'PENDING']:
+                button_text = f"{status_icon} {button_text} | معلق"
+            elif status_value in ['CLOSED']:
+                button_text = f"{status_icon} {button_text} | مغلق"
+            else:
+                button_text = f"{status_icon} {button_text} | نشط"
+
             # تحديد نوع العنصر
             is_trade = getattr(item, 'is_user_trade', False)
             item_type = 'trade' if is_trade else 'rec'
             
-            keyboard.append([KeyboardFactory.create_button(
-                button_text,
-                CallbackSchema(CallbackNamespace.POSITION, CallbackAction.SHOW, (item_type, rec_id))
+            keyboard.append([InlineKeyboardButton(
+                _truncate_text(button_text),
+                callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, item_type, rec_id)
             )])
         
         # إضافة الترقيم
-        pagination = NavigationBuilder.build_pagination(
-            current_page, total_pages, CallbackNamespace.NAVIGATION
-        )
+        pagination = NavigationBuilder.build_pagination(current_page, total_pages, CallbackNamespace.NAVIGATION)
         keyboard.extend(pagination)
         
-        return KeyboardFactory.create_keyboard(keyboard)
+        return InlineKeyboardMarkup(keyboard)
         
     except Exception as e:
         logger.error(f"Open recs keyboard build failed: {e}")
-        return KeyboardFactory.create_keyboard([
-            [KeyboardFactory.create_button("⚠️ خطأ في تحميل البيانات", CallbackSchema(CallbackNamespace.SYSTEM, "noop"))],
-            [KeyboardFactory.create_button("🔄 إعادة تحميل", CallbackSchema(CallbackNamespace.NAVIGATION, CallbackAction.SHOW, ("1",)))]
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚠️ خطأ في تحميل البيانات", callback_data="noop")],
+            [InlineKeyboardButton("🔄 إعادة تحميل", callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.SHOW, "1"))]
         ])
 
-async def _fetch_prices(items: List[Any], price_service: PriceService) -> Dict[str, Optional[float]]:
-    """جلب الأسعار بشكل جماعي"""
-    prices_map = {}
-    try:
-        for item in items:
-            asset = _safe_get_asset(item)
-            market = _safe_get_market(item)
-            price = await price_service.get_cached_price(asset, market)
-            prices_map[asset] = price
-    except Exception as e:
-        logger.warning(f"Price fetch failed: {e}")
-    return prices_map
-
-def _enhance_button_text(base_text: str, icon: str, status: Any, live_price: Optional[float], entry: float, side: str) -> str:
-    """تحسين نص الزر بمعلومات الأداء"""
-    status_value = status.value if hasattr(status, 'value') else status
-    
-    if status_value in [RecommendationStatus.ACTIVE.value, 'ACTIVE', 'OPEN'] and live_price is not None and entry > 0:
-        pnl = _pct(entry, float(live_price), side)
-        return f"{icon} {base_text} | PnL: {pnl:+.2f}%"
-    elif status_value in [RecommendationStatus.PENDING.value, 'PENDING']:
-        return f"{icon} {base_text} | معلق"
-    elif status_value in ['CLOSED']:
-        return f"{icon} {base_text} | مغلق"
-    else:
-        return f"{icon} {base_text} | نشط"
-
-def _safe_get_market(item: Any) -> str:
-    """الحصول على السوق بشكل آمن"""
-    return str(_get_attr(item, 'market', 'Futures'))
-
-# ==================== LEGACY FUNCTIONS (FULL COMPATIBILITY) ====================
-
-# الحفاظ على جميع الدوال القديمة بنفس التوقيعات
-
 def main_creation_keyboard() -> InlineKeyboardMarkup:
-    return KeyboardFactory.create_keyboard([[
-        KeyboardFactory.create_button("💬 المنشئ التفاعلي (/new)", CallbackSchema(CallbackNamespace.SYSTEM, "method_interactive"))
-    ]])
+    """القائمة الرئيسية لاختيار طريقة إنشاء التوصية"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 المنشئ التفاعلي (/new)", callback_data="method_interactive")],
+        [InlineKeyboardButton("⚡️ الأمر السريع (/rec)", callback_data="method_quick")],
+        [InlineKeyboardButton("📋 المحرر النصي (/editor)", callback_data="method_editor")],
+    ])
 
 def public_channel_keyboard(rec_id: int, bot_username: str) -> InlineKeyboardMarkup:
+    """بناء لوحة المفاتيح لرسالة القناة العامة"""
     buttons = []
+    
     if bot_username:
         buttons.append(InlineKeyboardButton(
             "📊 تتبّع الإشارة", 
@@ -587,10 +416,168 @@ def public_channel_keyboard(rec_id: int, bot_username: str) -> InlineKeyboardMar
         "🔄 تحديث البيانات الحية", 
         callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.UPDATE, "public", rec_id)
     ))
+
     return InlineKeyboardMarkup([buttons])
 
 def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
-    return RecommendationKeyboards.control_panel(rec)
+    """بناء لوحة التحكم الديناميكية بناءً على حالة التوصية"""
+    rec_id = rec.id
+    
+    if rec.status == RecommendationStatus.PENDING:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ إلغاء التوصية", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "cancel_pending", rec_id))],
+            [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.SHOW, "1"))],
+        ])
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("🔄 تحديث السعر", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.UPDATE, "private", rec_id)),
+            InlineKeyboardButton("✏️ تعديل", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_menu", rec_id)),
+        ],
+        [
+            InlineKeyboardButton("📈 استراتيجية الخروج", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "strategy_menu", rec_id)),
+            InlineKeyboardButton("💰 إغلاق جزئي", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.PARTIAL, rec_id)),
+        ],
+        [InlineKeyboardButton("❌ إغلاق كلي", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "close_menu", rec_id))],
+        [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.SHOW, "1"))],
+    ]
+    
+    return InlineKeyboardMarkup(keyboard)
+
+def build_close_options_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+    """بناء لوحة خيارات الإغلاق"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📉 إغلاق بسعر السوق الآن", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "close_market", rec_id))],
+        [InlineKeyboardButton("✍️ إغلاق بسعر محدد", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "close_manual", rec_id))],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "back_to_main", rec_id))],
+    ])
+
+def analyst_edit_menu_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+    """بناء قائمة التعديل للمحلل"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_sl", rec_id)),
+            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_tp", rec_id)),
+        ],
+        [
+            InlineKeyboardButton("📊 تعديل سعر الدخول", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_entry", rec_id)),
+            InlineKeyboardButton("🏷️ تعديل الملاحظات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_notes", rec_id)),
+        ],
+        [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "back_to_main", rec_id))],
+    ])
+
+def build_exit_strategy_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
+    """بناء لوحة استراتيجية الخروج"""
+    rec_id = rec.id
+    current_strategy = rec.exit_strategy
+    
+    auto_close_text = "🎯 الإغلاق عند الهدف الأخير"
+    if current_strategy == ExitStrategy.CLOSE_AT_FINAL_TP: 
+        auto_close_text = f"✅ {auto_close_text}"
+    
+    manual_close_text = "✍️ الإغلاق اليدوي فقط"
+    if current_strategy == ExitStrategy.MANUAL_CLOSE_ONLY: 
+        manual_close_text = f"✅ {manual_close_text}"
+
+    keyboard = [
+        [InlineKeyboardButton(
+            auto_close_text, 
+            callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.STRATEGY, rec_id, ExitStrategy.CLOSE_AT_FINAL_TP.value)
+        )],
+        [InlineKeyboardButton(
+            manual_close_text, 
+            callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.STRATEGY, rec_id, ExitStrategy.MANUAL_CLOSE_ONLY.value)
+        )],
+        [InlineKeyboardButton("🛡️ وضع/تعديل وقف الربح", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "set_profit_stop", rec_id))],
+    ]
+    
+    if getattr(rec, "profit_stop_price", None) is not None:
+        keyboard.append([InlineKeyboardButton(
+            "🗑️ إزالة وقف الربح", 
+            callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "remove_profit_stop", rec_id)
+        )])
+        
+    keyboard.append([InlineKeyboardButton(
+        ButtonTexts.BACK_TO_MAIN, 
+        callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "back_to_main", rec_id)
+    )])
+    
+    return InlineKeyboardMarkup(keyboard)
+
+def confirm_close_keyboard(rec_id: int, exit_price: Decimal) -> InlineKeyboardMarkup:
+    """بناء لوحة تأكيد الإغلاق"""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "✅ تأكيد الإغلاق", 
+            callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "confirm_close", rec_id, f"{float(exit_price):.8f}")
+        ),
+        InlineKeyboardButton(
+            "❌ تراجع", 
+            callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "cancel_close", rec_id)
+        ),
+    ]])
+
+def asset_choice_keyboard(recent_assets: List[str]) -> InlineKeyboardMarkup:
+    """بناء لوحة اختيار الأصل"""
+    if not recent_assets:
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("✍️ اكتب أصلاً جديدًا", callback_data="asset_new")
+        ]])
+    
+    buttons = [InlineKeyboardButton(asset, callback_data=f"asset_{asset}") for asset in recent_assets]
+    keyboard_layout = [buttons[i: i + 3] for i in range(0, len(buttons), 3)]
+    keyboard_layout.append([
+        InlineKeyboardButton("✍️ اكتب أصلاً جديدًا", callback_data="asset_new")
+    ])
+    return InlineKeyboardMarkup(keyboard_layout)
+
+def side_market_keyboard(current_market: str = "Futures") -> InlineKeyboardMarkup:
+    """بناء لوحة اختيار الاتجاه والسوق"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(f"🟢 LONG / {current_market}", callback_data=f"side_LONG"),
+            InlineKeyboardButton(f"🔴 SHORT / {current_market}", callback_data=f"side_SHORT"),
+        ],
+        [InlineKeyboardButton(
+            f"🔄 تغيير السوق (الحالي: {current_market})", 
+            callback_data="change_market_menu"
+        )],
+    ])
+
+def market_choice_keyboard() -> InlineKeyboardMarkup:
+    """بناء لوحة اختيار السوق"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📈 Futures", callback_data="market_Futures"), 
+            InlineKeyboardButton("💎 Spot", callback_data="market_Spot")
+        ],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data="market_back")],
+    ])
+
+def order_type_keyboard() -> InlineKeyboardMarkup:
+    """بناء لوحة اختيار نوع الطلب"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Market (دخول فوري)", callback_data="type_MARKET")],
+        [InlineKeyboardButton("🎯 Limit (انتظار سعر أفضل)", callback_data="type_LIMIT")],
+        [InlineKeyboardButton("🚨 Stop Market (دخول بعد اختراق)", callback_data="type_STOP_MARKET")],
+    ])
+
+def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
+    """بناء لوحة المراجعة النهائية"""
+    short_token = review_token[:12]
+    
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ نشر في القنوات الفعّالة", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "publish", short_token))],
+        [
+            InlineKeyboardButton("📢 اختيار القنوات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "choose_channels", short_token)),
+            InlineKeyboardButton("📝 إضافة/تعديل ملاحظات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "add_notes", short_token)),
+        ],
+        [
+            InlineKeyboardButton("✏️ تعديل البيانات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_data", short_token)),
+            InlineKeyboardButton("👁️ معاينة", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "preview", short_token)),
+        ],
+        [InlineKeyboardButton("❌ إلغاء", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "cancel", short_token))],
+    ])
 
 def build_channel_picker_keyboard(
     review_token: str,
@@ -599,31 +586,231 @@ def build_channel_picker_keyboard(
     page: int = 1,
     per_page: int = 5,
 ) -> InlineKeyboardMarkup:
-    return ChannelSelectionKeyboards.build_selector(review_token, channels, selected_ids, page, per_page)
+    """بناء لوحة اختيار القنوات مع الترقيم - الإصدار المعدل"""
+    ch_list = list(channels)
+    total = len(ch_list)
+    page = max(page, 1)
+    start = (page - 1) * per_page
+    page_items = ch_list[start:start + per_page]
 
-# ... استمرار جميع الدوال العامة الأخرى بنفس المنطق
+    rows = []
+    short_token = _create_short_token(review_token)
+    
+    # أزرار اختيار القنوات
+    for ch in page_items:
+        tg_chat_id = int(_get_attr(ch, 'telegram_channel_id', 0))
+        label = _get_attr(ch, 'title') or (
+            f"@{_get_attr(ch, 'username')}" if _get_attr(ch, 'username') else str(tg_chat_id)
+        )
+        mark = "✅" if tg_chat_id in selected_ids else "☑️"
+        
+        callback_data = CallbackBuilder.create(CallbackNamespace.PUBLICATION, CallbackAction.TOGGLE, short_token, tg_chat_id, page)
+        
+        rows.append([InlineKeyboardButton(
+            f"{mark} {_truncate_text(label)}", 
+            callback_data=callback_data
+        )])
 
-# ==================== EXPORTS ====================
+    # التنقل
+    max_page = max(1, math.ceil(total / per_page))
+    nav_buttons = NavigationBuilder.build_pagination(page, max_page, CallbackNamespace.PUBLICATION, (short_token,))
+    rows.extend(nav_buttons)
+
+    # أزرار الإجراءات
+    rows.append([
+        InlineKeyboardButton("🚀 نشر المحدد", callback_data=CallbackBuilder.create(CallbackNamespace.PUBLICATION, CallbackAction.CONFIRM, short_token)),
+        InlineKeyboardButton(ButtonTexts.BACK, callback_data=CallbackBuilder.create(CallbackNamespace.PUBLICATION, CallbackAction.BACK, short_token)),
+    ])
+
+    return InlineKeyboardMarkup(rows)
+
+def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineKeyboardMarkup]:
+    """بناء لوحة الاشتراك إذا كان رابط القناة متوفراً"""
+    if channel_link:
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("➡️ الانضمام للقناة", url=channel_link)
+        ]])
+    return None
+
+def build_signal_tracking_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+    """بناء لوحة تتبع الإشارة"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔔 نبهني عند الهدف الأول", callback_data=CallbackBuilder.create(CallbackNamespace.TRACKING, "notify_tp1", rec_id)),
+            InlineKeyboardButton("🔔 نبهني عند وقف الخسارة", callback_data=CallbackBuilder.create(CallbackNamespace.TRACKING, "notify_sl", rec_id))
+        ],
+        [
+            InlineKeyboardButton("🎯 نبهني عند جميع الأهداف", callback_data=CallbackBuilder.create(CallbackNamespace.TRACKING, "notify_all_tp", rec_id)),
+            InlineKeyboardButton("📊 إحصائيات الأداء", callback_data=CallbackBuilder.create(CallbackNamespace.TRACKING, "stats", rec_id))
+        ],
+        [
+            InlineKeyboardButton("➕ أضف إلى محفظتي", callback_data=CallbackBuilder.create(CallbackNamespace.TRACKING, "add_portfolio", rec_id)),
+            InlineKeyboardButton("📋 تفاصيل الصفقة", callback_data=CallbackBuilder.create(CallbackNamespace.TRACKING, "details", rec_id))
+        ]
+    ])
+
+def build_user_trade_control_keyboard(trade_id: int) -> InlineKeyboardMarkup:
+    """بناء لوحة تحكم صفقة المستخدم"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 تحديث السعر", callback_data=CallbackBuilder.create(CallbackNamespace.TRADE, CallbackAction.UPDATE, trade_id)),
+            InlineKeyboardButton("✏️ تعديل", callback_data=CallbackBuilder.create(CallbackNamespace.TRADE, CallbackAction.EDIT, trade_id)),
+        ],
+        [
+            InlineKeyboardButton("📊 تفاصيل الأداء", callback_data=CallbackBuilder.create(CallbackNamespace.TRADE, "performance", trade_id)),
+            InlineKeyboardButton("❌ إغلاق الصفقة", callback_data=CallbackBuilder.create(CallbackNamespace.TRADE, CallbackAction.CLOSE, trade_id)),
+        ],
+        [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.SHOW, "1"))],
+    ])
+
+def build_confirmation_keyboard(
+    action: str, 
+    item_id: int, 
+    confirm_text: str = "✅ تأكيد",
+    cancel_text: str = "❌ إلغاء"
+) -> InlineKeyboardMarkup:
+    """بناء لوحة تأكيد عامة"""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(confirm_text, callback_data=CallbackBuilder.create(CallbackNamespace(action), CallbackAction.CONFIRM, item_id)),
+        InlineKeyboardButton(cancel_text, callback_data=CallbackBuilder.create(CallbackNamespace(action), CallbackAction.CANCEL, item_id)),
+    ]])
+
+def build_settings_keyboard() -> InlineKeyboardMarkup:
+    """بناء لوحة الإعدادات"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔔 إعدادات التنبيهات", callback_data=CallbackBuilder.create(CallbackNamespace.SETTINGS, "alerts"))],
+        [InlineKeyboardButton("📊 إعدادات التقارير", callback_data=CallbackBuilder.create(CallbackNamespace.SETTINGS, "reports"))],
+        [InlineKeyboardButton("🌐 إعدادات اللغة", callback_data=CallbackBuilder.create(CallbackNamespace.SETTINGS, "language"))],
+        [InlineKeyboardButton("⚙️ إعدادات متقدمة", callback_data=CallbackBuilder.create(CallbackNamespace.SETTINGS, "advanced"))],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=CallbackBuilder.create(CallbackNamespace.SETTINGS, CallbackAction.BACK))],
+    ])
+
+def build_quick_actions_keyboard() -> InlineKeyboardMarkup:
+    """بناء لوحة الإجراءات السريعة"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📈 صفقاتي", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "my_trades")),
+            InlineKeyboardButton("📊 الإحصائيات", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "stats")),
+        ],
+        [
+            InlineKeyboardButton("⚡ توصية سريعة", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "new_trade")),
+            InlineKeyboardButton("🔍 استكشاف", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "explore")),
+        ],
+        [
+            InlineKeyboardButton("🆘 المساعدة", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "help")),
+            InlineKeyboardButton("⚙️ الإعدادات", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "settings")),
+        ]
+    ])
+
+def build_admin_panel_keyboard() -> InlineKeyboardMarkup:
+    """بناء لوحة تحكم المشرف"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 إحصائيات النظام", callback_data=CallbackBuilder.create(CallbackNamespace.ADMIN, "stats"))],
+        [InlineKeyboardButton("👥 إدارة المستخدمين", callback_data=CallbackBuilder.create(CallbackNamespace.ADMIN, "users"))],
+        [InlineKeyboardButton("📢 إدارة القنوات", callback_data=CallbackBuilder.create(CallbackNamespace.ADMIN, "channels"))],
+        [InlineKeyboardButton("🔔 الإشعارات النظامية", callback_data=CallbackBuilder.create(CallbackNamespace.ADMIN, "notifications"))],
+        [InlineKeyboardButton("📈 أداء المحللين", callback_data=CallbackBuilder.create(CallbackNamespace.ADMIN, "analysts"))],
+        [InlineKeyboardButton("🚪 العودة", callback_data=CallbackBuilder.create(CallbackNamespace.ADMIN, CallbackAction.BACK))],
+    ])
+
+def build_trader_dashboard_keyboard() -> InlineKeyboardMarkup:
+    """بناء لوحة تحكم المتداول"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 صفقاتي المفتوحة", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "open_trades")),
+            InlineKeyboardButton("📈 أداء المحفظة", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "portfolio")),
+        ],
+        [
+            InlineKeyboardButton("🔔 متابعة إشارة", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "track_signal")),
+            InlineKeyboardButton("📋 سجل الصفقات", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "trade_history")),
+        ],
+        [
+            InlineKeyboardButton("⚡ صفقة سريعة", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "quick_trade")),
+            InlineKeyboardButton("⚙️ إعداداتي", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "settings")),
+        ]
+    ])
+
+def build_trade_edit_keyboard(trade_id: int) -> InlineKeyboardMarkup:
+    """بناء لوحة تعديل الصفقة الشخصية"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=CallbackBuilder.create(CallbackNamespace.TRADE, "edit_sl", trade_id)),
+            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=CallbackBuilder.create(CallbackNamespace.TRADE, "edit_tp", trade_id)),
+        ],
+        [
+            InlineKeyboardButton("📊 تعديل سعر الدخول", callback_data=CallbackBuilder.create(CallbackNamespace.TRADE, "edit_entry", trade_id)),
+            InlineKeyboardButton("🏷️ تعديل الملاحظات", callback_data=CallbackBuilder.create(CallbackNamespace.TRADE, "edit_notes", trade_id)),
+        ],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, "trade", trade_id))],
+    ])
+
+def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
+    """بناء لوحة إغلاق جزئي محايدة"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 إغلاق 25%", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.PARTIAL, rec_id, "25"))],
+        [InlineKeyboardButton("💰 إغلاق 50%", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.PARTIAL, rec_id, "50"))],
+        [InlineKeyboardButton("💰 إغلاق 75%", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.PARTIAL, rec_id, "75"))],
+        [InlineKeyboardButton("✍️ نسبة مخصصة", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "partial_close_custom", rec_id))],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "back_to_main", rec_id))],
+    ])
+
+def build_analyst_dashboard_keyboard() -> InlineKeyboardMarkup:
+    """بناء لوحة تحكم المحلل"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 توصياتي النشطة", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "open_recs")),
+            InlineKeyboardButton("📈 أداء التوصيات", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "performance")),
+        ],
+        [
+            InlineKeyboardButton("💬 توصية جديدة", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "new_recommendation")),
+            InlineKeyboardButton("📋 سجل التوصيات", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "rec_history")),
+        ],
+        [
+            InlineKeyboardButton("📢 إدارة القنوات", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "manage_channels")),
+            InlineKeyboardButton("⚙️ إعدادات المحلل", callback_data=CallbackBuilder.create(CallbackNamespace.SYSTEM, "settings")),
+        ]
+    ])
+
+# ==================== EXPORTS - COMPLETE LIST ====================
 
 __all__ = [
-    # الدوال الأساسية
+    # الدوال الأساسية (الأكثر استخداماً)
     'build_open_recs_keyboard',
     'main_creation_keyboard',
-    'public_channel_keyboard', 
+    'public_channel_keyboard',
     'analyst_control_panel_keyboard',
+    'build_close_options_keyboard',
+    'analyst_edit_menu_keyboard',
+    'build_exit_strategy_keyboard',
+    'confirm_close_keyboard',
+    'asset_choice_keyboard',
+    'side_market_keyboard',
+    'market_choice_keyboard',
+    'order_type_keyboard',
+    'review_final_keyboard',
     'build_channel_picker_keyboard',
+    
+    # جميع الدوال المطلوبة للتشغيل
+    'build_subscription_keyboard',
+    'build_signal_tracking_keyboard',
+    'build_user_trade_control_keyboard',
+    'build_confirmation_keyboard',
+    'build_settings_keyboard',
+    'build_quick_actions_keyboard',
+    'build_admin_panel_keyboard',
+    'build_trader_dashboard_keyboard',
+    'build_trade_edit_keyboard',
+    'build_partial_close_keyboard',
+    'build_analyst_dashboard_keyboard',
     
     # الفئات المساعدة
     'CallbackBuilder',
-    'CallbackParser',
     'StatusDeterminer',
     'NavigationBuilder',
     
     # الثوابت
     'StatusIcons',
     'ButtonTexts',
-    'CallbackNamespace', 
+    'CallbackNamespace',
     'CallbackAction',
-    
-    # جميع الدوال الأخرى للحفاظ على التوافق...
 ]
