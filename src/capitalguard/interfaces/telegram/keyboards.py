@@ -1,12 +1,11 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v20.2 - FINAL STABLE)
+# src/capitalguard/interfaces/telegram/keyboards.py (v20.2 - Patched)
 """
-هندسة لوحات المفاتيح المستدامة - الإصدار النهائي المستقر
-✅ حلول جذرية مستدامة قابلة للصيانة
-✅ أفضل الممارسات الهندسية مع الحفاظ على التوافق
-✅ إصلاح كامل لمشاكل Button_data_invalid
+هندسة لوحات المفاتيح المستدامة - إصدار متوافق كامل
+✅ إصلاح جميع أخطاء الاستيراد
+✅ الحفاظ على جميع الدوال القديمة
 ✅ توافق 100% مع النظام الحالي
+✅ [PATCH] إصلاح خطأ تركيبي في تعريف CallbackSchema.params
 """
-
 import math
 import logging
 import hashlib
@@ -20,7 +19,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.interfaces.telegram.ui_texts import _pct
-
 # ==================== CONSTANTS & CONFIGURATION ====================
 ITEMS_PER_PAGE = 8
 MAX_BUTTON_TEXT_LENGTH = 40
@@ -118,7 +116,6 @@ class CallbackBuilder:
             if not parts:
                 return result
                 
-            # استخراج الإصدار إذا موجود
             if parts[-1].startswith('v'):
                 result['version'] = parts.pop()[1:]
                 
@@ -298,6 +295,29 @@ class NavigationBuilder:
             ))
         
         return [buttons] if buttons else []
+
+# ==================== KEYBOARD FACTORIES ====================
+
+class KeyboardFactory:
+    """المصنع الأساسي للوحات المفاتيح"""
+    
+    @staticmethod
+    def create_button(text: str, callback_schema: CallbackSchema) -> InlineKeyboardButton:
+        """إنشاء زر مع التحقق من الصحة"""
+        return InlineKeyboardButton(
+            _truncate_text(text),
+            callback_data=callback_schema.build()
+        )
+    
+    @staticmethod
+    def create_row(buttons: List[InlineKeyboardButton]) -> List[InlineKeyboardButton]:
+        """إنشاء صف من الأزرار"""
+        return buttons
+    
+    @staticmethod
+    def create_keyboard(rows: List[List[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
+        """إنشاء لوحة مفاتيح"""
+        return InlineKeyboardMarkup(rows)
 
 # ==================== COMPATIBILITY LAYER - ALL ORIGINAL FUNCTIONS ====================
 
