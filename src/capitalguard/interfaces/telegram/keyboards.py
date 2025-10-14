@@ -1,8 +1,7 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v19.0 - FINAL PRODUCTION COMPLETE MATCH for v28.7)
+# src/capitalguard/interfaces/telegram/keyboards.py (v19.1 - FINAL PRODUCTION FIXED)
 """
-واجهة لوحات المفاتيح للتليجرام - الإصدار النهائي الكامل والمتين
-متوافق تماماً مع TradeService v28.7 و management_handlers v28.1
-يدعم اللغة العربية بشكل كامل مع معالجة متقدمة للأخطاء وأداء محسن.
+واجهة لوحات المفاتيح للتليجرام - الإصدار النهائي المعدل والمتين
+إصلاح جذري لمشكلة Button_data_invalid مع الحفاظ على أفضل الممارسات
 """
 
 import math
@@ -18,6 +17,7 @@ from capitalguard.interfaces.telegram.ui_texts import _pct
 # ثوابت النظام
 ITEMS_PER_PAGE = 8
 MAX_BUTTON_TEXT_LENGTH = 40
+MAX_CALLBACK_DATA_LENGTH = 64  # الحد الأقصى المسموح في تليجرام
 logger = logging.getLogger(__name__)
 
 class StatusIcons:
@@ -45,6 +45,63 @@ class ButtonTexts:
     CLOSE = "❌ إغلاق"
     SAVE = "💾 حفظ"
     DELETE = "🗑️ حذف"
+
+class CallbackPrefixes:
+    """بادئات مختصرة لبيانات الاستدعاء لتجنب تجاوز الحد المسموح"""
+    # بادئات عامة
+    POSITION = "pos"
+    RECOMMENDATION = "rec"
+    TRADE = "trd"
+    PUBLISH_SELECT = "ps"
+    OPEN_NAV = "onav"
+    SETTINGS = "set"
+    ADMIN = "adm"
+    
+    # إجراءات مختصرة
+    SHOW = "sh"
+    TOGGLE = "tg"
+    NAVIGATE = "nav"
+    CONFIRM = "cf"
+    CANCEL = "cn"
+    BACK = "bk"
+    EDIT = "ed"
+    UPDATE = "up"
+    CLOSE = "cl"
+    STRATEGY = "str"
+    PARTIAL = "part"
+
+def _validate_callback_data(callback_data: str) -> str:
+    """
+    التحقق من صحة callback_data وتقصيرها إذا تجاوزت الحد المسموح.
+    يضمن عدم تجاوز 64 بايت مع الحفاظ على الوظيفة.
+    """
+    if len(callback_data) <= MAX_CALLBACK_DATA_LENGTH:
+        return callback_data
+    
+    logger.warning(f"Callback data too long ({len(callback_data)} chars), truncating: {callback_data}")
+    
+    # تقصير مع الحفاظ على البنية الأساسية
+    parts = callback_data.split(':')
+    if len(parts) >= 3:
+        # الحفاظ على البادئة والإجراء والمعرف الأساسي
+        shortened = ':'.join(parts[:3])
+        if len(shortened) <= MAX_CALLBACK_DATA_LENGTH - 10:
+            # إضافة معلومات إضافية إذا كان هناك مساحة
+            additional = ':'.join(parts[3:])[:8]
+            return f"{shortened}:{additional}"
+        return shortened[:MAX_CALLBACK_DATA_LENGTH]
+    
+    return callback_data[:MAX_CALLBACK_DATA_LENGTH]
+
+def _build_callback_data(prefix: str, action: str, *args) -> str:
+    """
+    بناء callback_data بشكل آمن مع التحقق من الطول.
+    """
+    base_data = f"{prefix}:{action}"
+    if args:
+        base_data += ":" + ":".join(str(arg) for arg in args)
+    
+    return _validate_callback_data(base_data)
 
 def _get_attr(obj: Any, attr: str, default: Any = None) -> Any:
     """
@@ -146,7 +203,7 @@ def _build_navigation_buttons(
     if current_page > 1:
         page_nav_row.append(InlineKeyboardButton(
             ButtonTexts.PREVIOUS, 
-            callback_data=f"{callback_prefix}:{current_page - 1}"
+            callback_data=_build_callback_data(callback_prefix, str(current_page - 1))
         ))
     
     if show_page_info and total_pages > 1:
@@ -158,7 +215,7 @@ def _build_navigation_buttons(
     if current_page < total_pages:
         page_nav_row.append(InlineKeyboardButton(
             ButtonTexts.NEXT, 
-            callback_data=f"{callback_prefix}:{current_page + 1}"
+            callback_data=_build_callback_data(callback_prefix, str(current_page + 1))
         ))
     
     if page_nav_row:
@@ -231,7 +288,7 @@ async def build_open_recs_keyboard(
             # تحديد نوع العنصر وبناء callback_data المناسب
             is_trade = getattr(item, 'is_user_trade', False)
             item_type = 'trade' if is_trade else 'rec'
-            callback_data = f"pos:show_panel:{item_type}:{rec_id}"
+            callback_data = _build_callback_data(CallbackPrefixes.POSITION, CallbackPrefixes.SHOW, item_type, rec_id)
 
             keyboard.append([InlineKeyboardButton(
                 _truncate_text(button_text), 
@@ -239,7 +296,7 @@ async def build_open_recs_keyboard(
             )])
 
         # إضافة أزرار التنقل
-        nav_buttons = _build_navigation_buttons(current_page, total_pages, "open_nav:page")
+        nav_buttons = _build_navigation_buttons(current_page, total_pages, CallbackPrefixes.OPEN_NAV)
         keyboard.extend(nav_buttons)
 
         return InlineKeyboardMarkup(keyboard)
@@ -249,7 +306,7 @@ async def build_open_recs_keyboard(
         # لوحة مفاتيح احتياطية في حالة الخطأ
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("⚠️ خطأ في تحميل البيانات", callback_data="noop")],
-            [InlineKeyboardButton("🔄 إعادة تحميل", callback_data="open_nav:page:1")]
+            [InlineKeyboardButton("🔄 إعادة تحميل", callback_data=_build_callback_data(CallbackPrefixes.OPEN_NAV, "1"))]
         ])
 
 def main_creation_keyboard() -> InlineKeyboardMarkup:
@@ -272,7 +329,7 @@ def public_channel_keyboard(rec_id: int, bot_username: str) -> InlineKeyboardMar
     
     buttons.append(InlineKeyboardButton(
         "🔄 تحديث البيانات الحية", 
-        callback_data=f"rec:update_public:{rec_id}"
+        callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, CallbackPrefixes.UPDATE, "public", rec_id)
     ))
 
     return InlineKeyboardMarkup([buttons])
@@ -283,23 +340,22 @@ def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
     
     if rec.status == RecommendationStatus.PENDING:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ إلغاء التوصية", callback_data=f"rec:cancel_pending:{rec_id}")],
-            [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=f"open_nav:page:1")],
+            [InlineKeyboardButton("❌ إلغاء التوصية", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "cancel_pending", rec_id))],
+            [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=_build_callback_data(CallbackPrefixes.OPEN_NAV, "1"))],
         ])
     
     # لوحة المفاتيح الافتراضية للتوصيات النشطة
     keyboard: List[List[InlineKeyboardButton]] = [
         [
-            InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"rec:update_private:{rec_id}"),
-            InlineKeyboardButton("✏️ تعديل", callback_data=f"rec:edit_menu:{rec_id}"),
+            InlineKeyboardButton("🔄 تحديث السعر", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, CallbackPrefixes.UPDATE, "private", rec_id)),
+            InlineKeyboardButton("✏️ تعديل", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "edit_menu", rec_id)),
         ],
         [
-            InlineKeyboardButton("📈 استراتيجية الخروج", callback_data=f"rec:strategy_menu:{rec_id}"),
-            # الان تسميات محايدة: إغلاق جزئي بدلاً من "جني ربح" لتغطي الربح/الخسارة/تخفيف
-            InlineKeyboardButton("💰 إغلاق جزئي", callback_data=f"rec:close_partial:{rec_id}"),
+            InlineKeyboardButton("📈 استراتيجية الخروج", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "strategy_menu", rec_id)),
+            InlineKeyboardButton("💰 إغلاق جزئي", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, CallbackPrefixes.PARTIAL, rec_id)),
         ],
-        [InlineKeyboardButton("❌ إغلاق كلي", callback_data=f"rec:close_menu:{rec_id}")],
-        [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=f"open_nav:page:1")],
+        [InlineKeyboardButton("❌ إغلاق كلي", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "close_menu", rec_id))],
+        [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=_build_callback_data(CallbackPrefixes.OPEN_NAV, "1"))],
     ]
     
     return InlineKeyboardMarkup(keyboard)
@@ -307,23 +363,23 @@ def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
 def build_close_options_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     """بناء لوحة خيارات الإغلاق"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📉 إغلاق بسعر السوق الآن", callback_data=f"rec:close_market:{rec_id}")],
-        [InlineKeyboardButton("✍️ إغلاق بسعر محدد", callback_data=f"rec:close_manual:{rec_id}")],
-        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=f"rec:back_to_main:{rec_id}")],
+        [InlineKeyboardButton("📉 إغلاق بسعر السوق الآن", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "close_market", rec_id))],
+        [InlineKeyboardButton("✍️ إغلاق بسعر محدد", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "close_manual", rec_id))],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "back_to_main", rec_id))],
     ])
 
 def analyst_edit_menu_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     """بناء قائمة التعديل للمحلل"""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=f"rec:edit_sl:{rec_id}"),
-            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"rec:edit_tp:{rec_id}"),
+            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "edit_sl", rec_id)),
+            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "edit_tp", rec_id)),
         ],
         [
-            InlineKeyboardButton("📊 تعديل سعر الدخول", callback_data=f"rec:edit_entry:{rec_id}"),
-            InlineKeyboardButton("🏷️ تعديل الملاحظات", callback_data=f"rec:edit_notes:{rec_id}"),
+            InlineKeyboardButton("📊 تعديل سعر الدخول", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "edit_entry", rec_id)),
+            InlineKeyboardButton("🏷️ تعديل الملاحظات", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "edit_notes", rec_id)),
         ],
-        [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=f"rec:back_to_main:{rec_id}")],
+        [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "back_to_main", rec_id))],
     ])
 
 def build_exit_strategy_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
@@ -343,25 +399,25 @@ def build_exit_strategy_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
     keyboard: List[List[InlineKeyboardButton]] = [
         [InlineKeyboardButton(
             auto_close_text, 
-            callback_data=f"rec:set_strategy:{rec_id}:{ExitStrategy.CLOSE_AT_FINAL_TP.value}"
+            callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, CallbackPrefixes.STRATEGY, rec_id, ExitStrategy.CLOSE_AT_FINAL_TP.value)
         )],
         [InlineKeyboardButton(
             manual_close_text, 
-            callback_data=f"rec:set_strategy:{rec_id}:{ExitStrategy.MANUAL_CLOSE_ONLY.value}"
+            callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, CallbackPrefixes.STRATEGY, rec_id, ExitStrategy.MANUAL_CLOSE_ONLY.value)
         )],
-        [InlineKeyboardButton("🛡️ وضع/تعديل وقف الربح", callback_data=f"rec:set_profit_stop:{rec_id}")],
+        [InlineKeyboardButton("🛡️ وضع/تعديل وقف الربح", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "set_profit_stop", rec_id))],
     ]
     
     # إضافة زر إزالة وقف الربح إذا كان موجوداً
     if getattr(rec, "profit_stop_price", None) is not None:
         keyboard.append([InlineKeyboardButton(
             "🗑️ إزالة وقف الربح", 
-            callback_data=f"rec:remove_profit_stop:{rec_id}"
+            callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "remove_profit_stop", rec_id)
         )])
         
     keyboard.append([InlineKeyboardButton(
         ButtonTexts.BACK_TO_MAIN, 
-        callback_data=f"rec:back_to_main:{rec_id}"
+        callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "back_to_main", rec_id)
     )])
     
     return InlineKeyboardMarkup(keyboard)
@@ -371,11 +427,11 @@ def confirm_close_keyboard(rec_id: int, exit_price: float) -> InlineKeyboardMark
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(
             "✅ تأكيد الإغلاق", 
-            callback_data=f"rec:confirm_close:{rec_id}:{exit_price}"
+            callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "confirm_close", rec_id, f"{exit_price:.8f}")
         ),
         InlineKeyboardButton(
             "❌ تراجع", 
-            callback_data=f"rec:cancel_close:{rec_id}"
+            callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "cancel_close", rec_id)
         ),
     ]])
 
@@ -426,17 +482,20 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
 
 def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
     """بناء لوحة المراجعة النهائية"""
+    # استخدام token مختصر للتقليل من الطول
+    short_token = review_token[:12]
+    
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ نشر في القنوات الفعّالة", callback_data=f"rec:publish:{review_token}")],
+        [InlineKeyboardButton("✅ نشر في القنوات الفعّالة", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "publish", short_token))],
         [
-            InlineKeyboardButton("📢 اختيار القنوات", callback_data=f"rec:choose_channels:{review_token}"),
-            InlineKeyboardButton("📝 إضافة/تعديل ملاحظات", callback_data=f"rec:add_notes:{review_token}"),
+            InlineKeyboardButton("📢 اختيار القنوات", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "choose_channels", short_token)),
+            InlineKeyboardButton("📝 إضافة/تعديل ملاحظات", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "add_notes", short_token)),
         ],
         [
-            InlineKeyboardButton("✏️ تعديل البيانات", callback_data=f"rec:edit_data:{review_token}"),
-            InlineKeyboardButton("👁️ معاينة", callback_data=f"rec:preview:{review_token}"),
+            InlineKeyboardButton("✏️ تعديل البيانات", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "edit_data", short_token)),
+            InlineKeyboardButton("👁️ معاينة", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "preview", short_token)),
         ],
-        [InlineKeyboardButton("❌ إلغاء", callback_data=f"rec:cancel:{review_token}")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "cancel", short_token))],
     ])
 
 def build_channel_picker_keyboard(
@@ -446,7 +505,7 @@ def build_channel_picker_keyboard(
     page: int = 1,
     per_page: int = 5,
 ) -> InlineKeyboardMarkup:
-    """بناء لوحة اختيار القنوات مع الترقيم"""
+    """بناء لوحة اختيار القنوات مع الترقيم - الإصدار المعدل"""
     ch_list = list(channels)
     total = len(ch_list)
     page = max(page, 1)
@@ -456,6 +515,9 @@ def build_channel_picker_keyboard(
 
     rows: List[List[InlineKeyboardButton]] = []
 
+    # استخدام token مختصر
+    short_token = review_token[:10]
+    
     # أزرار اختيار القنوات
     for ch in page_items:
         tg_chat_id = int(_get_attr(ch, 'telegram_channel_id', 0))
@@ -463,23 +525,29 @@ def build_channel_picker_keyboard(
             f"@{_get_attr(ch, 'username')}" if _get_attr(ch, 'username') else str(tg_chat_id)
         )
         mark = "✅" if tg_chat_id in selected_ids else "☑️"
+        
+        # استخدام callback_data قصيرة ومضمونة
+        callback_data = _build_callback_data(CallbackPrefixes.PUBLISH_SELECT, CallbackPrefixes.TOGGLE, short_token, tg_chat_id, page)
+        
         rows.append([InlineKeyboardButton(
             f"{mark} {_truncate_text(label)}", 
-            callback_data=f"pubsel:toggle:{review_token}:{tg_chat_id}:{page}"
+            callback_data=callback_data
         )])
 
-    # التنقل
+    # التنقل مع callback_data قصيرة
     max_page = max(1, math.ceil(total / per_page))
-    nav_buttons = _build_navigation_buttons(page, max_page, f"pubsel:nav:{review_token}")
+    nav_buttons = _build_navigation_buttons(page, max_page, f"{CallbackPrefixes.PUBLISH_SELECT}:{CallbackPrefixes.NAVIGATE}:{short_token}")
     rows.extend(nav_buttons)
 
-    # أزرار الإجراءات
+    # أزرار الإجراءات مع callback_data قصيرة
     rows.append([
-        InlineKeyboardButton("🚀 نشر المحدد", callback_data=f"pubsel:confirm:{review_token}"),
-        InlineKeyboardButton(ButtonTexts.BACK, callback_data=f"pubsel:back:{review_token}"),
+        InlineKeyboardButton("🚀 نشر المحدد", callback_data=_build_callback_data(CallbackPrefixes.PUBLISH_SELECT, CallbackPrefixes.CONFIRM, short_token)),
+        InlineKeyboardButton(ButtonTexts.BACK, callback_data=_build_callback_data(CallbackPrefixes.PUBLISH_SELECT, CallbackPrefixes.BACK, short_token)),
     ])
 
     return InlineKeyboardMarkup(rows)
+
+# ... باقي الدوال بنفس المنطق مع استخدام _build_callback_data
 
 def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineKeyboardMarkup]:
     """بناء لوحة الاشتراك إذا كان رابط القناة متوفراً"""
@@ -493,16 +561,16 @@ def build_signal_tracking_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     """بناء لوحة تتبع الإشارة"""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔔 نبهني عند الهدف الأول", callback_data=f"track:notify_tp1:{rec_id}"),
-            InlineKeyboardButton("🔔 نبهني عند وقف الخسارة", callback_data=f"track:notify_sl:{rec_id}")
+            InlineKeyboardButton("🔔 نبهني عند الهدف الأول", callback_data=_build_callback_data("track", "notify_tp1", rec_id)),
+            InlineKeyboardButton("🔔 نبهني عند وقف الخسارة", callback_data=_build_callback_data("track", "notify_sl", rec_id))
         ],
         [
-            InlineKeyboardButton("🎯 نبهني عند جميع الأهداف", callback_data=f"track:notify_all_tp:{rec_id}"),
-            InlineKeyboardButton("📊 إحصائيات الأداء", callback_data=f"track:stats:{rec_id}")
+            InlineKeyboardButton("🎯 نبهني عند جميع الأهداف", callback_data=_build_callback_data("track", "notify_all_tp", rec_id)),
+            InlineKeyboardButton("📊 إحصائيات الأداء", callback_data=_build_callback_data("track", "stats", rec_id))
         ],
         [
-            InlineKeyboardButton("➕ أضف إلى محفظتي", callback_data=f"track:add_portfolio:{rec_id}"),
-            InlineKeyboardButton("📋 تفاصيل الصفقة", callback_data=f"track:details:{rec_id}")
+            InlineKeyboardButton("➕ أضف إلى محفظتي", callback_data=_build_callback_data("track", "add_portfolio", rec_id)),
+            InlineKeyboardButton("📋 تفاصيل الصفقة", callback_data=_build_callback_data("track", "details", rec_id))
         ]
     ])
 
@@ -510,14 +578,14 @@ def build_user_trade_control_keyboard(trade_id: int) -> InlineKeyboardMarkup:
     """بناء لوحة تحكم صفقة المستخدم"""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔄 تحديث السعر", callback_data=f"trade:update:{trade_id}"),
-            InlineKeyboardButton("✏️ تعديل", callback_data=f"trade:edit:{trade_id}"),
+            InlineKeyboardButton("🔄 تحديث السعر", callback_data=_build_callback_data(CallbackPrefixes.TRADE, CallbackPrefixes.UPDATE, trade_id)),
+            InlineKeyboardButton("✏️ تعديل", callback_data=_build_callback_data(CallbackPrefixes.TRADE, CallbackPrefixes.EDIT, trade_id)),
         ],
         [
-            InlineKeyboardButton("📊 تفاصيل الأداء", callback_data=f"trade:performance:{trade_id}"),
-            InlineKeyboardButton("❌ إغلاق الصفقة", callback_data=f"trade:close:{trade_id}"),
+            InlineKeyboardButton("📊 تفاصيل الأداء", callback_data=_build_callback_data(CallbackPrefixes.TRADE, "performance", trade_id)),
+            InlineKeyboardButton("❌ إغلاق الصفقة", callback_data=_build_callback_data(CallbackPrefixes.TRADE, CallbackPrefixes.CLOSE, trade_id)),
         ],
-        [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=f"open_nav:page:1")],
+        [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=_build_callback_data(CallbackPrefixes.OPEN_NAV, "1"))],
     ])
 
 def build_confirmation_keyboard(
@@ -528,62 +596,62 @@ def build_confirmation_keyboard(
 ) -> InlineKeyboardMarkup:
     """بناء لوحة تأكيد عامة"""
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(confirm_text, callback_data=f"{action}:confirm:{item_id}"),
-        InlineKeyboardButton(cancel_text, callback_data=f"{action}:cancel:{item_id}"),
+        InlineKeyboardButton(confirm_text, callback_data=_build_callback_data(action, CallbackPrefixes.CONFIRM, item_id)),
+        InlineKeyboardButton(cancel_text, callback_data=_build_callback_data(action, CallbackPrefixes.CANCEL, item_id)),
     ]])
 
 def build_settings_keyboard() -> InlineKeyboardMarkup:
     """بناء لوحة الإعدادات"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔔 إعدادات التنبيهات", callback_data="settings:alerts")],
-        [InlineKeyboardButton("📊 إعدادات التقارير", callback_data="settings:reports")],
-        [InlineKeyboardButton("🌐 إعدادات اللغة", callback_data="settings:language")],
-        [InlineKeyboardButton("⚙️ إعدادات متقدمة", callback_data="settings:advanced")],
-        [InlineKeyboardButton(ButtonTexts.BACK, callback_data="settings:back")],
+        [InlineKeyboardButton("🔔 إعدادات التنبيهات", callback_data=_build_callback_data(CallbackPrefixes.SETTINGS, "alerts"))],
+        [InlineKeyboardButton("📊 إعدادات التقارير", callback_data=_build_callback_data(CallbackPrefixes.SETTINGS, "reports"))],
+        [InlineKeyboardButton("🌐 إعدادات اللغة", callback_data=_build_callback_data(CallbackPrefixes.SETTINGS, "language"))],
+        [InlineKeyboardButton("⚙️ إعدادات متقدمة", callback_data=_build_callback_data(CallbackPrefixes.SETTINGS, "advanced"))],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=_build_callback_data(CallbackPrefixes.SETTINGS, CallbackPrefixes.BACK))],
     ])
 
 def build_quick_actions_keyboard() -> InlineKeyboardMarkup:
     """بناء لوحة الإجراءات السريعة"""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📈 صفقاتي", callback_data="quick:my_trades"),
-            InlineKeyboardButton("📊 الإحصائيات", callback_data="quick:stats"),
+            InlineKeyboardButton("📈 صفقاتي", callback_data=_build_callback_data("quick", "my_trades")),
+            InlineKeyboardButton("📊 الإحصائيات", callback_data=_build_callback_data("quick", "stats")),
         ],
         [
-            InlineKeyboardButton("⚡ توصية سريعة", callback_data="quick:new_trade"),
-            InlineKeyboardButton("🔍 استكشاف", callback_data="quick:explore"),
+            InlineKeyboardButton("⚡ توصية سريعة", callback_data=_build_callback_data("quick", "new_trade")),
+            InlineKeyboardButton("🔍 استكشاف", callback_data=_build_callback_data("quick", "explore")),
         ],
         [
-            InlineKeyboardButton("🆘 المساعدة", callback_data="quick:help"),
-            InlineKeyboardButton("⚙️ الإعدادات", callback_data="quick:settings"),
+            InlineKeyboardButton("🆘 المساعدة", callback_data=_build_callback_data("quick", "help")),
+            InlineKeyboardButton("⚙️ الإعدادات", callback_data=_build_callback_data("quick", "settings")),
         ]
     ])
 
 def build_admin_panel_keyboard() -> InlineKeyboardMarkup:
     """بناء لوحة تحكم المشرف"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 إحصائيات النظام", callback_data="admin:stats")],
-        [InlineKeyboardButton("👥 إدارة المستخدمين", callback_data="admin:users")],
-        [InlineKeyboardButton("📢 إدارة القنوات", callback_data="admin:channels")],
-        [InlineKeyboardButton("🔔 الإشعارات النظامية", callback_data="admin:notifications")],
-        [InlineKeyboardButton("📈 أداء المحللين", callback_data="admin:analysts")],
-        [InlineKeyboardButton("🚪 العودة", callback_data="admin:back")],
+        [InlineKeyboardButton("📊 إحصائيات النظام", callback_data=_build_callback_data(CallbackPrefixes.ADMIN, "stats"))],
+        [InlineKeyboardButton("👥 إدارة المستخدمين", callback_data=_build_callback_data(CallbackPrefixes.ADMIN, "users"))],
+        [InlineKeyboardButton("📢 إدارة القنوات", callback_data=_build_callback_data(CallbackPrefixes.ADMIN, "channels"))],
+        [InlineKeyboardButton("🔔 الإشعارات النظامية", callback_data=_build_callback_data(CallbackPrefixes.ADMIN, "notifications"))],
+        [InlineKeyboardButton("📈 أداء المحللين", callback_data=_build_callback_data(CallbackPrefixes.ADMIN, "analysts"))],
+        [InlineKeyboardButton("🚪 العودة", callback_data=_build_callback_data(CallbackPrefixes.ADMIN, CallbackPrefixes.BACK))],
     ])
 
 def build_trader_dashboard_keyboard() -> InlineKeyboardMarkup:
     """بناء لوحة تحكم المتداول"""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📊 صفقاتي المفتوحة", callback_data="trader:open_trades"),
-            InlineKeyboardButton("📈 أداء المحفظة", callback_data="trader:portfolio"),
+            InlineKeyboardButton("📊 صفقاتي المفتوحة", callback_data=_build_callback_data("trader", "open_trades")),
+            InlineKeyboardButton("📈 أداء المحفظة", callback_data=_build_callback_data("trader", "portfolio")),
         ],
         [
-            InlineKeyboardButton("🔔 متابعة إشارة", callback_data="trader:track_signal"),
-            InlineKeyboardButton("📋 سجل الصفقات", callback_data="trader:trade_history"),
+            InlineKeyboardButton("🔔 متابعة إشارة", callback_data=_build_callback_data("trader", "track_signal")),
+            InlineKeyboardButton("📋 سجل الصفقات", callback_data=_build_callback_data("trader", "trade_history")),
         ],
         [
-            InlineKeyboardButton("⚡ صفقة سريعة", callback_data="trader:quick_trade"),
-            InlineKeyboardButton("⚙️ إعداداتي", callback_data="trader:settings"),
+            InlineKeyboardButton("⚡ صفقة سريعة", callback_data=_build_callback_data("trader", "quick_trade")),
+            InlineKeyboardButton("⚙️ إعداداتي", callback_data=_build_callback_data("trader", "settings")),
         ]
     ])
 
@@ -591,44 +659,40 @@ def build_trade_edit_keyboard(trade_id: int) -> InlineKeyboardMarkup:
     """بناء لوحة تعديل الصفقة الشخصية"""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=f"trade:edit_sl:{trade_id}"),
-            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=f"trade:edit_tp:{trade_id}"),
+            InlineKeyboardButton("🛑 تعديل الوقف", callback_data=_build_callback_data(CallbackPrefixes.TRADE, "edit_sl", trade_id)),
+            InlineKeyboardButton("🎯 تعديل الأهداف", callback_data=_build_callback_data(CallbackPrefixes.TRADE, "edit_tp", trade_id)),
         ],
         [
-            InlineKeyboardButton("📊 تعديل سعر الدخول", callback_data=f"trade:edit_entry:{trade_id}"),
-            InlineKeyboardButton("🏷️ تعديل الملاحظات", callback_data=f"trade:edit_notes:{trade_id}"),
+            InlineKeyboardButton("📊 تعديل سعر الدخول", callback_data=_build_callback_data(CallbackPrefixes.TRADE, "edit_entry", trade_id)),
+            InlineKeyboardButton("🏷️ تعديل الملاحظات", callback_data=_build_callback_data(CallbackPrefixes.TRADE, "edit_notes", trade_id)),
         ],
-        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=f"pos:show_panel:trade:{trade_id}")],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=_build_callback_data(CallbackPrefixes.POSITION, CallbackPrefixes.SHOW, "trade", trade_id))],
     ])
 
 def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """
-    بناء لوحة إغلاق جزئي محايدة:
-    - تستخدم callback_data: rec:partial_close:<rec_id>:<percent>
-    - ولخيار مخصص: rec:partial_close_custom:<rec_id>
-    """
+    """بناء لوحة إغلاق جزئي محايدة"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💰 إغلاق 25%", callback_data=f"rec:partial_close:{rec_id}:25")],
-        [InlineKeyboardButton("💰 إغلاق 50%", callback_data=f"rec:partial_close:{rec_id}:50")],
-        [InlineKeyboardButton("💰 إغلاق 75%", callback_data=f"rec:partial_close:{rec_id}:75")],
-        [InlineKeyboardButton("✍️ نسبة مخصصة", callback_data=f"rec:partial_close_custom:{rec_id}")],
-        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=f"rec:back_to_main:{rec_id}")],
+        [InlineKeyboardButton("💰 إغلاق 25%", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, CallbackPrefixes.PARTIAL, rec_id, "25"))],
+        [InlineKeyboardButton("💰 إغلاق 50%", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, CallbackPrefixes.PARTIAL, rec_id, "50"))],
+        [InlineKeyboardButton("💰 إغلاق 75%", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, CallbackPrefixes.PARTIAL, rec_id, "75"))],
+        [InlineKeyboardButton("✍️ نسبة مخصصة", callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "partial_close_custom", rec_id))],
+        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=_build_callback_data(CallbackPrefixes.RECOMMENDATION, "back_to_main", rec_id))],
     ])
 
 def build_analyst_dashboard_keyboard() -> InlineKeyboardMarkup:
     """بناء لوحة تحكم المحلل"""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📊 توصياتي النشطة", callback_data="analyst:open_recs"),
-            InlineKeyboardButton("📈 أداء التوصيات", callback_data="analyst:performance"),
+            InlineKeyboardButton("📊 توصياتي النشطة", callback_data=_build_callback_data("analyst", "open_recs")),
+            InlineKeyboardButton("📈 أداء التوصيات", callback_data=_build_callback_data("analyst", "performance")),
         ],
         [
-            InlineKeyboardButton("💬 توصية جديدة", callback_data="analyst:new_recommendation"),
-            InlineKeyboardButton("📋 سجل التوصيات", callback_data="analyst:rec_history"),
+            InlineKeyboardButton("💬 توصية جديدة", callback_data=_build_callback_data("analyst", "new_recommendation")),
+            InlineKeyboardButton("📋 سجل التوصيات", callback_data=_build_callback_data("analyst", "rec_history")),
         ],
         [
-            InlineKeyboardButton("📢 إدارة القنوات", callback_data="analyst:manage_channels"),
-            InlineKeyboardButton("⚙️ إعدادات المحلل", callback_data="analyst:settings"),
+            InlineKeyboardButton("📢 إدارة القنوات", callback_data=_build_callback_data("analyst", "manage_channels")),
+            InlineKeyboardButton("⚙️ إعدادات المحلل", callback_data=_build_callback_data("analyst", "settings")),
         ]
     ])
 
@@ -660,5 +724,6 @@ __all__ = [
     'build_partial_close_keyboard',
     'build_analyst_dashboard_keyboard',
     'StatusIcons',
-    'ButtonTexts'
+    'ButtonTexts',
+    'CallbackPrefixes'
 ]
