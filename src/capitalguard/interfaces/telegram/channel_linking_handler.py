@@ -1,13 +1,13 @@
 # src/capitalguard/interfaces/telegram/channel_linking_handler.py
-# (v1.4 - FINAL PRODUCTION READY WITH PER_MESSAGE FIX)
+# (v1.5 - PRODUCTION READY WITH IMPORT FIX)
 """
 Handles the conversation flow for linking and unlinking an analyst's Telegram channels.
 
-✅ v1.4 Highlights:
+✅ v1.5 Highlights:
+- FIXED: Correct function name 'register_channel_linking_handler' (singular)
 - FIXED: per_message=False to resolve PTBUserWarning conflicts
 - Full support for forward_origin / sender_chat (API v7+)
 - Safe channel linking and permission verification
-- New: /unlink_channel command with interactive confirmation
 - Complete, production-ready, and robust
 """
 
@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 # --- Conversation States ---
 AWAITING_CHANNEL_FORWARD = 1
 AWAITING_UNLINK_SELECTION = 2
-AWAIT_UNLINK_CONFIRM = 3  # Added for confirmation step
+AWAIT_UNLINK_CONFIRM = 3
 
 
 # --- Conversation Entry Point (Link) ---
@@ -214,7 +214,7 @@ async def cancel_link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 # --- Registration ---
-def register_channel_linking_handlers(app: Application):
+def register_channel_linking_handler(app: Application):  # ✅ FIXED: Singular function name
     """Registers both /link_channel and /unlink_channel handlers."""
     
     # Linking conversation
@@ -256,12 +256,12 @@ def register_channel_linking_handlers(app: Application):
     app.add_handler(link_conv)
     app.add_handler(unlink_conv)
     
-    log.info("✅ Channel linking handlers registered successfully - FIXED VERSION")
+    log.info("✅ Channel linking handler registered successfully - FIXED VERSION")
 
 
-# Export public functions
+# Export public functions - ✅ FIXED: Correct function names
 __all__ = [
-    'register_channel_linking_handlers',
+    'register_channel_linking_handler',  # ✅ FIXED: Singular name
     'link_channel_entry',
     'received_channel_forward', 
     'start_unlink_channel',
