@@ -4,9 +4,11 @@
 Final and production-ready version with User Experience hardening.
 
 Changelog:
-- [CRITICAL UX FIX] Implemented logic to disable old inline keyboards to prevent "Stale action" errors.
+- [CRITICAL UX FIX] Implemented logic to disable/remove old inline keyboards to prevent "Stale action" errors.
   - When a new conversation starts (`/newrec`), the bot now finds the last conversation message and removes its keyboard.
-  - When a conversation ends (publish or cancel), the final message's keyboard is removed.
+  - When a conversation ends (publish or cancel), the final message's keyboard is removed immediately,
+    preventing the user from clicking expired buttons.
+- [IMPROVEMENT] The "Stale action" error message now also removes the keyboard from the offending message.
 - [IMPROVEMENT] Added safe handling for `telegram.error.BadRequest` when a message is not modified.
 - [CONFIG] Added `per_message=False` to suppress PTBUserWarning.
 """
@@ -79,7 +81,6 @@ async def _disable_previous_keyboard(context: ContextTypes.DEFAULT_TYPE):
 @require_active_user
 @require_analyst_user
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
-    # UX FIX: Disable any lingering keyboards from a previous, unfinished conversation
     await _disable_previous_keyboard(context)
     
     clean_user_state(context)
@@ -112,7 +113,6 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
         return ConversationHandler.END
 
 
-# ... (asset_chosen, side_chosen, order_type_chosen, prices_received are unchanged)
 async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     draft, message_obj = get_user_draft(context), update.callback_query.message if update.callback_query else update.message
     asset = ""
@@ -405,7 +405,6 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         if update.callback_query:
             await update.callback_query.answer()
         
-        # UX FIX: Disable the keyboard on the message that was cancelled.
         await _disable_previous_keyboard(context)
 
         if last_msg_info := context.user_data.get("last_conv_message"):
@@ -458,6 +457,6 @@ def register_conversation_handlers(app: Application):
         persistent=False,
         per_user=True,
         per_chat=True,
-        per_message=False, # Suppress PTBUserWarning
+        per_message=False,
     )
     app.add_handler(conv_handler)
