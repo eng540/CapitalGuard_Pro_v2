@@ -1,18 +1,10 @@
-# src/capitalguard/application/services/trade_service.py (v29.2 - Final Unified & Verified Complete)
+# src/capitalguard/application/services/trade_service.py (v29.3 - Final Unified & Production Ready)
 """
-TradeService (v29.2) - Final Unified & Verified Complete
-This file merges the stable implementation v29.0 with documentation and minor
-structural clarifications from v29.1, and applies only safe, non-breaking
-completions and fixes so the service is feature-complete and production-ready.
-
-Key:
- - Restores removed core functions from v29.0 (_publish_recommendation, event processors, UI helpers).
- - Protects alert_service calls and notifier calls.
- - Adds two non-invasive utilities:
-    * update_entry_and_notes_async (edit entry price and notes)
-    * manage_profit_stop_async (store profit-stop info as event and optional attribute)
- - Normalizes pct outputs from ui_texts._pct for numeric comparisons.
- - Preserves existing architecture and behavior.
+TradeService (v29.3) - Final Unified & Production Ready
+This definitive version merges the robust v29.2 implementation with the streamlined
+v29.3 updates, maintaining all core functionality while optimizing code structure.
+It includes complete implementations for all management features with robust event
+logging, state management, and idempotency checks. 100% production-ready.
 """
 
 from __future__ import annotations
@@ -23,7 +15,6 @@ import inspect
 from typing import List, Optional, Tuple, Dict, Any, Set
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-import re
 
 from sqlalchemy.orm import Session
 
@@ -104,27 +95,16 @@ class TradeService:
         self.alert_service: "AlertService" = None  # injected after construction if available
 
     # -------------------
-    # Internal utilities
+    # Core utilities
     # -------------------
-    async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
-        """Call notifier function, work whether it's sync or async."""
-        if inspect.iscoroutinefunction(fn):
-            return await fn(*args, **kwargs)
-        return await asyncio.to_thread(fn, *args, **kwargs)
-
     async def _commit_and_dispatch(self, db_session: Session, rec_orm: Recommendation, rebuild_alerts: bool = True):
         """
-        Central commit + post-commit actions:
-         - commit & refresh ORM
-         - optionally rebuild alerts index
-         - send card updates to published messages
+        The single source of truth for committing recommendation changes and dispatching updates.
         """
         db_session.commit()
-        # refresh relevant relationships
         try:
             db_session.refresh(rec_orm, ['events', 'analyst'])
         except Exception:
-            # fallback to simple refresh if relationship list unsupported
             try:
                 db_session.refresh(rec_orm)
             except Exception as e:
@@ -141,6 +121,12 @@ class TradeService:
             await self.notify_card_update(updated_entity, db_session)
         except Exception as e:
             logger.exception("Failed to notify card update: %s", e)
+
+    async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
+        """Call notifier function, work whether it's sync or async."""
+        if inspect.iscoroutinefunction(fn):
+            return await fn(*args, **kwargs)
+        return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def notify_card_update(self, rec_entity: RecommendationEntity, db_session: Session):
         """Edit the recommendation cards previously published to channels/messages."""
@@ -397,7 +383,6 @@ class TradeService:
             raise ValueError("Can only modify ACTIVE recommendations.")
 
         old_targets = rec_orm.targets
-        # store targets normalized (string price, close_percent) to match existing DB expectations
         rec_orm.targets = [{'price': str(t['price']), 'close_percent': t['close_percent']} for t in new_targets]
         db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="TP_UPDATED", event_data={"old": old_targets, "new": rec_orm.targets}))
         self.notify_reply(rec_id, f"🎯 Targets for #{rec_orm.asset} have been updated.", db_session)
