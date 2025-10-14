@@ -1,9 +1,9 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v31.1 - CALLBACK DATA FIX)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v31.2 - COMPLETE FIXED VERSION)
 """
-الإصدار المصحح - إصلاح تحليل بيانات الاستدعاء البسيطة
-✅ إصلاح خطأ 'NoneType' object has no attribute 'replace'
-✅ معالجة صحيحة للأنماط البسيطة (asset_, side_, market_, type_)
-✅ استمرار دعم أنماط CallbackBuilder المعقدة
+الإصدار الكامل المصحح - جميع الدوال معرّفة
+✅ إصلاح خطأ NameError: name 'prices_received' is not defined
+✅ إصلاح تحليل بيانات الاستدعاء البسيطة
+✅ جميع الدوال معرّفة ومتصلة بشكل صحيح
 """
 
 import logging
@@ -517,7 +517,475 @@ async def order_type_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.callback_query.message.reply_text("❌ حدث خطأ في اختيار نوع الطلب. يرجى المحاولة مرة أخرى.")
         return I_ORDER_TYPE
 
-# ... (بقية الدوال تبقى كما هي بدون تغيير) ...
+# ✅ الإصلاح: إضافة الدوال المفقودة
+async def prices_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """معالج استقبال الأسعار - الإصدار المصحح"""
+    try:
+        draft = get_user_draft(context)
+        user_id = update.effective_user.id
+        user_input = (update.message.text or "").strip()
+        tokens = user_input.split()
+        
+        log.info(f"🔢 User {user_id} entered prices: {user_input}")
+        
+        # حذف رسالة المستخدم
+        try:
+            await update.message.delete()
+        except (BadRequest, TelegramError):
+            pass
+        
+        trade_service = get_service(context, "trade_service", TradeService)
+        price_service = get_service(context, "price_service", PriceService)
+        
+        try:
+            if draft["order_type"] == "MARKET":
+                # تحليل صيغة MARKET: STOP TARGETS...
+                if len(tokens) < 2:
+                    raise ValueError(
+                        "❌ <b>تنسيق غير صحيح</b>\n\n"
+                        "لأوامر MARKET:\n"
+                        "أدخل <code>وقف_الخسارة</code> ثم <code>الأهداف</code>\n\n"
+                        "<b>مثال:</b>\n<code>58000 60000@30 62000@50</code>"
+                    )
+                
+                stop_loss = parse_number(tokens[0])
+                targets = parse_targets_list(tokens[1:])
+                
+                # جلب السعر الحالي للسوق
+                live_price_float = await price_service.get_cached_price(
+                    draft["asset"], draft["market"], True
+                )
+                
+                if not live_price_float:
+                    raise ValueError("❌ تعذر جلب سعر السوق الحالي. يرجى المحاولة لاحقاً.")
+                
+                live_price = Decimal(str(live_price_float))
+                entry_price = live_price
+                
+                # التحقق من صحة الأهداف بالنسبة للسعر الحالي
+                target_prices = [t['price'] for t in targets]
+                if draft["side"] == "LONG":
+                    invalid_targets = [f"{p:g}" for p in target_prices if p <= live_price]
+                    if invalid_targets:
+                        raise ValueError(
+                            f"❌ <b>أهداف غير صالحة للشراء (LONG)</b>\n\n"
+                            f"💰 <b>السعر الحالي:</b> {live_price:g}\n"
+                            f"🎯 <b>أهداف أقل من السعر الحالي:</b> {', '.join(invalid_targets)}\n\n"
+                            f"💡 <b>ملاحظة:</b> جميع أهداف الشراء يجب أن تكون <b>أعلى</b> من السعر الحالي"
+                        )
+                else:  # SHORT
+                    invalid_targets = [f"{p:g}" for p in target_prices if p >= live_price]
+                    if invalid_targets:
+                        raise ValueError(
+                            f"❌ <b>أهداف غير صالحة للبيع (SHORT)</b>\n\n"
+                            f"💰 <b>السعر الحالي:</b> {live_price:g}\n"
+                            f"🎯 <b>أهداف أعلى من السعر الحالي:</b> {', '.join(invalid_targets)}\n\n"
+                            f"💡 <b>ملاحظة:</b> جميع أهداف البيع يجب أن تكون <b>أقل</b> من السعر الحالي"
+                        )
+                
+                # التحقق من صحة البيانات
+                trade_service._validate_recommendation_data(
+                    draft["side"], entry_price, stop_loss, targets
+                )
+                
+                draft.update({
+                    "entry": entry_price,
+                    "stop_loss": stop_loss,
+                    "targets": targets
+                })
+                
+            else:
+                # تحليل صيغة LIMIT/STOP: ENTRY STOP TARGETS...
+                if len(tokens) < 3:
+                    raise ValueError(
+                        "❌ <b>تنسيق غير صحيح</b>\n\n"
+                        "لأوامر LIMIT/STOP:\n"
+                        "أدخل <code>سعر_الدخول وقف_الخسارة</code> ثم <code>الأهداف</code>\n\n"
+                        "<b>مثال:</b>\n<code>59000 58000 60000@30 62000@50</code>"
+                    )
+                
+                entry = parse_number(tokens[0])
+                stop_loss = parse_number(tokens[1])
+                targets = parse_targets_list(tokens[2:])
+                
+                # التحقق من صحة البيانات
+                trade_service._validate_recommendation_data(
+                    draft["side"], entry, stop_loss, targets
+                )
+                
+                draft.update({
+                    "entry": entry,
+                    "stop_loss": stop_loss,
+                    "targets": targets
+                })
+            
+            if not draft.get("targets"):
+                raise ValueError("❌ لم يتم تحديد أهداف صالحة. يرجى إدخال أهداف على الأقل.")
+            
+            log.info(f"✅ Prices validated successfully for user {user_id}")
+            
+        except (ValueError, InvalidOperation, TypeError) as e:
+            error_msg = str(e)
+            if "Risk/Reward ratio" in error_msg:
+                error_msg = (
+                    f"❌ <b>نسبة المخاطرة/العائد غير كافية</b>\n\n"
+                    f"{error_msg}\n\n"
+                    f"💡 <b>نصيحة:</b> حاول تعديل وقف الخسارة أو الأهداف لتحسين النسبة"
+                )
+            
+            await update.message.reply_html(error_msg)
+            return I_PRICES
+            
+        except Exception as e:
+            loge.exception(f"Validation error for user {user_id}: {e}")
+            await update.message.reply_html("❌ <b>خطأ في تحليل الأسعار</b>\n\nيرجى التأكد من التنسيق والمحاولة مرة أخرى.")
+            return I_PRICES
+        
+        # الانتقال لبطاقة المراجعة
+        return await show_review_card(update, context)
+        
+    except Exception as e:
+        loge.exception(f"❌ Unexpected error in prices_received: {e}")
+        await update.message.reply_text("❌ حدث خطأ غير متوقع في معالجة الأسعار. يرجى المحاولة مرة أخرى.")
+        return I_PRICES
+
+async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """عرض بطاقة المراجعة النهائية - الإصدار المصحح"""
+    try:
+        draft = get_user_draft(context)
+        user_id = update.effective_user.id
+        
+        # إنشاء أو استخدام الرمز الحالي
+        review_token = context.user_data.get("review_token") or ConversationSafetyManager.generate_secure_token()
+        context.user_data["review_token"] = review_token
+        
+        # جلب السعر الحالي للمعاينة
+        price_service = get_service(context, "price_service", PriceService)
+        preview_price = await price_service.get_cached_price(draft["asset"], draft["market"])
+        
+        # بناء نص المراجعة
+        review_text = build_review_text_with_price(draft, preview_price)
+        
+        # تحديد الرسالة المستهدفة للتعديل
+        if update.callback_query:
+            message = update.callback_query.message
+            await update.callback_query.answer()
+        else:
+            message = update.message
+        
+        target_chat_id, target_message_id = context.user_data.get(
+            "last_conv_message", 
+            (message.chat_id, message.message_id)
+        )
+        
+        # محاولة تعديل الرسالة الحالية
+        try:
+            sent_message = await context.bot.edit_message_text(
+                chat_id=target_chat_id,
+                message_id=target_message_id,
+                text=review_text,
+                reply_markup=review_final_keyboard(review_token),
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+        except BadRequest as e:
+            if "message is not modified" in str(e).lower():
+                # تجاهل الخطأ الآمن
+                sent_message = message
+            else:
+                # إنشاء رسالة جديدة
+                sent_message = await context.bot.send_message(
+                    chat_id=target_chat_id,
+                    text=review_text,
+                    reply_markup=review_final_keyboard(review_token),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
+        
+        # حفظ رسالة المحادثة الأخيرة
+        context.user_data["last_conv_message"] = (sent_message.chat_id, sent_message.message_id)
+        
+        log.info(f"📋 Review card shown for user {user_id}")
+        
+        return I_REVIEW
+        
+    except Exception as e:
+        loge.exception(f"❌ Error in show_review_card: {e}")
+        error_msg = "❌ حدث خطأ في عرض بطاقة المراجعة. يرجى المحاولة مرة أخرى."
+        if update.callback_query:
+            await update.callback_query.message.reply_text(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
+        return I_PRICES
+
+@uow_transaction
+async def add_notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
+    """معالج إضافة الملاحظات - الإصدار المصحح"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        await query.edit_message_text(
+            f"{query.message.text}\n\n"
+            f"✍️ <b>إضافة الملاحظات</b>\n\n"
+            f"أرسل الملاحظات الإضافية لهذه التوصية (اختياري):",
+            parse_mode="HTML"
+        )
+        return I_NOTES
+        
+    except Exception as e:
+        loge.exception(f"❌ Error in add_notes_handler: {e}")
+        await update.callback_query.message.reply_text("❌ حدث خطأ في فتح محرر الملاحظات.")
+        return I_REVIEW
+
+async def notes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """معالج استقبال الملاحظات - الإصدار المصحح"""
+    try:
+        draft = get_user_draft(context)
+        user_id = update.effective_user.id
+        
+        notes_text = (update.message.text or "").strip()
+        draft["notes"] = notes_text
+        
+        # حذف رسالة المستخدم
+        try:
+            await update.message.delete()
+        except (BadRequest, TelegramError):
+            pass
+        
+        log.info(f"📝 User {user_id} added notes: {len(notes_text)} characters")
+        
+        # العودة لبطاقة المراجعة
+        return await show_review_card(update, context)
+        
+    except Exception as e:
+        loge.exception(f"❌ Error in notes_received: {e}")
+        await update.message.reply_text("❌ حدث خطأ في حفظ الملاحظات. يرجى المحاولة مرة أخرى.")
+        return I_NOTES
+
+@uow_transaction
+async def choose_channels_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
+    """معالج اختيار القنوات - الإصدار المصحح"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        review_token = context.user_data.get("review_token", "")
+        
+        log.info(f"📢 User {user_id} opening channel picker")
+        
+        # جلب القنوات المتاحة
+        user = UserRepository(db_session).find_by_telegram_id(user_id)
+        all_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False)
+        
+        # تهيئة القنوات المختارة
+        selected_ids = context.user_data.setdefault(
+            "channel_picker_selection", 
+            {ch.telegram_channel_id for ch in all_channels if ch.is_active}
+        )
+        
+        # بناء لوحة المفاتيح
+        keyboard = build_channel_picker_keyboard(review_token, all_channels, selected_ids)
+        
+        await query.edit_message_text(
+            "📢 <b>اختيار قنوات النشر</b>\n\n"
+            "اختر القنوات التي تريد نشر التوصية فيها:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return I_CHANNEL_PICKER
+        
+    except Exception as e:
+        loge.exception(f"❌ Error in choose_channels_handler: {e}")
+        await update.callback_query.message.reply_text("❌ حدث خطأ في تحميل القنوات. يرجى المحاولة مرة أخرى.")
+        return I_REVIEW
+
+@uow_transaction
+async def channel_picker_logic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
+    """معالج منطق اختيار القنوات - الإصدار المصحح"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        callback_data = parse_callback_data_universal(query.data)
+        if not callback_data['is_valid']:
+            await query.answer("❌ بيانات غير صالحة", show_alert=True)
+            return I_CHANNEL_PICKER
+        
+        action = callback_data['action']
+        params = callback_data['params']
+        
+        if not params:
+            await query.answer("❌ بيانات ناقصة", show_alert=True)
+            return I_CHANNEL_PICKER
+        
+        token = params[0]
+        selected_ids = context.user_data.get("channel_picker_selection", set())
+        page = 1
+        
+        # معالجة الإجراءات
+        if action == CallbackAction.TOGGLE.value and len(params) >= 3:
+            channel_id = int(params[1])
+            page = int(params[2]) if len(params) > 2 else 1
+            
+            if channel_id in selected_ids:
+                selected_ids.remove(channel_id)
+            else:
+                selected_ids.add(channel_id)
+                
+        elif action == CallbackAction.NAVIGATE.value and len(params) >= 2:
+            page = int(params[1])
+        
+        # جلب القنوات وبناء اللوحة
+        user = UserRepository(db_session).find_by_telegram_id(query.from_user.id)
+        all_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False)
+        keyboard = build_channel_picker_keyboard(token, all_channels, selected_ids, page=page)
+        
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+        return I_CHANNEL_PICKER
+        
+    except BadRequest as e:
+        if "message is not modified" in str(e).lower():
+            await query.answer()
+            return I_CHANNEL_PICKER
+        else:
+            loge.exception(f"❌ Unhandled BadRequest in channel_picker: {e}")
+            await query.answer("❌ فشل في تحديث القنوات", show_alert=True)
+            return I_CHANNEL_PICKER
+    except Exception as e:
+        loge.exception(f"❌ Error in channel_picker_logic_handler: {e}")
+        await query.answer("❌ حدث خطأ في معالجة الاختيار", show_alert=True)
+        return I_CHANNEL_PICKER
+
+@uow_transaction
+async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
+    """معالج النشر النهائي - الإصدار المصحح"""
+    try:
+        query = update.callback_query
+        await query.answer("🔄 جاري النشر...")
+        
+        user_id = query.from_user.id
+        callback_data = parse_callback_data_universal(query.data)
+        params = callback_data.get('params', [])
+        token_in_callback = params[0] if params else ""
+        
+        # التحقق من صحة الرمز
+        stored_token = context.user_data.get("review_token", "")
+        if not ConversationSafetyManager.validate_token(stored_token, token_in_callback):
+            await query.edit_message_text(
+                "❌ <b>إجراء منتهي الصلاحية</b>\n\n"
+                "انتهت صلاحية هذه العملية. يرجى بدء توصية جديدة.",
+                parse_mode="HTML",
+                reply_markup=None
+            )
+            clean_user_state(context)
+            return ConversationHandler.END
+        
+        # تجهيز البيانات للنشر
+        draft = get_user_draft(context)
+        draft["target_channel_ids"] = context.user_data.get("channel_picker_selection", set())
+        
+        log.info(f"🚀 User {user_id} publishing recommendation for {draft['asset']}")
+        
+        # إنشاء التوصية ونشرها
+        trade_service = get_service(context, "trade_service", TradeService)
+        rec, report = await trade_service.create_and_publish_recommendation_async(
+            user_id=str(user_id), db_session=db_session, **draft
+        )
+        
+        # معالجة النتيجة
+        if report.get("success"):
+            success_count = len(report["success"])
+            await query.edit_message_text(
+                f"✅ <b>تم النشر بنجاح</b>\n\n"
+                f"📊 <b>التوصية:</b> #{rec.id}\n"
+                f"💎 <b>الأصل:</b> {rec.asset.value}\n"
+                f"📈 <b>تم النشر في:</b> {success_count} قناة\n"
+                f"🕒 <b>الوقت:</b> {rec.created_at.strftime('%Y-%m-%d %H:%M')}",
+                parse_mode="HTML",
+                reply_markup=None
+            )
+            log.info(f"✅ Recommendation #{rec.id} published successfully by user {user_id}")
+        else:
+            failed_reason = report.get('failed', [{}])[0].get('reason', 'سبب غير معروف')
+            await query.edit_message_text(
+                f"⚠️ <b>تم الحفظ مع أخطاء في النشر</b>\n\n"
+                f"📊 <b>التوصية:</b> #{rec.id}\n"
+                f"💎 <b>الأصل:</b> {rec.asset.value}\n"
+                f"❌ <b>سبب الفشل:</b> {failed_reason}\n\n"
+                f"💡 <b>ملاحظة:</b> التوصية محفوظة ولكن تحتاج نشر يدوي",
+                parse_mode="HTML",
+                reply_markup=None
+            )
+            log.warning(f"⚠️ Recommendation #{rec.id} publication failed: {failed_reason}")
+        
+        # حساب وقت المحادثة
+        start_time = context.user_data.get("conversation_start_time", 0)
+        conversation_duration = time.time() - start_time if start_time else 0
+        log.info(f"⏱️ Conversation completed in {conversation_duration:.2f} seconds for user {user_id}")
+        
+        return ConversationHandler.END
+        
+    except Exception as e:
+        loge.exception(f"❌ Critical failure in publish_handler: {e}")
+        await query.edit_message_text(
+            f"❌ <b>حدث خطأ حرج أثناء النشر</b>\n\n"
+            f"الخطأ: {str(e)[:100]}...\n\n"
+            f"يرجى المحاولة مرة أخرى أو الاتصال بالدعم.",
+            parse_mode="HTML",
+            reply_markup=None
+        )
+        return ConversationHandler.END
+    finally:
+        clean_user_state(context)
+
+async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """معالج إلغاء المحادثة - الإصدار المصحح"""
+    try:
+        user_id = update.effective_user.id
+        
+        if update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            message = query.message
+        else:
+            message = update.message
+        
+        # تعطيل لوحات المفاتيح السابقة
+        await ConversationSafetyManager.disable_previous_keyboard(context)
+        
+        # إرسال رسالة الإلغاء
+        if context.user_data.get("last_conv_message"):
+            try:
+                await context.bot.edit_message_text(
+                    "❌ <b>تم إلغاء العملية</b>\n\n"
+                    "يمكنك البدء من جديد باستخدام /newrec",
+                    chat_id=context.user_data["last_conv_message"][0],
+                    message_id=context.user_data["last_conv_message"][1],
+                    parse_mode="HTML",
+                    reply_markup=None
+                )
+            except (BadRequest, TelegramError):
+                await message.reply_text(
+                    "❌ تم إلغاء العملية",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+        else:
+            await message.reply_text(
+                "❌ تم إلغاء العملية", 
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
+        log.info(f"❌ User {user_id} cancelled conversation")
+        
+        return ConversationHandler.END
+        
+    except Exception as e:
+        loge.exception(f"❌ Error in cancel_conv_handler: {e}")
+        return ConversationHandler.END
+    finally:
+        clean_user_state(context)
 
 def register_conversation_handlers(app: Application):
     """تسجيل معالجات المحادثة - الإصدار المصحح"""
@@ -547,7 +1015,7 @@ def register_conversation_handlers(app: Application):
                 CallbackQueryHandler(order_type_chosen, pattern="^type_")
             ],
             I_PRICES: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, prices_received),  # ✅ الآن الدالة معرّفة
             ],
             I_REVIEW: [
                 CallbackQueryHandler(publish_handler, pattern=rf"^{rec_ns}:publish:"),
@@ -556,7 +1024,7 @@ def register_conversation_handlers(app: Application):
                 CallbackQueryHandler(cancel_conv_handler, pattern=rf"^{rec_ns}:cancel"),
             ],
             I_NOTES: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, notes_received),
             ],
             I_CHANNEL_PICKER: [
                 CallbackQueryHandler(channel_picker_logic_handler, pattern=rf"^{pub_ns}:"),
@@ -578,9 +1046,9 @@ def register_conversation_handlers(app: Application):
     )
     
     app.add_handler(conv_handler)
-    log.info("✅ Conversation handlers registered successfully - CALLBACK DATA FIXED")
+    log.info("✅ Conversation handlers registered successfully - ALL FUNCTIONS DEFINED")
 
-# تصدير الوظائف العامة
+# تصدير الوظائف العامة - ✅ جميع الدوال معرّفة الآن
 __all__ = [
     'register_conversation_handlers',
     'newrec_menu_entrypoint',
@@ -589,7 +1057,7 @@ __all__ = [
     'side_chosen',
     'market_chosen',
     'order_type_chosen',
-    'prices_received',
+    'prices_received',  # ✅ الآن معرّفة
     'show_review_card',
     'add_notes_handler',
     'notes_received',
