@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v31.2 - COMPLETE FIXED VERSION)
+# _src/capitalguard/interfaces/telegram/conversation_handlers.py (v31.2 - COMPLETE FIXED VERSION)
 """
 الإصدار الكامل المصحح - جميع الدوال معرّفة
 ✅ إصلاح خطأ NameError: name 'prices_received' is not defined
