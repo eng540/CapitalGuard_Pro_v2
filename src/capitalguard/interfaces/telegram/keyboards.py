@@ -5,10 +5,10 @@
 ✅ الحفاظ على جميع الدوال القديمة
 ✅ توافق 100% مع النظام الحالي
 """
-
 import math
 import logging
 import hashlib
+from decimal import Decimal
 from typing import List, Iterable, Set, Optional, Any, Dict, Tuple, Union
 from dataclasses import dataclass
 from enum import Enum
@@ -18,7 +18,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.interfaces.telegram.ui_texts import _pct
-
 # ==================== CONSTANTS & CONFIGURATION ====================
 ITEMS_PER_PAGE = 8
 MAX_BUTTON_TEXT_LENGTH = 40
