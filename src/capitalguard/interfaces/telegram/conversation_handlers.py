@@ -1,16 +1,14 @@
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
-# (v29.7 - Final Production Release)
+# (v29.8 - Final Production Release with UX Hardening)
 """
-Final and production-ready version with SAFE compatibility fixes.
+Final and production-ready version with User Experience hardening.
 
 Changelog:
-- [CRITICAL FIX] Implemented safe handling for `telegram.error.BadRequest` when a message is not modified.
-  This prevents crashes and log spam from user interactions that don't change the UI state (e.g., double-clicking a button).
-- [IMPROVEMENT] Added specific `try...except` blocks around all `edit_message_*` calls to gracefully handle
-  expected API errors without interrupting the user flow.
-- [CONFIG] Added `per_message=False` to the main ConversationHandler definition to suppress PTBUserWarning
-  and clarify intent, resulting in cleaner production logs.
-- [COMPATIBILITY] Verified all callback patterns match the centralized CallbackBuilder structure.
+- [CRITICAL UX FIX] Implemented logic to disable old inline keyboards to prevent "Stale action" errors.
+  - When a new conversation starts (`/newrec`), the bot now finds the last conversation message and removes its keyboard.
+  - When a conversation ends (publish or cancel), the final message's keyboard is removed.
+- [IMPROVEMENT] Added safe handling for `telegram.error.BadRequest` when a message is not modified.
+- [CONFIG] Added `per_message=False` to suppress PTBUserWarning.
 """
 
 import logging
@@ -65,10 +63,25 @@ def clean_user_state(context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(key, None)
 
 
+async def _disable_previous_keyboard(context: ContextTypes.DEFAULT_TYPE):
+    """Finds the last known conversation message and removes its keyboard to prevent stale interactions."""
+    if last_msg_info := context.user_data.get("last_conv_message"):
+        chat_id, message_id = last_msg_info
+        try:
+            await context.bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+        except BadRequest:
+            pass # Message might have been deleted or has no keyboard, ignore safely.
+        except Exception as e:
+            log.warning(f"Could not disable previous keyboard: {e}")
+
+
 @uow_transaction
 @require_active_user
 @require_analyst_user
 async def newrec_menu_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
+    # UX FIX: Disable any lingering keyboards from a previous, unfinished conversation
+    await _disable_previous_keyboard(context)
+    
     clean_user_state(context)
     sent_message = await update.message.reply_html(
         "🚀 <b>New Recommendation</b>\nChoose an input method:", reply_markup=main_creation_keyboard()
@@ -99,6 +112,7 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
         return ConversationHandler.END
 
 
+# ... (asset_chosen, side_chosen, order_type_chosen, prices_received are unchanged)
 async def asset_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     draft, message_obj = get_user_draft(context), update.callback_query.message if update.callback_query else update.message
     asset = ""
@@ -359,7 +373,7 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
         token_in_callback = parts[-1]
         
         if context.user_data.get("review_token")[:len(token_in_callback)] != token_in_callback:
-            await query.edit_message_text("❌ Stale action. Please start a new recommendation.")
+            await query.edit_message_text("❌ Stale action. Please start a new recommendation.", reply_markup=None)
             clean_user_state(context)
             return ConversationHandler.END
             
@@ -370,15 +384,16 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
             user_id=str(query.from_user.id), db_session=db_session, **draft
         )
         if report.get("success"):
-            await query.message.edit_text(f"✅ Recommendation #{rec.id} for <b>{rec.asset.value}</b> published.", parse_mode="HTML")
+            await query.message.edit_text(f"✅ Recommendation #{rec.id} for <b>{rec.asset.value}</b> published.", parse_mode="HTML", reply_markup=None)
         else:
             await query.message.edit_text(
                 f"⚠️ Rec #{rec.id} saved, but publishing failed: {report.get('failed', [{}])[0].get('reason')}",
                 parse_mode="HTML",
+                reply_markup=None
             )
     except Exception as e:
         loge.exception(f"[publish_handler] Critical failure: {e}")
-        await query.message.edit_text(f"❌ A critical error occurred: {e}.")
+        await query.message.edit_text(f"❌ A critical error occurred: {e}.", reply_markup=None)
     finally:
         clean_user_state(context)
     return ConversationHandler.END
@@ -389,18 +404,23 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         message = update.callback_query.message if update.callback_query else update.message
         if update.callback_query:
             await update.callback_query.answer()
+        
+        # UX FIX: Disable the keyboard on the message that was cancelled.
+        await _disable_previous_keyboard(context)
+
         if last_msg_info := context.user_data.get("last_conv_message"):
             try:
-                await context.bot.edit_message_text("Operation cancelled.", chat_id=last_msg_info[0], message_id=last_msg_info[1])
+                await context.bot.edit_message_text("Operation cancelled.", chat_id=last_msg_info[0], message_id=last_msg_info[1], reply_markup=None)
             except BadRequest:
                 await message.reply_text("Operation cancelled.", reply_markup=ReplyKeyboardRemove())
         else:
             await message.reply_text("Operation cancelled.", reply_markup=ReplyKeyboardRemove())
-        clean_user_state(context)
-        return ConversationHandler.END
+            
     except Exception as e:
         loge.exception(f"[cancel_conv_handler] Error: {e}")
-        return ConversationHandler.END
+    finally:
+        clean_user_state(context)
+    return ConversationHandler.END
 
 
 def register_conversation_handlers(app: Application):
