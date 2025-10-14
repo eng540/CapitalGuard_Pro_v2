@@ -968,7 +968,7 @@ def register_conversation_handlers(app: Application):
         persistent=False,
         per_user=True,
         per_chat=True,
-        per_message=True,
+        per_message=False,
     )
     
     app.add_handler(conv_handler)
