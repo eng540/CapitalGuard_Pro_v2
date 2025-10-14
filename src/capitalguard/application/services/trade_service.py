@@ -1,10 +1,10 @@
-# src/capitalguard/application/services/trade_service.py (v29.3 - Final Unified & Production Ready)
+# src/capitalguard/application/services/trade_service.py (v29.4 - Patched & Hardened)
 """
-TradeService (v29.3) - Final Unified & Production Ready
-This definitive version merges the robust v29.2 implementation with the streamlined
-v29.3 updates, maintaining all core functionality while optimizing code structure.
-It includes complete implementations for all management features with robust event
-logging, state management, and idempotency checks. 100% production-ready.
+TradeService (v29.4) - Patched & Hardened
+This version incorporates critical patches for production stability.
+✅ [PATCH] Hardened exit_strategy handling in creation flow to prevent runtime errors.
+Maintains all core functionality of v29.3 while ensuring robustness against varied inputs.
+100% production-ready.
 """
 
 from __future__ import annotations
@@ -262,6 +262,23 @@ class TradeService:
         market = kwargs.get('market', 'Futures')
         order_type_enum = OrderTypeEnum[kwargs['order_type'].upper()]
 
+        # [FIX] Normalize incoming exit_strategy to prevent type/key errors
+        exit_strategy_val = kwargs.get('exit_strategy')
+        if exit_strategy_val is None:
+            exit_strategy_enum = ExitStrategyEnum.CLOSE_AT_FINAL_TP
+        elif isinstance(exit_strategy_val, ExitStrategyEnum):
+            exit_strategy_enum = exit_strategy_val
+        elif isinstance(exit_strategy_val, ExitStrategy):
+            exit_strategy_enum = ExitStrategyEnum[exit_strategy_val.name]
+        elif isinstance(exit_strategy_val, str):
+            try:
+                # Attempt to match by name (e.g., "CLOSE_AT_FINAL_TP")
+                exit_strategy_enum = ExitStrategyEnum[exit_strategy_val.upper()]
+            except KeyError:
+                raise ValueError(f"Unsupported exit_strategy string value: {exit_strategy_val}")
+        else:
+            raise ValueError(f"Unsupported exit_strategy format: {type(exit_strategy_val)}")
+
         # Determine initial status and entry price
         if order_type_enum == OrderTypeEnum.MARKET:
             live_price = await self.price_service.get_cached_price(asset, market, force_refresh=True)
@@ -286,7 +303,7 @@ class TradeService:
             status=status,
             market=market,
             notes=kwargs.get('notes'),
-            exit_strategy=ExitStrategyEnum[kwargs.get('exit_strategy', ExitStrategy.CLOSE_AT_FINAL_TP).value],
+            exit_strategy=exit_strategy_enum,
             activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None
         )
         db_session.add(rec_orm)
@@ -402,7 +419,7 @@ class TradeService:
             raise ValueError("Can only modify ACTIVE recommendations.")
 
         old_strategy = rec_orm.exit_strategy
-        rec_orm.exit_strategy = new_strategy
+        rec_orm.exit_strategy = ExitStrategyEnum[new_strategy.name]
         db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="STRATEGY_UPDATED", event_data={"old": old_strategy.value, "new": new_strategy.value}))
         strategy_text = "Auto-close at final TP" if new_strategy == ExitStrategy.CLOSE_AT_FINAL_TP else "Manual close only"
         self.notify_reply(rec_id, f"📈 Exit strategy for #{rec_orm.asset} updated to: {strategy_text}.", db_session)
