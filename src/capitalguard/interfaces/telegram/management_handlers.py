@@ -1,4 +1,4 @@
-# .src/capitalguard/interfaces/telegram/management_handlers.py (v28.7 - Final Merged & Hardened)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v28.7 - Final Merged & Hardened)
 """
 Final, merged, and hardened production release for the management system.
 
