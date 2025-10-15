@@ -1,4 +1,4 @@
-# --- START OF FILE: requirements.txt ---
+# --- START OF FILE: requirements.txt (Updated) ---
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.8.2
@@ -8,7 +8,7 @@ psycopg[binary]==3.2.1
 python-telegram-bot[persistence,job-queue]==21.4
 python-dotenv==1.0.1
 python-jose[cryptography]==3.3.0
-python-multipart  # ✅ الاعتمادية الجديدة المضافة
+python-multipart
 passlib[bcrypt]==1.7.4
 requests==2.32.3
 httpx==0.27.2
@@ -20,4 +20,5 @@ websockets==12.0
 pytest==8.3.2
 pydantic-settings==2.3.4
 supervisor==4.2.5
-# --- END OF FILE ---
+# ✅ NEW: Added Redis client for persistent sessions (THE CRITICAL FIX)
+redis==5.0.7
