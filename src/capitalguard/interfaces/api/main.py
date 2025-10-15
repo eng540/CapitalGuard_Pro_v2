@@ -1,14 +1,15 @@
-# src/capitalguard/interfaces/api/main.py (v26.0 - FINAL with Redis Persistence)
+# src/capitalguard/interfaces/api/main.py (v26.1 - The Just-in-Time Fix)
 """
 The main entry point for the FastAPI application, with a robust and state-safe startup
-sequence, now featuring Redis-backed persistence to ensure session consistency across
-multiple workers, permanently fixing all "Stale action" errors.
+sequence. This version includes a critical fix for startup race conditions on platforms
+like Railway by reading the Redis URL "just-in-time" from environment variables.
 """
 
 import logging
 import asyncio
 import html
 import json
+import os
 import pickle
 import traceback
 from typing import List, Dict, Any, Optional, Tuple
@@ -82,11 +83,12 @@ class RedisPersistence(BasePersistence):
         self.redis_client.hset(self.conversations_key, name, pickle.dumps(conversations))
 
     async def flush(self) -> None:
+        # Redis writes are atomic, so flush is not strictly necessary
         pass
 
 # --- FastAPI Application ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="26.0.0-persistent")
+app = FastAPI(title="CapitalGuard Pro API", version="26.1.0-persistent")
 app.state.ptb_app = None
 app.state.services = None
 
@@ -97,14 +99,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 async def on_startup():
     log.info("🚀 Application startup sequence initiated...")
 
-    # Step 1: Set up Redis-backed persistence.
+    # Step 1: Read REDIS_URL directly from the environment at runtime to avoid race conditions.
+    redis_url = os.environ.get("REDIS_URL")
+    if not redis_url:
+        log.critical("FATAL: REDIS_URL environment variable not found. Startup aborted.")
+        # This will prevent the app from starting if Redis is not configured.
+        return
+
     try:
-        redis_client = redis.from_url(settings.REDIS_URL, decode_responses=False)
+        redis_client = redis.from_url(redis_url, decode_responses=False)
         redis_client.ping()
         persistence = RedisPersistence(redis_client=redis_client)
-        log.info(f"✅ Successfully connected to Redis at {settings.REDIS_URL.split('@')[-1]} for persistence.")
+        log.info(f"✅ Successfully connected to Redis for persistence.")
     except Exception as e:
-        log.critical(f"FATAL: Could not connect to Redis for persistence: {e}. Startup aborted.")
+        log.critical(f"FATAL: Could not connect to Redis using URL from environment: {e}. Startup aborted.")
         return
 
     # Step 2: Create the PTB Application instance with persistence.
