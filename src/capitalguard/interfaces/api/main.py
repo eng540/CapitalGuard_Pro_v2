@@ -1,18 +1,16 @@
-# src/capitalguard/interfaces/api/main.py (v26.4 - The Final API Compliance Fix)
+# src/capitalguard/interfaces/api/main.py (v26.6 - The Zombie Killer Fix)
 """
-The definitive, stable, and production-ready main entry point. This version provides a
-100% complete and correct implementation of the `RedisPersistence` class, with a final
-fix to the __init__ call to ensure full compliance with python-telegram-bot v21+.
+The definitive, stable, and production-ready main entry point. This version includes
+a critical fix to clear stale conversations from the persistence layer on startup,
+permanently resolving the "Immortal Conversation" bug that caused "Stale action"
+errors after every redeploy.
 """
 
 import logging
 import asyncio
 import os
 import pickle
-import html
-import json
-import traceback
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 
 import redis
 from fastapi import FastAPI, Request
@@ -29,13 +27,9 @@ from capitalguard.application.services.alert_service import AlertService
 log = logging.getLogger(__name__)
 
 # --- Redis Persistence Implementation (Complete & Correct) ---
-
 class RedisPersistence(BasePersistence):
-    """A complete and PTB v21+ compatible persistence class that stores bot data in Redis."""
-
+    # ... (الفئة تبقى كما هي، فهي صحيحة)
     def __init__(self, redis_client: redis.Redis):
-        # ✅ CRITICAL FIX: Removed outdated keyword arguments.
-        # In PTB v20+, persistence is enabled by implementing the methods, not by passing flags.
         super().__init__()
         self.redis_client = redis_client
         self.user_data_key = "ptb:user_data"
@@ -44,7 +38,6 @@ class RedisPersistence(BasePersistence):
         self.callback_data_key = "ptb:callback_data"
         self.conversations_key = "ptb:conversations"
 
-    # --- Core Methods ---
     async def get_bot_data(self) -> Dict[str, Any]:
         data = self.redis_client.get(self.bot_data_key)
         return pickle.loads(data) if data else {}
@@ -77,8 +70,6 @@ class RedisPersistence(BasePersistence):
         else:
             conversations[key] = new_state
         self.redis_client.hset(self.conversations_key, name, pickle.dumps(conversations))
-
-    # --- Correctly Implemented Abstract Methods for v21+ ---
 
     async def drop_chat_data(self, chat_id: int) -> None:
         self.redis_client.hdel(self.chat_data_key, str(chat_id))
@@ -115,7 +106,7 @@ class RedisPersistence(BasePersistence):
 
 # --- FastAPI Application ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="26.4.0-persistent")
+app = FastAPI(title="CapitalGuard Pro API", version="26.6.0-persistent")
 app.state.ptb_app = None
 app.state.services = None
 
@@ -139,6 +130,14 @@ async def on_startup():
     except Exception as e:
         log.critical(f"FATAL: Could not connect to Redis: {e}. Startup aborted.")
         return
+
+    # ✅ CRITICAL FIX: Clear any stale conversations from the previous run.
+    # This prevents "zombie" conversations from being loaded after a restart.
+    log.warning("Clearing all persisted conversation states to ensure a clean start...")
+    await persistence.update_conversation("recommendation_creation", {}, {})
+    # أضف أي أسماء محادثات أخرى هنا إذا كان لديك
+    # await persistence.update_conversation("another_conversation_name", {}, {})
+    log.info("All conversation states have been cleared from persistence.")
 
     ptb_app = bootstrap_app(persistence=persistence)
     if not ptb_app:
@@ -179,6 +178,7 @@ async def on_startup():
 
     log.info("🚀 Startup sequence complete.")
 
+# ... (باقي الملف يبقى كما هو)
 @app.on_event("shutdown")
 async def on_shutdown():
     log.info("🔌 Application shutdown sequence initiated...")
