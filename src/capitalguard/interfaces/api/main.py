@@ -1,18 +1,8 @@
-# src/capitalguard/interfaces/api/main.py (v26.3 - The Complete & Correct Persistence)
+# src/capitalguard/interfaces/api/main.py (v26.4 - The Final API Compliance Fix)
 """
 The definitive, stable, and production-ready main entry point. This version provides a
-100% complete and correct implementation of the `RedisPersistence` class, ensuring full
-compliance with python-telegram-bot v21+ and guaranteeing session state consistency.
-
-Changelog:
-- [CRITICAL FIX] Correctly implemented all abstract methods in `RedisPersistence`,
-  including `refresh_user_data`, `refresh_chat_data`, and `refresh_bot_data`. This
-  is the final, crucial step to make Redis persistence work and permanently solve
-  the "Stale action" / "Session Ghost" problem.
-- [REJECT] Rejected the previous version's empty `pass` implementations, which would
-  have caused state synchronization to fail silently.
-- [CONFIRM] The "just-in-time" reading of `REDIS_URL` from the environment is retained
-  to prevent startup race conditions.
+100% complete and correct implementation of the `RedisPersistence` class, with a final
+fix to the __init__ call to ensure full compliance with python-telegram-bot v21+.
 """
 
 import logging
@@ -27,7 +17,6 @@ from typing import List, Dict, Any, Optional, Tuple
 import redis
 from fastapi import FastAPI, Request
 from telegram import Update, BotCommand
-from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes, BasePersistence
 
 from capitalguard.config import settings
@@ -45,7 +34,9 @@ class RedisPersistence(BasePersistence):
     """A complete and PTB v21+ compatible persistence class that stores bot data in Redis."""
 
     def __init__(self, redis_client: redis.Redis):
-        super().__init__(store_user_data=True, store_chat_data=True, store_bot_data=True, store_callback_data=True)
+        # ✅ CRITICAL FIX: Removed outdated keyword arguments.
+        # In PTB v20+, persistence is enabled by implementing the methods, not by passing flags.
+        super().__init__()
         self.redis_client = redis_client
         self.user_data_key = "ptb:user_data"
         self.chat_data_key = "ptb:chat_data"
@@ -106,18 +97,15 @@ class RedisPersistence(BasePersistence):
             self.redis_client.delete(self.callback_data_key)
 
     async def refresh_bot_data(self, bot_data: Dict) -> None:
-        """Correctly populates the in-memory bot_data dict from Redis."""
         data = await self.get_bot_data()
         bot_data.update(data)
 
     async def refresh_chat_data(self, chat_id: int, chat_data: Dict) -> None:
-        """Correctly populates the in-memory chat_data dict from Redis."""
         data = self.redis_client.hget(self.chat_data_key, str(chat_id))
         if data:
             chat_data.update(pickle.loads(data))
 
     async def refresh_user_data(self, user_id: int, user_data: Dict) -> None:
-        """Correctly populates the in-memory user_data dict from Redis."""
         data = self.redis_client.hget(self.user_data_key, str(user_id))
         if data:
             user_data.update(pickle.loads(data))
@@ -127,7 +115,7 @@ class RedisPersistence(BasePersistence):
 
 # --- FastAPI Application ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="26.3.0-persistent")
+app = FastAPI(title="CapitalGuard Pro API", version="26.4.0-persistent")
 app.state.ptb_app = None
 app.state.services = None
 
