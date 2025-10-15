@@ -1,7 +1,7 @@
-# --- START OF FINAL, COMPLETE, AND SECURE FILE (Version 13.4.0) ---
+# --- START OF FINAL, COMPLETE, AND SECURE FILE (Version 13.4.1) ---
 # src/capitalguard/config.py
 
-from pantic import Field
+from pydantic import Field  # ✅ CORRECTED: Was "pantic", now "pydantic"
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     ENV: str = Field(default="dev")
     DATABASE_URL: str = Field(default="sqlite:///./dev.db")
     
-    # ✅ CRITICAL FIX: Directly use the REDIS_URL provided by Railway.
+    # CRITICAL FIX: Directly use the REDIS_URL provided by Railway.
     # This is the simplest and most robust way to connect.
     # The default value is for local development. Railway will override this.
     REDIS_URL: str = Field(default="redis://localhost:6379/0")
