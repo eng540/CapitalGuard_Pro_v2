@@ -1,8 +1,8 @@
-# src/capitalguard/interfaces/api/main.py (v26.1 - The Just-in-Time Fix)
+# src/capitalguard/interfaces/api/main.py (v26.2 - The Complete Persistence Fix)
 """
-The main entry point for the FastAPI application, with a robust and state-safe startup
-sequence. This version includes a critical fix for startup race conditions on platforms
-like Railway by reading the Redis URL "just-in-time" from environment variables.
+The main entry point for the FastAPI application. This version includes a complete and
+correct implementation of the `RedisPersistence` class, compatible with PTB v21+,
+resolving the abstract method instantiation error.
 """
 
 import logging
@@ -39,16 +39,21 @@ log = logging.getLogger(__name__)
 # --- Redis Persistence Implementation (THE CRITICAL FIX) ---
 
 class RedisPersistence(BasePersistence):
-    """A custom persistence class that stores bot data in Redis."""
+    """
+    A complete and PTB v21+ compatible persistence class that stores bot data in Redis.
+    This implementation includes all required abstract methods.
+    """
 
     def __init__(self, redis_client: redis.Redis):
         super().__init__(store_user_data=True, store_chat_data=True, store_bot_data=True)
         self.redis_client = redis_client
-        self.user_data_key = "ptb_user_data"
-        self.chat_data_key = "ptb_chat_data"
-        self.bot_data_key = "ptb_bot_data"
-        self.conversations_key = "ptb_conversations"
+        self.user_data_key = "ptb:user_data"
+        self.chat_data_key = "ptb:chat_data"
+        self.bot_data_key = "ptb:bot_data"
+        self.callback_data_key = "ptb:callback_data"
+        self.conversations_key = "ptb:conversations"
 
+    # --- Core Methods ---
     async def get_bot_data(self) -> Dict[str, Any]:
         data = self.redis_client.get(self.bot_data_key)
         return pickle.loads(data) if data else {}
@@ -82,13 +87,43 @@ class RedisPersistence(BasePersistence):
             conversations[key] = new_state
         self.redis_client.hset(self.conversations_key, name, pickle.dumps(conversations))
 
+    # --- New Required Methods for PTB v21+ ---
+    async def drop_chat_data(self, chat_id: int) -> None:
+        self.redis_client.hdel(self.chat_data_key, str(chat_id))
+
+    async def drop_user_data(self, user_id: int) -> None:
+        self.redis_client.hdel(self.user_data_key, str(user_id))
+
+    async def get_callback_data(self) -> Optional[Any]:
+        data = self.redis_client.get(self.callback_data_key)
+        return pickle.loads(data) if data else None
+
+    async def update_callback_data(self, data: Any) -> None:
+        if data:
+            self.redis_client.set(self.callback_data_key, pickle.dumps(data))
+        else:
+            self.redis_client.delete(self.callback_data_key)
+
+    async def refresh_bot_data(self, bot_data: Dict) -> None:
+        # The data is already live from Redis, so we just update the in-memory object
+        bot_data.update(await self.get_bot_data())
+
+    async def refresh_chat_data(self, chat_id: int, chat_data: Dict) -> None:
+        data = self.redis_client.hget(self.chat_data_key, str(chat_id))
+        if data:
+            chat_data.update(pickle.loads(data))
+
+    async def refresh_user_data(self, user_id: int, user_data: Dict) -> None:
+        data = self.redis_client.hget(self.user_data_key, str(user_id))
+        if data:
+            user_data.update(pickle.loads(data))
+
     async def flush(self) -> None:
-        # Redis writes are atomic, so flush is not strictly necessary
         pass
 
 # --- FastAPI Application ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="26.1.0-persistent")
+app = FastAPI(title="CapitalGuard Pro API", version="26.2.0-persistent")
 app.state.ptb_app = None
 app.state.services = None
 
@@ -99,11 +134,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 async def on_startup():
     log.info("🚀 Application startup sequence initiated...")
 
-    # Step 1: Read REDIS_URL directly from the environment at runtime to avoid race conditions.
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
         log.critical("FATAL: REDIS_URL environment variable not found. Startup aborted.")
-        # This will prevent the app from starting if Redis is not configured.
         return
 
     try:
@@ -115,30 +148,21 @@ async def on_startup():
         log.critical(f"FATAL: Could not connect to Redis using URL from environment: {e}. Startup aborted.")
         return
 
-    # Step 2: Create the PTB Application instance with persistence.
-    ptb_app = bootstrap_app(persistence=persistence)
-    if not ptb_app:
-        log.critical("FATAL: Could not create Telegram Application. Startup aborted.")
-        return
-
+    ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
     app.state.ptb_app = ptb_app
     
-    # Step 3: Initialize the application. This loads data from Redis.
     await ptb_app.initialize()
     log.info("Telegram application initialized, persistence data loaded from Redis.")
 
-    # Step 4: Build and attach services.
     app.state.services = build_services(ptb_app=ptb_app)
     ptb_app.bot_data["services"] = app.state.services
     log.info("✅ All application services built and registered.")
 
-    # Step 5: Register all handlers.
     register_all_handlers(ptb_app)
     log.info("✅ All Telegram handlers registered.")
 
     ptb_app.add_error_handler(error_handler)
 
-    # Step 6: Start background services.
     market_data_service = app.state.services.get("market_data_service")
     if market_data_service:
         asyncio.create_task(market_data_service.refresh_symbols_cache())
@@ -150,7 +174,6 @@ async def on_startup():
         alert_service.start()
         log.info("AlertService background tasks started.")
 
-    # Step 7: Set bot commands and webhook.
     private_commands = [
         BotCommand("newrec", "📊 New Recommendation"),
         BotCommand("myportfolio", "📂 View My Trades"),
@@ -163,7 +186,6 @@ async def on_startup():
         await ptb_app.bot.set_webhook(url=settings.TELEGRAM_WEBHOOK_URL, allowed_updates=Update.ALL_TYPES)
         log.info(f"Telegram webhook set to {settings.TELEGRAM_WEBHOOK_URL}")
     
-    # Step 8: Start the PTB application's main processing loop.
     await ptb_app.start()
     log.info("Telegram application polling/webhook handler started.")
     
