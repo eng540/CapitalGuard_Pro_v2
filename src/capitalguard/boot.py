@@ -1,14 +1,15 @@
-# src/capitalguard/boot.py (v25.6 - FINAL & STATE-SAFE)
+# src/capitalguard/boot.py (v26.0 - Persistence-Aware)
 """
 Bootstrap and dependency injection setup for the application.
-This version ensures services are correctly injected and are not overwritten by the persistence layer.
+This version is updated to accept an external persistence object, enabling
+integration with Redis or other persistent session backends.
 """
 
 import os
 import logging
 from typing import Dict, Any, Optional
 
-from telegram.ext import Application, PicklePersistence
+from telegram.ext import Application, PicklePersistence, BasePersistence
 
 from capitalguard.config import settings
 from capitalguard.application.services.trade_service import TradeService
@@ -72,21 +73,26 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         log.critical(f"❌ Service building failed: {e}", exc_info=True)
         raise
 
-def bootstrap_app() -> Optional[Application]:
+def bootstrap_app(persistence: Optional[BasePersistence] = None) -> Optional[Application]:
     """
     Bootstraps the Telegram Application instance.
-    It creates the application with persistence, but does NOT build or attach services yet.
+    
+    ✅ CRITICAL FIX: This function now accepts an optional `persistence` object.
+    If provided, it will be used to build the application. If not, it falls back
+    to a default PicklePersistence for backward compatibility or local testing.
     """
     if not settings.TELEGRAM_BOT_TOKEN:
         log.error("TELEGRAM_BOT_TOKEN not set. Bot cannot start.")
         return None
         
     try:
-        persistence = PicklePersistence(filepath="./telegram_bot_persistence")
+        # Use the provided persistence object if it exists, otherwise create a default one.
+        if persistence is None:
+            log.warning("No persistence object provided to bootstrap_app. Falling back to default PicklePersistence.")
+            persistence = PicklePersistence(filepath="./telegram_bot_persistence")
+            
         ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
         return ptb_app
     except Exception as e:
         log.critical(f"❌ Application bootstrap failed during PTB app creation: {e}", exc_info=True)
         raise
-
-#END
