@@ -330,7 +330,6 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
     query = update.callback_query
     draft = context.user_data
     try:
-        # Prepare a clean dict for the service layer
         final_data = {key.replace('rec_creation_', ''): val for key, val in draft.items() if key.startswith('rec_creation_')}
         final_data['target_channel_ids'] = draft.get("rec_creation_channel_ids")
         
@@ -364,23 +363,11 @@ def register_conversation_handlers(app: Application):
     app.add_handler(CommandHandler("newrec", newrec_handler))
     app.add_handler(CommandHandler("cancel", cancel_handler))
     
-    # Step 1: Method Selection
     app.add_handler(CallbackQueryHandler(interactive_method_handler, pattern="^method_interactive$"))
-    
-    # Step 2: Asset Selection
     app.add_handler(CallbackQueryHandler(asset_handler, pattern="^asset_"))
-    
-    # Step 3: Side Selection
     app.add_handler(CallbackQueryHandler(side_handler, pattern="^side_"))
-    
-    # Step 4: Type Selection
     app.add_handler(CallbackQueryHandler(type_handler, pattern="^type_"))
-    
-    # Step 5: Review Card Actions
     app.add_handler(CallbackQueryHandler(review_action_handler, pattern=r"^rec:"))
-    
-    # Step 6: Channel Picker Actions
     app.add_handler(CallbackQueryHandler(channel_picker_handler, pattern=r"^pub:"))
     
-    # General Text Input Router
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input_router))
