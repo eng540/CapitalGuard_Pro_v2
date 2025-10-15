@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND SECURE FILE (Version 13.1.2) ---
+# --- START OF FINAL, COMPLETE, AND SECURE FILE (Version 13.2.0) ---
 # src/capitalguard/config.py
 
 from pydantic import Field
@@ -15,14 +15,16 @@ class Settings(BaseSettings):
     # Environment / DB
     ENV: str = Field(default="dev")
     DATABASE_URL: str = Field(default="sqlite:///./dev.db")
+    
+    # ✅ NEW: Redis URL for persistent sessions (THE CRITICAL FIX)
+    # This will be automatically provided by Railway.
+    REDIS_URL: str = Field(default="redis://localhost:6379/0")
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str | None = None
     TELEGRAM_CHAT_ID: str | None = None # For public channel subscription check
     TELEGRAM_WEBHOOK_URL: str | None = None
     TELEGRAM_CHANNEL_INVITE_LINK: str | None = None
-
-    # ✅ NEW: Dedicated setting for admin/error notifications.
     TELEGRAM_ADMIN_CHAT_ID: str | None = None
 
     # Admin configuration
