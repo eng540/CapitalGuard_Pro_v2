@@ -11,7 +11,7 @@ import html
 import json
 import pickle
 import traceback
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import redis
 from fastapi import FastAPI, HTTPException, Depends, Request, Query
@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from telegram import Update, BotCommand
 from telegram.constants import ParseMode
-from telegram.ext import Application, ContextTypes, BasePersistence, PersistenceInput
+from telegram.ext import Application, ContextTypes, BasePersistence
 
 from capitalguard.config import settings
 from capitalguard.boot import bootstrap_app, build_services
@@ -35,7 +35,7 @@ from capitalguard.infrastructure.db.base import get_session
 
 log = logging.getLogger(__name__)
 
-# --- Redis Persistence Implementation ---
+# --- Redis Persistence Implementation (THE CRITICAL FIX) ---
 
 class RedisPersistence(BasePersistence):
     """A custom persistence class that stores bot data in Redis."""
@@ -82,7 +82,6 @@ class RedisPersistence(BasePersistence):
         self.redis_client.hset(self.conversations_key, name, pickle.dumps(conversations))
 
     async def flush(self) -> None:
-        # Redis writes are atomic, so flush is not strictly necessary
         pass
 
 # --- FastAPI Application ---
@@ -98,15 +97,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 async def on_startup():
     log.info("🚀 Application startup sequence initiated...")
 
-    # Step 1: Set up Redis-backed persistence. THIS IS THE CRITICAL FIX.
+    # Step 1: Set up Redis-backed persistence.
     try:
         redis_client = redis.from_url(settings.REDIS_URL, decode_responses=False)
         redis_client.ping()
         persistence = RedisPersistence(redis_client=redis_client)
-        log.info(f"✅ Successfully connected to Redis at {settings.REDIS_URL} for persistence.")
+        log.info(f"✅ Successfully connected to Redis at {settings.REDIS_URL.split('@')[-1]} for persistence.")
     except Exception as e:
         log.critical(f"FATAL: Could not connect to Redis for persistence: {e}. Startup aborted.")
-        # In a real scenario, this should cause the container to exit unhealthy.
         return
 
     # Step 2: Create the PTB Application instance with persistence.
