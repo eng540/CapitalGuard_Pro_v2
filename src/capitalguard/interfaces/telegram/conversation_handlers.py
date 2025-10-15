@@ -1,18 +1,18 @@
 # src/capitalguard/interfaces/telegram/conversation_handlers.py
-# (v31.1 - The Token Consistency Fix)
+# (v31.1 - The Decorator Fix)
 """
-The definitive, stable, and production-ready version with a critical architectural fix
-to the token validation logic, permanently resolving the "Stale action" error during publication.
+The definitive, stable, and production-ready version with a critical fix for a
+decorator dependency issue that caused a fatal runtime error on startup.
 
 Changelog:
-- [CRITICAL TOKEN FIX] The logic for handling `review_token` has been completely rewritten
-  to be 100% consistent. The short token is now generated once, stored in the user's state,
-  and used for both button creation and validation. This eliminates any possibility of a
-  mismatch and permanently fixes the "Stale action" error at the final step.
-- [CONFIRM] The atomic entry point architecture from v31.0 is retained, ensuring conversations
-  always start in a clean state.
+- [CRITICAL FIX] Reinstated the `@uow_transaction` decorator on the `newrec_command_handler`.
+  This resolves the `RuntimeError` by ensuring that the `@require_active_user` and
+  `@require_analyst_user` decorators receive the necessary `db_session` to perform
+  authentication and authorization checks.
+- [CONFIRM] The atomic entry point architecture, which prevents state corruption, is retained
+  and now functions correctly with the restored decorator chain.
 - [CONFIRM] All previous critical fixes (disabling keyboards, handling API errors, separate
-  restart logic) are retained and operate correctly within this final, stable architecture.
+  restart logic) are present and correct.
 """
 
 import logging
@@ -77,34 +77,64 @@ async def _disable_previous_keyboard(context: ContextTypes.DEFAULT_TYPE):
 
 # --- Conversation Entry and Exit Handlers ---
 
+@uow_transaction
 @require_active_user
 @require_analyst_user
 async def newrec_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
+    """
+    Handles the initial `/newrec` command atomically. It sends the new message FIRST,
+    and only upon success does it clean up the old state. This prevents state corruption.
+    """
     user_id = update.effective_user.id
     log.info(f"User {user_id} attempting to start a new recommendation conversation.")
+
     try:
+        # 1. Attempt the fallible operation first.
         sent_message = await update.message.reply_html(
             "🚀 <b>New Recommendation</b>\nChoose an input method:", reply_markup=main_creation_keyboard()
         )
+
+        # 2. Only if the message was sent successfully, proceed with state mutation.
         log.info(f"Successfully sent new conversation message for user {user_id}. Cleaning up old state.")
         await _disable_previous_keyboard(context)
         clean_user_state(context)
+        
+        # 3. Set the new state.
         context.user_data["last_conv_message"] = (sent_message.chat_id, sent_message.message_id)
+        
+        # 4. Signal the conversation to start.
         return SELECT_METHOD
+
     except (TelegramError, Exception) as e:
         loge.exception(f"Failed to start /newrec conversation for user {user_id}: {e}")
-        await update.message.reply_text("❌ Could not start a new operation. Please try again.")
+        await update.message.reply_text(
+            "❌ Could not start a new operation at this time. Please try again in a moment."
+        )
+        # Do NOT change the state. Let the user retry.
         return ConversationHandler.END
 
+
 async def restart_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Handles `/newrec` or `/cancel` typed *during* an active conversation.
+    This is a fallback that safely terminates the current process.
+    """
     user_id = update.effective_user.id
     log.warning(f"User {user_id} sent a command during an active conversation. Terminating.")
+    
     await _disable_previous_keyboard(context)
-    await update.message.reply_text("Previous operation cancelled. You can now start a new one.", reply_markup=ReplyKeyboardRemove())
+    
+    await update.message.reply_text(
+        "Previous operation cancelled. You can now start a new one.",
+        reply_markup=ReplyKeyboardRemove()
+    )
     clean_user_state(context)
     return ConversationHandler.END
 
 async def final_exit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Handles the final exit from the conversation, ensuring all state is cleaned up.
+    """
     await _disable_previous_keyboard(context)
     clean_user_state(context)
     return ConversationHandler.END
@@ -120,6 +150,7 @@ async def start_interactive_entrypoint(update: Update, context: ContextTypes.DEF
         await query.answer()
         trade_service = get_service(context, "trade_service", TradeService)
         recent_assets = trade_service.get_recent_assets_for_user(db_session, str(query.from_user.id))
+        
         await query.edit_message_text(
             "<b>Step 1/4: Asset</b>\nSelect or type the asset symbol (e.g., BTCUSDT).",
             reply_markup=asset_choice_keyboard(recent_assets),
@@ -230,17 +261,13 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         message = update.callback_query.message if update.callback_query else update.message
         draft = get_user_draft(context)
-        
-        # CRITICAL FIX: Generate short token once, store it, and use it everywhere.
         full_token = str(uuid.uuid4())
         short_token = full_token[:12]
-        context.user_data["review_token"] = short_token # Store the short token
-        
+        context.user_data["review_token"] = short_token
         price_service = get_service(context, "price_service", PriceService)
         preview_price = await price_service.get_cached_price(draft["asset"], draft["market"])
         review_text = build_review_text_with_price(draft, preview_price)
         target_chat_id, target_message_id = context.user_data.get("last_conv_message", (message.chat_id, message.message_id))
-        
         try:
             sent_message = await context.bot.edit_message_text(chat_id=target_chat_id, message_id=target_message_id, text=review_text, reply_markup=review_final_keyboard(short_token), parse_mode="HTML")
             if update.message: await update.message.delete()
@@ -250,7 +277,6 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 sent_message = message
             else:
                 sent_message = await context.bot.send_message(chat_id=target_chat_id, text=review_text, reply_markup=review_final_keyboard(short_token), parse_mode="HTML")
-        
         context.user_data["last_conv_message"] = (sent_message.chat_id, sent_message.message_id)
         return I_REVIEW
     except Exception as e:
@@ -336,23 +362,18 @@ async def publish_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db
         await query.answer("Publishing...")
         parts = parse_cq_parts(query.data)
         token_in_callback = parts[-1]
-        
-        # CRITICAL FIX: Direct, exact comparison of short tokens.
         if context.user_data.get("review_token") != token_in_callback:
             await query.edit_message_text("❌ Stale action. Please start a new recommendation.", reply_markup=None)
             return await final_exit_handler(update, context)
-            
         draft = get_user_draft(context)
         draft["target_channel_ids"] = context.user_data.get("channel_picker_selection")
         trade_service = get_service(context, "trade_service", TradeService)
         rec, report = await trade_service.create_and_publish_recommendation_async(user_id=str(query.from_user.id), db_session=db_session, **draft)
-        
         if report.get("success"):
             await query.edit_message_text(f"✅ Recommendation #{rec.id} for <b>{rec.asset.value}</b> published.", parse_mode="HTML", reply_markup=None)
         else:
             reason = report.get('failed', [{}])[0].get('reason', 'Unknown error')
             await query.edit_message_text(f"⚠️ Rec #{rec.id} saved, but publishing failed: {reason}", reply_markup=None)
-            
     except Exception as e:
         loge.exception(f"Critical failure in publish_handler: {e}")
         await query.edit_message_text(f"❌ A critical error occurred: {e}.", reply_markup=None)
