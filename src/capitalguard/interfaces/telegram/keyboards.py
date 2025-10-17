@@ -1,9 +1,10 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v20.3 - Production Ready)
+# src/capitalguard/interfaces/telegram/keyboards.py (v21.0 - Production Ready)
 """
 هندسة لوحات المفاتيح المستدامة - إصدار إنتاجي متكامل
 ✅ إصلاح جميع مشاكل الأداء والتوافق
 ✅ تحسين استجابة الأزرار والواجهات
 ✅ دعم كامل لنظام اختيار القنوات
+✅ إصلاح مشكلة أزرار القنوات
 """
 
 import math
@@ -132,6 +133,19 @@ class CallbackBuilder:
         except Exception as e:
             logger.error(f"Failed to parse callback data: {callback_data}, error: {e}")
             return {'raw': callback_data, 'error': str(e)}
+    
+    @staticmethod
+    def parse_cq_parts(callback_data: str) -> List[str]:
+        """تحليل بيانات الاستدعاء إلى أجزاء - للتوافق مع الدوال الموجودة"""
+        try:
+            parts = callback_data.split(':')
+            # إزالة الإصدار إذا كان موجوداً
+            if parts and parts[-1].startswith('v'):
+                parts = parts[:-1]
+            return parts
+        except Exception as e:
+            logger.error(f"Failed to parse callback data parts: {callback_data}, error: {e}")
+            return []
 
 # ==================== DOMAIN MODELS ====================
 
@@ -201,6 +215,10 @@ def _create_short_token(full_token: str, length: int = 10) -> str:
     if len(full_token) <= length:
         return full_token
     return hashlib.md5(full_token.encode()).hexdigest()[:length]
+
+def parse_cq_parts(callback_data: str) -> List[str]:
+    """تحليل بيانات الاستدعاء إلى أجزاء - للتوافق مع الإصدارات السابقة"""
+    return CallbackBuilder.parse_cq_parts(callback_data)
 
 # ==================== BUSINESS LOGIC LAYER ====================
 
@@ -567,20 +585,62 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
-    """بناء لوحة المراجعة النهائية"""
+    """بناء لوحة المراجعة النهائية - الإصدار المصحح"""
     short_token = review_token[:12]
     
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ نشر في القنوات الفعّالة", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "publish", short_token))],
+        [InlineKeyboardButton(
+            "✅ نشر في القنوات الفعّالة", 
+            callback_data=CallbackBuilder.create(
+                CallbackNamespace.RECOMMENDATION, 
+                "publish", 
+                short_token
+            )
+        )],
         [
-            InlineKeyboardButton("📢 اختيار القنوات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "choose_channels", short_token)),
-            InlineKeyboardButton("📝 إضافة/تعديل ملاحظات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "add_notes", short_token)),
+            InlineKeyboardButton(
+                "📢 اختيار القنوات", 
+                callback_data=CallbackBuilder.create(
+                    CallbackNamespace.RECOMMENDATION, 
+                    "choose_channels", 
+                    short_token
+                )
+            ),
+            InlineKeyboardButton(
+                "📝 إضافة/تعديل ملاحظات", 
+                callback_data=CallbackBuilder.create(
+                    CallbackNamespace.RECOMMENDATION, 
+                    "add_notes", 
+                    short_token
+                )
+            ),
         ],
         [
-            InlineKeyboardButton("✏️ تعديل البيانات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_data", short_token)),
-            InlineKeyboardButton("👁️ معاينة", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "preview", short_token)),
+            InlineKeyboardButton(
+                "✏️ تعديل البيانات", 
+                callback_data=CallbackBuilder.create(
+                    CallbackNamespace.RECOMMENDATION, 
+                    "edit_data", 
+                    short_token
+                )
+            ),
+            InlineKeyboardButton(
+                "👁️ معاينة", 
+                callback_data=CallbackBuilder.create(
+                    CallbackNamespace.RECOMMENDATION, 
+                    "preview", 
+                    short_token
+                )
+            ),
         ],
-        [InlineKeyboardButton("❌ إلغاء", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "cancel", short_token))],
+        [InlineKeyboardButton(
+            "❌ إلغاء", 
+            callback_data=CallbackBuilder.create(
+                CallbackNamespace.RECOMMENDATION, 
+                "cancel", 
+                short_token
+            )
+        )],
     ])
 
 def build_channel_picker_keyboard(
@@ -590,7 +650,7 @@ def build_channel_picker_keyboard(
     page: int = 1,
     per_page: int = 6,
 ) -> InlineKeyboardMarkup:
-    """بناء لوحة اختيار القنوات مع الترقيم - الإصدار المحسَن"""
+    """بناء لوحة اختيار القنوات - الإصدار المصحح"""
     try:
         ch_list = list(channels)
         total = len(ch_list)
@@ -603,7 +663,7 @@ def build_channel_picker_keyboard(
 
         rows = []
         
-        # أزرار القنوات
+        # أزرار القنوات - الإصلاح: استخدام CallbackBuilder بشكل صحيح
         for ch in page_items:
             try:
                 tg_chat_id = int(_get_attr(ch, 'telegram_channel_id', 0))
@@ -617,7 +677,12 @@ def build_channel_picker_keyboard(
                 if len(label) > 25:
                     label = label[:22] + "..."
                 
-                callback_data = f"pub:tg:{review_token}:{tg_chat_id}:{page}"
+                # ✅ الإصلاح: استخدام CallbackBuilder مع التنسيق الصحيح
+                callback_data = CallbackBuilder.create(
+                    CallbackNamespace.PUBLICATION, 
+                    CallbackAction.TOGGLE, 
+                    review_token, tg_chat_id, page
+                )
                 
                 rows.append([InlineKeyboardButton(
                     f"{status} {label}", 
@@ -627,12 +692,16 @@ def build_channel_picker_keyboard(
                 logger.warning(f"Skipping channel due to error: {e}")
                 continue
 
-        # أزرار التنقل بين الصفحات
+        # أزرار التنقل بين الصفحات - الإصلاح: استخدام CallbackBuilder
         nav_buttons = []
         if page > 1:
             nav_buttons.append(InlineKeyboardButton(
                 "⬅️ السابق", 
-                callback_data=f"pub:tg:{review_token}:0:{page-1}"
+                callback_data=CallbackBuilder.create(
+                    CallbackNamespace.PUBLICATION, 
+                    CallbackAction.TOGGLE, 
+                    review_token, 0, page-1
+                )
             ))
         
         if total_pages > 1:
@@ -644,21 +713,33 @@ def build_channel_picker_keyboard(
         if page < total_pages:
             nav_buttons.append(InlineKeyboardButton(
                 "التالي ➡️", 
-                callback_data=f"pub:tg:{review_token}:0:{page+1}"
+                callback_data=CallbackBuilder.create(
+                    CallbackNamespace.PUBLICATION, 
+                    CallbackAction.TOGGLE, 
+                    review_token, 0, page+1
+                )
             ))
         
         if nav_buttons:
             rows.append(nav_buttons)
 
-        # أزرار الإجراءات الرئيسية
+        # أزرار الإجراءات الرئيسية - الإصلاح: استخدام CallbackBuilder
         action_buttons = [
             InlineKeyboardButton(
                 "🚀 نشر المحدد", 
-                callback_data=f"pub:confirm:{review_token}"
+                callback_data=CallbackBuilder.create(
+                    CallbackNamespace.PUBLICATION, 
+                    CallbackAction.CONFIRM, 
+                    review_token
+                )
             ),
             InlineKeyboardButton(
                 "⬅️ عودة", 
-                callback_data=f"pub:back:{review_token}"
+                callback_data=CallbackBuilder.create(
+                    CallbackNamespace.PUBLICATION, 
+                    CallbackAction.BACK, 
+                    review_token
+                )
             ),
         ]
         rows.append(action_buttons)
@@ -669,7 +750,13 @@ def build_channel_picker_keyboard(
         logger.error(f"Error building channel picker: {e}")
         # لوحة مفاتيح طوارئ
         return InlineKeyboardMarkup([[
-            InlineKeyboardButton("❌ خطأ في التحميل - العودة", callback_data=f"pub:back:{review_token}")
+            InlineKeyboardButton("❌ خطأ في التحميل - العودة", 
+                callback_data=CallbackBuilder.create(
+                    CallbackNamespace.PUBLICATION, 
+                    CallbackAction.BACK, 
+                    review_token
+                )
+            )
         ]])
 
 def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineKeyboardMarkup]:
@@ -793,13 +880,48 @@ def build_trade_edit_keyboard(trade_id: int) -> InlineKeyboardMarkup:
     ])
 
 def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """بناء لوحة إغلاق جزئي محايدة"""
+    """بناء لوحة إغلاق جزئي محايدة - الإصدار المصحح"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💰 إغلاق 25%", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.PARTIAL, rec_id, "25"))],
-        [InlineKeyboardButton("💰 إغلاق 50%", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.PARTIAL, rec_id, "50"))],
-        [InlineKeyboardButton("💰 إغلاق 75%", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.PARTIAL, rec_id, "75"))],
-        [InlineKeyboardButton("✍️ نسبة مخصصة", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "partial_close_custom", rec_id))],
-        [InlineKeyboardButton(ButtonTexts.BACK, callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "back_to_main", rec_id))],
+        [InlineKeyboardButton(
+            "💰 إغلاق 25%", 
+            callback_data=CallbackBuilder.create(
+                CallbackNamespace.RECOMMENDATION, 
+                CallbackAction.PARTIAL, 
+                rec_id, "25"
+            )
+        )],
+        [InlineKeyboardButton(
+            "💰 إغلاق 50%", 
+            callback_data=CallbackBuilder.create(
+                CallbackNamespace.RECOMMENDATION, 
+                CallbackAction.PARTIAL, 
+                rec_id, "50"
+            )
+        )],
+        [InlineKeyboardButton(
+            "💰 إغلاق 75%", 
+            callback_data=CallbackBuilder.create(
+                CallbackNamespace.RECOMMENDATION, 
+                CallbackAction.PARTIAL, 
+                rec_id, "75"
+            )
+        )],
+        [InlineKeyboardButton(
+            "✍️ نسبة مخصصة", 
+            callback_data=CallbackBuilder.create(
+                CallbackNamespace.RECOMMENDATION, 
+                "partial_close_custom", 
+                rec_id
+            )
+        )],
+        [InlineKeyboardButton(
+            ButtonTexts.BACK, 
+            callback_data=CallbackBuilder.create(
+                CallbackNamespace.RECOMMENDATION, 
+                "back_to_main", 
+                rec_id
+            )
+        )],
     ])
 
 def build_analyst_dashboard_keyboard() -> InlineKeyboardMarkup:
@@ -861,4 +983,7 @@ __all__ = [
     'ButtonTexts',
     'CallbackNamespace',
     'CallbackAction',
+    
+    # ✅ الإضافة: دالة التحليل للتوافق
+    'parse_cq_parts',
 ]

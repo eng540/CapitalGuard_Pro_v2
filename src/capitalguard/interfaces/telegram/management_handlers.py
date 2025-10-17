@@ -1,9 +1,10 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v28.8 - Production Ready)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v29.0 - Production Ready)
 """
 إصدار إنتاجي محسَن لإدارة التوصيات والصفقات
 ✅ إصلاح جميع مشاكل التجميد وعدم الاستجابة
 ✅ تحسين نظام المهلات ومعالجة الأخطاء
 ✅ دعم كامل للواجهات التفاعلية
+✅ إصلاح مشكلة انتهاء الجلسة
 """
 
 import logging
@@ -44,22 +45,36 @@ LAST_ACTIVITY_KEY = "last_activity_management"
 # --- Timeout Configuration ---
 MANAGEMENT_TIMEOUT = 1800  # 30 دقيقة
 
+# --- نظام مهلات محسَن ---
+def init_management_session(context: ContextTypes.DEFAULT_TYPE):
+    """تهيئة جلسة إدارة جديدة"""
+    context.user_data[LAST_ACTIVITY_KEY] = time.time()
+    # تنظيف أي حالة قديمة
+    context.user_data.pop(AWAITING_INPUT_KEY, None)
+    context.user_data.pop('partial_close_rec_id', None)
+    context.user_data.pop('partial_close_percent', None)
+
+def update_management_activity(context: ContextTypes.DEFAULT_TYPE):
+    """تحديث وقت النشاط الأخير للإدارة - نسخة محسنة"""
+    context.user_data[LAST_ACTIVITY_KEY] = time.time()
+
+def check_management_timeout(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """التحقق من انتهاء مدة جلسة الإدارة - نسخة محسنة"""
+    last_activity = context.user_data.get(LAST_ACTIVITY_KEY, 0)
+    current_time = time.time()
+    timeout_occurred = current_time - last_activity > MANAGEMENT_TIMEOUT
+    
+    if timeout_occurred:
+        log.info(f"Management session timeout - Last activity: {last_activity}, Current: {current_time}")
+    
+    return timeout_occurred
+
 def clean_management_state(context: ContextTypes.DEFAULT_TYPE):
     """تنظيف حالة الإدارة"""
     context.user_data.pop(AWAITING_INPUT_KEY, None)
     context.user_data.pop(LAST_ACTIVITY_KEY, None)
     context.user_data.pop('partial_close_rec_id', None)
     context.user_data.pop('partial_close_percent', None)
-
-def update_management_activity(context: ContextTypes.DEFAULT_TYPE):
-    """تحديث وقت النشاط الأخير للإدارة"""
-    context.user_data[LAST_ACTIVITY_KEY] = time.time()
-
-def check_management_timeout(context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """التحقق من انتهاء مدة جلسة الإدارة"""
-    last_activity = context.user_data.get(LAST_ACTIVITY_KEY, 0)
-    current_time = time.time()
-    return current_time - last_activity > MANAGEMENT_TIMEOUT
 
 async def safe_edit_message(query: CallbackQuery, text: str = None, reply_markup=None, parse_mode: str = None) -> bool:
     """تحرير الرسالة بشكل آمن مع استعادة الأخطاء"""
@@ -83,13 +98,23 @@ async def safe_edit_message(query: CallbackQuery, text: str = None, reply_markup
         loge.error(f"TelegramError in safe_edit_message: {e}")
         return False
 
-async def handle_management_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة انتهاء مدة جلسة الإدارة"""
+async def handle_management_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """معالجة انتهاء مدة جلسة الإدارة - نسخة محسنة"""
     if check_management_timeout(context):
         clean_management_state(context)
-        if update.callback_query:
-            await update.callback_query.answer("انتهت مدة الجلسة", show_alert=True)
-            await safe_edit_message(update.callback_query, "⏰ انتهت مدة الجلسة. يرجى البدء من جديد.")
+        try:
+            if update.callback_query:
+                await update.callback_query.answer("انتهت مدة الجلسة", show_alert=True)
+                await safe_edit_message(update.callback_query, 
+                    "⏰ انتهت مدة الجلسة بسبب عدم النشاط.\n\n"
+                    "يرجى استخدام /open أو /myportfolio للبدء من جديد.")
+            elif update.message:
+                await update.message.reply_text(
+                    "⏰ انتهت مدة الجلسة بسبب عدم النشاط.\n\n"
+                    "يرجى استخدام /open أو /myportfolio للبدء من جديد."
+                )
+        except Exception as e:
+            log.error(f"Error handling timeout: {e}")
         return True
     return False
 
@@ -157,37 +182,58 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
 @uow_transaction
 @require_active_user
 async def navigate_open_positions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """معالجة التنقل بين المراكز المفتوحة"""
+    """معالجة التنقل بين المراكز المفتوحة - الإصدار المصحح"""
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
+    else:
+        # إذا كان الأمر من رسالة مباشرة (مثل /open أو /myportfolio)
+        init_management_session(context)
     
+    # تحديث النشاط في جميع الحالات
+    update_management_activity(context)
+    
+    # التحقق من المهلة بعد تحديث النشاط
     if await handle_management_timeout(update, context):
         return
-        
-    update_management_activity(context)
-    parts = parse_cq_parts(query.data)
+    
+    parts = parse_cq_parts(query.data) if query else []
     page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
     
     try:
         trade_service = get_service(context, "trade_service", TradeService)
         price_service = get_service(context, "price_service", PriceService)
-        items = trade_service.get_open_positions_for_user(db_session, str(query.from_user.id))
+        items = trade_service.get_open_positions_for_user(db_session, str(update.effective_user.id))
         
         if not items:
-            await safe_edit_message(query, text="✅ لا توجد مراكز مفتوحة.")
+            if query:
+                await safe_edit_message(query, text="✅ لا توجد مراكز مفتوحة حالياً.")
+            else:
+                await update.message.reply_text("✅ لا توجد مراكز مفتوحة حالياً.")
             return
             
         keyboard = await build_open_recs_keyboard(items, current_page=page, price_service=price_service)
-        await safe_edit_message(
-            query, 
-            text="<b>📊 المراكز المفتوحة</b>\nاختر مركزاً للإدارة:", 
-            reply_markup=keyboard, 
-            parse_mode=ParseMode.HTML
-        )
+        
+        if query:
+            await safe_edit_message(
+                query, 
+                text="<b>📊 المراكز المفتوحة</b>\nاختر مركزاً للإدارة:", 
+                reply_markup=keyboard, 
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await update.message.reply_html(
+                "<b>📊 المراكز المفتوحة</b>\nاختر مركزاً للإدارة:",
+                reply_markup=keyboard
+            )
         
     except Exception as e:
         loge.error(f"Error in open positions navigation: {e}")
-        await safe_edit_message(query, text="❌ خطأ في تحميل المراكز المفتوحة.")
+        error_msg = "❌ خطأ في تحميل المراكز المفتوحة."
+        if query:
+            await safe_edit_message(query, text=error_msg)
+        else:
+            await update.message.reply_text(error_msg)
 
 @uow_transaction
 @require_active_user
@@ -498,8 +544,66 @@ async def partial_close_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     return ConversationHandler.END
 
+# --- معالجات الأوامر المباشرة المفقودة ---
+
+@uow_transaction
+@require_active_user
+async def myportfolio_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """معالج أمر /myportfolio المباشر"""
+    # تهيئة جلسة الإدارة
+    context.user_data[LAST_ACTIVITY_KEY] = time.time()
+    context.user_data.pop(AWAITING_INPUT_KEY, None)
+    
+    try:
+        trade_service = get_service(context, "trade_service", TradeService)
+        price_service = get_service(context, "price_service", PriceService)
+        items = trade_service.get_open_positions_for_user(db_session, str(update.effective_user.id))
+        
+        if not items:
+            await update.message.reply_text("✅ لا توجد مراكز مفتوحة حالياً.")
+            return
+            
+        keyboard = await build_open_recs_keyboard(items, current_page=1, price_service=price_service)
+        
+        await update.message.reply_html(
+            "<b>📊 المراكز المفتوحة</b>\nاختر مركزاً للإدارة:",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        loge.error(f"Error in myportfolio command: {e}")
+        await update.message.reply_text("❌ خطأ في تحميل المراكز المفتوحة.")
+
+@uow_transaction
+@require_active_user
+async def open_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """معالج أمر /open المباشر"""
+    # تهيئة جلسة الإدارة
+    context.user_data[LAST_ACTIVITY_KEY] = time.time()
+    context.user_data.pop(AWAITING_INPUT_KEY, None)
+    
+    try:
+        trade_service = get_service(context, "trade_service", TradeService)
+        price_service = get_service(context, "price_service", PriceService)
+        items = trade_service.get_open_positions_for_user(db_session, str(update.effective_user.id))
+        
+        if not items:
+            await update.message.reply_text("✅ لا توجد مراكز مفتوحة حالياً.")
+            return
+            
+        keyboard = await build_open_recs_keyboard(items, current_page=1, price_service=price_service)
+        
+        await update.message.reply_html(
+            "<b>📊 المراكز المفتوحة</b>\nاختر مركزاً للإدارة:",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        loge.error(f"Error in open command: {e}")
+        await update.message.reply_text("❌ خطأ في تحميل المراكز المفتوحة.")
+
 def register_management_handlers(app: Application):
-    """تسجيل معالجات الإدارة"""
+    """تسجيل معالجات الإدارة - الإصدار المصحح"""
     ns_rec = CallbackNamespace.RECOMMENDATION.value
     ns_nav = CallbackNamespace.NAVIGATION.value
     ns_pos = CallbackNamespace.POSITION.value
@@ -509,6 +613,10 @@ def register_management_handlers(app: Application):
     act_st = CallbackAction.STRATEGY.value
     act_pt = CallbackAction.PARTIAL.value
 
+    # ✅ الإصلاح: إضافة معالجات الأوامر المباشرة
+    app.add_handler(CommandHandler("myportfolio", myportfolio_command_handler))
+    app.add_handler(CommandHandler("open", open_command_handler))
+    
     # معالجات التنقل والعرض
     app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{ns_nav}:{act_nv}:"))
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^(?:{ns_pos}:{act_sh}:|{ns_rec}:back_to_main:)"))
