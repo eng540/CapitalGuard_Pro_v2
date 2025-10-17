@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.2 - Production Ready)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.3 - Production Fixed)
 import logging
 import uuid
 from decimal import Decimal, InvalidOperation
@@ -77,17 +77,11 @@ async def start_text_input_entrypoint(update: Update, context: ContextTypes.DEFA
     clean_creation_state(context)
     command = (update.message.text or "").lstrip('/').split()[0].lower()
     context.user_data[DRAFT_KEY] = {'input_mode': command}
-    
-    if command == 'rec':
-        prompt = "⚡️ وضع الأمر السريع\n\nأدخل توصيتك الكاملة (مثال: BTCUSDT LONG 59000 58000 60000@50 62000@50)"
-    else:
-        prompt = "📋 وضع المحرر النصي\n\nالصق توصيتك بتنسيق مفتاح:قيمة"
-    
+    prompt = "⚡️ Quick Command Mode\n\nEnter your full recommendation." if command == 'rec' else "📋 Text Editor Mode\n\nPaste your recommendation."
     await update.message.reply_text(prompt)
     return AWAIT_TEXT_INPUT
 
 # --- State Handlers ---
-
 @uow_transaction
 @require_active_user
 @require_analyst_user
@@ -101,7 +95,7 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
         trade_service = get_service(context, "trade_service", TradeService)
         recent_assets = trade_service.get_recent_assets_for_user(db_session, str(query.from_user.id))
         await query.edit_message_text(
-            "<b>الخطوة 1/4: الأصل</b>\nاختر أو اكتب رمز الأصل (مثال: BTCUSDT).",
+            "<b>Step 1/4: Asset</b>\nSelect or type the asset symbol (e.g., BTCUSDT).",
             reply_markup=asset_choice_keyboard(recent_assets),
             parse_mode=ParseMode.HTML,
         )
@@ -109,12 +103,7 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
         return AWAITING_ASSET
         
     context.user_data[DRAFT_KEY] = {'input_mode': 'rec' if choice == 'quick' else 'editor'}
-    
-    if choice == "quick":
-        prompt = "⚡️ وضع الأمر السريع\n\nأدخل توصيتك الكاملة (مثال: BTCUSDT LONG 59000 58000 60000@50 62000@50)"
-    else:
-        prompt = "📋 وضع المحرر النصي\n\nالصق توصيتك بتنسيق مفتاح:قيمة"
-        
+    prompt = "⚡️ Quick Command Mode\n\nEnter your full recommendation." if choice == "quick" else "📋 Text Editor Mode\n\nPaste your recommendation."
     await query.edit_message_text(prompt)
     return AWAIT_TEXT_INPUT
 
@@ -123,18 +112,12 @@ async def received_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     draft = context.user_data.get(DRAFT_KEY, {})
     mode = draft.get('input_mode')
     text = update.message.text
-    
-    if mode == 'rec':
-        data = parse_quick_command(text)
-    else:
-        data = parse_text_editor(text)
-        
+    data = parse_quick_command(text) if mode == 'rec' else parse_text_editor(text)
     if data:
         draft.update(data)
         await show_review_card(update, context)
         return AWAITING_REVIEW
-        
-    await update.message.reply_text("❌ تنسيق غير صالح. يرجى المحاولة مرة أخرى أو /cancel.")
+    await update.message.reply_text("❌ Invalid format. Please try again or /cancel.")
     return AWAIT_TEXT_INPUT
 
 async def asset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -147,22 +130,21 @@ async def asset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await query.answer()
         asset = query.data.split("_", 1)[1]
         if asset.lower() == "new":
-            await query.edit_message_text("✍️ الرجاء كتابة رمز الأصل الجديد.")
+            await query.edit_message_text("✍️ Please type the new asset symbol.")
             return AWAITING_ASSET
     else:
         asset = (update.message.text or "").strip().upper()
 
-    # التحقق من صحة الرمز
     market_data_service = get_service(context, "market_data_service", MarketDataService)
     if not market_data_service.is_valid_symbol(asset, draft.get("market", "Futures")):
-        await message.reply_text(f"❌ الرمز '<b>{asset}</b>' غير صالح. يرجى المحاولة مرة أخرى.", parse_mode=ParseMode.HTML)
+        await message.reply_text(f"❌ Symbol '<b>{asset}</b>' is not valid. Please try again.", parse_mode=ParseMode.HTML)
         return AWAITING_ASSET
 
     draft['asset'] = asset
     draft['market'] = draft.get('market', 'Futures')
     
     await message.reply_html(
-        f"✅ الأصل: <b>{asset}</b>\n\n<b>الخطوة 2/4: الاتجاه</b>\nاختر اتجاه التداول.",
+        f"✅ Asset: <b>{asset}</b>\n\n<b>Step 2/4: Side</b>\nChoose the trade direction.",
         reply_markup=side_market_keyboard(draft['market'])
     )
     return AWAITING_SIDE
@@ -177,12 +159,12 @@ async def side_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if action in ("LONG", "SHORT"):
         draft['side'] = action
         await query.edit_message_text(
-            f"✅ الاتجاه: <b>{action}</b>\n\n<b>الخطوة 3/4: نوع الطلب</b>\nاختر نوع أمر الدخول.",
+            f"✅ Side: <b>{action}</b>\n\n<b>Step 3/4: Order Type</b>\nChoose the entry order type.",
             reply_markup=order_type_keyboard(),
             parse_mode=ParseMode.HTML
         )
         return AWAITING_TYPE
-    elif action == "menu": # تغيير السوق
+    elif action == "menu": # change_market_menu
         await query.edit_message_reply_markup(reply_markup=market_choice_keyboard())
         return AWAITING_SIDE
 
@@ -209,12 +191,12 @@ async def type_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     order_type = query.data.split("_")[1]
     draft['order_type'] = order_type
     
-    if order_type == 'MARKET':
-        prompt = "<b>الخطوة 4/4: الأسعار</b>\nأدخل: <code>وقف الخسارة الأهداف...</code>\nمثال: <code>58000 60000@50 62000@50</code>"
-    else:
-        prompt = "<b>الخطوة 4/4: الأسعار</b>\nأدخل: <code>سعر الدخول وقف الخسارة الأهداف...</code>\nمثال: <code>59000 58000 60000@50 62000@50</code>"
-        
-    await query.edit_message_text(f"✅ نوع الطلب: <b>{order_type}</b>\n\n{prompt}", parse_mode=ParseMode.HTML)
+    prompt = (
+        "<b>Step 4/4: Prices</b>\nEnter: <code>STOP TARGETS...</code>\nEx: <code>58k 60k@50 62k@50</code>"
+        if order_type == 'MARKET' else
+        "<b>Step 4/4: Prices</b>\nEnter: <code>ENTRY STOP TARGETS...</code>\nEx: <code>59k 58k 60k@50 62k@50</code>"
+    )
+    await query.edit_message_text(f"✅ Order Type: <b>{order_type}</b>\n\n{prompt}", parse_mode=ParseMode.HTML)
     return AWAITING_PRICES
 
 async def prices_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -226,36 +208,28 @@ async def prices_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         trade_service = get_service(context, "trade_service", TradeService)
         
         if draft["order_type"] == 'MARKET':
-            if len(tokens) < 2:
-                raise ValueError("تنسيق السوق: وقف الخسارة ثم الأهداف...")
-                
+            if len(tokens) < 2: raise ValueError("MARKET format: STOP then TARGETS...")
             stop_loss, targets = parse_number(tokens[0]), parse_targets_list(tokens[1:])
             price_service = get_service(context, "price_service", PriceService)
             live_price_float = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"), True)
-            
-            if not live_price_float:
-                raise ValueError("تعذر جلب سعر السوق الحالي.")
-                
+            if not live_price_float: raise ValueError("Could not fetch live market price.")
             live_price = Decimal(str(live_price_float))
             trade_service._validate_recommendation_data(draft["side"], live_price, stop_loss, targets)
             draft.update({"entry": live_price, "stop_loss": stop_loss, "targets": targets})
         else:
-            if len(tokens) < 3:
-                raise ValueError("تنسيق LIMIT/STOP: سعر الدخول، وقف الخسارة، ثم الأهداف...")
-                
+            if len(tokens) < 3: raise ValueError("LIMIT/STOP format: ENTRY, STOP, then TARGETS...")
             entry, stop_loss = parse_number(tokens[0]), parse_number(tokens[1])
             targets = parse_targets_list(tokens[2:])
             trade_service._validate_recommendation_data(draft["side"], entry, stop_loss, targets)
             draft.update({"entry": entry, "stop_loss": stop_loss, "targets": targets})
             
-        if not draft.get("targets"):
-            raise ValueError("لم يتم تحليل أي أهداف صالحة.")
+        if not draft.get("targets"): raise ValueError("No valid targets parsed.")
         
         await show_review_card(update, context)
         return AWAITING_REVIEW
         
     except (ValueError, InvalidOperation, TypeError) as e:
-        await update.message.reply_text(f"⚠️ {str(e)}\nيرجى المحاولة مرة أخرى.")
+        await update.message.reply_text(f"⚠️ {str(e)}\nPlease try again.")
         return AWAITING_PRICES
 
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -285,7 +259,7 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
     token_in_callback = callback_data.get('params', [None])[0]
 
     if not draft or draft.get('token') != token_in_callback:
-        await query.edit_message_text("❌ إجراء قديم. يرجى بدء توصية جديدة باستخدام /newrec.")
+        await query.edit_message_text("❌ Stale action. Please start a new recommendation with /newrec.")
         clean_creation_state(context)
         return ConversationHandler.END
 
@@ -299,22 +273,20 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
                 db_session=db_session, 
                 **draft
             )
-            
             if report.get("success"):
                 await query.edit_message_text(
-                    f"✅ تم نشر التوصية #{rec.id} لـ <b>{rec.asset.value}</b>.", 
+                    f"✅ Recommendation #{rec.id} for <b>{rec.asset.value}</b> published.", 
                     parse_mode=ParseMode.HTML
                 )
             else:
-                failed_reason = report.get('failed', [{}])[0].get('reason', 'غير معروف')
                 await query.edit_message_text(
-                    f"⚠️ تم حفظ التوصية #{rec.id}، لكن فشل النشر: {failed_reason}"
+                    f"⚠️ Rec #{rec.id} saved, but publishing failed: {report.get('failed', [{}])[0].get('reason', 'Unknown')}"
                 )
         except Exception as e:
-            log.exception("فشل معالج النشر")
-            error_msg = f"❌ حدث خطأ حرج: {e}"
+            log.exception("Publish handler failed")
+            error_msg = f"❌ A critical error occurred: {e}"
             if rec:
-                error_msg = f"❌ فشل نشر التوصية #{rec.id}: {e}"
+                error_msg = f"❌ Failed to publish recommendation #{rec.id}: {e}"
             await query.edit_message_text(error_msg)
         finally:
             clean_creation_state(context)
@@ -322,7 +294,7 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
     
     elif action == "add_notes":
         await query.edit_message_text(
-            f"{query.message.text}\n\n✍️ الرجاء إرسال ملاحظاتك لهذه التوصية.", 
+            f"{query.message.text}\n\n✍️ Please send your notes for this recommendation.", 
             parse_mode=ParseMode.HTML
         )
         return AWAITING_NOTES
@@ -334,11 +306,11 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
             ch.telegram_channel_id for ch in all_channels if ch.is_active
         })
         keyboard = build_channel_picker_keyboard(draft['token'], all_channels, selected_ids)
-        await query.edit_message_text("📢 اختر القنوات للنشر:", reply_markup=keyboard)
+        await query.edit_message_text("📢 Select channels for publication:", reply_markup=keyboard)
         return AWAITING_CHANNELS
 
     elif action == "cancel":
-        await query.edit_message_text("تم الإلغاء.")
+        await query.edit_message_text("Operation cancelled.")
         clean_creation_state(context)
         return ConversationHandler.END
 
@@ -364,7 +336,7 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
     token_in_callback = params[0] if params else None
 
     if not draft or draft.get('token') != token_in_callback:
-        await query.edit_message_text("❌ إجراء قديم. يرجى بدء توصية جديدة باستخدام /newrec.")
+        await query.edit_message_text("❌ Stale action. Please start a new recommendation with /newrec.")
         clean_creation_state(context)
         return ConversationHandler.END
 
@@ -392,13 +364,13 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
         return AWAITING_CHANNELS
 
 async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """معالجة إلغاء العملية"""
+    """معالجة الإلغاء"""
     clean_creation_state(context)
-    await update.message.reply_text("تم إلغاء العملية.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("Operation cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 def register_conversation_handlers(app: Application):
-    """تسجيل معالجات المحادثة"""
+    """تسجيل معالجات المحادثة مع الإصلاحات"""
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("newrec", newrec_entrypoint),
@@ -426,6 +398,6 @@ def register_conversation_handlers(app: Application):
         name="recommendation_creation_v3.5",
         per_user=True,
         per_chat=True,
-        per_message=True,  # ✅ إصلاح التحذير
+        per_message=False,  # ✅ الإصلاح: تغيير من True إلى False
     )
     app.add_handler(conv_handler)
