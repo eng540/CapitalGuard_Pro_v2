@@ -1,5 +1,6 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.1 - Full Feature Conversation)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.1 - Fixed Version)
 import logging
+import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Any, Set
 
@@ -36,9 +37,23 @@ log = logging.getLogger(__name__)
 
 # --- State Management Keys ---
 DRAFT_KEY = "rec_creation_draft"
+CHANNEL_PICKER_KEY = "channel_picker_selection"  # ADDED MISSING CONSTANT
 
 def clean_creation_state(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop(DRAFT_KEY, None)
+    context.user_data.pop(CHANNEL_PICKER_KEY, None)  # Clean channel picker state too
+
+# --- Simple Callback Parser (REPLACED CallbackBuilder) ---
+def parse_callback_data(callback_data: str) -> Dict[str, Any]:
+    """Parse callback data in format 'prefix:action:param1:param2:...'"""
+    if not callback_data or ':' not in callback_data:
+        return {"action": callback_data, "params": []}
+    
+    parts = callback_data.split(':')
+    return {
+        "action": parts[1] if len(parts) > 1 else "",
+        "params": parts[2:] if len(parts) > 2 else []
+    }
 
 # --- Entry Points ---
 @require_active_user
@@ -209,7 +224,7 @@ async def prices_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     draft = context.user_data[DRAFT_KEY]
     if not draft.get("token"):
-        draft["token"] = str(uuid.uuid4())[:8]
+        draft["token"] = str(uuid.uuid4())[:8]  # FIXED: uuid now imported
     
     price_service = get_service(context, "price_service", PriceService)
     preview_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"))
@@ -226,7 +241,8 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
     await query.answer()
     draft = context.user_data.get(DRAFT_KEY)
     
-    callback_data = CallbackBuilder.parse(query.data)
+    # FIXED: Replaced CallbackBuilder with parse_callback_data
+    callback_data = parse_callback_data(query.data)
     action = callback_data.get('action')
     token_in_callback = callback_data.get('params', [None])[0]
 
@@ -237,28 +253,47 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
 
     if action == "publish":
         trade_service = get_service(context, "trade_service", TradeService)
+        rec = None
         try:
-            draft['target_channel_ids'] = context.user_data.get(CHANNEL_PICKER_KEY)
-            rec, report = await trade_service.create_and_publish_recommendation_async(user_id=str(query.from_user.id), db_session=db_session, **draft)
+            # FIXED: Use the defined CHANNEL_PICKER_KEY constant
+            draft['target_channel_ids'] = context.user_data.get(CHANNEL_PICKER_KEY, set())
+            rec, report = await trade_service.create_and_publish_recommendation_async(
+                user_id=str(query.from_user.id), 
+                db_session=db_session, 
+                **draft
+            )
             if report.get("success"):
-                await query.edit_message_text(f"✅ Recommendation #{rec.id} for <b>{rec.asset.value}</b> published.", parse_mode=ParseMode.HTML)
+                await query.edit_message_text(
+                    f"✅ Recommendation #{rec.id} for <b>{rec.asset.value}</b> published.", 
+                    parse_mode=ParseMode.HTML
+                )
             else:
-                await query.edit_message_text(f"⚠️ Rec #{rec.id} saved, but publishing failed: {report.get('failed', [{}])[0].get('reason', 'Unknown')}")
+                await query.edit_message_text(
+                    f"⚠️ Rec #{rec.id} saved, but publishing failed: {report.get('failed', [{}])[0].get('reason', 'Unknown')}"
+                )
         except Exception as e:
             log.exception("Publish handler failed")
-            await query.edit_message_text(f"❌ A critical error occurred: {e}")
+            error_msg = f"❌ A critical error occurred: {e}"
+            if rec:
+                error_msg = f"❌ Failed to publish recommendation #{rec.id}: {e}"
+            await query.edit_message_text(error_msg)
         finally:
             clean_creation_state(context)
         return ConversationHandler.END
     
     elif action == "add_notes":
-        await query.edit_message_text(f"{query.message.text}\n\n✍️ Please send your notes for this recommendation.", parse_mode=ParseMode.HTML)
+        await query.edit_message_text(
+            f"{query.message.text}\n\n✍️ Please send your notes for this recommendation.", 
+            parse_mode=ParseMode.HTML
+        )
         return AWAITING_NOTES
 
     elif action == "choose_channels":
         user = UserRepository(db_session).find_by_telegram_id(query.from_user.id)
         all_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False)
-        selected_ids: Set[int] = context.user_data.setdefault(CHANNEL_PICKER_KEY, {ch.telegram_channel_id for ch in all_channels if ch.is_active})
+        selected_ids = context.user_data.setdefault(CHANNEL_PICKER_KEY, {
+            ch.telegram_channel_id for ch in all_channels if ch.is_active
+        })
         keyboard = build_channel_picker_keyboard(draft['token'], all_channels, selected_ids)
         await query.edit_message_text("📢 Select channels for publication:", reply_markup=keyboard)
         return AWAITING_CHANNELS
@@ -282,7 +317,8 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     draft = context.user_data.get(DRAFT_KEY)
     
-    callback_data = CallbackBuilder.parse(query.data)
+    # FIXED: Replaced CallbackBuilder with parse_callback_data
+    callback_data = parse_callback_data(query.data)
     action = callback_data.get('action')
     params = callback_data.get('params', [])
     token_in_callback = params[0] if params else None
@@ -297,16 +333,16 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
         return AWAITING_REVIEW
 
     if action == "confirm":
-        # This is now handled by the main review_handler with action="publish"
-        # We just need to return to the review card.
         await show_review_card(update, context)
         return AWAITING_REVIEW
 
     if action == "toggle":
-        selected_ids: Set[int] = context.user_data.get(CHANNEL_PICKER_KEY, set())
+        selected_ids = context.user_data.get(CHANNEL_PICKER_KEY, set())
         channel_id, page = int(params[1]), int(params[2])
-        if channel_id in selected_ids: selected_ids.remove(channel_id)
-        else: selected_ids.add(channel_id)
+        if channel_id in selected_ids: 
+            selected_ids.remove(channel_id)
+        else: 
+            selected_ids.add(channel_id)
         context.user_data[CHANNEL_PICKER_KEY] = selected_ids
         
         user = UserRepository(db_session).find_by_telegram_id(query.from_user.id)
