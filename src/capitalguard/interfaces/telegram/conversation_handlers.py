@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.4 - Production Ready)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.5 - Production Fixed)
 import logging
 import uuid
 import time
@@ -19,7 +19,7 @@ from .ui_texts import build_review_text_with_price
 from .keyboards import (
     main_creation_keyboard, asset_choice_keyboard, side_market_keyboard,
     market_choice_keyboard, order_type_keyboard, review_final_keyboard,
-    build_channel_picker_keyboard
+    build_channel_picker_keyboard, CallbackBuilder, CallbackNamespace, CallbackAction
 )
 from .auth import require_active_user, require_analyst_user
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
@@ -399,15 +399,13 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
         return ConversationHandler.END
 
     try:
-        parts = query.data.split(':')
-        if len(parts) < 3:
-            await safe_edit_message(query, "❌ تنسيق غير صالح.")
-            return ConversationHandler.END
-            
-        action = parts[1]
-        token_in_callback = parts[2]
+        # استخدام CallbackBuilder للتحليل المتسق
+        callback_data = CallbackBuilder.parse(query.data)
+        action = callback_data.get('action')
+        params = callback_data.get('params', [])
+        token_in_callback = params[0] if params else None
 
-        if draft.get('token') != token_in_callback:
+        if not token_in_callback or draft.get('token') != token_in_callback:
             await safe_edit_message(query, "❌ جلسة منتهية الصلاحية.")
             clean_creation_state(context)
             return ConversationHandler.END
@@ -488,7 +486,7 @@ async def notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 @require_active_user
 @require_analyst_user
 async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """معالجة اختيار القنوات"""
+    """معالجة اختيار القنوات - الإصدار المصحح"""
     query = update.callback_query
     await query.answer()
     
@@ -503,15 +501,13 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
 
     try:
-        parts = query.data.split(':')
-        if len(parts) < 3:
-            await safe_edit_message(query, "❌ تنسيق بيانات غير صالح.")
-            return AWAITING_CHANNELS
-            
-        action = parts[1]
-        token_in_callback = parts[2]
+        # استخدام CallbackBuilder للتحليل المتسق
+        callback_data = CallbackBuilder.parse(query.data)
+        action = callback_data.get('action')
+        params = callback_data.get('params', [])
+        token_in_callback = params[0] if params else None
 
-        if draft.get('token') != token_in_callback:
+        if not token_in_callback or draft.get('token') != token_in_callback:
             await safe_edit_message(query, "❌ جلسة منتهية. يرجى البدء من جديد.")
             clean_creation_state(context)
             return ConversationHandler.END
@@ -549,12 +545,12 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
             return ConversationHandler.END
 
         elif action == "toggle":
-            if len(parts) < 5:
+            if len(params) < 3:
                 await query.answer("❌ معرّف قناة غير صالح", show_alert=True)
                 return AWAITING_CHANNELS
             
-            channel_id = int(parts[3])
-            page = int(parts[4]) if len(parts) > 4 else 1
+            channel_id = int(params[1])
+            page = int(params[2]) if len(params) > 2 else 1
             
             # تبديل اختيار القناة
             selected_ids = context.user_data.get(CHANNEL_PICKER_KEY, set())
