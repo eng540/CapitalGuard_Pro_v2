@@ -1,10 +1,14 @@
 # src/capitalguard/interfaces/telegram/session_fix.py
 """
-إصلاح جلسات المستخدم ومنع انتهاء المهلة - الإصدار النهائي الكامل
+إصلاح جلسات المستخدم ومنع انتهاء المهلة - الإصدار النهائي مع إصلاحات الـ Async
 """
 
 import logging
 import time
+import inspect
+from functools import wraps
+from typing import Callable
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -42,7 +46,7 @@ async def reset_user_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return True
         
     except Exception as e:
-        log.error(f"Error resetting session for user {update.effective_user.id}: {e}")
+        log.error(f"Error resetting session: {e}")
         return False
 
 async def update_session_activity(context: ContextTypes.DEFAULT_TYPE):
@@ -63,9 +67,16 @@ def is_session_active(context: ContextTypes.DEFAULT_TYPE, timeout_minutes=120):
     except Exception:
         return False
 
-async def safe_command_handler(handler_func):
-    """غلاف آمن للأوامر يمنع انتهاء الجلسة"""
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+def safe_command_handler(handler_func: Callable) -> Callable:
+    """
+    غلاف آمن للأوامر يمنع انتهاء الجلسة.
+    الإصدار المصحح: يتعامل بشكل صحيح مع الدوال غير المتزامنة.
+    """
+    if not inspect.iscoroutinefunction(handler_func):
+        raise TypeError("@safe_command_handler can only be used with async functions")
+    
+    @wraps(handler_func)
+    async def async_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         try:
             # تحديث النشاط أولاً
             await update_session_activity(context)
@@ -80,9 +91,29 @@ async def safe_command_handler(handler_func):
             log.error(f"Error in safe_command_handler: {e}")
             if update.message:
                 await update.message.reply_text("❌ حدث خطأ في النظام. يرجى المحاولة مرة أخرى.")
-            return
+            return None
+    
+    return async_wrapper
+
+def safe_conversation_handler(handler_func: Callable) -> Callable:
+    """
+    غلاف آمن لمعالجات المحادثات.
+    الإصدار المصحح: يتعامل بشكل صحيح مع الدوال غير المتزامنة.
+    """
+    if not inspect.iscoroutinefunction(handler_func):
+        raise TypeError("@safe_conversation_handler can only be used with async functions")
+    
+    @wraps(handler_func)
+    async def async_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        try:
+            # تحديث النشاط
+            await update_session_activity(context)
+            return await handler_func(update, context, *args, **kwargs)
+        except Exception as e:
+            log.error(f"Error in safe_conversation_handler: {e}")
+            return await handler_func(update, context, *args, **kwargs)
             
-    return wrapper
+    return async_wrapper
 
 async def check_and_reset_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """التحقق من حالة الجلسة وإعادة تعيينها إذا انتهت"""
@@ -102,52 +133,4 @@ def get_session_duration(context: ContextTypes.DEFAULT_TYPE):
         session_start = context.user_data.get('session_start', time.time())
         return time.time() - session_start
     except Exception:
-        return 0
-
-async def safe_conversation_handler(handler_func):
-    """غلاف آمن لمعالجات المحادثات"""
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        try:
-            # التحقق من الجلسة وتحديث النشاط
-            session_ok = await check_and_reset_session(update, context)
-            if not session_ok:
-                if update.callback_query:
-                    await update.callback_query.answer("تم إعادة تعيين الجلسة بسبب عدم النشاط", show_alert=True)
-                return await handler_func(update, context, *args, **kwargs)
-                
-            await update_session_activity(context)
-            return await handler_func(update, context, *args, **kwargs)
-        except Exception as e:
-            log.error(f"Error in safe_conversation_handler: {e}")
-            return await handler_func(update, context, *args, **kwargs)
-            
-    return wrapper
-
-def cleanup_expired_sessions(context: ContextTypes.DEFAULT_TYPE, timeout_minutes=120):
-    """تنظيف الجلسات المنتهية (للاستخدام في المهام الدورية)"""
-    try:
-        cleaned_count = 0
-        # هذه دالة مساعدة يمكن استخدامها في مهام تنظيف دورية
-        # في نظام حقيقي، قد تحتاج لتكرار على جميع جلسات المستخدمين
-        if not is_session_active(context, timeout_minutes):
-            # تنظيف جلسة المستخدم الحالي
-            keys_to_remove = [
-                'rec_creation_draft', 
-                'channel_picker_selection',
-                'last_activity',
-                'db_user_id',
-                'conversation_started',
-                'selected_channels',
-                'creation_method',
-                'current_page',
-                'asset_search_term',
-                'last_price_check'
-            ]
-            for key in keys_to_remove:
-                if key in context.user_data:
-                    del context.user_data[key]
-                    cleaned_count += 1
-        return cleaned_count
-    except Exception as e:
-        log.error(f"Error cleaning expired sessions: {e}")
         return 0
