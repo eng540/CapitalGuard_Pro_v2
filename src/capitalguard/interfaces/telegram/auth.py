@@ -1,13 +1,13 @@
-# src/capitalguard/interfaces/telegram/auth.py (v25.9 - ASYNC FIXED)
+# src/capitalguard/interfaces/telegram/auth.py (v25.7 - FINAL & STATE-SAFE)
 """
-مصادقة والتفويض والديكوراتورات والمساعدات لمعالجات Telegram.
-هذا الإصدار يصلح مشكلة 'coroutine' object is not callable بشكل نهائي.
+Authentication and authorization decorators and helpers for Telegram handlers.
+This version implements a stateless approach to handling user objects to prevent
+DetachedInstanceError after persistence rehydration.
 """
 
 import logging
-import inspect
 from functools import wraps
-from typing import Callable, Any
+from typing import Callable
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -21,7 +21,8 @@ log = logging.getLogger(__name__)
 
 def get_db_user(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) -> User:
     """
-    مساعد آمن للحالة لاسترداد كائن مستخدم باستخدام جلسة حية مقدمة.
+    A state-safe helper to retrieve a user object using a provided live session.
+    It only caches the user's DB ID in the context for the duration of the update.
     """
     user = update.effective_user
     if not user:
@@ -46,185 +47,84 @@ def get_db_user(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session) 
 
 def require_active_user(func: Callable) -> Callable:
     """
-    ديكوراتور لـ CommandHandlers البسيطة. يتحقق مما إذا كان للمستخدم حساب نشط.
-    الإصدار المصحح: يتعامل بشكل صحيح مع الدوال المتزامنة وغير المتزامنة.
+    Decorator for simple CommandHandlers. Checks if the user has an active account.
+    It MUST be placed below @uow_transaction.
     """
     @wraps(func)
-    def wrapper(*args, **kwargs):
-        # البحث عن update و context في الوسائط
-        update = None
-        context = None
-        db_session = None
-        
-        for arg in args:
-            if hasattr(arg, 'effective_user'):  # Update object
-                update = arg
-            elif hasattr(arg, 'bot'):  # Context object
-                context = arg
-        
-        # الحصول على db_session من kwargs
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         db_session = kwargs.get('db_session')
         if not db_session:
             log.critical("FATAL: @require_active_user used without @uow_transaction. Cannot get a DB session.")
-            if update and update.message:
-                if inspect.iscoroutinefunction(func):
-                    async def async_error():
-                        await update.message.reply_html("🚫 <b>System Error</b>\nDatabase session not available.")
-                    return async_error()
-                else:
-                    update.message.reply_html("🚫 <b>System Error</b>\nDatabase session not available.")
-                    return None
-            return None
+            raise RuntimeError("@require_active_user must be used with @uow_transaction.")
 
         db_user = get_db_user(update, context, db_session)
         
         if not db_user or not db_user.is_active:
-            log.warning(f"Blocked access for inactive user {update.effective_user.id if update else 'unknown'}.")
+            log.warning(f"Blocked access for inactive user {update.effective_user.id}.")
             message = "🚫 <b>Access Denied</b>\nYour account is not active. Please contact support."
-            
-            if update:
-                if update.message:
-                    if inspect.iscoroutinefunction(func):
-                        async def async_reply():
-                            await update.message.reply_html(message)
-                        return async_reply()
-                    else:
-                        update.message.reply_html(message)
-                elif update.callback_query:
-                    if inspect.iscoroutinefunction(func):
-                        async def async_answer():
-                            await update.callback_query.answer("🚫 Access Denied: Account not active.", show_alert=True)
-                        return async_answer()
-                    else:
-                        context.bot.answer_callback_query(
-                            update.callback_query.id, 
-                            "🚫 Access Denied: Account not active.", 
-                            show_alert=True
-                        )
-            return None
+            if update.message:
+                await update.message.reply_html(message)
+            elif update.callback_query:
+                await update.callback_query.answer("🚫 Access Denied: Account not active.", show_alert=True)
+            return
         
         kwargs['db_user'] = db_user
-        
-        # استدعاء الدالة الأصلية
-        if inspect.iscoroutinefunction(func):
-            async def async_exec():
-                return await func(*args, **kwargs)
-            return async_exec()
-        else:
-            return func(*args, **kwargs)
-    
+        return await func(update, context, *args, **kwargs)
     return wrapper
 
 def require_analyst_user(func: Callable) -> Callable:
     """
-    ديكوراتور يتحقق مما إذا كان المستخدم لديه دور ANALYST.
-    الإصدار المصحح: يتعامل بشكل صحيح مع الدوال المتزامنة وغير المتزامنة.
+    Decorator that checks if the user has the ANALYST role.
+    Must be placed below @require_active_user.
     """
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         db_user = kwargs.get('db_user')
         
         if not db_user or db_user.user_type != UserType.ANALYST:
-            # البحث عن update و context في الوسائط
-            update = None
-            for arg in args:
-                if hasattr(arg, 'effective_user'):  # Update object
-                    update = arg
-                    break
-            
-            log.warning(f"Blocked analyst-only command for non-analyst user {update.effective_user.id if update else 'unknown'}.")
+            log.warning(f"Blocked analyst-only command for non-analyst user {update.effective_user.id}.")
             message = "🚫 <b>Permission Denied</b>\nThis command is available for analysts only."
+            if update.message:
+                await update.message.reply_html(message)
+            elif update.callback_query:
+                await update.callback_query.answer("🚫 Permission Denied: Analysts only.", show_alert=True)
+            return
             
-            if update:
-                if update.message:
-                    if inspect.iscoroutinefunction(func):
-                        async def async_reply():
-                            await update.message.reply_html(message)
-                        return async_reply()
-                    else:
-                        update.message.reply_html(message)
-                elif update.callback_query:
-                    if inspect.iscoroutinefunction(func):
-                        async def async_answer():
-                            await update.callback_query.answer("🚫 Permission Denied: Analysts only.", show_alert=True)
-                        return async_answer()
-                    else:
-                        # البحث عن context
-                        context = None
-                        for arg in args:
-                            if hasattr(arg, 'bot'):
-                                context = arg
-                                break
-                        if context:
-                            context.bot.answer_callback_query(
-                                update.callback_query.id,
-                                "🚫 Permission Denied: Analysts only.", 
-                                show_alert=True
-                            )
-            return None
-            
-        # استدعاء الدالة الأصلية
-        if inspect.iscoroutinefunction(func):
-            async def async_exec():
-                return await func(*args, **kwargs)
-            return async_exec()
-        else:
-            return func(*args, **kwargs)
-    
+        return await func(update, context, *args, **kwargs)
     return wrapper
 
 def require_channel_subscription(func: Callable) -> Callable:
-    """
-    ديكوراتور يفرض الاشتراك في القناة.
-    الإصدار المصحح: يتعامل بشكل صحيح مع الدوال غير المتزامنة فقط.
-    """
-    if not inspect.iscoroutinefunction(func):
-        raise TypeError("@require_channel_subscription can only be used with async functions")
-    
+    """Decorator that enforces channel subscription."""
     @wraps(func)
-    async def async_wrapper(*args, **kwargs):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         channel_id_str = settings.TELEGRAM_CHAT_ID
         if not channel_id_str:
-            return await func(*args, **kwargs)
+            return await func(update, context, *args, **kwargs)
 
-        # البحث عن update و context في الوسائط
-        update = None
-        context = None
-        
-        for arg in args:
-            if hasattr(arg, 'effective_user'):  # Update object
-                update = arg
-            elif hasattr(arg, 'bot'):  # Context object
-                context = arg
-
-        user = update.effective_user if update else None
-        if not user: 
-            return await func(*args, **kwargs)
+        user = update.effective_user
+        if not user: return
 
         try:
-            if context and context.bot:
-                member = await context.bot.get_chat_member(chat_id=channel_id_str, user_id=user.id)
-                if member.status in ['creator', 'administrator', 'member', 'restricted']:
-                    return await func(*args, **kwargs)
-                else:
-                    raise ValueError(f"User is not a member, status: {member.status}")
+            member = await context.bot.get_chat_member(chat_id=channel_id_str, user_id=user.id)
+            if member.status in ['creator', 'administrator', 'member', 'restricted']:
+                return await func(update, context, *args, **kwargs)
             else:
-                raise RuntimeError("Context or bot not available")
-        except Exception as e:
-            log.info(f"User {user.id} blocked from command due to not being in channel {channel_id_str}. Error: {e}")
+                raise ValueError(f"User is not a member, status: {member.status}")
+        except Exception:
+            log.info(f"User {user.id} blocked from command due to not being in channel {channel_id_str}.")
             
             channel_link = settings.TELEGRAM_CHANNEL_INVITE_LINK
             message = "⚠️ <b>Subscription Required</b>\n\nTo use this bot, you must first be a member of our channel."
             
-            if update:
-                if update.message:
-                    await update.message.reply_html(
-                        text=message,
-                        reply_markup=build_subscription_keyboard(channel_link),
-                        disable_web_page_preview=True
-                    )
-                elif update.callback_query:
-                    await update.callback_query.answer("Please subscribe to our main channel first.", show_alert=True)
+            if update.message:
+                await update.message.reply_html(
+                    text=message,
+                    reply_markup=build_subscription_keyboard(channel_link),
+                    disable_web_page_preview=True
+                )
+            elif update.callback_query:
+                await update.callback_query.answer("Please subscribe to our main channel first.", show_alert=True)
             return
-    
-    return async_wrapper
+    return wrapper
+
+#END
