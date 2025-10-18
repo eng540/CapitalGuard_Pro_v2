@@ -1,13 +1,13 @@
-# src/capitalguard/interfaces/telegram/commands.py (v26.6 - COMPLETE, FINAL & ARCHITECTURALLY-CORRECT)
+# src/capitalguard/interfaces/telegram/commands.py (v27.0 - COMPLETE, FINAL & ARCHITECTURALLY-CORRECT)
 """
 Registers and implements all simple, non-conversational commands for the bot.
-This version has been cleaned and refactored to only contain simple command logic,
-adhering to the principle of single responsibility.
+This version includes all missing imports and functions, with complete session management fixes.
 """
 
 import logging
 import io
 import csv
+from datetime import datetime
 
 from telegram import Update, InputFile
 from telegram.ext import (Application, ContextTypes, CommandHandler)
@@ -15,10 +15,11 @@ from telegram.ext import (Application, ContextTypes, CommandHandler)
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service
 from .auth import require_active_user, require_analyst_user
+from .session_fix import reset_user_session, safe_command_handler
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.audit_service import AuditService
-from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository
+from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository, RecommendationRepository
 from capitalguard.infrastructure.db.models import UserType
 from .keyboards import build_open_recs_keyboard
 
@@ -28,6 +29,9 @@ log = logging.getLogger(__name__)
 
 @uow_transaction
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Start command with session reset"""
+    await reset_user_session(update, context)
+    
     user = update.effective_user
     log.info(f"User {user.id} ({user.username or 'NoUsername'}) initiated /start command.")
     UserRepository(db_session).find_or_create(telegram_id=user.id, first_name=user.first_name, username=user.username)
@@ -54,8 +58,12 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
 @uow_transaction
 @require_active_user
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Help command with session reset"""
+    await reset_user_session(update, context)
+    
     trader_help = (
         "• <code>/myportfolio</code> — View and manage your open trades.\n"
+        "• <code>/open</code> — Same as /myportfolio\n"
         "• <code>/export</code> — Export your trade history to a CSV file.\n"
     )
     analyst_help = (
@@ -77,36 +85,65 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessio
 
 @uow_transaction
 @require_active_user
+@safe_command_handler
 async def myportfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Portfolio command with session management"""
+    await reset_user_session(update, context)
+    
     trade_service = get_service(context, "trade_service", TradeService)
     price_service = get_service(context, "price_service", PriceService)
+    
+    if not trade_service or not price_service:
+        await update.message.reply_text("❌ System services are not available. Please try again later.")
+        return
+    
     items = trade_service.get_open_positions_for_user(db_session, str(update.effective_user.id))
     if not items:
-        await update.message.reply_text("✅ You have no open trades.")
+        await update.message.reply_html(
+            "✅ <b>No Open Positions</b>\n\n"
+            "You don't have any open trades at the moment.\n"
+            "To start tracking signals, forward recommendation messages to me."
+        )
         return
+        
     keyboard = await build_open_recs_keyboard(items, current_page=1, price_service=price_service)
     await update.message.reply_html("<b>📊 Your Open Positions</b>\nSelect one to manage:", reply_markup=keyboard)
 
 @uow_transaction
 @require_active_user
+@safe_command_handler
+async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Open command alias with session management"""
+    await reset_user_session(update, context)
+    await myportfolio_cmd(update, context, db_session, **kwargs)
+
+@uow_transaction
+@require_active_user
 @require_analyst_user
 async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Channels command with session reset"""
+    await reset_user_session(update, context)
+    
     channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=False)
     if not channels:
         await update.message.reply_html("📭 You have no channels linked. Use <code>/link_channel</code> to add one.")
         return
+        
     lines = ["<b>📡 Your Linked Channels:</b>"]
     for ch in channels:
         status_icon = "✅ Active" if ch.is_active else "⏸️ Inactive"
         username_str = f"(@{ch.username})" if ch.username else "(Private Channel)"
         lines.append(f"• <b>{ch.title or 'Untitled'}</b> {username_str}\n  ID: <code>{ch.telegram_channel_id}</code> | Status: {status_icon}")
+        
     await update.message.reply_html("\n".join(lines))
 
 @uow_transaction
 @require_active_user
 @require_analyst_user
 async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """✅ NEW: Fetches and displays the event log for a recommendation."""
+    """Events command with session reset"""
+    await reset_user_session(update, context)
+    
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_html("<b>Usage:</b> <code>/events &lt;recommendation_id&gt;</code>")
         return
@@ -145,11 +182,14 @@ async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
 @uow_transaction
 @require_active_user
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """✅ NEW: Exports user's trade history to a CSV file."""
+    """Export command with session reset"""
+    await reset_user_session(update, context)
+    
     await update.message.reply_text("Preparing your export file...")
     
     # This is a simplified export. A real implementation might need more complex data fetching.
-    recs = RecommendationRepository().get_open_recs_for_analyst(db_session, db_user.id) # Simplified for now
+    repo = RecommendationRepository()
+    recs = repo.get_open_recs_for_analyst(db_session, db_user.id) # Simplified for now
     
     if not recs:
         await update.message.reply_text("You have no data to export.")
@@ -159,17 +199,19 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
     writer = csv.writer(output)
     header = ["id", "asset", "side", "status", "market", "entry_price", "stop_loss", "targets", "exit_price", "notes", "created_at", "closed_at"]
     writer.writerow(header)
+    
     for rec_orm in recs:
-        rec = RecommendationRepository._to_entity(rec_orm)
-        row = [
-            rec.id, rec.asset.value, rec.side.value, rec.status.value, rec.market, 
-            rec.entry.value, rec.stop_loss.value, 
-            ", ".join(f"{t.price.value}" for t in rec.targets.values), 
-            rec.exit_price, rec.notes, 
-            rec.created_at.strftime('%Y-%m-%d %H:%M:%S') if rec.created_at else "", 
-            rec.closed_at.strftime('%Y-%m-%d %H:%M:%S') if rec.closed_at else ""
-        ]
-        writer.writerow(row)
+        rec = repo._to_entity(rec_orm)
+        if rec:
+            row = [
+                rec.id, rec.asset.value, rec.side.value, rec.status.value, rec.market, 
+                rec.entry.value, rec.stop_loss.value, 
+                ", ".join(f"{t.price.value}" for t in rec.targets.values), 
+                rec.exit_price, rec.notes, 
+                rec.created_at.strftime('%Y-%m-%d %H:%M:%S') if rec.created_at else "", 
+                rec.closed_at.strftime('%Y-%m-%d %H:%M:%S') if rec.closed_at else ""
+            ]
+            writer.writerow(row)
         
     output.seek(0)
     bytes_buffer = io.BytesIO(output.getvalue().encode("utf-8"))
@@ -187,3 +229,5 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("channels", channels_cmd))
     app.add_handler(CommandHandler("events", events_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
+    
+    log.info("✅ All commands registered successfully with session fixes")
