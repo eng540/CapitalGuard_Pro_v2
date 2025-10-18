@@ -1,4 +1,4 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.5 - Production Fixed)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v36.1 - Production Ready with Session Fix)
 import logging
 import uuid
 import time
@@ -22,6 +22,7 @@ from .keyboards import (
     build_channel_picker_keyboard, CallbackBuilder, CallbackNamespace, CallbackAction
 )
 from .auth import require_active_user, require_analyst_user
+from .session_fix import reset_user_session, update_session_activity, safe_conversation_handler
 from .parsers import parse_quick_command, parse_text_editor, parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
@@ -42,7 +43,7 @@ CHANNEL_PICKER_KEY = "channel_picker_selection"
 LAST_ACTIVITY_KEY = "last_activity"
 
 # --- Timeout Configuration ---
-CONVERSATION_TIMEOUT = 1800  # 30 دقيقة
+CONVERSATION_TIMEOUT = 7200  # 2 ساعة بدلاً من 30 دقيقة
 
 def clean_creation_state(context: ContextTypes.DEFAULT_TYPE):
     """تنظيف حالة إنشاء التوصية بشكل كامل"""
@@ -100,6 +101,7 @@ async def handle_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_analyst_user
 async def newrec_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
     """نقطة بدء إنشاء توصية جديدة"""
+    await reset_user_session(update, context)  # ✅ إضافة إعادة تعيين الجلسة
     clean_creation_state(context)
     update_activity(context)
     
@@ -123,6 +125,7 @@ async def newrec_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 @require_analyst_user
 async def start_text_input_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
     """بدء الإدخال النصي السريع"""
+    await reset_user_session(update, context)  # ✅ إضافة إعادة تعيين الجلسة
     clean_creation_state(context)
     command = (update.message.text or "").lstrip('/').split()[0].lower()
     context.user_data[DRAFT_KEY] = {'input_mode': command}
@@ -159,6 +162,7 @@ async def start_text_input_entrypoint(update: Update, context: ContextTypes.DEFA
 @uow_transaction
 @require_active_user
 @require_analyst_user
+@safe_conversation_handler  # ✅ إضافة معالج الجلسة الآمن
 async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
     """معالجة اختيار طريقة الإدخال"""
     query = update.callback_query
@@ -192,6 +196,7 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
     await safe_edit_message(query, prompt)
     return AWAIT_TEXT_INPUT
 
+@safe_conversation_handler  # ✅ إضافة معالج الجلسة الآمن
 async def received_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """معالجة الإدخال النصي"""
     if await handle_timeout(update, context):
@@ -211,6 +216,7 @@ async def received_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("❌ تنسيق غير صالح. يرجى المحاولة مرة أخرى أو /cancel.")
     return AWAIT_TEXT_INPUT
 
+@safe_conversation_handler  # ✅ إضافة معالج الجلسة الآمن
 async def asset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """معالجة اختيار الأصل"""
     if await handle_timeout(update, context):
@@ -254,6 +260,7 @@ async def asset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
     return AWAITING_SIDE
 
+@safe_conversation_handler  # ✅ إضافة معالج الجلسة الآمن
 async def side_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """معالجة اختيار الاتجاه"""
     query = update.callback_query
@@ -278,6 +285,7 @@ async def side_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await query.edit_message_reply_markup(reply_markup=market_choice_keyboard())
         return AWAITING_SIDE
 
+@safe_conversation_handler  # ✅ إضافة معالج الجلسة الآمن
 async def market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """معالجة اختيار السوق"""
     query = update.callback_query
@@ -298,6 +306,7 @@ async def market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.edit_message_reply_markup(reply_markup=side_market_keyboard(market))
     return AWAITING_SIDE
 
+@safe_conversation_handler  # ✅ إضافة معالج الجلسة الآمن
 async def type_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """معالجة اختيار نوع الطلب"""
     query = update.callback_query
@@ -319,6 +328,7 @@ async def type_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await safe_edit_message(query, f"✅ نوع الطلب: <b>{order_type}</b>\n\n{prompt}")
     return AWAITING_PRICES
 
+@safe_conversation_handler  # ✅ إضافة معالج الجلسة الآمن
 async def prices_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """معالجة إدخال الأسعار"""
     if await handle_timeout(update, context):
@@ -383,6 +393,7 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @uow_transaction
 @require_active_user
 @require_analyst_user
+@safe_conversation_handler  # ✅ إضافة معالج الجلسة الآمن
 async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
     """معالجة مراجعة التوصية"""
     query = update.callback_query
@@ -471,6 +482,7 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
         clean_creation_state(context)
         return ConversationHandler.END
 
+@safe_conversation_handler  # ✅ إضافة معالج الجلسة الآمن
 async def notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """معالجة إدخال الملاحظات"""
     if await handle_timeout(update, context):
@@ -485,6 +497,7 @@ async def notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 @uow_transaction
 @require_active_user
 @require_analyst_user
+@safe_conversation_handler  # ✅ إضافة معالج الجلسة الآمن
 async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
     """معالجة اختيار القنوات - الإصدار المصحح"""
     query = update.callback_query
