@@ -201,4 +201,16 @@ def build_channel_picker_keyboard(
         logger.exception("Failed to build channel picker keyboard: %s", e)
         # Fallback: minimal keyboard to avoid crashes
         return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ رجوع", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, CallbackAction.BACK, (review_token or "")[:24]))]])
+# ✅ THE FIX: Restored legacy keyboard required by TelegramNotifier
+def public_channel_keyboard(channel_url: str) -> InlineKeyboardMarkup:
+    """
+    Legacy helper used by TelegramNotifier to attach a 'View Channel' button
+    when posting to public channels.
+    """
+    try:
+        buttons = [[InlineKeyboardButton("📢 فتح القناة", url=channel_url)]]
+        return InlineKeyboardMarkup(buttons)
+    except Exception as e:
+        logger.exception("Failed to build public_channel_keyboard: %s", e)
+        return InlineKeyboardMarkup([])
 # --- END OF FILE ---
