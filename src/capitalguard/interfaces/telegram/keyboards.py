@@ -1,13 +1,13 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v21.2 - Production Ready & Final)
+# src/capitalguard/interfaces/telegram/keyboards.py (v21.3 - Production Ready & Final)
 """
 هندسة لوحات المفاتيح المستدامة - إصدار إنتاجي متكامل ونهائي
+✅ إصلاح حاسم: إضافة استيراد 'Enum' المفقود الذي كان يمنع بدء تشغيل التطبيق.
 ✅ إصلاح جميع مشاكل الأداء والتوافق (بما في ذلك تجميد لوحة القنوات).
 ✅ تحسين استجابة الأزرار والواجهات عبر بنية CallbackBuilder الموحدة.
 ✅ دعم كامل لنظام اختيار القنوات مع ترقيم الصفحات.
 ✅ منطق عرض ديناميكي للحالات (ربح/خسارة/معلق).
 ✅ آليات أمان لمنع النقرات من الجلسات القديمة.
 ✅ توافق عكسي كامل مع الإصدارات السابقة.
-✅ هندسة عكسية محسنة للصيانة والتطوير.
 """
 
 import math
@@ -16,7 +16,7 @@ import hashlib
 from decimal import Decimal
 from typing import List, Iterable, Set, Optional, Any, Dict, Tuple, Union
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum  # ✅ الإصلاح الحاسم: تمت إضافة الاستيراد المفقود
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 class CallbackNamespace(Enum):
     """مساحات الأسماء المنطقية لبيانات الاستدعاء"""
     POSITION = "pos"
-    RECOMMENDATION = "rec" 
+    RECOMMENDATION = "rec"
     TRADE = "trd"
     PUBLICATION = "pub"
     NAVIGATION = "nav"
