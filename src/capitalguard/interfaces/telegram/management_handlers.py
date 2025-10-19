@@ -1,10 +1,10 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v29.3 - Production Ready & Final)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v29.4 - Production Ready & Final)
 """
 إصدار إنتاجي نهائي لإدارة التوصيات والصفقات.
-✅ إصلاح حاسم ونهائي لمشكلة "انتهاء مدة الجلسة" الفوري عن طريق تصحيح ترتيب منطق تحديث النشاط والتحقق من المهلة.
+✅ إصلاح حاسم ونهائي لمشكلة تجمد أزرار لوحة التحكم عن طريق تصحيح أنماط Regex.
+✅ إصلاح جذري لمشكلة "انتهاء مدة الجلسة" الفوري عن طريق تصحيح ترتيب منطق تحديث النشاط والتحقق من المهلة.
 ✅ تطبيق نظام مهلات قوي وموثوق.
 ✅ تكامل كامل مع بنية CallbackBuilder الموحدة.
-✅ تحسين معالجة الأخطاء لضمان تجربة مستخدم سلسة ومستقرة.
 """
 
 import logging
@@ -41,29 +41,28 @@ loge = logging.getLogger("capitalguard.errors")
 (AWAIT_PARTIAL_PERCENT, AWAIT_PARTIAL_PRICE) = range(2)
 AWAITING_INPUT_KEY = "awaiting_management_input"
 LAST_ACTIVITY_KEY = "last_activity_management"
-MANAGEMENT_TIMEOUT = 1800  # 30 دقيقة
+MANAGEMENT_TIMEOUT = 1800  # 30 minutes
 
 # --- Session & Timeout Management ---
 
 def init_management_session(context: ContextTypes.DEFAULT_TYPE):
-    """تهيئة أو إعادة تعيين جلسة الإدارة لضمان بداية نظيفة."""
+    """Initializes or resets the management session for a clean start."""
     context.user_data[LAST_ACTIVITY_KEY] = time.time()
     context.user_data.pop(AWAITING_INPUT_KEY, None)
     log.debug(f"Management session initialized/reset for user {context._user_id}.")
 
 def update_management_activity(context: ContextTypes.DEFAULT_TYPE):
-    """تحديث وقت النشاط الأخير للإدارة."""
+    """Updates the last activity timestamp for the session."""
     context.user_data[LAST_ACTIVITY_KEY] = time.time()
 
 def clean_management_state(context: ContextTypes.DEFAULT_TYPE):
-    """تنظيف حالة الإدارة عند انتهاء المحادثة أو المهلة."""
+    """Cleans up all management-related state upon exit or timeout."""
     for key in [AWAITING_INPUT_KEY, LAST_ACTIVITY_KEY, 'partial_close_rec_id', 'partial_close_percent']:
         context.user_data.pop(key, None)
 
 async def handle_management_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """معالجة انتهاء مدة جلسة الإدارة."""
+    """Handles session timeout due to inactivity."""
     if LAST_ACTIVITY_KEY not in context.user_data:
-        # إذا لم يتم تهيئة الجلسة، لا تفعل شيئًا. هذا يمنع الأخطاء في الحالات النادرة.
         return False
         
     if time.time() - context.user_data.get(LAST_ACTIVITY_KEY, 0) > MANAGEMENT_TIMEOUT:
@@ -80,6 +79,7 @@ async def handle_management_timeout(update: Update, context: ContextTypes.DEFAUL
 # --- Helper Functions ---
 
 async def safe_edit_message(query: CallbackQuery, text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML) -> bool:
+    """Safely edits a message, handling common Telegram API errors."""
     try:
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode, disable_web_page_preview=True)
         return True
@@ -92,6 +92,7 @@ async def safe_edit_message(query: CallbackQuery, text: str = None, reply_markup
         return False
 
 async def _send_or_edit_position_panel(query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, db_session, position_type: str, position_id: int):
+    """Renders the main control panel for a specific recommendation or trade."""
     try:
         trade_service = get_service(context, "trade_service", TradeService)
         position = trade_service.get_position_details_for_user(db_session, str(query.from_user.id), position_type, position_id)
@@ -117,7 +118,7 @@ async def _send_or_edit_position_panel(query: CallbackQuery, context: ContextTyp
 @uow_transaction
 @require_active_user
 async def management_entry_point_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """نقطة دخول موحدة لأوامر /myportfolio و /open."""
+    """Unified entry point for /myportfolio and /open commands."""
     init_management_session(context)
     try:
         trade_service = get_service(context, "trade_service", TradeService)
@@ -139,9 +140,9 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
 @uow_transaction
 @require_active_user
 async def navigate_open_positions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Handles pagination for the list of open positions."""
     query = update.callback_query
     await query.answer()
-    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
     if await handle_management_timeout(update, context): return
     
@@ -159,9 +160,9 @@ async def navigate_open_positions_handler(update: Update, context: ContextTypes.
 @uow_transaction
 @require_active_user
 async def show_position_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Handles displaying the control panel for a selected position."""
     query = update.callback_query
     await query.answer()
-    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
     if await handle_management_timeout(update, context): return
     
@@ -177,9 +178,9 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
 @require_active_user
 @require_analyst_user
 async def show_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Handles displaying sub-menus (edit, close, strategy)."""
     query = update.callback_query
     await query.answer()
-    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
     if await handle_management_timeout(update, context): return
     
@@ -187,11 +188,17 @@ async def show_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     action, rec_id = parts[1], int(parts[2])
     
     try:
+        trade_service = get_service(context, "trade_service", TradeService)
+        rec = trade_service.repo.get(db_session, rec_id)
+        if not rec:
+            await query.answer("❌ التوصية غير موجودة.", show_alert=True)
+            return
+
+        rec_entity = trade_service.repo._to_entity(rec)
+        
         if action == "edit_menu": keyboard = analyst_edit_menu_keyboard(rec_id)
         elif action == "close_menu": keyboard = build_close_options_keyboard(rec_id)
-        elif action == "strategy_menu":
-            rec = get_service(context, "trade_service", TradeService).repo.get(db_session, rec_id)
-            keyboard = build_exit_strategy_keyboard(get_service(context, "trade_service", TradeService).repo._to_entity(rec)) if rec else None
+        elif action == "strategy_menu": keyboard = build_exit_strategy_keyboard(rec_entity)
         elif action == CallbackAction.PARTIAL.value: keyboard = build_partial_close_keyboard(rec_id)
         else: keyboard = None
         
@@ -205,9 +212,9 @@ async def show_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 @require_active_user
 @require_analyst_user
 async def action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Unified handler for actions like changing strategy, market close, etc."""
     query = update.callback_query
     await query.answer("جاري التنفيذ...")
-    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
     if await handle_management_timeout(update, context): return
     
@@ -219,7 +226,7 @@ async def action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
         if action == CallbackAction.STRATEGY.value:
             strategy_value = parts[3]
             await trade_service.update_exit_strategy_async(rec_id, str(query.from_user.id), ExitStrategy(strategy_value), db_session)
-        else: # close_market or partial_close
+        else:
             price_service = get_service(context, "price_service", PriceService)
             rec_orm = trade_service.repo.get(db_session, rec_id)
             if not rec_orm: raise ValueError("التوصية غير موجودة.")
@@ -238,9 +245,9 @@ async def action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
         await query.answer(f"❌ فشل الإجراء: {str(e)}", show_alert=True)
 
 async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles prompting the user for text input (e.g., new SL, exit price)."""
     query = update.callback_query
     await query.answer()
-    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
     if await handle_management_timeout(update, context): return
     
@@ -260,7 +267,7 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_active_user
 @require_analyst_user
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
+    """Handles user text replies to prompts."""
     update_management_activity(context)
     if await handle_management_timeout(update, context): return
     
@@ -298,7 +305,6 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
 async def partial_close_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
     if await handle_management_timeout(update, context): return ConversationHandler.END
     
@@ -308,7 +314,6 @@ async def partial_close_custom_start(update: Update, context: ContextTypes.DEFAU
     return AWAIT_PARTIAL_PERCENT
 
 async def partial_close_percent_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
     if await handle_management_timeout(update, context): return ConversationHandler.END
     
@@ -356,16 +361,18 @@ async def partial_close_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
 # --- Handler Registration ---
 
 def register_management_handlers(app: Application):
-    """تسجيل جميع معالجات الإدارة."""
+    """Registers all management-related handlers."""
     ns_rec, ns_nav, ns_pos = CallbackNamespace.RECOMMENDATION.value, CallbackNamespace.NAVIGATION.value, CallbackNamespace.POSITION.value
     
     app.add_handler(CommandHandler(["myportfolio", "open"], management_entry_point_handler))
     
+    # ✅ FINAL FIX: Regex patterns are now flexible to accept parameters.
     app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{ns_nav}:{CallbackAction.NAVIGATE.value}:"))
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^(?:{ns_pos}:{CallbackAction.SHOW.value}:|{ns_rec}:back_to_main:)"))
-    app.add_handler(CallbackQueryHandler(show_menu_handler, pattern=rf"^{ns_rec}:(?:edit_menu|close_menu|strategy_menu|{CallbackAction.PARTIAL.value}$)"))
-    app.add_handler(CallbackQueryHandler(action_handler, pattern=rf"^{ns_rec}:(?:{CallbackAction.STRATEGY.value}|close_market|{CallbackAction.PARTIAL.value}:)"))
-    app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^{ns_rec}:(?:edit_sl|edit_tp|close_manual)"))
+    app.add_handler(CallbackQueryHandler(show_menu_handler, pattern=rf"^{ns_rec}:(?:edit_menu|close_menu|strategy_menu|{CallbackAction.PARTIAL.value}):"))
+    app.add_handler(CallbackQueryHandler(action_handler, pattern=rf"^{ns_rec}:(?:{CallbackAction.STRATEGY.value}|close_market|{CallbackAction.PARTIAL.value}):"))
+    app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^{ns_rec}:(?:edit_sl|edit_tp|close_manual):"))
+    
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, reply_handler))
 
     partial_close_conv = ConversationHandler(
