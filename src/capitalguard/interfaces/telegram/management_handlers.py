@@ -1,8 +1,7 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v29.2 - Production Ready & Final)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v29.3 - Production Ready & Final)
 """
 إصدار إنتاجي نهائي لإدارة التوصيات والصفقات.
-✅ إصلاح حاسم: إضافة استيراد 'CommandHandler' المفقود الذي كان يمنع بدء تشغيل التطبيق.
-✅ إصلاح جذري لمشكلة "انتهاء مدة الجلسة" عبر تهيئة الجلسة بشكل صريح.
+✅ إصلاح حاسم ونهائي لمشكلة "انتهاء مدة الجلسة" الفوري عن طريق تصحيح ترتيب منطق تحديث النشاط والتحقق من المهلة.
 ✅ تطبيق نظام مهلات قوي وموثوق.
 ✅ تكامل كامل مع بنية CallbackBuilder الموحدة.
 ✅ تحسين معالجة الأخطاء لضمان تجربة مستخدم سلسة ومستقرة.
@@ -17,7 +16,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application, CallbackQueryHandler, MessageHandler, 
-    ContextTypes, filters, ConversationHandler, CommandHandler  # ✅ الإصلاح الحاسم: تمت إضافة CommandHandler
+    ContextTypes, filters, ConversationHandler, CommandHandler
 )
 
 from capitalguard.domain.entities import ExitStrategy
@@ -50,8 +49,6 @@ def init_management_session(context: ContextTypes.DEFAULT_TYPE):
     """تهيئة أو إعادة تعيين جلسة الإدارة لضمان بداية نظيفة."""
     context.user_data[LAST_ACTIVITY_KEY] = time.time()
     context.user_data.pop(AWAITING_INPUT_KEY, None)
-    context.user_data.pop('partial_close_rec_id', None)
-    context.user_data.pop('partial_close_percent', None)
     log.debug(f"Management session initialized/reset for user {context._user_id}.")
 
 def update_management_activity(context: ContextTypes.DEFAULT_TYPE):
@@ -65,8 +62,11 @@ def clean_management_state(context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_management_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """معالجة انتهاء مدة جلسة الإدارة."""
-    last_activity = context.user_data.get(LAST_ACTIVITY_KEY, 0)
-    if time.time() - last_activity > MANAGEMENT_TIMEOUT:
+    if LAST_ACTIVITY_KEY not in context.user_data:
+        # إذا لم يتم تهيئة الجلسة، لا تفعل شيئًا. هذا يمنع الأخطاء في الحالات النادرة.
+        return False
+        
+    if time.time() - context.user_data.get(LAST_ACTIVITY_KEY, 0) > MANAGEMENT_TIMEOUT:
         clean_management_state(context)
         msg = "⏰ انتهت مدة الجلسة بسبب عدم النشاط.\n\nيرجى استخدام /myportfolio للبدء من جديد."
         if update.callback_query:
@@ -80,7 +80,6 @@ async def handle_management_timeout(update: Update, context: ContextTypes.DEFAUL
 # --- Helper Functions ---
 
 async def safe_edit_message(query: CallbackQuery, text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML) -> bool:
-    """تحرير الرسالة بشكل آمن مع استعادة الأخطاء."""
     try:
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode, disable_web_page_preview=True)
         return True
@@ -93,7 +92,6 @@ async def safe_edit_message(query: CallbackQuery, text: str = None, reply_markup
         return False
 
 async def _send_or_edit_position_panel(query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, db_session, position_type: str, position_id: int):
-    """إرسال أو تعديل لوحة المركز بشكل آمن وموحد."""
     try:
         trade_service = get_service(context, "trade_service", TradeService)
         position = trade_service.get_position_details_for_user(db_session, str(query.from_user.id), position_type, position_id)
@@ -141,11 +139,11 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
 @uow_transaction
 @require_active_user
 async def navigate_open_positions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """معالجة التنقل بين صفحات المراكز المفتوحة."""
     query = update.callback_query
     await query.answer()
-    if await handle_management_timeout(update, context): return
+    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
+    if await handle_management_timeout(update, context): return
     
     page = int(parse_cq_parts(query.data)[2])
     try:
@@ -161,11 +159,11 @@ async def navigate_open_positions_handler(update: Update, context: ContextTypes.
 @uow_transaction
 @require_active_user
 async def show_position_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """معالجة عرض لوحة التحكم لمركز محدد."""
     query = update.callback_query
     await query.answer()
-    if await handle_management_timeout(update, context): return
+    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
+    if await handle_management_timeout(update, context): return
     
     parts = parse_cq_parts(query.data)
     try:
@@ -179,11 +177,11 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
 @require_active_user
 @require_analyst_user
 async def show_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """معالجة عرض القوائم الفرعية (تعديل, إغلاق, استراتيجية)."""
     query = update.callback_query
     await query.answer()
-    if await handle_management_timeout(update, context): return
+    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
+    if await handle_management_timeout(update, context): return
     
     parts = parse_cq_parts(query.data)
     action, rec_id = parts[1], int(parts[2])
@@ -207,11 +205,11 @@ async def show_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 @require_active_user
 @require_analyst_user
 async def action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """معالج موحد للإجراءات (تغيير استراتيجية, إغلاق بسعر السوق, إغلاق جزئي)."""
     query = update.callback_query
     await query.answer("جاري التنفيذ...")
-    if await handle_management_timeout(update, context): return
+    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
+    if await handle_management_timeout(update, context): return
     
     parts = parse_cq_parts(query.data)
     action, rec_id = parts[1], int(parts[2])
@@ -240,11 +238,11 @@ async def action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
         await query.answer(f"❌ فشل الإجراء: {str(e)}", show_alert=True)
 
 async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة طلب الإدخال من المستخدم (تعديل SL/TP, إغلاق يدوي)."""
     query = update.callback_query
     await query.answer()
-    if await handle_management_timeout(update, context): return
+    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
+    if await handle_management_timeout(update, context): return
     
     parts = parse_cq_parts(query.data)
     action, rec_id = parts[1], int(parts[2])
@@ -262,9 +260,9 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_active_user
 @require_analyst_user
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """معالجة ردود المستخدم على الطلبات."""
-    if await handle_management_timeout(update, context): return
+    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
+    if await handle_management_timeout(update, context): return
     
     state = context.user_data.pop(AWAITING_INPUT_KEY, None)
     if not (state and update.message.reply_to_message and state.get("original_query")): return
@@ -293,16 +291,16 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
     except Exception as e:
         loge.error(f"Error processing reply for {action} on #{rec_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ خطأ: {e}\n\nيرجى المحاولة مرة أخرى.")
-        context.user_data[AWAITING_INPUT_KEY] = state # Restore state for retry
+        context.user_data[AWAITING_INPUT_KEY] = state
 
 # --- Partial Close Conversation ---
 
 async def partial_close_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """بدء محادثة الإغلاق الجزئي المخصص."""
     query = update.callback_query
     await query.answer()
-    if await handle_management_timeout(update, context): return ConversationHandler.END
+    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
+    if await handle_management_timeout(update, context): return ConversationHandler.END
     
     rec_id = int(parse_cq_parts(query.data)[2])
     context.user_data['partial_close_rec_id'] = rec_id
@@ -310,9 +308,9 @@ async def partial_close_custom_start(update: Update, context: ContextTypes.DEFAU
     return AWAIT_PARTIAL_PERCENT
 
 async def partial_close_percent_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """معالجة استلام نسبة الإغلاق الجزئي."""
-    if await handle_management_timeout(update, context): return ConversationHandler.END
+    # ✅ الإصلاح الحاسم: تحديث النشاط أولاً
     update_management_activity(context)
+    if await handle_management_timeout(update, context): return ConversationHandler.END
     
     try:
         percent = parse_number(update.message.text)
@@ -328,7 +326,6 @@ async def partial_close_percent_received(update: Update, context: ContextTypes.D
 @require_active_user
 @require_analyst_user
 async def partial_close_price_received(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
-    """معالجة استلام سعر الإغلاق الجزئي وإنهاء المحادثة."""
     if await handle_management_timeout(update, context): return ConversationHandler.END
     
     try:
@@ -352,7 +349,6 @@ async def partial_close_price_received(update: Update, context: ContextTypes.DEF
     return ConversationHandler.END
 
 async def partial_close_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """إلغاء محادثة الإغلاق الجزئي."""
     clean_management_state(context)
     await update.message.reply_text("❌ تم إلغاء عملية الإغلاق الجزئي.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
@@ -363,7 +359,6 @@ def register_management_handlers(app: Application):
     """تسجيل جميع معالجات الإدارة."""
     ns_rec, ns_nav, ns_pos = CallbackNamespace.RECOMMENDATION.value, CallbackNamespace.NAVIGATION.value, CallbackNamespace.POSITION.value
     
-    # ✅ الإصلاح: استخدام معالج واحد لنقاط الدخول
     app.add_handler(CommandHandler(["myportfolio", "open"], management_entry_point_handler))
     
     app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{ns_nav}:{CallbackAction.NAVIGATE.value}:"))
