@@ -1,6 +1,7 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v29.1 - Production Ready & Final)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v29.2 - Production Ready & Final)
 """
 إصدار إنتاجي نهائي لإدارة التوصيات والصفقات.
+✅ إصلاح حاسم: إضافة استيراد 'CommandHandler' المفقود الذي كان يمنع بدء تشغيل التطبيق.
 ✅ إصلاح جذري لمشكلة "انتهاء مدة الجلسة" عبر تهيئة الجلسة بشكل صريح.
 ✅ تطبيق نظام مهلات قوي وموثوق.
 ✅ تكامل كامل مع بنية CallbackBuilder الموحدة.
@@ -16,7 +17,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application, CallbackQueryHandler, MessageHandler, 
-    ContextTypes, filters, ConversationHandler
+    ContextTypes, filters, ConversationHandler, CommandHandler  # ✅ الإصلاح الحاسم: تمت إضافة CommandHandler
 )
 
 from capitalguard.domain.entities import ExitStrategy
@@ -339,7 +340,7 @@ async def partial_close_price_received(update: Update, context: ContextTypes.DEF
         
         trade_service = get_service(context, "trade_service", TradeService)
         await trade_service.partial_close_async(rec_id, str(update.effective_user.id), percent, price, db_session)
-        await update.message.reply_text("✅ تم الإغلاق الجزئي بنجاح. سيتم تحديث اللوحة الرئيسية.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("✅ تم الإغلاق الجزئي بنجاح.", reply_markup=ReplyKeyboardRemove())
     except (ValueError, KeyError) as e:
         await update.message.reply_text(f"❌ خطأ: {e}. حاول مرة أخرى أو /cancel.")
         return AWAIT_PARTIAL_PRICE
@@ -362,7 +363,9 @@ def register_management_handlers(app: Application):
     """تسجيل جميع معالجات الإدارة."""
     ns_rec, ns_nav, ns_pos = CallbackNamespace.RECOMMENDATION.value, CallbackNamespace.NAVIGATION.value, CallbackNamespace.POSITION.value
     
+    # ✅ الإصلاح: استخدام معالج واحد لنقاط الدخول
     app.add_handler(CommandHandler(["myportfolio", "open"], management_entry_point_handler))
+    
     app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{ns_nav}:{CallbackAction.NAVIGATE.value}:"))
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^(?:{ns_pos}:{CallbackAction.SHOW.value}:|{ns_rec}:back_to_main:)"))
     app.add_handler(CallbackQueryHandler(show_menu_handler, pattern=rf"^{ns_rec}:(?:edit_menu|close_menu|strategy_menu|{CallbackAction.PARTIAL.value}$)"))
