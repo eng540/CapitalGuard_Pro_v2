@@ -1,7 +1,8 @@
-# src/capitalguard/infrastructure/db/models/recommendation.py (v25.1 - Enum Unification)
+# src/capitalguard/infrastructure/db/models/recommendation.py (v25.2 - Forwarding Fix)
 """
 SQLAlchemy ORM models related to recommendations, user trades, and their lifecycle.
-This version removes redundant Enum definitions and imports them from the domain layer.
+✅ FIX: Added the missing 'source_forwarded_text' column to the UserTrade model
+to align it with the database schema and fix the TypeError on trade creation.
 """
 
 from sqlalchemy import (
@@ -12,7 +13,6 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from .base import Base
 
-# ✅ THE DEFINITIVE FIX: Import all Enums from the single source of truth in the domain layer.
 from capitalguard.domain.entities import (
     RecommendationStatus as RecommendationStatusEnum,
     OrderType as OrderTypeEnum,
@@ -51,7 +51,7 @@ class Recommendation(Base):
     __tablename__ = 'recommendations'
     id = Column(Integer, primary_key=True)
     analyst_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
-    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True) # For context, can be null
+    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True)
     
     asset = Column(String, nullable=False, index=True)
     side = Column(String, nullable=False)
@@ -75,11 +75,10 @@ class Recommendation(Base):
     closed_at = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    # --- Relationships ---
     analyst = relationship("User", back_populates="created_recommendations")
     channel = relationship("Channel", back_populates="recommendations")
     events = relationship("RecommendationEvent", back_populates="recommendation", cascade="all, delete-orphan", lazy="selectin")
-    user_trades = relationship("UserTrade", back_populates="source_recommendation", cascade="all, delete-orphan")
+    user_trades = relationship("UserTrade", back_populates="source_recommendation") # Removed cascade
     published_messages = relationship("PublishedMessage", back_populates="recommendation", cascade="all, delete-orphan")
 
 class UserTrade(Base):
@@ -99,10 +98,12 @@ class UserTrade(Base):
     close_price = Column(Numeric(20, 8), nullable=True)
     pnl_percentage = Column(Numeric(10, 4), nullable=True)
     
+    # ✅ THE FIX: Added the missing column definition to match the DB schema.
+    source_forwarded_text = Column(Text, nullable=True)
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     closed_at = Column(DateTime(timezone=True), nullable=True)
 
-    # --- Relationships ---
     user = relationship("User", back_populates="user_trades")
     source_recommendation = relationship("Recommendation", back_populates="user_trades")
 
@@ -124,8 +125,6 @@ class Subscription(Base):
     start_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     end_date = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
-
-    # Relationships defined in User model via back_populates
 
 class AnalystStats(Base):
     __tablename__ = 'analyst_stats'
