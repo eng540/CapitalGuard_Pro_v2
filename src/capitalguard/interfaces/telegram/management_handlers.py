@@ -1,16 +1,12 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v29.5 - Production Ready & Final)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v30.2 - Final UX Implementation)
 """
-إصدار إنتاجي نهائي لإدارة التوصيات والصفقات.
-✅ إصلاح حاسم ونهائي لمشكلة "Message text is empty" عن طريق جعل دالة safe_edit_message أكثر ذكاءً.
-✅ إصلاح تجمد أزرار لوحة التحكم عن طريق تصحيح أنماط Regex.
-✅ إصلاح جذري لمشكلة "انتهاء مدة الجلسة" الفوري.
-✅ بنية نهائية ومستقرة.
+Handles all post-creation management of recommendations via a unified, state-aware UX.
+This file implements the full user workflow for the new Exit Management Platform.
 """
 
 import logging
 import time
 from decimal import Decimal
-
 from telegram import Update, ReplyKeyboardRemove, CallbackQuery
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
@@ -19,32 +15,30 @@ from telegram.ext import (
     ContextTypes, filters, ConversationHandler, CommandHandler
 )
 
-from capitalguard.domain.entities import ExitStrategy
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service, parse_cq_parts
 from .keyboards import (
     analyst_control_panel_keyboard, build_open_recs_keyboard, 
     build_user_trade_control_keyboard, build_close_options_keyboard, 
-    analyst_edit_menu_keyboard, build_exit_strategy_keyboard, 
+    build_trade_data_edit_keyboard,
+    build_exit_management_keyboard,
     build_partial_close_keyboard, CallbackAction, CallbackNamespace
 )
 from .ui_texts import build_trade_card_text
 from .auth import require_active_user, require_analyst_user
-from .parsers import parse_number, parse_targets_list
+from .parsers import parse_number, parse_targets_list, parse_trailing_distance
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors")
 
-# --- Conversation States & Constants ---
-(AWAIT_PARTIAL_PERCENT, AWAIT_PARTIAL_PRICE) = range(2)
+# --- Constants ---
 AWAITING_INPUT_KEY = "awaiting_management_input"
 LAST_ACTIVITY_KEY = "last_activity_management"
-MANAGEMENT_TIMEOUT = 1800
+MANAGEMENT_TIMEOUT = 1800  # 30 minutes
 
 # --- Session & Timeout Management ---
-
 def init_management_session(context: ContextTypes.DEFAULT_TYPE):
     context.user_data[LAST_ACTIVITY_KEY] = time.time()
     context.user_data.pop(AWAITING_INPUT_KEY, None)
@@ -54,31 +48,28 @@ def update_management_activity(context: ContextTypes.DEFAULT_TYPE):
     context.user_data[LAST_ACTIVITY_KEY] = time.time()
 
 def clean_management_state(context: ContextTypes.DEFAULT_TYPE):
-    for key in [AWAITING_INPUT_KEY, LAST_ACTIVITY_KEY, 'partial_close_rec_id', 'partial_close_percent']:
+    for key in [AWAITING_INPUT_KEY, LAST_ACTIVITY_KEY]:
         context.user_data.pop(key, None)
 
 async def handle_management_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if LAST_ACTIVITY_KEY not in context.user_data:
+        # If session was never initialized, don't timeout.
+        # This can happen if the bot restarts and a user clicks an old button.
         return False
+        
     if time.time() - context.user_data.get(LAST_ACTIVITY_KEY, 0) > MANAGEMENT_TIMEOUT:
         clean_management_state(context)
         msg = "⏰ انتهت مدة الجلسة بسبب عدم النشاط.\n\nيرجى استخدام /myportfolio للبدء من جديد."
         if update.callback_query:
             await update.callback_query.answer("انتهت مدة الجلسة", show_alert=True)
-            await safe_edit_message(update.callback_query, text=msg)
+            await safe_edit_message(update.callback_query, text=msg, reply_markup=None)
         elif update.message:
             await update.message.reply_text(msg)
         return True
     return False
 
 # --- Helper Functions ---
-
 async def safe_edit_message(query: CallbackQuery, text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML) -> bool:
-    """
-    ✅ الإصلاح الحاسم: تعديل الدالة لتكون أكثر ذكاءً.
-    - إذا تم توفير نص، تستدعي edit_message_text.
-    - إذا تم توفير لوحة مفاتيح فقط، تستدعي edit_message_reply_markup.
-    """
     try:
         if text is not None:
             await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode, disable_web_page_preview=True)
@@ -98,7 +89,7 @@ async def _send_or_edit_position_panel(query: CallbackQuery, context: ContextTyp
         trade_service = get_service(context, "trade_service", TradeService)
         position = trade_service.get_position_details_for_user(db_session, str(query.from_user.id), position_type, position_id)
         if not position:
-            await safe_edit_message(query, text="❌ المركز غير موجود أو تم إغلاقه.")
+            await safe_edit_message(query, text="❌ المركز غير موجود أو تم إغلاقه.", reply_markup=None)
             return
         price_service = get_service(context, "price_service", PriceService)
         live_price = await price_service.get_cached_price(position.asset.value, position.market, force_refresh=True)
@@ -108,10 +99,9 @@ async def _send_or_edit_position_panel(query: CallbackQuery, context: ContextTyp
         await safe_edit_message(query, text=text, reply_markup=keyboard)
     except Exception as e:
         loge.error(f"Error rendering position panel for {position_type} #{position_id}: {e}", exc_info=True)
-        await safe_edit_message(query, text=f"❌ خطأ في تحميل البيانات: {str(e)}")
+        await safe_edit_message(query, text=f"❌ خطأ في تحميل البيانات: {str(e)}", reply_markup=None)
 
-# --- Entry Point Handlers (Commands) ---
-
+# --- Entry Point & Navigation Handlers ---
 @uow_transaction
 @require_active_user
 async def management_entry_point_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
@@ -129,26 +119,6 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
         loge.error(f"Error in management entry point: {e}", exc_info=True)
         await update.message.reply_text("❌ خطأ في تحميل المراكز المفتوحة.")
 
-# --- CallbackQuery Handlers ---
-
-@uow_transaction
-@require_active_user
-async def navigate_open_positions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    query = update.callback_query
-    await query.answer()
-    update_management_activity(context)
-    if await handle_management_timeout(update, context): return
-    page = int(parse_cq_parts(query.data)[2])
-    try:
-        trade_service = get_service(context, "trade_service", TradeService)
-        price_service = get_service(context, "price_service", PriceService)
-        items = trade_service.get_open_positions_for_user(db_session, str(update.effective_user.id))
-        keyboard = await build_open_recs_keyboard(items, current_page=page, price_service=price_service)
-        await safe_edit_message(query, text="<b>📊 المراكز المفتوحة</b>\nاختر مركزاً للإدارة:", reply_markup=keyboard)
-    except Exception as e:
-        loge.error(f"Error in open positions navigation: {e}", exc_info=True)
-        await safe_edit_message(query, text="❌ خطأ في تحميل المراكز.")
-
 @uow_transaction
 @require_active_user
 async def show_position_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
@@ -162,186 +132,168 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
         await _send_or_edit_position_panel(query, context, db_session, position_type, position_id)
     except (IndexError, ValueError) as e:
         loge.error(f"Could not parse position info from callback: {query.data}, error: {e}")
-        await safe_edit_message(query, text="❌ بيانات استدعاء غير صالحة.")
+        await safe_edit_message(query, text="❌ بيانات استدعاء غير صالحة.", reply_markup=None)
 
 @uow_transaction
 @require_active_user
 @require_analyst_user
-async def show_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Handles displaying all sub-menus for a recommendation."""
     query = update.callback_query
     await query.answer()
     update_management_activity(context)
     if await handle_management_timeout(update, context): return
+    
     parts = parse_cq_parts(query.data)
-    action, rec_id = parts[1], int(parts[2])
-    try:
-        trade_service = get_service(context, "trade_service", TradeService)
-        rec = trade_service.repo.get(db_session, rec_id)
-        if not rec:
-            await query.answer("❌ التوصية غير موجودة.", show_alert=True)
-            return
-        rec_entity = trade_service.repo._to_entity(rec)
-        if action == "edit_menu": keyboard = analyst_edit_menu_keyboard(rec_id)
-        elif action == "close_menu": keyboard = build_close_options_keyboard(rec_id)
-        elif action == "strategy_menu": keyboard = build_exit_strategy_keyboard(rec_entity)
-        elif action == CallbackAction.PARTIAL.value: keyboard = build_partial_close_keyboard(rec_id)
-        else: keyboard = None
-        if keyboard: await safe_edit_message(query, reply_markup=keyboard)
-        else: await query.answer("❌ تعذر تحميل القائمة.", show_alert=True)
-    except Exception as e:
-        loge.error(f"Error in menu handler for rec #{rec_id}: {e}", exc_info=True)
-        await query.answer("❌ خطأ في تحميل القائمة.", show_alert=True)
-
-@uow_transaction
-@require_active_user
-@require_analyst_user
-async def action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    query = update.callback_query
-    await query.answer("جاري التنفيذ...")
-    update_management_activity(context)
-    if await handle_management_timeout(update, context): return
-    parts = parse_cq_parts(query.data)
-    action, rec_id = parts[1], int(parts[2])
+    namespace, action, rec_id_str = parts[0], parts[1], parts[2]
+    rec_id = int(rec_id_str)
+    
     trade_service = get_service(context, "trade_service", TradeService)
-    try:
-        if action == CallbackAction.STRATEGY.value:
-            strategy_value = parts[3]
-            await trade_service.update_exit_strategy_async(rec_id, str(query.from_user.id), ExitStrategy(strategy_value), db_session)
-        else:
-            price_service = get_service(context, "price_service", PriceService)
-            rec_orm = trade_service.repo.get(db_session, rec_id)
-            if not rec_orm: raise ValueError("التوصية غير موجودة.")
-            live_price = await price_service.get_cached_price(rec_orm.asset, rec_orm.market, force_refresh=True)
-            if not live_price: raise ValueError(f"تعذر جلب سعر السوق لـ {rec_orm.asset}.")
-            if action == "close_market":
-                await trade_service.close_recommendation_async(rec_id, str(query.from_user.id), Decimal(str(live_price)), db_session)
-            elif action == CallbackAction.PARTIAL.value:
-                percent_to_close = Decimal(parts[3])
-                await trade_service.partial_close_async(rec_id, str(query.from_user.id), percent_to_close, Decimal(str(live_price)), db_session)
-        await _send_or_edit_position_panel(query, context, db_session, 'rec', rec_id)
-    except Exception as e:
-        loge.error(f"Error in action handler for rec #{rec_id}: {e}", exc_info=True)
-        await query.answer(f"❌ فشل الإجراء: {str(e)}", show_alert=True)
+    rec = trade_service.get_position_details_for_user(db_session, str(query.from_user.id), 'rec', rec_id)
+    if not rec:
+        await query.answer("❌ التوصية غير موجودة.", show_alert=True)
+        return
 
+    keyboard = None
+    if namespace == CallbackNamespace.RECOMMENDATION.value:
+        if action == "edit_menu": keyboard = build_trade_data_edit_keyboard(rec_id)
+        elif action == "close_menu": keyboard = build_close_options_keyboard(rec_id)
+        elif action == "partial_close_menu": keyboard = build_partial_close_keyboard(rec_id)
+    elif namespace == CallbackNamespace.EXIT_STRATEGY.value:
+        if action == "show_menu": keyboard = build_exit_management_keyboard(rec)
+
+    if keyboard:
+        await safe_edit_message(query, reply_markup=keyboard)
+    else:
+        await query.answer("❌ قائمة غير معروفة.", show_alert=True)
+
+# --- Prompt & Reply Handlers ---
 async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Prompts user for input for various editing actions."""
     query = update.callback_query
     await query.answer()
     update_management_activity(context)
     if await handle_management_timeout(update, context): return
+    
     parts = parse_cq_parts(query.data)
-    action, rec_id = parts[1], int(parts[2])
-    prompts = {"edit_sl": "✏️ أرسل وقف الخسارة الجديد:", "edit_tp": "🎯 أرسل قائمة الأهداف الجديدة (e.g., 50k 52k@50):", "close_manual": "✍️ أرسل سعر الإغلاق النهائي:"}
-    context.user_data[AWAITING_INPUT_KEY] = {"action": action, "rec_id": rec_id, "original_query": query}
-    await safe_edit_message(query, text=f"{query.message.text_html}\n\n<b>{prompts.get(action, 'أرسل القيمة الجديدة:')}</b>")
+    namespace, action, rec_id_str = parts[0], parts[1], parts[2]
+    rec_id = int(rec_id_str)
+    
+    prompts = {
+        "edit_sl": "✏️ أرسل وقف الخسارة الجديد:",
+        "edit_tp": "🎯 أرسل قائمة الأهداف الجديدة (e.g., 50k 52k@50):",
+        "edit_entry": "💰 أرسل سعر الدخول الجديد (للتوصيات المعلقة فقط):",
+        "edit_notes": "📝 أرسل الملاحظات الجديدة:",
+        "close_manual": "✍️ أرسل سعر الإغلاق النهائي:",
+        "set_fixed": "🔒 أرسل سعر حجز الربح الثابت:",
+        "set_trailing": "📈 أرسل مسافة التتبع (e.g., 1.5% or 500):",
+    }
+    
+    context.user_data[AWAITING_INPUT_KEY] = {"namespace": namespace, "action": action, "rec_id": rec_id, "original_query": query}
+    await safe_edit_message(query, text=f"{query.message.text_html}\n\n<b>{prompts.get(action, 'أرسل القيمة الجديدة:')}</b>", reply_markup=None)
 
 @uow_transaction
 @require_active_user
 @require_analyst_user
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Handles user text replies to all prompts."""
     update_management_activity(context)
     if await handle_management_timeout(update, context): return
+    
     state = context.user_data.pop(AWAITING_INPUT_KEY, None)
     if not (state and update.message.reply_to_message and state.get("original_query")): return
-    action, rec_id, original_query = state["action"], state["rec_id"], state["original_query"]
+    
+    namespace, action, rec_id, original_query = state["namespace"], state["action"], state["rec_id"], state["original_query"]
     user_input = update.message.text.strip()
     try: await update.message.delete()
     except Exception: pass
+
     trade_service = get_service(context, "trade_service", TradeService)
     try:
-        if action == "close_manual":
-            price = parse_number(user_input)
-            if price is None: raise ValueError("تنسيق السعر غير صالح.")
-            await trade_service.close_recommendation_async(rec_id, str(update.effective_user.id), price, db_session)
-        elif action == "edit_sl":
-            price = parse_number(user_input)
-            if price is None: raise ValueError("تنسيق السعر غير صالح.")
-            await trade_service.update_sl_for_user_async(rec_id, str(update.effective_user.id), price, db_session)
-        elif action == "edit_tp":
-            targets = parse_targets_list(user_input.split())
-            if not targets: raise ValueError("تنسيق الأهداف غير صالح.")
-            await trade_service.update_targets_for_user_async(rec_id, str(update.effective_user.id), targets, db_session)
+        if namespace == CallbackNamespace.EXIT_STRATEGY.value:
+            if action == "set_fixed":
+                price = parse_number(user_input)
+                if price is None: raise ValueError("تنسيق السعر غير صالح.")
+                await trade_service.set_exit_strategy_async(rec_id, str(update.effective_user.id), "FIXED", price=price, session=db_session)
+            elif action == "set_trailing":
+                config = parse_trailing_distance(user_input)
+                if config is None: raise ValueError("تنسيق غير صالح. استخدم نسبة (e.g., '1.5%') أو قيمة (e.g., '500').")
+                await trade_service.set_exit_strategy_async(rec_id, str(update.effective_user.id), "TRAILING", trailing_value=Decimal(str(config["value"])), session=db_session)
+        
+        elif namespace == CallbackNamespace.RECOMMENDATION.value:
+            if action in ["edit_sl", "edit_entry", "close_manual"]:
+                price = parse_number(user_input)
+                if price is None: raise ValueError("تنسيق السعر غير صالح.")
+                if action == "edit_sl": await trade_service.update_sl_for_user_async(rec_id, str(update.effective_user.id), price, db_session)
+                elif action == "edit_entry": await trade_service.update_entry_and_notes_async(rec_id, str(update.effective_user.id), new_entry=price, new_notes=None, db_session=db_session)
+                elif action == "close_manual": await trade_service.close_recommendation_async(rec_id, str(update.effective_user.id), price, db_session)
+            elif action == "edit_tp":
+                targets = parse_targets_list(user_input.split())
+                if not targets: raise ValueError("تنسيق الأهداف غير صالح.")
+                await trade_service.update_targets_for_user_async(rec_id, str(update.effective_user.id), targets, db_session)
+            elif action == "edit_notes":
+                await trade_service.update_entry_and_notes_async(rec_id, str(update.effective_user.id), new_entry=None, new_notes=user_input, db_session=db_session)
+
         await _send_or_edit_position_panel(original_query, context, db_session, 'rec', rec_id)
     except Exception as e:
         loge.error(f"Error processing reply for {action} on #{rec_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ خطأ: {e}\n\nيرجى المحاولة مرة أخرى.")
         context.user_data[AWAITING_INPUT_KEY] = state
 
-# --- Partial Close Conversation ---
-
-async def partial_close_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    update_management_activity(context)
-    if await handle_management_timeout(update, context): return ConversationHandler.END
-    rec_id = int(parse_cq_parts(query.data)[2])
-    context.user_data['partial_close_rec_id'] = rec_id
-    await safe_edit_message(query, text=f"{query.message.text_html}\n\n<b>💰 أرسل النسبة المئوية للإغلاق (e.g., 25.5)</b>")
-    return AWAIT_PARTIAL_PERCENT
-
-async def partial_close_percent_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    update_management_activity(context)
-    if await handle_management_timeout(update, context): return ConversationHandler.END
-    try:
-        percent = parse_number(update.message.text)
-        if not (percent and 0 < percent <= 100): raise ValueError("النسبة يجب أن تكون بين 0 و 100.")
-        context.user_data['partial_close_percent'] = percent
-        await update.message.reply_html(f"✅ النسبة: {percent:g}%\n\n<b>الآن، أرسل سعر الإغلاق.</b>")
-        return AWAIT_PARTIAL_PRICE
-    except ValueError as e:
-        await update.message.reply_text(f"❌ قيمة غير صالحة: {e}. حاول مرة أخرى أو /cancel.")
-        return AWAIT_PARTIAL_PERCENT
-
+# --- Immediate Action Handlers ---
 @uow_transaction
 @require_active_user
 @require_analyst_user
-async def partial_close_price_received(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
-    if await handle_management_timeout(update, context): return ConversationHandler.END
-    try:
-        price = parse_number(update.message.text)
-        if price is None: raise ValueError("تنسيق السعر غير صالح.")
-        percent = context.user_data['partial_close_percent']
-        rec_id = context.user_data['partial_close_rec_id']
-        trade_service = get_service(context, "trade_service", TradeService)
-        await trade_service.partial_close_async(rec_id, str(update.effective_user.id), percent, price, db_session)
-        await update.message.reply_text("✅ تم الإغلاق الجزئي بنجاح.", reply_markup=ReplyKeyboardRemove())
-    except (ValueError, KeyError) as e:
-        await update.message.reply_text(f"❌ خطأ: {e}. حاول مرة أخرى أو /cancel.")
-        return AWAIT_PARTIAL_PRICE
-    except Exception as e:
-        loge.error(f"Error in partial close flow for rec #{context.user_data.get('partial_close_rec_id')}: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ حدث خطأ غير متوقع: {e}", reply_markup=ReplyKeyboardRemove())
-    clean_management_state(context)
-    return ConversationHandler.END
+async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Handles immediate, one-click actions."""
+    query = update.callback_query
+    await query.answer("جاري التنفيذ...")
+    update_management_activity(context)
+    if await handle_management_timeout(update, context): return
 
-async def partial_close_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    clean_management_state(context)
-    await update.message.reply_text("❌ تم إلغاء عملية الإغلاق الجزئي.", reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
+    parts = parse_cq_parts(query.data)
+    namespace, action, rec_id_str = parts[0], parts[1], parts[2]
+    rec_id = int(rec_id_str)
+    trade_service = get_service(context, "trade_service", TradeService)
+
+    try:
+        if namespace == CallbackNamespace.EXIT_STRATEGY.value:
+            if action == "move_to_be":
+                await trade_service.move_sl_to_breakeven_async(rec_id, db_session)
+            elif action == "cancel":
+                await trade_service.set_exit_strategy_async(rec_id, str(query.from_user.id), "NONE", active=False, session=db_session)
+        
+        elif namespace == CallbackNamespace.RECOMMENDATION.value:
+             if action == "close_market":
+                price_service = get_service(context, "price_service", PriceService)
+                rec = trade_service.get_position_details_for_user(db_session, str(query.from_user.id), 'rec', rec_id)
+                if not rec: raise ValueError("التوصية غير موجودة.")
+                live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
+                if not live_price: raise ValueError(f"تعذر جلب سعر السوق لـ {rec.asset.value}.")
+                await trade_service.close_recommendation_async(rec_id, str(query.from_user.id), Decimal(str(live_price)), db_session)
+
+        await _send_or_edit_position_panel(query, context, db_session, 'rec', rec_id)
+    except Exception as e:
+        loge.error(f"Error in immediate action handler for rec #{rec_id}: {e}", exc_info=True)
+        await query.answer(f"❌ فشل الإجراء: {str(e)}", show_alert=True)
 
 # --- Handler Registration ---
-
 def register_management_handlers(app: Application):
     """Registers all management-related handlers."""
-    ns_rec, ns_nav, ns_pos = CallbackNamespace.RECOMMENDATION.value, CallbackNamespace.NAVIGATION.value, CallbackNamespace.POSITION.value
-    
     app.add_handler(CommandHandler(["myportfolio", "open"], management_entry_point_handler))
     
-    app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{ns_nav}:{CallbackAction.NAVIGATE.value}:"))
-    app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^(?:{ns_pos}:{CallbackAction.SHOW.value}:|{ns_rec}:back_to_main:)"))
-    app.add_handler(CallbackQueryHandler(show_menu_handler, pattern=rf"^{ns_rec}:(?:edit_menu|close_menu|strategy_menu|{CallbackAction.PARTIAL.value}):"))
-    app.add_handler(CallbackQueryHandler(action_handler, pattern=rf"^{ns_rec}:(?:{CallbackAction.STRATEGY.value}|close_market|{CallbackAction.PARTIAL.value}):"))
-    app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^{ns_rec}:(?:edit_sl|edit_tp|close_manual):"))
+    # Navigation and Main Panel
+    app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{CallbackNamespace.NAVIGATION.value}:{CallbackAction.NAVIGATE.value}:"))
+    app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.SHOW.value}:"))
+
+    # Sub-menu Display
+    app.add_handler(CallbackQueryHandler(show_submenu_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):show_menu:"))
+
+    # Prompts for user input
+    app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_|set_|close_manual)"))
     
+    # Handler for text replies to prompts
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, reply_handler))
 
-    partial_close_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(partial_close_custom_start, pattern=rf"^{ns_rec}:partial_close_custom:")],
-        states={
-            AWAIT_PARTIAL_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, partial_close_percent_received)],
-            AWAIT_PARTIAL_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, partial_close_price_received)],
-        },
-        fallbacks=[CommandHandler("cancel", partial_close_cancel)],
-        name="partial_close_conversation",
-        per_user=True, per_chat=True, conversation_timeout=MANAGEMENT_TIMEOUT,
-    )
-    app.add_handler(partial_close_conv)
+    # Immediate one-click actions
+    app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market:)"))
