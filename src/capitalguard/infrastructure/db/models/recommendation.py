@@ -3,6 +3,7 @@
 SQLAlchemy ORM models.
 ✅ NEW: Added persistent fields for the profit stop feature to the Recommendation model.
 """
+import sqlalchemy as sa
 from sqlalchemy import (
     Column, Integer, String, DateTime, Boolean,
     ForeignKey, Enum, Text, BigInteger, Numeric, func
