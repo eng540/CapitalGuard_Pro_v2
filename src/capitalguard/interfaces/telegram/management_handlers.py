@@ -1,12 +1,16 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v30.2 - Final UX Implementation)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v30.3 - Final Restoration Fix)
 """
-Handles all post-creation management of recommendations via a unified, state-aware UX.
-This file implements the full user workflow for the new Exit Management Platform.
+Handles all post-creation management of recommendations via a unified UX.
+✅ HOTFIX: Restored missing handler functions (`navigate_open_positions_handler`, etc.)
+that were accidentally removed, fixing a critical startup NameError.
+✅ Implements the full workflow for setting and managing exit strategies.
 """
 
 import logging
 import time
 from decimal import Decimal
+from typing import Optional
+
 from telegram import Update, ReplyKeyboardRemove, CallbackQuery
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
@@ -34,9 +38,10 @@ log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors")
 
 # --- Constants ---
+(AWAIT_PARTIAL_PERCENT, AWAIT_PARTIAL_PRICE) = range(2)
 AWAITING_INPUT_KEY = "awaiting_management_input"
 LAST_ACTIVITY_KEY = "last_activity_management"
-MANAGEMENT_TIMEOUT = 1800  # 30 minutes
+MANAGEMENT_TIMEOUT = 1800
 
 # --- Session & Timeout Management ---
 def init_management_session(context: ContextTypes.DEFAULT_TYPE):
@@ -48,15 +53,12 @@ def update_management_activity(context: ContextTypes.DEFAULT_TYPE):
     context.user_data[LAST_ACTIVITY_KEY] = time.time()
 
 def clean_management_state(context: ContextTypes.DEFAULT_TYPE):
-    for key in [AWAITING_INPUT_KEY, LAST_ACTIVITY_KEY]:
+    for key in [AWAITING_INPUT_KEY, LAST_ACTIVITY_KEY, 'partial_close_rec_id', 'partial_close_percent']:
         context.user_data.pop(key, None)
 
 async def handle_management_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if LAST_ACTIVITY_KEY not in context.user_data:
-        # If session was never initialized, don't timeout.
-        # This can happen if the bot restarts and a user clicks an old button.
         return False
-        
     if time.time() - context.user_data.get(LAST_ACTIVITY_KEY, 0) > MANAGEMENT_TIMEOUT:
         clean_management_state(context)
         msg = "⏰ انتهت مدة الجلسة بسبب عدم النشاط.\n\nيرجى استخدام /myportfolio للبدء من جديد."
@@ -119,6 +121,28 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
         loge.error(f"Error in management entry point: {e}", exc_info=True)
         await update.message.reply_text("❌ خطأ في تحميل المراكز المفتوحة.")
 
+# ✅ RESTORED HANDLER
+@uow_transaction
+@require_active_user
+async def navigate_open_positions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    query = update.callback_query
+    await query.answer()
+    update_management_activity(context)
+    if await handle_management_timeout(update, context): return
+    
+    parts = parse_cq_parts(query.data)
+    page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    
+    try:
+        trade_service = get_service(context, "trade_service", TradeService)
+        price_service = get_service(context, "price_service", PriceService)
+        items = trade_service.get_open_positions_for_user(db_session, str(update.effective_user.id))
+        keyboard = await build_open_recs_keyboard(items, current_page=page, price_service=price_service)
+        await safe_edit_message(query, text="<b>📊 المراكز المفتوحة</b>\nاختر مركزاً للإدارة:", reply_markup=keyboard)
+    except Exception as e:
+        loge.error(f"Error in open positions navigation: {e}", exc_info=True)
+        await safe_edit_message(query, text="❌ خطأ في تحميل المراكز.")
+
 @uow_transaction
 @require_active_user
 async def show_position_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
@@ -138,7 +162,6 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
 @require_active_user
 @require_analyst_user
 async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """Handles displaying all sub-menus for a recommendation."""
     query = update.callback_query
     await query.answer()
     update_management_activity(context)
@@ -169,7 +192,6 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # --- Prompt & Reply Handlers ---
 async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Prompts user for input for various editing actions."""
     query = update.callback_query
     await query.answer()
     update_management_activity(context)
@@ -196,7 +218,6 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_active_user
 @require_analyst_user
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """Handles user text replies to all prompts."""
     update_management_activity(context)
     if await handle_management_timeout(update, context): return
     
@@ -245,7 +266,6 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
 @require_active_user
 @require_analyst_user
 async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """Handles immediate, one-click actions."""
     query = update.callback_query
     await query.answer("جاري التنفيذ...")
     update_management_activity(context)
@@ -282,18 +302,9 @@ def register_management_handlers(app: Application):
     """Registers all management-related handlers."""
     app.add_handler(CommandHandler(["myportfolio", "open"], management_entry_point_handler))
     
-    # Navigation and Main Panel
     app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{CallbackNamespace.NAVIGATION.value}:{CallbackAction.NAVIGATE.value}:"))
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.SHOW.value}:"))
-
-    # Sub-menu Display
     app.add_handler(CallbackQueryHandler(show_submenu_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):show_menu:"))
-
-    # Prompts for user input
     app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_|set_|close_manual)"))
-    
-    # Handler for text replies to prompts
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, reply_handler))
-
-    # Immediate one-click actions
     app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market:)"))
