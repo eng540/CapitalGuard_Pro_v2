@@ -1,7 +1,8 @@
-# src/capitalguard/application/services/alert_service.py (v26.1 - StrategyEngine Integration)
+# src/capitalguard/application/services/alert_service.py (v26.2 - DetachedInstanceError Hotfix)
 """
 AlertService - Orchestrates price updates, delegating complex exit strategy
 logic to the StrategyEngine, while handling core SL/TP/Entry triggers.
+✅ HOTFIX: Now works with dictionaries from the repository to prevent DetachedInstanceError.
 """
 
 import logging
@@ -14,7 +15,7 @@ import time
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
-from capitalguard.infrastructure.db.models import Recommendation, RecommendationStatusEnum
+from capitalguard.infrastructure.db.models import RecommendationStatusEnum
 from capitalguard.application.strategy.engine import StrategyEngine
 
 if False:
@@ -48,11 +49,9 @@ class AlertService:
         self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
 
     def start(self):
-        """Starts the AlertService and its background tasks in a separate thread."""
         if self._bg_thread and self._bg_thread.is_alive():
             log.warning("AlertService background thread already running.")
             return
-
         def _bg_runner():
             try:
                 loop = asyncio.new_event_loop()
@@ -60,26 +59,22 @@ class AlertService:
                 asyncio.set_event_loop(loop)
                 self._processing_task = loop.create_task(self._process_queue())
                 self._index_sync_task = loop.create_task(self._run_index_sync())
-                if hasattr(self.streamer, "start"):
-                    self.streamer.start(loop=loop)
+                if hasattr(self.streamer, "start"): self.streamer.start(loop=loop)
                 loop.run_forever()
             except Exception:
                 log.exception("AlertService background runner crashed.")
             finally:
                 if self._bg_loop and self._bg_loop.is_running():
                     self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
-        
         self._bg_thread = threading.Thread(target=_bg_runner, name="alertservice-bg", daemon=True)
         self._bg_thread.start()
         log.info("AlertService started in background thread.")
 
     async def build_triggers_index(self):
-        """Builds the in-memory index of all active triggers from the database."""
         log.info("Attempting to build in-memory trigger index...")
         try:
             with session_scope() as session:
-                # Fetch all active recommendations (PENDING or ACTIVE)
-                active_recs = self.repo.get_all_active_recs(session)
+                trigger_data_list = self.repo.list_all_active_triggers_data(session)
         except Exception:
             log.critical("CRITICAL: DB read failure during trigger index build.", exc_info=True)
             return
@@ -87,70 +82,56 @@ class AlertService:
         new_triggers: Dict[str, List[Dict[str, Any]]] = {}
         active_rec_ids = set()
 
-        for rec in active_recs:
+        for item in trigger_data_list:
             try:
-                asset = rec.asset
+                asset = item.get("asset")
                 if not asset: continue
                 
-                active_rec_ids.add(rec.id)
-                # Initialize state in StrategyEngine for this active recommendation
-                self.strategy_engine.initialize_state_for_recommendation(rec)
+                active_rec_ids.add(item['id'])
+                self.strategy_engine.initialize_state_for_recommendation(item)
 
-                trigger_key = f"{asset.upper()}:{rec.market or 'Futures'}"
-                if trigger_key not in new_triggers:
-                    new_triggers[trigger_key] = []
-                
-                # Prepare a dictionary with all necessary data for evaluation
-                trigger_data = {
-                    "id": rec.id,
-                    "user_id": str(rec.analyst.telegram_user_id) if rec.analyst else None,
-                    "asset": rec.asset,
-                    "side": rec.side,
-                    "entry": Decimal(str(rec.entry)),
-                    "stop_loss": Decimal(str(rec.stop_loss)),
-                    "targets": rec.targets,
-                    "status": rec.status,
-                    "processed_events": {e.event_type for e in rec.events},
-                }
-                new_triggers[trigger_key].append(trigger_data)
+                trigger_key = f"{asset.upper()}:{item.get('market', 'Futures')}"
+                if trigger_key not in new_triggers: new_triggers[trigger_key] = []
+                new_triggers[trigger_key].append(item)
             except Exception:
-                log.exception("Failed processing trigger for recommendation: %s", rec.id)
+                log.exception("Failed processing trigger item: %s", item)
         
         async with self._triggers_lock:
             self.active_triggers = new_triggers
         
-        # Clean up stale states in StrategyEngine for recommendations that are no longer active
         stale_ids = set(self.strategy_engine._state.keys()) - active_rec_ids
         for rec_id in stale_ids:
             self.strategy_engine._state.pop(rec_id, None)
 
-        log.info("✅ Trigger index rebuilt: %d items across %d unique asset/market pairs.", len(active_recs), len(new_triggers))
+        log.info("✅ Trigger index rebuilt: %d items across %d unique asset/market pairs.", len(trigger_data_list), len(new_triggers))
 
     async def _run_index_sync(self, interval_seconds: int = 60):
-        """Periodically rebuilds the trigger index to catch new or closed trades."""
         log.info("Index sync task started (interval=%ss).", interval_seconds)
         while True:
             await asyncio.sleep(interval_seconds)
             await self.build_triggers_index()
 
     async def _process_queue(self):
-        """Main processing loop that consumes price updates from the queue."""
         log.info("AlertService queue processor started.")
         while True:
             try:
                 symbol, market, low_price, high_price = await self.price_queue.get()
-                
-                # Delegate advanced strategy evaluation to the engine for each price in the tick
-                with session_scope() as db_session:
-                    # Find all relevant recommendations from the DB for this tick
-                    recs_to_evaluate = self.repo.get_active_recs_for_asset_and_market(db_session, symbol, market)
-                    for rec in recs_to_evaluate:
-                        # Evaluate for both high and low price to catch wicks
-                        await self.strategy_engine.evaluate_recommendation(db_session, rec, Decimal(str(high_price)), Decimal(str(low_price)))
-
-                # Handle core triggers (Entry, SL, TP) using the in-memory index for speed
                 trigger_key = f"{symbol.upper()}:{market}"
-                await self.check_and_process_core_alerts(trigger_key, Decimal(str(low_price)), Decimal(str(high_price)))
+                
+                async with self._triggers_lock:
+                    triggers_for_key = self.active_triggers.get(trigger_key, [])
+
+                if not triggers_for_key:
+                    self.price_queue.task_done()
+                    continue
+
+                # Evaluate all triggers for this asset
+                for trigger in triggers_for_key:
+                    # Delegate advanced strategy evaluation
+                    await self.strategy_engine.evaluate_recommendation(trigger, Decimal(str(high_price)), Decimal(str(low_price)))
+                    
+                    # Handle core triggers
+                    await self.check_and_process_core_alerts(trigger, Decimal(str(low_price)), Decimal(str(high_price)))
                 
                 self.price_queue.task_done()
             except asyncio.CancelledError:
@@ -160,7 +141,6 @@ class AlertService:
                 log.exception("Unexpected error in queue processor.")
 
     def stop(self):
-        """Stops the AlertService and its background tasks."""
         if hasattr(self.streamer, "stop"): self.streamer.stop()
         if self._bg_loop:
             tasks = [self._processing_task, self._index_sync_task]
@@ -171,7 +151,6 @@ class AlertService:
         log.info("AlertService stopped and cleaned up.")
 
     def _is_price_condition_met(self, side: str, low_price: Decimal, high_price: Decimal, target_price: Decimal, condition_type: str) -> bool:
-        """Checks if a price condition (SL, TP, Entry) has been met."""
         side_upper = side.upper()
         cond = condition_type.upper()
         if side_upper == "LONG":
@@ -184,49 +163,30 @@ class AlertService:
             if cond == "ENTRY": return high_price >= target_price
         return False
 
-    async def check_and_process_core_alerts(self, trigger_key: str, low_price: Decimal, high_price: Decimal):
-        """Handles only the core triggers: Entry, SL, and TP."""
-        async with self._triggers_lock:
-            triggers_for_key = self.active_triggers.get(trigger_key, [])
+    async def check_and_process_core_alerts(self, trigger: Dict[str, Any], low_price: Decimal, high_price: Decimal):
+        item_id = trigger["id"]
+        status = trigger["status"]
+        side = trigger["side"]
         
-        if not triggers_for_key: return
+        try:
+            if status == RecommendationStatusEnum.PENDING:
+                entry_price, sl_price = trigger["entry"], trigger["stop_loss"]
+                if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
+                    await self.trade_service.process_invalidation_event(item_id)
+                elif self._is_price_condition_met(side, low_price, high_price, entry_price, "ENTRY"):
+                    await self.trade_service.process_activation_event(item_id)
 
-        processed_item_ids = set()
-        for trigger in triggers_for_key:
-            item_id = trigger["id"]
-            if item_id in processed_item_ids: continue
+            elif status == RecommendationStatusEnum.ACTIVE:
+                sl_price = trigger["stop_loss"]
+                if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
+                    await self.trade_service.process_sl_hit_event(item_id, sl_price)
+                    return # Stop further checks if SL is hit
 
-            status = trigger["status"]
-            side = trigger["side"]
-            
-            try:
-                if status == RecommendationStatusEnum.PENDING:
-                    entry_price, sl_price = trigger["entry"], trigger["stop_loss"]
-                    if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
-                        log.warning("Invalidation HIT for PENDING Rec #%s: SL hit before entry.", item_id)
-                        await self.trade_service.process_invalidation_event(item_id)
-                        processed_item_ids.add(item_id)
-                    elif self._is_price_condition_met(side, low_price, high_price, entry_price, "ENTRY"):
-                        log.info("Activation HIT for PENDING Rec #%s.", item_id)
-                        await self.trade_service.process_activation_event(item_id)
-                        processed_item_ids.add(item_id)
-
-                elif status == RecommendationStatusEnum.ACTIVE:
-                    sl_price = trigger["stop_loss"]
-                    if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
-                        log.info("SL HIT for ACTIVE item #%s.", item_id)
-                        await self.trade_service.process_sl_hit_event(item_id, sl_price)
-                        processed_item_ids.add(item_id)
-                        continue
-
-                    for i, target in enumerate(trigger["targets"], 1):
-                        if f"TP{i}_HIT" in trigger["processed_events"]: continue
-                        target_price = Decimal(str(target['price']))
-                        if self._is_price_condition_met(side, low_price, high_price, target_price, "TP"):
-                            log.info("TP%d HIT for ACTIVE item #%s.", i, item_id)
-                            await self.trade_service.process_tp_hit_event(item_id, i, target_price)
-                            processed_item_ids.add(item_id)
-            
-            except Exception as e:
-                log.error("Error processing core trigger for item #%s: %s", item_id, e, exc_info=True)
-                processed_item_ids.add(item_id)
+                for i, target in enumerate(trigger["targets"], 1):
+                    if f"TP{i}_HIT" in trigger["processed_events"]: continue
+                    target_price = Decimal(str(target['price']))
+                    if self._is_price_condition_met(side, low_price, high_price, target_price, "TP"):
+                        await self.trade_service.process_tp_hit_event(item_id, i, target_price)
+        
+        except Exception as e:
+            log.error("Error processing core trigger for item #%s: %s", item_id, e, exc_info=True)
