@@ -1,7 +1,7 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v21.6 - Final Exit Management UI)
+# src/capitalguard/interfaces/telegram/keyboards.py (v21.7 - Final Exit Management UI)
 """
 Builds all Telegram keyboards for the bot.
-✅ NEW: Implements the new unified Exit Management control panel and sub-panels.
+✅ NEW: Implements the new unified Exit Management control panel and all its sub-panels.
 ✅ REFINED: All callback data now uses the unified CallbackBuilder for maximum reliability.
 This is the final, production-ready version for the new feature.
 """
@@ -110,7 +110,7 @@ class NavigationBuilder:
 # --- Keyboard Factories ---
 
 def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
-    """The new unified control panel for active recommendations."""
+    """The unified control panel for active recommendations."""
     rec_id = rec.id
     keyboard = [
         [
@@ -125,7 +125,7 @@ def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def build_exit_management_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
-    """The new exit strategy management panel."""
+    """The exit strategy management panel."""
     rec_id = rec.id
     keyboard = [
         [InlineKeyboardButton("⚖️ نقل الوقف إلى التعادل (فوري)", callback_data=CallbackBuilder.create(CallbackNamespace.EXIT_STRATEGY, "move_to_be", rec_id))],
@@ -139,7 +139,7 @@ def build_exit_management_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def build_trade_data_edit_keyboard(rec_id: int) -> InlineKeyboardMarkup:
-    """The new trade data editing panel."""
+    """The trade data editing panel."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💰 تعديل سعر الدخول", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_entry", rec_id))],
         [InlineKeyboardButton("🛑 تعديل وقف الخسارة", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_sl", rec_id))],
@@ -148,10 +148,9 @@ def build_trade_data_edit_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))],
     ])
 
-# --- Other Keyboards (Largely Unchanged) ---
+# --- Other Keyboards ---
 
 async def build_open_recs_keyboard(items: List[Any], current_page: int, price_service: PriceService) -> InlineKeyboardMarkup:
-    # ... (Implementation is unchanged)
     try:
         total_items = len(items)
         total_pages = math.ceil(total_items / ITEMS_PER_PAGE) or 1
@@ -199,12 +198,12 @@ def build_confirmation_keyboard(namespace: str, item_id: int, confirm_text: str 
         InlineKeyboardButton(cancel_text, callback_data=CallbackBuilder.create(namespace, CallbackAction.CANCEL, item_id)),
     ]])
 
-# ... (Other minor keyboards like public_channel_keyboard, etc., are unchanged)
 def public_channel_keyboard(rec_id: int, bot_username: Optional[str]) -> InlineKeyboardMarkup:
     buttons = []
     if bot_username:
         buttons.append(InlineKeyboardButton("📊 تتبّع الإشارة", url=f"https://t.me/{bot_username}?start=track_{rec_id}"))
     return InlineKeyboardMarkup([buttons])
+
 def build_user_trade_control_keyboard(trade_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 تحديث السعر", callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.UPDATE, "trade", trade_id)), InlineKeyboardButton("❌ إغلاق الصفقة", callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.CLOSE, "trade", trade_id))],
