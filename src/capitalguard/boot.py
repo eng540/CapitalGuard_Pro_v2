@@ -1,8 +1,10 @@
-# src/capitalguard/boot.py (v26.1 - StrategyEngine DI)
+# src/capitalguard/boot.py (v26.2 - StrategyEngine DI)
 """
 Bootstrap and dependency injection setup for the application.
-✅ NEW: Initializes and injects the new StrategyEngine.
+✅ NEW: Initializes and injects the new StrategyEngine into the AlertService.
+This file is responsible for assembling all application components.
 """
+
 import os
 import logging
 from typing import Dict, Any, Optional
@@ -10,8 +12,11 @@ from typing import Dict, Any, Optional
 from telegram.ext import Application, BasePersistence
 
 from capitalguard.config import settings
-from capitalguard.application.services import *
-from capitalguard.application.strategy.engine import StrategyEngine # ✅ NEW IMPORT
+from capitalguard.application.services import (
+    TradeService, AnalyticsService, PriceService, AlertService,
+    MarketDataService, AuditService, ImageParsingService
+)
+from capitalguard.application.strategy.engine import StrategyEngine
 from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository, ChannelRepository
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 
@@ -23,7 +28,7 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
     services = {}
     
     try:
-        # Infrastructure Components
+        # --- Infrastructure Components ---
         notifier = TelegramNotifier()
         if ptb_app:
             notifier.set_ptb_app(ptb_app)
@@ -33,7 +38,7 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         services['user_repo_class'] = UserRepository
         services['channel_repo_class'] = ChannelRepository
 
-        # Core Application Services
+        # --- Core Application Services ---
         services['price_service'] = PriceService()
         services['market_data_service'] = MarketDataService()
         services['analytics_service'] = AnalyticsService(repo=services['recommendation_repo'])
@@ -48,22 +53,25 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         )
         services['trade_service'] = trade_service
         
-        # ✅ NEW: Strategy Engine Initialization
+        # --- Strategy & Alerting Layer ---
+        
+        # 1. Initialize the new StrategyEngine
         strategy_engine = StrategyEngine(trade_service=trade_service)
         services['strategy_engine'] = strategy_engine
         
-        # Alert Service with StrategyEngine injected
+        # 2. Initialize AlertService and inject the StrategyEngine
         alert_service = AlertService(
             trade_service=trade_service,
             price_service=services['price_service'],
             repo=services['recommendation_repo'],
-            strategy_engine=strategy_engine # ✅ INJECTION
+            strategy_engine=strategy_engine
         )
         services['alert_service'] = alert_service
         
+        # Circular dependency injection
         trade_service.alert_service = alert_service
         
-        log.info("✅ All services built successfully.")
+        log.info("✅ All services built and wired successfully.")
         return services
 
     except Exception as e:
@@ -80,8 +88,9 @@ def bootstrap_app(persistence: Optional[BasePersistence] = None) -> Optional[App
             from telegram.ext import PicklePersistence
             log.warning("No persistence object provided. Falling back to default PicklePersistence.")
             persistence = PicklePersistence(filepath="./telegram_bot_persistence")
+            
         ptb_app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
         return ptb_app
     except Exception as e:
-        log.critical(f"❌ Application bootstrap failed: {e}", exc_info=True)
+        log.critical(f"❌ Application bootstrap failed during PTB app creation: {e}", exc_info=True)
         raise
