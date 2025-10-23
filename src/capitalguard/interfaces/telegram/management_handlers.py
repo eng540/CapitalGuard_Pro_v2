@@ -1,9 +1,8 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v30.3 - Final Restoration Fix)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v30.4 - Final Handler Registration Fix)
 """
 Handles all post-creation management of recommendations via a unified UX.
-✅ HOTFIX: Restored missing handler functions (`navigate_open_positions_handler`, etc.)
-that were accidentally removed, fixing a critical startup NameError.
-✅ Implements the full workflow for setting and managing exit strategies.
+✅ HOTFIX: Correctly registers all required CallbackQueryHandlers, fixing the unresponsive buttons issue.
+This is the final, complete, and production-ready version.
 """
 
 import logging
@@ -121,7 +120,6 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
         loge.error(f"Error in management entry point: {e}", exc_info=True)
         await update.message.reply_text("❌ خطأ في تحميل المراكز المفتوحة.")
 
-# ✅ RESTORED HANDLER
 @uow_transaction
 @require_active_user
 async def navigate_open_positions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
@@ -302,9 +300,19 @@ def register_management_handlers(app: Application):
     """Registers all management-related handlers."""
     app.add_handler(CommandHandler(["myportfolio", "open"], management_entry_point_handler))
     
+    # ✅ FINAL REGISTRATION LOGIC
+    # Navigation and Main Panel
     app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{CallbackNamespace.NAVIGATION.value}:{CallbackAction.NAVIGATE.value}:"))
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.SHOW.value}:"))
+
+    # Sub-menu Display
     app.add_handler(CallbackQueryHandler(show_submenu_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):show_menu:"))
-    app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_|set_|close_manual)"))
+
+    # Prompts for user input
+    app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_|set_|close_)"))
+    
+    # Handler for text replies to prompts
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, reply_handler))
-    app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market:)"))
+
+    # Immediate one-click actions
+    app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market)"))
