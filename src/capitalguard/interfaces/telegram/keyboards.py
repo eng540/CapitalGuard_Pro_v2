@@ -1,10 +1,10 @@
-# src/capitalguard/interfaces/telegram/keyboards.py (v21.9 - Final Restoration Fix)
+# src/capitalguard/interfaces/telegram/keyboards.py (v21.10 - Final UX Hotfix)
 """
 Builds all Telegram keyboards for the bot.
-✅ HOTFIX 2: Restored all missing creation-flow keyboards (`main_creation_keyboard`, etc.)
-that were accidentally removed, fixing the final critical startup ImportError.
-✅ Implements the new unified Exit Management control panel and all its sub-panels.
-✅ All callback data now uses the unified CallbackBuilder for maximum reliability.
+✅ UX HOTFIX: Restored direct access to "Partial Close" and "Full Close" buttons
+on the main analyst control panel for better usability.
+- Implements the new unified Exit Management control panel and all its sub-panels.
+- All callback data now uses the unified CallbackBuilder for maximum reliability.
 """
 
 import math
@@ -119,8 +119,10 @@ def analyst_control_panel_keyboard(rec: Recommendation) -> InlineKeyboardMarkup:
             InlineKeyboardButton("💰 إغلاق جزئي", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "partial_close_menu", rec_id)),
             InlineKeyboardButton("❌ إغلاق كلي", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "close_menu", rec_id)),
         ],
-        [InlineKeyboardButton("📈 إدارة الخروج والمخاطر", callback_data=CallbackBuilder.create(CallbackNamespace.EXIT_STRATEGY, "show_menu", rec_id))],
-        [InlineKeyboardButton("✏️ تعديل بيانات الصفقة", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_menu", rec_id))],
+        [
+            InlineKeyboardButton("📈 إدارة الخروج والمخاطر", callback_data=CallbackBuilder.create(CallbackNamespace.EXIT_STRATEGY, "show_menu", rec_id)),
+            InlineKeyboardButton("✏️ تعديل بيانات الصفقة", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "edit_menu", rec_id)),
+        ],
         [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, 1))],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -214,10 +216,7 @@ def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineK
         return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ الانضمام للقناة", url=channel_link)]])
     return None
 
-# --- ✅ RESTORED: Creation Flow Keyboards ---
-
 def main_creation_keyboard() -> InlineKeyboardMarkup:
-    """The main menu for choosing a recommendation creation method."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 المنشئ التفاعلي", callback_data="method_interactive")],
         [InlineKeyboardButton("⚡️ الأمر السريع", callback_data="method_quick")],
@@ -225,31 +224,24 @@ def main_creation_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def asset_choice_keyboard(recent_assets: List[str]) -> InlineKeyboardMarkup:
-    """Keyboard for selecting an asset."""
     buttons = [InlineKeyboardButton(asset, callback_data=f"asset_{asset}") for asset in recent_assets]
     keyboard = [buttons[i: i + 3] for i in range(0, len(buttons), 3)]
     keyboard.append([InlineKeyboardButton("✍️ اكتب أصلاً جديدًا", callback_data="asset_new")])
     return InlineKeyboardMarkup(keyboard)
 
 def side_market_keyboard(current_market: str = "Futures") -> InlineKeyboardMarkup:
-    """Keyboard for selecting trade side and market."""
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(f"🟢 LONG / {current_market}", callback_data="side_LONG"),
-            InlineKeyboardButton(f"🔴 SHORT / {current_market}", callback_data="side_SHORT"),
-        ],
+        [InlineKeyboardButton(f"🟢 LONG / {current_market}", callback_data="side_LONG"), InlineKeyboardButton(f"🔴 SHORT / {current_market}", callback_data="side_SHORT")],
         [InlineKeyboardButton(f"🔄 تغيير السوق", callback_data="side_menu")],
     ])
 
 def market_choice_keyboard() -> InlineKeyboardMarkup:
-    """Keyboard for choosing the market type."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📈 Futures", callback_data="market_Futures"), InlineKeyboardButton("💎 Spot", callback_data="market_Spot")],
         [InlineKeyboardButton("⬅️ عودة", callback_data="market_back")],
     ])
 
 def order_type_keyboard() -> InlineKeyboardMarkup:
-    """Keyboard for selecting the order type."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Market", callback_data="type_MARKET")],
         [InlineKeyboardButton("🎯 Limit", callback_data="type_LIMIT")],
@@ -257,19 +249,14 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
-    """The final review keyboard before publishing."""
     short_token = review_token[:12]
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ نشر الآن", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "publish", short_token))],
-        [
-            InlineKeyboardButton("📢 اختيار القنوات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "choose_channels", short_token)),
-            InlineKeyboardButton("📝 إضافة ملاحظات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "add_notes", short_token)),
-        ],
+        [InlineKeyboardButton("📢 اختيار القنوات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "choose_channels", short_token)), InlineKeyboardButton("📝 إضافة ملاحظات", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "add_notes", short_token))],
         [InlineKeyboardButton("❌ إلغاء", callback_data=CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "cancel", short_token))],
     ])
 
 def build_channel_picker_keyboard(review_token: str, channels: Iterable[Any], selected_ids: Set[int], page: int = 1, per_page: int = 6) -> InlineKeyboardMarkup:
-    """Builds the channel picker keyboard with pagination."""
     try:
         ch_list = list(channels)
         total = len(ch_list)
