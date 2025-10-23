@@ -1,9 +1,8 @@
-# src/capitalguard/interfaces/telegram/ui_texts.py (v28.2 - Final & Production Ready)
+# src/capitalguard/interfaces/telegram/ui_texts.py (v28.3 - Final Hotfix)
 """
 Contains helper functions for building the text content of Telegram messages.
-This is the final, complete, and reliable version, featuring event-driven
-rendering for the logbook, accurate weighted PnL calculations, and robust
-number formatting. This file is 100% complete.
+✅ HOTFIX: Restored the missing `_normalize_pct_value` function to resolve a critical startup ImportError.
+This is the final, complete, and reliable version.
 """
 
 from __future__ import annotations
@@ -30,8 +29,6 @@ def _format_price(price: Any) -> str:
     price_dec = _to_decimal(price)
     if not price_dec.is_finite():
         return "N/A"
-    # Use 'f' format specifier to force standard decimal notation,
-    # then combine with normalize() to remove trailing zeros.
     return f"{price_dec.normalize():f}"
 
 def _pct(entry: Any, target_price: Any, side: str) -> float:
@@ -44,6 +41,26 @@ def _pct(entry: Any, target_price: Any, side: str) -> float:
         else: return 0.0
         return float(pnl)
     except (InvalidOperation, TypeError, ZeroDivisionError): return 0.0
+
+# ✅ RESTORED FUNCTION
+def _normalize_pct_value(pct_raw: Any) -> Decimal:
+    """
+    Normalize the output of ui_texts._pct to a Decimal for numeric comparisons.
+    Accepts numbers, Decimal, or formatted strings like '+1.23%' or '1.23'.
+    Falls back to Decimal(0) on parse failure while logging a warning.
+    """
+    try:
+        if isinstance(pct_raw, Decimal):
+            return pct_raw
+        if isinstance(pct_raw, (int, float)):
+            return Decimal(str(pct_raw))
+        if isinstance(pct_raw, str):
+            s = pct_raw.strip().replace('%', '').replace('+', '').replace(',', '')
+            return Decimal(s)
+        return Decimal(str(pct_raw))
+    except (InvalidOperation, Exception) as exc:
+        logger.warning("Unable to normalize pct value '%s' (%s); defaulting to 0", pct_raw, exc)
+        return Decimal(0)
 
 def _format_pnl(pnl: float) -> str:
     return f"{pnl:+.2f}%"
@@ -60,14 +77,10 @@ def _rr(entry: Any, sl: Any, first_target: Optional[Target]) -> str:
     except Exception: return "—"
 
 def _calculate_weighted_pnl(rec: Recommendation) -> float:
-    """
-    A correct, event-driven weighted PnL calculation. It uses the event log
-    as the single source of truth for all closing activities.
-    """
     total_pnl_contribution = 0.0
     total_percent_closed = 0.0
     
-    closure_event_types = ("PARTIAL_CLOSE_MANUAL", "PARTIAL_CLOSE_AUTO", "FINAL_PARTIAL_CLOSE")
+    closure_event_types = ("PARTIAL_CLOSE_MANUAL", "PARTIAL_CLOSE_AUTO", "FINAL_CLOSE")
 
     if not rec.events:
         if rec.status == RecommendationStatus.CLOSED and rec.exit_price is not None:
@@ -85,13 +98,11 @@ def _calculate_weighted_pnl(rec: Recommendation) -> float:
                 total_pnl_contribution += (closed_pct / 100.0) * pnl_on_part
                 total_percent_closed += closed_pct
 
-    # Fallback for simple trades closed by SL_HIT or MANUAL_CLOSE without partials
     if total_percent_closed == 0 and rec.status == RecommendationStatus.CLOSED and rec.exit_price is not None:
         return _pct(rec.entry.value, rec.exit_price, rec.side.value)
         
-    # Normalize in case of floating point inaccuracies (e.g., 99.99% closed)
     if total_percent_closed > 99.9 and total_percent_closed < 100.1:
-        normalization_factor = 100.0 / total_percent_closed
+        normalization_factor = 100.0 / total_percent_closed if total_percent_closed > 0 else 1.0
         return total_pnl_contribution * normalization_factor
 
     return total_pnl_contribution
@@ -161,7 +172,7 @@ def _build_logbook_section(rec: Recommendation) -> str:
     lines = []
     log_events = [
         event for event in (rec.events or []) 
-        if getattr(event, "event_type", "") in ("PARTIAL_CLOSE_MANUAL", "PARTIAL_CLOSE_AUTO", "FINAL_PARTIAL_CLOSE")
+        if getattr(event, "event_type", "") in ("PARTIAL_CLOSE_MANUAL", "PARTIAL_CLOSE_AUTO", "FINAL_CLOSE")
     ]
     if not log_events:
         return ""
