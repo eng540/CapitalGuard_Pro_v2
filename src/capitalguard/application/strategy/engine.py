@@ -1,104 +1,129 @@
-# src/capitalguard/application/strategy/engine.py (v1.1 - Dict Hotfix)
+# src/capitalguard/application/strategy/engine.py (v2.1 - Final Logic Implementation)
 """
-StrategyEngine v1.1 - Stateful, reliable, and focused rule engine for exit strategies.
-✅ HOTFIX: Refactored to work with dictionaries instead of ORM objects to prevent
-AttributeError and align with AlertService's data structure.
+StrategyEngine v2.1 - A pure, stateful, and reliable rule engine for exit strategies.
+
+- Decoupled from the database; operates only on dictionaries.
+- Returns a list of Action objects for the AlertService to execute.
+- Correctly implements stateful logic for Fixed and Trailing stops.
+- All logic is now finalized and production-ready.
 """
 
 import logging
 from decimal import Decimal
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
 
-from sqlalchemy.orm import Session
-
-from capitalguard.infrastructure.db.models import RecommendationEvent, RecommendationStatusEnum
+from capitalguard.infrastructure.db.models import RecommendationStatusEnum
 from capitalguard.application.services.trade_service import TradeService
 
 logger = logging.getLogger(__name__)
 
+# --- Action Data Classes ---
+@dataclass
+class BaseAction:
+    rec_id: int
+
+@dataclass
+class CloseAction(BaseAction):
+    price: Decimal
+    reason: str
+
+@dataclass
+class MoveSLAction(BaseAction):
+    new_sl: Decimal
+
+# --- Strategy Engine ---
+
 class StrategyEngine:
     """
     Evaluates advanced exit strategies using a stateful in-memory cache.
-    This version operates on dictionaries to remain decoupled from SQLAlchemy sessions.
+    It expects trigger data as dictionaries and returns a list of actions.
     """
     def __init__(self, trade_service: TradeService):
         self.trade_service = trade_service
-        self._state: Dict[int, Dict] = {}
+        self._state: Dict[int, Dict] = {}  # In-memory state cache: {rec_id: {"highest": Decimal, "lowest": Decimal, "in_profit_zone": bool}}
 
-    def initialize_state_for_recommendation(self, rec_data: Dict[str, Any]):
-        """Initializes or resets the in-memory state for a recommendation from a dictionary."""
-        rec_id = rec_data['id']
-        if rec_data['status'] == RecommendationStatusEnum.ACTIVE:
+    def initialize_state_for_recommendation(self, rec_dict: Dict[str, Any]):
+        """Initializes or resets the in-memory state for a recommendation dictionary."""
+        rec_id = rec_dict['id']
+        if rec_dict['status'] == RecommendationStatusEnum.ACTIVE:
             self._state[rec_id] = {
-                "highest": rec_data['entry'],
-                "lowest": rec_data['entry'],
+                "highest": rec_dict.get('entry', Decimal('0')),
+                "lowest": rec_dict.get('entry', Decimal('0')),
                 "in_profit_zone": False,
             }
         else:
             self._state.pop(rec_id, None)
 
-    async def evaluate_recommendation(self, trigger_data: Dict[str, Any], high_price: Decimal, low_price: Decimal):
-        """
-        Evaluates a single recommendation (as a dict) against a price tick.
-        This is the core logic method, designed to be called by AlertService.
-        """
-        if not trigger_data or trigger_data['status'] != RecommendationStatusEnum.ACTIVE or not trigger_data.get('profit_stop_active'):
-            self._state.pop(trigger_data.get('id'), None)
-            return
+    def clear_state(self, rec_id: int):
+        """Explicitly clears the state for a given recommendation ID, typically on close."""
+        self._state.pop(rec_id, None)
+        logger.debug(f"Cleared state for closed recommendation #{rec_id}")
 
-        rec_id = trigger_data['id']
+    def evaluate(self, rec_dict: Dict[str, Any], high_price: Decimal, low_price: Decimal) -> List[BaseAction]:
+        """
+        Evaluates a single recommendation dictionary and returns a list of actions to be taken.
+        """
+        actions: List[BaseAction] = []
+        if not rec_dict or rec_dict['status'] != RecommendationStatusEnum.ACTIVE or not rec_dict.get('profit_stop_active'):
+            return actions
+
+        rec_id = rec_dict['id']
         if rec_id not in self._state:
-            self.initialize_state_for_recommendation(trigger_data)
+            self.initialize_state_for_recommendation(rec_dict)
         
         state = self._state[rec_id]
-        side = trigger_data['side'].upper()
-        mode = (trigger_data.get('profit_stop_mode') or 'NONE').upper()
+        side = rec_dict['side'].upper()
+        mode = (rec_dict.get('profit_stop_mode') or 'NONE').upper()
 
-        # Update highest/lowest price tracking
-        if side == "LONG":
-            if high_price > state["highest"]: state["highest"] = high_price
-        else: # SHORT
-            if low_price < state["lowest"]: state["lowest"] = low_price
+        # Update highest/lowest price tracking for the current tick
+        if side == "LONG" and high_price > state["highest"]:
+            state["highest"] = high_price
+        elif side == "SHORT" and low_price < state["lowest"]:
+            state["lowest"] = low_price
 
         # --- Execute Strategy Logic ---
         if mode == "FIXED":
-            await self._handle_fixed_profit_stop(trigger_data, high_price, low_price, state)
+            action = self._handle_fixed_profit_stop(rec_dict, high_price, low_price, state)
+            if action: actions.append(action)
         elif mode == "TRAILING":
-            await self._handle_trailing_stop(trigger_data, state)
+            action = self._handle_trailing_stop(rec_dict, state)
+            if action: actions.append(action)
+            
+        return actions
 
-    async def _handle_fixed_profit_stop(self, rec_data: Dict[str, Any], high_price: Decimal, low_price: Decimal, state: Dict):
-        """Correctly handles the logic for a fixed profit stop."""
-        profit_price = rec_data.get('profit_stop_price')
-        if not profit_price: return
+    def _handle_fixed_profit_stop(self, rec_dict: Dict[str, Any], high_price: Decimal, low_price: Decimal, state: Dict) -> Optional[CloseAction]:
+        """Correctly handles the logic for a fixed profit stop (take profit stop)."""
+        profit_price = rec_dict.get('profit_stop_price')
+        if not profit_price: return None
+        
+        side = rec_dict['side'].upper()
+        rec_id = rec_dict['id']
 
-        side = rec_data['side'].upper()
-        rec_id = rec_data['id']
-
+        # Step 1: Check if we have entered the profit zone
         if not state["in_profit_zone"]:
             if (side == "LONG" and high_price >= profit_price) or \
                (side == "SHORT" and low_price <= profit_price):
                 state["in_profit_zone"] = True
                 logger.info(f"Rec #{rec_id} entered profit zone for fixed stop at {profit_price:g}.")
         
+        # Step 2: If in the zone, check if price has retraced to the stop level
         if state["in_profit_zone"]:
             if (side == "LONG" and low_price <= profit_price) or \
                (side == "SHORT" and high_price >= profit_price):
                 logger.info(f"FIXED profit stop triggered for Rec #{rec_id} at price {profit_price:g}")
-                # Use create_task to avoid blocking the alert loop
-                asyncio.create_task(
-                    self.trade_service.close_recommendation_async(rec_id, rec_data['user_id'], profit_price, reason="PROFIT_STOP_HIT")
-                )
-                self._state.pop(rec_id, None)
+                return CloseAction(rec_id=rec_id, price=profit_price, reason="PROFIT_STOP_HIT")
+        return None
 
-    async def _handle_trailing_stop(self, rec_data: Dict[str, Any], state: Dict):
+    def _handle_trailing_stop(self, rec_dict: Dict[str, Any], state: Dict) -> Optional[MoveSLAction]:
         """Correctly handles the logic for a trailing stop loss."""
-        trailing_value = rec_data.get('profit_stop_trailing_value')
-        if not trailing_value: return
+        current_sl = rec_dict['stop_loss']
+        trailing_value = rec_dict.get('profit_stop_trailing_value')
+        if not trailing_value: return None
 
-        current_sl = rec_data['stop_loss']
-        side = rec_data['side'].upper()
-        rec_id = rec_data['id']
+        side = rec_dict['side'].upper()
         
+        # Heuristic: values > 10 are likely price distances, <= 10 are percentages.
         is_percentage = trailing_value <= 10
         
         new_potential_sl = None
@@ -115,7 +140,7 @@ class StrategyEngine:
                     (side == "SHORT" and new_potential_sl < current_sl)
 
         if is_better:
-            logger.info(f"TRAILING stop update for Rec #{rec_id}. Moving SL from {current_sl:g} to {new_potential_sl:g}")
-            asyncio.create_task(
-                self.trade_service.update_sl_for_user_async(rec_id, rec_data['user_id'], new_potential_sl)
-            )
+            logger.info(f"TRAILING stop update for Rec #{rec_dict['id']}. Moving SL from {current_sl:g} to {new_potential_sl:g}")
+            return MoveSLAction(rec_id=rec_dict['id'], new_sl=new_potential_sl)
+        
+        return None
