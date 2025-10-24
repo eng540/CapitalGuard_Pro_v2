@@ -1,9 +1,10 @@
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.8 - Unified Hotfix Integration)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.6 - Production Ready & Final)
 """
-Unified final version combining v35.6 stability and v35.7 handler overlap fix.
-✅ Retains full production stability from v35.6
-✅ Integrates regex hotfix to prevent handler conflicts with management_handlers
-✅ Verified for production use
+معالجات المحادثات النهائية والمستقرة لبيئة الإنتاج.
+✅ إصلاح شامل لمشكلة تجميد لوحة اختيار القنوات.
+✅ تطبيق نظام مهلات قوي وإدارة جلسات آمنة عبر التوكن.
+✅ إعادة هيكلة المعالجات للاعتماد الكامل على CallbackBuilder.
+✅ تحسين معالجة الأخطاء لضمان تجربة مستخدم سلسة.
 """
 
 import logging
@@ -330,11 +331,11 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
             all_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False)
             selected_ids = context.user_data.setdefault(CHANNEL_PICKER_KEY, {ch.telegram_channel_id for ch in all_channels if ch.is_active})
             keyboard = build_channel_picker_keyboard(draft['token'], all_channels, selected_ids)
-            await safe_edit_message(query, text="📢 <b>اختر القنوات للنشر</b>", reply_markup=keyboard)
+            await safe_edit_message(query, text="📢 **اختر القنوات للنشر**", reply_markup=keyboard)
             return AWAITING_CHANNELS
             
         elif action == "add_notes":
-            await safe_edit_message(query, text="📝 <b>أضف ملاحظاتك</b>")
+            await safe_edit_message(query, text="📝 **أضف ملاحظاتك**")
             return AWAITING_NOTES
             
         elif action == "cancel":
@@ -380,4 +381,87 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
         token_in_callback = params[0] if params else None
         short_token = draft["token"][:12]
 
-        if not token
+        if not token_in_callback or token_in_callback != short_token:
+            await safe_edit_message(query, text="❌ جلسة منتهية الصلاحية.")
+            clean_creation_state(context)
+            return ConversationHandler.END
+
+        user = UserRepository(db_session).find_by_telegram_id(query.from_user.id)
+        all_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False)
+        selected_ids = context.user_data.get(CHANNEL_PICKER_KEY, set())
+
+        if action == CallbackAction.BACK.value:
+            await show_review_card(update, context)
+            return AWAITING_REVIEW
+
+        elif action == CallbackAction.CONFIRM.value:
+            if not selected_ids:
+                await query.answer("❌ لم يتم اختيار أي قنوات", show_alert=True)
+                return AWAITING_CHANNELS
+            
+            draft['target_channel_ids'] = selected_ids
+            trade_service = get_service(context, "trade_service", TradeService)
+            rec, report = await trade_service.create_and_publish_recommendation_async(str(query.from_user.id), db_session, **draft)
+            msg = f"✅ تم النشر في {len(report.get('success', []))} قناة." if report.get("success") else "❌ فشل النشر."
+            await safe_edit_message(query, text=msg)
+            clean_creation_state(context)
+            return ConversationHandler.END
+
+        else: # Handles TOGGLE and NAV
+            page = 1
+            if action == CallbackAction.TOGGLE.value:
+                channel_id_to_toggle = int(params[1])
+                if channel_id_to_toggle in selected_ids: selected_ids.remove(channel_id_to_toggle)
+                else: selected_ids.add(channel_id_to_toggle)
+                context.user_data[CHANNEL_PICKER_KEY] = selected_ids
+                page = int(params[2])
+            elif action == "nav":
+                page = int(params[1])
+
+            keyboard = build_channel_picker_keyboard(draft['token'], all_channels, selected_ids, page=page)
+            await query.edit_message_reply_markup(reply_markup=keyboard)
+            return AWAITING_CHANNELS
+
+    except Exception as e:
+        log.error(f"Error in channel picker: {e}", exc_info=True)
+        await safe_edit_message(query, text=f"❌ حدث خطأ: {str(e)}")
+        return AWAITING_CHANNELS
+
+async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """معالجة الإلغاء."""
+    clean_creation_state(context)
+    await update.message.reply_text("❌ تم إلغاء العملية.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+def register_conversation_handlers(app: Application):
+    """تسجيل معالجات المحادثة."""
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("newrec", newrec_entrypoint),
+            CommandHandler("rec", start_text_input_entrypoint),
+            CommandHandler("editor", start_text_input_entrypoint),
+        ],
+        states={
+            SELECT_METHOD: [CallbackQueryHandler(method_chosen, pattern="^method_")],
+            AWAIT_TEXT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_text_input)],
+            AWAITING_ASSET: [
+                CallbackQueryHandler(asset_handler, pattern="^asset_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, asset_handler)
+            ],
+            AWAITING_SIDE: [
+                CallbackQueryHandler(side_handler, pattern="^side_"),
+                CallbackQueryHandler(market_handler, pattern="^market_")
+            ],
+            AWAITING_TYPE: [CallbackQueryHandler(type_handler, pattern="^type_")],
+            AWAITING_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_handler)],
+            AWAITING_REVIEW: [CallbackQueryHandler(review_handler, pattern=f"^{CallbackNamespace.RECOMMENDATION.value}:")],
+            AWAITING_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, notes_handler)],
+            AWAITING_CHANNELS: [CallbackQueryHandler(channel_picker_handler, pattern=f"^{CallbackNamespace.PUBLICATION.value}:")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_handler)],
+        name="recommendation_creation",
+        per_user=True,
+        per_chat=True,
+        conversation_timeout=CONVERSATION_TIMEOUT,
+    )
+    app.add_handler(conv_handler)
