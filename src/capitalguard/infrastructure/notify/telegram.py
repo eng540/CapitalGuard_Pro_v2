@@ -7,8 +7,7 @@ Handles all outbound communication to the Telegram Bot API.
 import logging
 import time
 import asyncio
-from typing import Optional, Tuple, Dict, Any
-
+from typing import Optional, Tuple, Dict, Any, Union
 import httpx
 from telegram import InlineKeyboardMarkup, Bot
 from telegram.ext import Application
