@@ -76,9 +76,7 @@ async def handle_management_timeout(update: Update, context: ContextTypes.DEFAUL
             # Try to answer callback first, then edit message
             try: await update.callback_query.answer("انتهت مدة الجلسة", show_alert=True)
             except TelegramError: pass # Ignore if callback expired
-            # Use context to get message reference if query is gone
-            message_to_edit = update.callback_query.message
-            await safe_edit_message(None, message=message_to_edit, text=msg, reply_markup=None)
+            await safe_edit_message(update.callback_query, text=msg, reply_markup=None)
         elif update.message:
             await update.message.reply_text(msg)
         return True
@@ -103,10 +101,9 @@ async def safe_edit_message(query: Optional[CallbackQuery], message=None, text: 
     except BadRequest as e:
         if "message is not modified" in str(e).lower(): return True
         # Ignore "message to edit not found" if it happened during timeout cleanup
-        # Need context for this check, assuming it's available or passed in a real scenario
-        # if query and "message to edit not found" in str(e).lower() and time.time() - context.user_data.get(LAST_ACTIVITY_KEY, 0) > MANAGEMENT_TIMEOUT:
-        #      log.debug("Ignoring 'message not found' during timeout cleanup.")
-        #      return False
+        if query and "message to edit not found" in str(e).lower() and time.time() - context.user_data.get(LAST_ACTIVITY_KEY, 0) > MANAGEMENT_TIMEOUT:
+             log.debug("Ignoring 'message not found' during timeout cleanup.")
+             return False
         loge.warning(f"Handled BadRequest in safe_edit_message: {e}")
         return False
     except TelegramError as e:
@@ -137,7 +134,7 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
                  keyboard = build_user_trade_control_keyboard(position_id)
         elif position.status == RecommendationStatus.ACTIVE:
              keyboard = analyst_control_panel_keyboard(position)
-        # For PENDING or CLOSED, usually no keyboard or just a "Back" button (handled by trade card text implicitly)
+        # For PENDING or CLOSED, usually no keyboard or just a "Back" button
 
         await safe_edit_message(query, message=message_target, text=text, reply_markup=keyboard)
 
@@ -239,45 +236,33 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     text = query.message.text_html # Default text is the current card
 
     # Build keyboard based on action AND status
-    # ✅ UX FIX: Check status before deciding which keyboard to show or if action is allowed
-    if namespace == CallbackNamespace.RECOMMENDATION.value:
-        if action == "edit_menu":
-             text = "✏️ <b>تعديل بيانات الصفقة</b>\nاختر الحقل للتعديل:"
-             keyboard = build_trade_data_edit_keyboard(rec_id) # Keyboard hides edit_entry if not PENDING implicitly for now
-             # More robust: check status explicitly
-             if rec.status != RecommendationStatus.ACTIVE and rec.status != RecommendationStatus.PENDING:
-                 keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))]])
-                 text = f"✏️ <b>تعديل بيانات الصفقة</b>\n لا يمكن تعديل توصية بحالة {rec.status.value}"
-
-        elif action == "close_menu":
-            text = "❌ <b>إغلاق كلي للصفقة</b>\nاختر طريقة الإغلاق:"
-            if rec.status == RecommendationStatus.ACTIVE:
-                keyboard = build_close_options_keyboard(rec_id)
-            else:
-                 keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))]])
-                 text = f"❌ <b>إغلاق كلي للصفقة</b>\n لا يمكن إغلاق توصية بحالة {rec.status.value}"
-
-        elif action == "partial_close_menu":
-            text = "💰 <b>إغلاق جزئي للصفقة</b>\nاختر النسبة:"
-            if rec.status == RecommendationStatus.ACTIVE:
+    if rec.status == RecommendationStatus.ACTIVE:
+        if namespace == CallbackNamespace.RECOMMENDATION.value:
+            if action == "edit_menu":
+                 keyboard = build_trade_data_edit_keyboard(rec_id) # Keyboard func itself should hide 'edit_entry'
+                 text = "✏️ <b>تعديل بيانات الصفقة</b>\nاختر الحقل للتعديل:"
+            elif action == "close_menu":
+                 keyboard = build_close_options_keyboard(rec_id)
+                 text = "❌ <b>إغلاق كلي للصفقة</b>\nاختر طريقة الإغلاق:"
+            elif action == "partial_close_menu":
                  keyboard = build_partial_close_keyboard(rec_id)
-            else:
-                 keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))]])
-                 text = f"💰 <b>إغلاق جزئي للصفقة</b>\n لا يمكن الإغلاق الجزئي لتوصية بحالة {rec.status.value}"
-
-    elif namespace == CallbackNamespace.EXIT_STRATEGY.value:
-        if action == "show_menu":
-            text = "📈 <b>إدارة الخروج والمخاطر</b>\nاختر الإجراء:"
-            if rec.status == RecommendationStatus.ACTIVE:
+                 text = "💰 <b>إغلاق جزئي للصفقة</b>\nاختر النسبة:"
+        elif namespace == CallbackNamespace.EXIT_STRATEGY.value:
+            if action == "show_menu":
                  keyboard = build_exit_management_keyboard(rec)
-            else:
-                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))]])
-                text = f"📈 <b>إدارة الخروج والمخاطر</b>\n لا يمكن إدارة خروج توصية بحالة {rec.status.value}"
+                 text = "📈 <b>إدارة الخروج والمخاطر</b>\nاختر الإجراء:"
+    else:
+         # If recommendation is not ACTIVE, most submenus are invalid
+         await query.answer(f"❌ لا يمكن تعديل توصية بحالة {rec.status.value}", show_alert=True)
+         # Re-render the main panel which might show different info for non-ACTIVE states
+         await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id)
+         return
+
 
     if keyboard:
         await safe_edit_message(query, text=text, reply_markup=keyboard)
     else:
-        # If no valid keyboard was built (e.g., invalid action), refresh main panel
+        # If no valid keyboard was built (e.g., invalid action or status), refresh main panel
         log.warning(f"No valid submenu keyboard for action '{action}' on rec #{rec_id} with status {rec.status}")
         await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id)
 
@@ -295,8 +280,7 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rec_id = int(rec_id_str)
 
     # Store state needed for reply and cancellation
-    # ✅ UX FIX: Generate callback to return to the specific submenu, not the main panel
-    previous_callback_data = CallbackBuilder.create(namespace, "show_menu" if namespace == CallbackNamespace.EXIT_STRATEGY.value else f"{action.split('_')[0]}_menu", rec_id)
+    previous_callback_data = CallbackBuilder.create(namespace, f"{action}_menu".replace("set_", "show_"), rec_id) # Heuristic for back button
     context.user_data[AWAITING_INPUT_KEY] = {
         "namespace": namespace,
         "action": action,
@@ -309,15 +293,15 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "edit_sl": "✏️ أرسل وقف الخسارة الجديد:",
         "edit_tp": "🎯 أرسل قائمة الأهداف الجديدة (e.g., 50k 52k@50):",
         "edit_entry": "💰 أرسل سعر الدخول الجديد (للتوصيات المعلقة فقط):",
-        "edit_notes": "📝 أرسل الملاحظات الجديدة (أو كلمة 'مسح'):",
+        "edit_notes": "📝 أرسل الملاحظات الجديدة:",
         "close_manual": "✍️ أرسل سعر الإغلاق النهائي:",
         "set_fixed": "🔒 أرسل سعر حجز الربح الثابت:",
         "set_trailing": "📈 أرسل مسافة التتبع (e.g., 1.5% or 500):",
-        "partial_close_custom": "💰 أرسل نسبة الإغلاق المخصصة (e.g., 30% أو 30):"
+        "partial_close_custom": "💰 أرسل نسبة الإغلاق المخصصة (e.g., 30%):"
     }
     prompt_text = prompts.get(action, 'أرسل القيمة الجديدة:')
 
-    # ✅ UX FIX: Keyboard with just a cancel button for the input phase
+    # Keyboard with just a cancel button for the input phase
     cancel_button = InlineKeyboardButton("❌ إلغاء الإدخال", callback_data=CallbackBuilder.create("mgmt", "cancel_input", rec_id))
     input_keyboard = InlineKeyboardMarkup([[cancel_button]])
 
@@ -344,26 +328,18 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
 
     namespace, action, rec_id = state["namespace"], state["action"], state["rec_id"]
     user_input = update.message.text.strip()
-    validated_value: Any = None # Use Any to store various types
+    validated_value = None
     change_description = "" # For the confirmation message
 
     try: await update.message.delete()
     except Exception: pass # Ignore if already deleted or permissions missing
 
-    trade_service = get_service(context, "trade_service", TradeService) # Needed for validation logic access
-
     try:
         # --- Validate Input based on Action ---
-        # Get current recommendation state for validation where needed
-        current_rec = trade_service.get_position_details_for_user(db_session, str(db_user.telegram_user_id), 'rec', rec_id)
-        if not current_rec:
-            raise ValueError("التوصية لم تعد موجودة.")
-
         if namespace == CallbackNamespace.EXIT_STRATEGY.value:
             if action == "set_fixed":
                 price = parse_number(user_input)
                 if price is None: raise ValueError("تنسيق السعر غير صالح.")
-                # TODO: Add logical validation if needed (e.g., price > entry for LONG)
                 validated_value = {"mode": "FIXED", "price": price}
                 change_description = f"تفعيل حجز ربح ثابت عند {price:g}"
             elif action == "set_trailing":
@@ -376,56 +352,36 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
             if action in ["edit_sl", "edit_entry", "close_manual"]:
                 price = parse_number(user_input)
                 if price is None: raise ValueError("تنسيق السعر غير صالح.")
-                # ✅ ROBUSTNESS: Add logical validation before confirmation
-                if action == "edit_sl":
-                    # Use a temporary Recommendation object or dict for validation
-                    temp_rec_data = {"side": current_rec.side.value, "entry": current_rec.entry.value, "stop_loss": price, "targets": [{"price": t.price.value} for t in current_rec.targets.values]}
-                    trade_service._validate_recommendation_data(temp_rec_data["side"], temp_rec_data["entry"], temp_rec_data["stop_loss"], temp_rec_data["targets"])
-                    validated_value = price
-                    change_description = f"تعديل وقف الخسارة إلى {price:g}"
-                elif action == "edit_entry":
-                    if current_rec.status != RecommendationStatus.PENDING: raise ValueError("لا يمكن تعديل الدخول إلا للتوصيات المعلقة.")
-                    temp_rec_data = {"side": current_rec.side.value, "entry": price, "stop_loss": current_rec.stop_loss.value, "targets": [{"price": t.price.value} for t in current_rec.targets.values]}
-                    trade_service._validate_recommendation_data(temp_rec_data["side"], temp_rec_data["entry"], temp_rec_data["stop_loss"], temp_rec_data["targets"])
-                    validated_value = price
-                    change_description = f"تعديل سعر الدخول إلى {price:g}"
-                elif action == "close_manual":
-                    validated_value = price # No logical validation needed for close price itself
-                    change_description = f"إغلاق الصفقة يدويًا بسعر {price:g}"
+                validated_value = price
+                if action == "edit_sl": change_description = f"تعديل وقف الخسارة إلى {price:g}"
+                elif action == "edit_entry": change_description = f"تعديل سعر الدخول إلى {price:g}"
+                elif action == "close_manual": change_description = f"إغلاق الصفقة يدويًا بسعر {price:g}"
             elif action == "edit_tp":
                 targets = parse_targets_list(user_input.split())
                 if not targets: raise ValueError("تنسيق الأهداف غير صالح.")
-                # ✅ ROBUSTNESS: Add logical validation
-                temp_rec_data = {"side": current_rec.side.value, "entry": current_rec.entry.value, "stop_loss": current_rec.stop_loss.value, "targets": targets}
-                trade_service._validate_recommendation_data(temp_rec_data["side"], temp_rec_data["entry"], temp_rec_data["stop_loss"], temp_rec_data["targets"])
+                # Basic validation (service layer should do stricter checks)
+                if not all(isinstance(t.get('price'), Decimal) and t['price'] > 0 for t in targets):
+                     raise ValueError("أحد أسعار الأهداف غير صالح.")
                 validated_value = targets
-                change_description = f"تعديل الأهداف إلى: {', '.join([f'{t['price']:g}' for t in targets])}"
+                change_description = f"تعديل الأهداف إلى: {', '.join([f'{t[\"price\"]:g}' for t in targets])}"
             elif action == "edit_notes":
-                # Allow empty string or specific keyword to clear notes
-                if user_input.lower() in ['clear', 'مسح', 'remove', 'إزالة', '']:
-                     validated_value = None
-                     change_description = "مسح الملاحظات"
-                else:
-                     validated_value = user_input
-                     change_description = f"تعديل الملاحظات إلى: '{validated_value}'"
+                validated_value = user_input if user_input else None # Allow clearing notes
+                change_description = f"تعديل الملاحظات إلى: '{validated_value}'" if validated_value else "مسح الملاحظات"
             elif action == "partial_close_custom":
                  percent_val = parse_number(user_input.replace('%',''))
-                 if percent_val is None or not (0 < percent_val <= Decimal('100')): # Use Decimal for comparison
+                 if percent_val is None or not (0 < percent_val <= 100):
                      raise ValueError("النسبة المئوية يجب أن تكون بين 0 و 100.")
                  validated_value = percent_val
                  change_description = f"إغلاق {percent_val:g}% من الصفقة بسعر السوق"
 
 
         # --- Store Pending Change and Show Confirmation ---
-        # Check if validated_value was actually set (it could be None legitimately for clearing notes)
-        if validated_value is not None or action == "edit_notes": # Explicitly allow None for edit_notes
-            context.user_data[PENDING_CHANGE_KEY] = {"value": validated_value} # Store in a dict
+        if validated_value is not None:
+            context.user_data[PENDING_CHANGE_KEY] = validated_value
             context.user_data.pop(AWAITING_INPUT_KEY, None) # Input phase complete
 
-            # ✅ UX FIX: Create confirmation keyboard callbacks
             confirm_callback = CallbackBuilder.create("mgmt", "confirm_change", namespace, action, rec_id)
-            # Use the stored previous_callback to go back correctly
-            reenter_callback = state.get("previous_callback", CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id)) # Fallback just in case
+            reenter_callback = state["previous_callback"] # Go back to the submenu
             cancel_callback = CallbackBuilder.create("mgmt", "cancel_all", rec_id) # Cancel whole operation
 
             confirm_keyboard = InlineKeyboardMarkup([
@@ -439,13 +395,14 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
              raise ValueError("فشل التحقق من القيمة المدخلة لسبب غير معروف.")
 
     except ValueError as e:
-        # Validation failed (either format or logic), ask user to re-enter
+        # Validation failed, ask user to re-enter
         log.warning(f"Invalid input for {action} on #{rec_id}: {e}")
         cancel_button = InlineKeyboardButton("❌ إلغاء الإدخال", callback_data=CallbackBuilder.create("mgmt", "cancel_input", rec_id))
         input_keyboard = InlineKeyboardMarkup([[cancel_button]])
-        # Ensure state remains for re-entry
-        context.user_data[AWAITING_INPUT_KEY] = state
         await safe_edit_message(original_query, text=f"{original_query.message.text_html}\n\n⚠️ <b>خطأ:</b> {e}\n\nيرجى إعادة إدخال القيمة الصحيحة:", reply_markup=input_keyboard)
+        # Keep the AWAITING_INPUT_KEY state active
+        context.user_data[AWAITING_INPUT_KEY] = state
+
 
     except Exception as e:
         # General error during validation or confirmation display
@@ -466,21 +423,15 @@ async def confirm_change_handler(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer("جاري التنفيذ...")
     if await handle_management_timeout(update, context): return
 
-    pending_data = context.user_data.pop(PENDING_CHANGE_KEY, None)
-    if not pending_data or "value" not in pending_data: # Check if value exists
-        await query.answer("❌ لا يوجد تغيير معلق للتأكيد أو أن البيانات تالفة.", show_alert=True)
-        # Attempt to restore panel even if state is lost
-        parts_fallback = parse_cq_parts(query.data)
-        rec_id_fallback = int(parts_fallback[4]) if len(parts_fallback) > 4 else None
-        if rec_id_fallback:
-             await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id_fallback)
-        clean_management_state(context) # Clean up just in case
-        return
-
-    pending_value = pending_data["value"] # Extract the actual value
+    pending_value = context.user_data.pop(PENDING_CHANGE_KEY, None)
     parts = parse_cq_parts(query.data) # mgmt:confirm_change:namespace:action:rec_id
     namespace, action, rec_id_str = parts[2], parts[3], parts[4]
     rec_id = int(rec_id_str)
+
+    if pending_value is None:
+        await query.answer("❌ لا يوجد تغيير معلق للتأكيد.", show_alert=True)
+        await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id)
+        return
 
     trade_service = get_service(context, "trade_service", TradeService)
     user_telegram_id = str(db_user.telegram_user_id)
@@ -496,7 +447,7 @@ async def confirm_change_handler(update: Update, context: ContextTypes.DEFAULT_T
         elif namespace == CallbackNamespace.RECOMMENDATION.value:
             if action == "edit_sl": await trade_service.update_sl_for_user_async(rec_id, user_telegram_id, pending_value, db_session)
             elif action == "edit_entry": await trade_service.update_entry_and_notes_async(rec_id, user_telegram_id, new_entry=pending_value, new_notes=None, db_session=db_session)
-            elif action == "close_manual": await trade_service.close_recommendation_async(rec_id, user_telegram_id, pending_value, db_session, reason="MANUAL_PRICE_CLOSE")
+            elif action == "close_manual": await trade_service.close_recommendation_async(rec_id, user_telegram_id, pending_value, db_session)
             elif action == "edit_tp": await trade_service.update_targets_for_user_async(rec_id, user_telegram_id, pending_value, db_session)
             elif action == "edit_notes": await trade_service.update_entry_and_notes_async(rec_id, user_telegram_id, new_entry=None, new_notes=pending_value, db_session=db_session)
             elif action == "partial_close_custom":
@@ -514,21 +465,19 @@ async def confirm_change_handler(update: Update, context: ContextTypes.DEFAULT_T
         # No need for query.answer here, panel update is enough feedback
 
     except (ValueError, Exception) as e:
-        # Error during execution (e.g., TradeService validation failed)
+        # Error during execution
         loge.error(f"Error confirming change for {action} on #{rec_id}: {e}", exc_info=True)
         # Notify user of failure
         await query.answer(f"❌ فشل التنفيذ: {e}", show_alert=True)
         # Restore the panel to allow retry or cancellation
         await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id)
     finally:
-        # Clean up input/pending state regardless of success or failure
-        context.user_data.pop(AWAITING_INPUT_KEY, None)
-        context.user_data.pop(PENDING_CHANGE_KEY, None)
-        # Keep LAST_ACTIVITY_KEY updated by update_management_activity()
+        # Clean up regardless of success or failure
+        clean_management_state(context)
 
 
 async def cancel_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles cancellation during the text input phase by returning to the previous submenu."""
+    """Handles cancellation during the text input phase."""
     query = update.callback_query
     await query.answer()
     if await handle_management_timeout(update, context): return
@@ -538,19 +487,14 @@ async def cancel_input_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if state and state.get("previous_callback"):
         # Simulate clicking the button that led to the input prompt
-        # Create a new Update object with the previous callback data
-        new_update = Update(update.update_id + 1, callback_query=query) # Simplistic update_id increment
-        new_update.callback_query.data = state["previous_callback"]
+        update.callback_query.data = state["previous_callback"]
         # Need db_session for show_submenu_handler - wrap in uow
-        # Ensure db_user is passed correctly if needed by decorators
-        await uow_transaction(require_active_user(require_analyst_user(show_submenu_handler)))(new_update, context)
+        await uow_transaction(require_active_user(require_analyst_user(show_submenu_handler)))(update, context, db_session=None, db_user=None) # db_session/db_user will be injected by decorators
     elif state:
          # Fallback: Refresh the main panel if previous state is lost
          rec_id = state.get("rec_id")
          if rec_id:
-             new_update = Update(update.update_id + 1, callback_query=query)
-             new_update.callback_query.data = CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id)
-             await uow_transaction(require_active_user(show_position_panel_handler))(new_update, context)
+             await uow_transaction(require_active_user(show_position_panel_handler))(update, context, db_session=None, db_user=None) # db_session/db_user will be injected
          else:
              await safe_edit_message(query, text="❌ تم إلغاء الإدخال.")
     else:
@@ -559,7 +503,7 @@ async def cancel_input_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def cancel_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles cancellation during the confirmation phase by returning to the main panel."""
+    """Handles cancellation during the confirmation phase."""
     query = update.callback_query
     await query.answer()
     if await handle_management_timeout(update, context): return
@@ -568,12 +512,8 @@ async def cancel_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Restore the main panel for the recommendation
     parts = parse_cq_parts(query.data) # mgmt:cancel_all:rec_id
     rec_id = int(parts[2])
-
-    # Simulate clicking the show main panel button
-    new_update = Update(update.update_id + 1, callback_query=query)
-    new_update.callback_query.data = CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id)
     # Need db_session for show_position_panel_handler - wrap in uow
-    await uow_transaction(require_active_user(show_position_panel_handler))(new_update, context)
+    await uow_transaction(require_active_user(show_position_panel_handler))(update, context, db_session=None, db_user=None) # db_session/db_user will be injected
 
 
 # --- Immediate Action Handlers ---
@@ -595,30 +535,22 @@ async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT
     user_telegram_id = str(db_user.telegram_user_id)
 
     try:
-        # Fetch recommendation state *before* action for validation
-        rec = trade_service.get_position_details_for_user(db_session, user_telegram_id, 'rec', rec_id)
-        if not rec:
-             raise ValueError("التوصية غير موجودة أو تم إغلاقها.")
-        if rec.status != RecommendationStatus.ACTIVE:
-             raise ValueError(f"لا يمكن تنفيذ هذا الإجراء على توصية بحالة {rec.status.value}")
-
-        # Execute action
         if namespace == CallbackNamespace.EXIT_STRATEGY.value:
             if action == "move_to_be":
                 await trade_service.move_sl_to_breakeven_async(rec_id, db_session)
-                await query.answer("✅ تم نقل الوقف إلى نقطة الدخول.") # Specific success feedback
             elif action == "cancel":
                 await trade_service.set_exit_strategy_async(rec_id, user_telegram_id, "NONE", active=False, session=db_session)
-                await query.answer("❌ تم إلغاء استراتيجية الخروج الآلية.") # Specific success feedback
 
         elif namespace == CallbackNamespace.RECOMMENDATION.value:
              if action == "close_market":
                 # --- Enhanced Close Market Logic ---
                 price_service = get_service(context, "price_service", PriceService)
                 live_price = None
+                rec = None
                 try:
-                    # Provide feedback during potentially slow operation
-                    await context.bot.send_chat_action(chat_id=query.message.chat_id, action='typing')
+                    await query.answer("جاري جلب السعر...") # More specific feedback
+                    rec = trade_service.get_position_details_for_user(db_session, user_telegram_id, 'rec', rec_id)
+                    if not rec: raise ValueError("التوصية غير موجودة.")
                     live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
                     if not live_price: raise ValueError(f"تعذر جلب سعر السوق لـ {rec.asset.value}.")
                 except Exception as price_err:
@@ -627,26 +559,24 @@ async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT
                     return # Stop execution if price fetching fails
 
                 try:
-                    # Provide feedback
-                    await query.answer("جاري الإغلاق...")
+                    await query.answer("جاري الإغلاق...") # More specific feedback
                     await trade_service.close_recommendation_async(rec_id, user_telegram_id, Decimal(str(live_price)), db_session, reason="MARKET_CLOSE_MANUAL")
-                    # Success feedback is handled by panel update below
                 except Exception as close_err:
                     loge.error(f"Failed to close recommendation #{rec_id} via close_market: {close_err}", exc_info=True)
                     await query.answer(f"❌ فشل الإغلاق: {close_err}", show_alert=True)
                     # Don't return here, still try to update the panel below
                 # --- End Enhanced Close Market Logic ---
 
-        # Update panel after successful action or even after close_market failure
+        # Update panel regardless of intermediate errors in close_market
+        # to show the latest state (might still be open if close failed)
         await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id)
 
-    except (ValueError, Exception) as e:
-        # General error for other immediate actions or validation failures
+    except Exception as e:
+        # General error for other immediate actions
         loge.error(f"Error in immediate action handler for rec #{rec_id} (Action: {namespace}:{action}): {e}", exc_info=True)
         await query.answer(f"❌ فشل الإجراء: {str(e)}", show_alert=True)
-        # Attempt to refresh the panel even on error if rec_id known
-        if rec_id:
-             await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id)
+        # Attempt to refresh the panel even on error
+        await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id)
 
 
 # --- ✅ NEW: Handler for Fixed Percentage Partial Close ---
@@ -673,25 +603,17 @@ async def partial_close_fixed_handler(update: Update, context: ContextTypes.DEFA
         if not rec: raise ValueError("التوصية غير موجودة.")
         if rec.status != RecommendationStatus.ACTIVE: raise ValueError("يمكن الإغلاق الجزئي للصفقات النشطة فقط.")
 
-        live_price = None
-        try:
-            await context.bot.send_chat_action(chat_id=query.message.chat_id, action='typing')
-            live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
-            if not live_price: raise ValueError(f"تعذر جلب سعر السوق لـ {rec.asset.value}.")
-        except Exception as price_err:
-            loge.error(f"Failed to get live price for partial_close_fixed #{rec_id}: {price_err}")
-            await query.answer(f"❌ فشل جلب السعر: {price_err}", show_alert=True)
-            return
+        live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
+        if not live_price: raise ValueError(f"تعذر جلب سعر السوق لـ {rec.asset.value}.")
 
         await trade_service.partial_close_async(
             rec_id, user_telegram_id, close_percent, Decimal(str(live_price)), db_session, triggered_by="MANUAL_FIXED"
         )
-        await query.answer(f"✅ تم إغلاق {close_percent:g}% بسعر السوق.") # Specific success
 
         # Update panel to show remaining size, logbook entry
         await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id)
 
-    except (ValueError, Exception) as e:
+    except Exception as e:
         loge.error(f"Error in partial close fixed handler for rec #{rec_id}: {e}", exc_info=True)
         await query.answer(f"❌ فشل الإغلاق الجزئي: {str(e)}", show_alert=True)
         # Attempt to refresh the panel even on error
@@ -710,7 +632,7 @@ def register_management_handlers(app: Application):
     # Sub-menu Display (Corrected Pattern for multiple actions)
     app.add_handler(CallbackQueryHandler(show_submenu_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}:(?:edit_menu|close_menu|partial_close_menu)|{CallbackNamespace.EXIT_STRATEGY.value}:show_menu):"))
 
-    # Prompts for user text input (e.g., edit SL, TP, notes, manual close, exit strategies, custom partial %)
+    # Prompts for user text input (e.g., edit SL, TP, notes, manual close, exit strategies)
     app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_|set_|close_manual|partial_close_custom)"))
 
     # Handler for text replies (validates and asks for confirmation)
@@ -722,14 +644,14 @@ def register_management_handlers(app: Application):
     # Handler for canceling during text input phase
     app.add_handler(CallbackQueryHandler(cancel_input_handler, pattern=rf"^mgmt:cancel_input:"))
 
-    # Handler for canceling during confirmation phase (cancels entire operation)
+    # Handler for canceling during confirmation phase
     app.add_handler(CallbackQueryHandler(cancel_all_handler, pattern=rf"^mgmt:cancel_all:"))
 
     # Immediate one-click actions (Move SL to BE, Cancel Exit Strat, Close Market)
     app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market)"))
 
     # ✅ NEW: Handler for fixed percentage partial close buttons
-    app.add_handler(CallbackQueryHandler(partial_close_fixed_handler, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:{CallbackAction.PARTIAL.value}:\d+:(?:25|50)$")) # Only match 25 or 50 explicitly
+    app.add_handler(CallbackQueryHandler(partial_close_fixed_handler, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:{CallbackAction.PARTIAL.value}:\d+:\d+$"))
 
 
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
