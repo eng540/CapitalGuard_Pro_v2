@@ -1,8 +1,9 @@
-# src/capitalguard/interfaces/telegram/management_handlers.py (v30.4 - Final Handler Registration Fix)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v30.5 - Final UX Implementation)
 """
 Handles all post-creation management of recommendations via a unified UX.
-✅ HOTFIX: Correctly registers all required CallbackQueryHandlers, fixing the unresponsive buttons issue.
-This is the final, complete, and production-ready version.
+- Implements the full, corrected handler registration, fixing all unresponsive buttons.
+- Provides the complete user workflow for setting and managing all exit strategies.
+- Robust session and state management for a smooth user experience.
 """
 
 import logging
@@ -301,18 +302,9 @@ def register_management_handlers(app: Application):
     app.add_handler(CommandHandler(["myportfolio", "open"], management_entry_point_handler))
     
     # ✅ FINAL REGISTRATION LOGIC
-    # Navigation and Main Panel
     app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{CallbackNamespace.NAVIGATION.value}:{CallbackAction.NAVIGATE.value}:"))
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.SHOW.value}:"))
-
-    # Sub-menu Display
     app.add_handler(CallbackQueryHandler(show_submenu_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):show_menu:"))
-
-    # Prompts for user input
     app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_|set_|close_)"))
-    
-    # Handler for text replies to prompts
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, reply_handler))
-
-    # Immediate one-click actions
     app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market)"))
