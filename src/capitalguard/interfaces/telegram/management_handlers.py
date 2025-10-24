@@ -363,7 +363,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
                 if not all(isinstance(t.get('price'), Decimal) and t['price'] > 0 for t in targets):
                      raise ValueError("أحد أسعار الأهداف غير صالح.")
                 validated_value = targets
-                change_description = f"تعديل الأهداف إلى: {', '.join([f'{t[\"price\"]:g}' for t in targets])}"
+                change_description = "تعديل الأهداف إلى: " + ", ".join([f"{t['price']:g}" for t in targets])
             elif action == "edit_notes":
                 validated_value = user_input if user_input else None # Allow clearing notes
                 change_description = f"تعديل الملاحظات إلى: '{validated_value}'" if validated_value else "مسح الملاحظات"
