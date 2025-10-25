@@ -1,8 +1,9 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
-# src/capitalguard/interfaces/telegram/management_handlers.py (v30.7 - f-string Syntax Hotfix)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v30.8 - Final Imports & f-string Fix)
 """
 Handles all post-creation management of recommendations via a unified UX.
-✅ FIX: Corrected f-string syntax for 'change_description' in reply_handler (unmatched '[' error).
+✅ FIX: Added missing imports for InlineKeyboardButton, InlineKeyboardMarkup.
+✅ FIX: Refactored f-string construction for 'change_description' to avoid backslash error.
 ✅ UX: Added confirmation step for all data modifications via text reply.
 ✅ UX: Added Cancel button during input prompts.
 ✅ UX: Dynamically hide/show buttons based on recommendation status.
@@ -16,18 +17,15 @@ This is the final, complete, and production-ready version.
 import logging
 import time
 from decimal import Decimal
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union # ✅ FIX: Ensure Union is imported
 
-from telegram import Update, ReplyKeyboardRemove, CallbackQuery
+from telegram import Update, ReplyKeyboardRemove, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup # ✅ FIX: Added missing imports
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application, CallbackQueryHandler, MessageHandler,
     ContextTypes, filters, ConversationHandler, CommandHandler
 )
-
-# ✅ FIX: Import Union for type hinting (This was fixed in a previous step, ensuring it's here)
-from typing import Union
 
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .helpers import get_service, parse_cq_parts
@@ -247,9 +245,10 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if namespace == CallbackNamespace.RECOMMENDATION.value:
         if action == "edit_menu":
              text = "✏️ <b>تعديل بيانات الصفقة</b>\nاختر الحقل للتعديل:"
-             keyboard = build_trade_data_edit_keyboard(rec_id) # Keyboard hides edit_entry if not PENDING implicitly for now
-             # More robust: check status explicitly
-             if rec.status != RecommendationStatus.ACTIVE and rec.status != RecommendationStatus.PENDING:
+             # Build keyboard based on status
+             if rec.status == RecommendationStatus.ACTIVE or rec.status == RecommendationStatus.PENDING:
+                 keyboard = build_trade_data_edit_keyboard(rec_id)
+             else: # CLOSED or other states
                  keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))]])
                  text = f"✏️ <b>تعديل بيانات الصفقة</b>\n لا يمكن تعديل توصية بحالة {rec.status.value}"
 
@@ -403,8 +402,9 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
                 temp_rec_data = {"side": current_rec.side.value, "entry": current_rec.entry.value, "stop_loss": current_rec.stop_loss.value, "targets": targets}
                 trade_service._validate_recommendation_data(temp_rec_data["side"], temp_rec_data["entry"], temp_rec_data["stop_loss"], temp_rec_data["targets"])
                 validated_value = targets
-                # ✅ FIX: Correct f-string syntax here
-                change_description = f"تعديل الأهداف إلى: {', '.join([f'{t[\"price\"]:g}' for t in validated_value])}"
+                # ✅ FIX: Corrected f-string syntax (avoids backslash issue by separating list comprehension)
+                price_strings = [f"{t['price']:g}" for t in validated_value]
+                change_description = f"تعديل الأهداف إلى: {', '.join(price_strings)}"
             elif action == "edit_notes":
                 # Allow empty string or specific keyword to clear notes
                 if user_input.lower() in ['clear', 'مسح', 'remove', 'إزالة', '']:
@@ -526,7 +526,7 @@ async def confirm_change_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Restore the panel to allow retry or cancellation
         await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id)
     finally:
-        # Clean up regardless of success or failure
+        # Clean up input/pending state regardless of success or failure
         context.user_data.pop(AWAITING_INPUT_KEY, None)
         context.user_data.pop(PENDING_CHANGE_KEY, None)
         # Keep LAST_ACTIVITY_KEY updated by update_management_activity()
@@ -606,7 +606,8 @@ async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT
         if not rec:
              raise ValueError("التوصية غير موجودة أو تم إغلاقها.")
         # Allow exit strategy cancel even if not active? No, align with show_submenu
-        if rec.status != RecommendationStatus.ACTIVE:
+        # Allow close_market only if ACTIVE
+        if action != "cancel" and rec.status != RecommendationStatus.ACTIVE: # "cancel" exit strat is allowed anytime? Or only on active? Let's restrict for now.
              raise ValueError(f"لا يمكن تنفيذ هذا الإجراء على توصية بحالة {rec.status.value}")
 
         # Execute action
@@ -615,8 +616,12 @@ async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT
                 await trade_service.move_sl_to_breakeven_async(rec_id, db_session)
                 await query.answer("✅ تم نقل الوقف إلى نقطة الدخول.") # Specific success feedback
             elif action == "cancel":
-                await trade_service.set_exit_strategy_async(rec_id, user_telegram_id, "NONE", active=False, session=db_session)
-                await query.answer("❌ تم إلغاء استراتيجية الخروج الآلية.") # Specific success feedback
+                 if rec.status == RecommendationStatus.ACTIVE: # Only cancel if active
+                    await trade_service.set_exit_strategy_async(rec_id, user_telegram_id, "NONE", active=False, session=db_session)
+                    await query.answer("❌ تم إلغاء استراتيجية الخروج الآلية.") # Specific success feedback
+                 else:
+                     await query.answer("ℹ️ لا توجد استراتيجية نشطة لإلغائها.", show_alert=True)
+
 
         elif namespace == CallbackNamespace.RECOMMENDATION.value:
              if action == "close_market":
