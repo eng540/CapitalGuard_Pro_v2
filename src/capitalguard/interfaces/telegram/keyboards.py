@@ -9,7 +9,7 @@ Builds all Telegram keyboards for the bot.
 - Implements the new unified Exit Management control panel.
 - All callback data now uses the unified CallbackBuilder.
 """
-
+import asyncio
 import math
 import logging
 from decimal import Decimal
