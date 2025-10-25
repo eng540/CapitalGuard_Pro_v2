@@ -1,15 +1,15 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/repository.py ---
-# src/capitalguard/infrastructure/db/repository.py (v2.1 - Deep Link & AlertService Integration)
+# src/capitalguard/infrastructure/db/repository.py (v2.2 - Deep Link & AlertService Fix)
 """
 Repository layer — provides clean data access abstractions.
 ✅ FIX: Added missing 'find_user_trade_by_source_id' to fix deep-link tracking.
-✅ NEW: Added `get_all_active_recs` and `get_active_recs_for_asset_and_market`
-to efficiently support the AlertService and StrategyEngine.
+✅ FIX: Added internal '_to_decimal' helper and updated '_to_entity' and 'list_all_active_triggers_data'
+     to correctly handle Decimal conversions, fixing validation errors.
 """
 
 import logging
 from typing import List, Optional, Any, Dict
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import and_
@@ -50,10 +50,6 @@ class UserRepository:
                 user.first_name = kwargs["first_name"]
             if kwargs.get("username") and user.username != kwargs["username"]:
                 user.username = kwargs["username"]
-            # Ensure user is active if they interact
-            # (Business logic for activation should be separate, e.g., admin command)
-            # if not user.is_active:
-            #     user.is_active = True # Example: auto-activate on /start
             return user
 
         logger.info("Creating new user for telegram_id=%s", telegram_id)
@@ -105,6 +101,7 @@ class RecommendationRepository:
     def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
         """Safely convert any value to a Decimal."""
         if isinstance(value, Decimal): return value
+        if value is None: return default
         try: return Decimal(str(value))
         except (InvalidOperation, TypeError, ValueError): return default
 
@@ -113,9 +110,9 @@ class RecommendationRepository:
         if not row: return None
         try:
             targets_data = row.targets or []
-            # Ensure prices in targets are converted to Decimal
+            # ✅ FIX: Ensure prices in targets are correctly converted to Decimal
             formatted_targets = [{"price": RecommendationRepository._to_decimal(t["price"]), "close_percent": t.get("close_percent", 0)} for t in targets_data]
-
+            
             # Create the entity with all available fields
             entity = RecommendationEntity(
                 id=row.id,
@@ -142,9 +139,9 @@ class RecommendationRepository:
             if hasattr(row, 'profit_stop_active'):
                 setattr(entity, 'profit_stop_active', row.profit_stop_active)
                 setattr(entity, 'profit_stop_mode', row.profit_stop_mode)
-                setattr(entity, 'profit_stop_price', row.profit_stop_price)
-                setattr(entity, 'profit_stop_trailing_value', row.profit_stop_trailing_value)
-
+                setattr(entity, 'profit_stop_price', RecommendationRepository._to_decimal(row.profit_stop_price) if row.profit_stop_price is not None else None)
+                setattr(entity, 'profit_stop_trailing_value', RecommendationRepository._to_decimal(row.profit_stop_trailing_value) if row.profit_stop_trailing_value is not None else None)
+            
             return entity
         except Exception as e:
             logger.error("Error translating ORM to entity for ID %s: %s", row.id, e, exc_info=True)
@@ -179,8 +176,8 @@ class RecommendationRepository:
                     "processed_events": {e.event_type for e in rec.events},
                     # Add profit stop fields for StrategyEngine
                     "profit_stop_mode": getattr(rec, 'profit_stop_mode', 'NONE'),
-                    "profit_stop_price": self._to_decimal(getattr(rec, 'profit_stop_price', None)),
-                    "profit_stop_trailing_value": self._to_decimal(getattr(rec, 'profit_stop_trailing_value', None)),
+                    "profit_stop_price": self._to_decimal(getattr(rec, 'profit_stop_price', None)) if getattr(rec, 'profit_stop_price', None) is not None else None,
+                    "profit_stop_trailing_value": self._to_decimal(getattr(rec, 'profit_stop_trailing_value', None)) if getattr(rec, 'profit_stop_trailing_value', None) is not None else None,
                     "profit_stop_active": getattr(rec, 'profit_stop_active', False),
                 })
             except Exception as e:
@@ -209,7 +206,7 @@ class RecommendationRepository:
     def get_user_trade_by_id(self, session: Session, trade_id: int) -> Optional[UserTrade]:
         """Gets a specific UserTrade by its primary key."""
         return session.query(UserTrade).filter(UserTrade.id == trade_id).first()
-
+    
     # ✅ FIX: Added missing method
     def find_user_trade_by_source_id(self, session: Session, user_id: int, rec_id: int) -> Optional[UserTrade]:
         """Finds an open UserTrade linked to a specific user and recommendation."""
