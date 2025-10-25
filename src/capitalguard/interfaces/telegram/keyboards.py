@@ -1,11 +1,12 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
-# src/capitalguard/interfaces/telegram/keyboards.py (v21.12 - NameError Hotfix)
+# src/capitalguard/interfaces/telegram/keyboards.py (v21.13 - Async/Await Hotfix)
 """
 Builds all Telegram keyboards for the bot.
-✅ FIX: Added missing 'import asyncio' statement to fix NameError in build_open_recs_keyboard.
+✅ FIX: MAJOR: Rewrote price fetching in 'build_open_recs_keyboard' to correctly
+  await coroutines and prevent 'RuntimeWarning: coroutine was never awaited'.
+✅ FIX: Added missing 'import asyncio' statement.
 ✅ FIX: Removed invalid citation syntax causing a SyntaxError on startup.
-✅ UX HOTFIX: Restored direct access to "Partial Close" and "Full Close" buttons
-on the main analyst control panel for better usability.
+✅ UX HOTFIX: Restored direct access to "Partial Close" and "Full Close" buttons.
 - Implements the new unified Exit Management control panel and all its sub-panels.
 - All callback data now uses the unified CallbackBuilder for maximum reliability.
 """
@@ -169,18 +170,28 @@ async def build_open_recs_keyboard(items: List[Any], current_page: int, price_se
         start_index = (current_page - 1) * ITEMS_PER_PAGE
         paginated_items = items[start_index : start_index + ITEMS_PER_PAGE]
 
-        # Fetch prices concurrently
-        price_tasks = {
-            _get_attr(item, 'asset'): price_service.get_cached_price(
-                _get_attr(item, 'asset'),
-                _get_attr(item, 'market', 'Futures')
-            ) for item in paginated_items
-        }
-        # ✅ FIX: Use asyncio.gather correctly
-        prices_results = await asyncio.gather(*price_tasks.values(), return_exceptions=True)
+        # ✅ FIX: MAJOR: Correctly create and await tasks to prevent RuntimeWarning
+        price_tasks = []
+        assets_to_fetch = []
+        asset_market_map = {} # Need to map asset to market
+        for item in paginated_items:
+            asset = _get_attr(item, 'asset')
+            market = _get_attr(item, 'market', 'Futures')
+            if asset not in asset_market_map:
+                asset_market_map[asset] = market
+                assets_to_fetch.append(asset)
+        
+        # Create tasks
+        for asset in assets_to_fetch:
+            price_tasks.append(
+                price_service.get_cached_price(asset, asset_market_map[asset])
+            )
+        
+        prices_results = await asyncio.gather(*price_tasks, return_exceptions=True)
+        
         prices_map = {}
         # Process results safely
-        for i, asset in enumerate(price_tasks.keys()):
+        for i, asset in enumerate(assets_to_fetch):
              result = prices_results[i]
              if isinstance(result, Exception):
                  logger.error(f"Failed to fetch price for {asset} in build_open_recs_keyboard: {result}")
