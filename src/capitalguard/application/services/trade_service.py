@@ -2,9 +2,9 @@
 # src/capitalguard/application/services/trade_service.py v 30.9
 """
 TradeService v30.9 - Final, complete, and production-ready version.
-✅ FIX: Added missing internal helper functions (_format_price, _pct, etc.) to resolve NameError on notifications. [cite: 1562, 1563, 1570]
-✅ FIX: Added missing 'create_trade_from_recommendation' method to fix deep-linking. [cite: 1612, 1426, 1428, 1440]
-✅ FIX: Corrected target format validation in 'update_sl_for_user_async' to prevent ValueError on move_to_be. 
+✅ FIX: Added missing internal helper functions (_format_price, _pct, etc.) to resolve NameError on notifications.
+✅ FIX: Added missing 'create_trade_from_recommendation' method to fix deep-linking.
+✅ FIX: Corrected target format validation in 'update_sl_for_user_async' to prevent ValueError on move_to_be.
 ✅ UX FIX: Added a small buffer in 'move_sl_to_breakeven_async' to prevent immediate SL_HIT.
 ✅ HOTFIX: Decoupled from `interfaces` layer by moving helper functions internally.
 """
@@ -432,7 +432,7 @@ class TradeService:
             logger.error(f"Error creating trade from forwarding for user {user_id}: {e}", exc_info=True)
             return {'success': False, 'error': 'An internal error occurred.'}
 
-    # ✅ NEW METHOD: To fix deep-linking (AttributeError) 
+    # ✅ NEW METHOD: To fix deep-linking (AttributeError)
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
         """
         Creates a UserTrade record by tracking an existing Recommendation.
@@ -497,7 +497,7 @@ class TradeService:
 
         old_sl = rec_orm.stop_loss
         
-        # ✅ FIX: Validate new SL logic before applying 
+        # ✅ FIX: Validate new SL logic before applying
         try:
             # Convert ORM targets (JSON) to list of dicts with Decimals for validation
             targets_list = [{"price": _to_decimal(t["price"]), "close_percent": t.get("close_percent", 0)} for t in rec_orm.targets or []]
