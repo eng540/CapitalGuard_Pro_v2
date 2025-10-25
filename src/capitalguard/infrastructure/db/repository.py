@@ -1,6 +1,8 @@
-# src/capitalguard/infrastructure/db/repository.py (v2.0 - AlertService Integration)
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/repository.py ---
+# src/capitalguard/infrastructure/db/repository.py (v2.1 - Deep Link & AlertService Integration)
 """
 Repository layer — provides clean data access abstractions.
+✅ FIX: Added missing 'find_user_trade_by_source_id' to fix deep-link tracking.
 ✅ NEW: Added `get_all_active_recs` and `get_active_recs_for_asset_and_market`
 to efficiently support the AlertService and StrategyEngine.
 """
@@ -48,6 +50,10 @@ class UserRepository:
                 user.first_name = kwargs["first_name"]
             if kwargs.get("username") and user.username != kwargs["username"]:
                 user.username = kwargs["username"]
+            # Ensure user is active if they interact
+            # (Business logic for activation should be separate, e.g., admin command)
+            # if not user.is_active:
+            #     user.is_active = True # Example: auto-activate on /start
             return user
 
         logger.info("Creating new user for telegram_id=%s", telegram_id)
@@ -59,7 +65,7 @@ class UserRepository:
             user_type=kwargs.get("user_type", UserType.TRADER),
         )
         self.session.add(new_user)
-        self.session.flush()
+        self.session.flush() # Flush to get new_user.id if needed
         return new_user
 
 # ==========================================================
@@ -96,20 +102,28 @@ class RecommendationRepository:
     """Repository for Recommendation and UserTrade entities."""
 
     @staticmethod
+    def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
+        """Safely convert any value to a Decimal."""
+        if isinstance(value, Decimal): return value
+        try: return Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError): return default
+
+    @staticmethod
     def _to_entity(row: Recommendation) -> Optional[RecommendationEntity]:
         if not row: return None
         try:
             targets_data = row.targets or []
-            formatted_targets = [{"price": Decimal(t["price"]), "close_percent": t.get("close_percent", 0)} for t in targets_data]
-            
+            # Ensure prices in targets are converted to Decimal
+            formatted_targets = [{"price": RecommendationRepository._to_decimal(t["price"]), "close_percent": t.get("close_percent", 0)} for t in targets_data]
+
             # Create the entity with all available fields
             entity = RecommendationEntity(
                 id=row.id,
                 analyst_id=row.analyst_id,
                 asset=Symbol(row.asset),
                 side=Side(row.side),
-                entry=Price(Decimal(str(row.entry))),
-                stop_loss=Price(Decimal(str(row.stop_loss))),
+                entry=Price(RecommendationRepository._to_decimal(row.entry)),
+                stop_loss=Price(RecommendationRepository._to_decimal(row.stop_loss)),
                 targets=Targets(formatted_targets),
                 order_type=OrderTypeEntity(row.order_type.value),
                 status=RecommendationStatusEntity(row.status.value),
@@ -130,39 +144,55 @@ class RecommendationRepository:
                 setattr(entity, 'profit_stop_mode', row.profit_stop_mode)
                 setattr(entity, 'profit_stop_price', row.profit_stop_price)
                 setattr(entity, 'profit_stop_trailing_value', row.profit_stop_trailing_value)
-            
+
             return entity
         except Exception as e:
             logger.error("Error translating ORM to entity for ID %s: %s", row.id, e, exc_info=True)
             return None
 
     def get(self, session: Session, rec_id: int) -> Optional[Recommendation]:
-        return session.query(Recommendation).options(joinedload(Recommendation.analyst), selectinload(Recommendation.events)).filter(Recommendation.id == rec_id).first()
+        """Gets a Recommendation ORM object by its primary key, loading analyst and events."""
+        return session.query(Recommendation).options(
+            joinedload(Recommendation.analyst), 
+            selectinload(Recommendation.events)
+        ).filter(Recommendation.id == rec_id).first()
 
     def get_for_update(self, session: Session, rec_id: int) -> Optional[Recommendation]:
+        """Gets a Recommendation ORM object by ID with a lock for updating."""
         return session.query(Recommendation).filter(Recommendation.id == rec_id).with_for_update().first()
 
     def list_all_active_triggers_data(self, session: Session) -> List[Dict[str, Any]]:
+        """Gets raw data for all PENDING/ACTIVE recommendations for the AlertService."""
         active_recs = self.get_all_active_recs(session)
         trigger_data = []
         for rec in active_recs:
-            trigger_data.append({
-                "id": rec.id,
-                "user_id": str(rec.analyst.telegram_user_id) if rec.analyst else None,
-                "asset": rec.asset,
-                "side": rec.side,
-                "entry": Decimal(str(rec.entry)),
-                "stop_loss": Decimal(str(rec.stop_loss)),
-                "targets": rec.targets,
-                "status": rec.status,
-                "processed_events": {e.event_type for e in rec.events},
-            })
+            try:
+                trigger_data.append({
+                    "id": rec.id,
+                    "user_id": str(rec.analyst.telegram_user_id) if rec.analyst else None,
+                    "asset": rec.asset,
+                    "side": rec.side,
+                    "entry": self._to_decimal(rec.entry),
+                    "stop_loss": self._to_decimal(rec.stop_loss),
+                    "targets": rec.targets or [], # Pass the raw JSON list of dicts
+                    "status": rec.status,
+                    "processed_events": {e.event_type for e in rec.events},
+                    # Add profit stop fields for StrategyEngine
+                    "profit_stop_mode": getattr(rec, 'profit_stop_mode', 'NONE'),
+                    "profit_stop_price": self._to_decimal(getattr(rec, 'profit_stop_price', None)),
+                    "profit_stop_trailing_value": self._to_decimal(getattr(rec, 'profit_stop_trailing_value', None)),
+                    "profit_stop_active": getattr(rec, 'profit_stop_active', False),
+                })
+            except Exception as e:
+                 logger.error(f"Failed to process trigger data for rec #{rec.id}: {e}", exc_info=True)
         return trigger_data
 
     def get_published_messages(self, session: Session, rec_id: int) -> List[PublishedMessage]:
+        """Gets all PublishedMessage records for a specific recommendation ID."""
         return session.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
 
     def get_open_recs_for_analyst(self, session: Session, analyst_user_id: int) -> List[Recommendation]:
+        """Gets all open (PENDING/ACTIVE) recommendations for a specific analyst."""
         return session.query(Recommendation).filter(
             Recommendation.analyst_id == analyst_user_id,
             Recommendation.is_shadow.is_(False),
@@ -170,20 +200,31 @@ class RecommendationRepository:
         ).order_by(Recommendation.created_at.desc()).all()
 
     def get_open_trades_for_trader(self, session: Session, trader_user_id: int) -> List[UserTrade]:
+        """Gets all open (OPEN) UserTrades for a specific trader."""
         return session.query(UserTrade).filter(
             UserTrade.user_id == trader_user_id,
             UserTrade.status == UserTradeStatus.OPEN,
         ).order_by(UserTrade.created_at.desc()).all()
 
     def get_user_trade_by_id(self, session: Session, trade_id: int) -> Optional[UserTrade]:
+        """Gets a specific UserTrade by its primary key."""
         return session.query(UserTrade).filter(UserTrade.id == trade_id).first()
-    
+
+    # ✅ FIX: Added missing method
+    def find_user_trade_by_source_id(self, session: Session, user_id: int, rec_id: int) -> Optional[UserTrade]:
+        """Finds an open UserTrade linked to a specific user and recommendation."""
+        return session.query(UserTrade).filter(
+            UserTrade.user_id == user_id,
+            UserTrade.source_recommendation_id == rec_id,
+            UserTrade.status == UserTradeStatus.OPEN
+        ).first()
+
     def get_events_for_recommendation(self, session: Session, rec_id: int) -> List[RecommendationEvent]:
+        """Gets all historical events for a specific recommendation, ordered by time."""
         return session.query(RecommendationEvent).filter(RecommendationEvent.recommendation_id == rec_id).order_by(RecommendationEvent.event_timestamp.asc()).all()
 
-    # ✅ NEW METHOD
     def get_all_active_recs(self, session: Session) -> List[Recommendation]:
-        """Fetches all PENDING or ACTIVE recommendations with related data."""
+        """Fetches all PENDING or ACTIVE recommendations with related data eager-loaded."""
         return session.query(Recommendation).options(
             selectinload(Recommendation.events),
             joinedload(Recommendation.analyst)
@@ -191,7 +232,6 @@ class RecommendationRepository:
             Recommendation.status.in_([RecommendationStatusEnum.PENDING, RecommendationStatusEnum.ACTIVE])
         ).all()
 
-    # ✅ NEW METHOD
     def get_active_recs_for_asset_and_market(self, session: Session, asset: str, market: str) -> List[Recommendation]:
         """Fetches active recommendations for a specific asset and market."""
         return session.query(Recommendation).filter(
@@ -201,3 +241,4 @@ class RecommendationRepository:
                 Recommendation.status == RecommendationStatusEnum.ACTIVE
             )
         ).all()
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/repository.py ---
