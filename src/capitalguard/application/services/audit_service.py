@@ -1,7 +1,7 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
-# src/capitalguard/interfaces/telegram/commands.py (v27.0 - Event Summary Enhancement)
+# src/capitalguard/interfaces/telegram/commands.py (v27.1 - get_service Fix + Event Summary Enhancement)
 """
 Registers and implements all simple, non-conversational commands for the bot.
+✅ FIX: Added missing get_service import.
 ✅ FIX: Added intelligent event summary to /events output.
 ✅ FIX: Improved event log formatting and automatic PnL aggregation.
 ✅ FINAL & PRODUCTION READY.
@@ -14,6 +14,9 @@ from statistics import mean
 
 from telegram import Update, InputFile
 from telegram.ext import (Application, ContextTypes, CommandHandler)
+
+# ✅ FIX: Added missing import for get_service
+from .helpers import get_service
 
 from capitalguard.infrastructure.db.uow import uow_transaction
 from .auth import require_active_user, require_analyst_user
@@ -201,4 +204,3 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("channels", channels_cmd))
     app.add_handler(CommandHandler("events", events_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
