@@ -1,5 +1,5 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.8 - AttributeError Hotfix)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.9 - Live Price in Type Step)
 """
 معالجات المحادثات النهائية والمستقرة لبيئة الإنتاج.
 ✅ FIX: Corrected channel_picker_handler to check for 'toggle' string instead of 'CallbackAction.TOGGLE'.
@@ -8,6 +8,7 @@
 ✅ تطبيق نظام مهلات قوي وإدارة جلسات آمنة عبر التوكن.
 ✅ إعادة هيكلة المعالجات للاعتماد الكامل على CallbackBuilder.
 ✅ تحسين معالجة الأخطاء لضمان تجربة مستخدم سلسة.
+✅ ENHANCEMENT: type_handler الآن يعرض السعر الحي واسم الأصل في رسالة الخطوة 4/4.
 """
 
 import logging
@@ -87,7 +88,10 @@ async def handle_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         clean_creation_state(context)
         message = "⏰ انتهت مدة الجلسة. يرجى البدء من جديد باستخدام /newrec"
         if update.callback_query:
-            await update.callback_query.answer("انتهت مدة الجلسة", show_alert=True)
+            try:
+                await update.callback_query.answer("انتهت مدة الجلسة", show_alert=True)
+            except Exception:
+                pass
             await safe_edit_message(update.callback_query, text=message)
         elif update.message:
             await update.message.reply_text(message)
@@ -233,7 +237,7 @@ async def market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return AWAITING_SIDE
 
 async def type_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """معالجة اختيار نوع الطلب."""
+    """معالجة اختيار نوع الطلب مع عرض السعر الحي واسم الأصل."""
     query = update.callback_query
     await query.answer()
     if await handle_timeout(update, context): return ConversationHandler.END
@@ -243,8 +247,41 @@ async def type_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     order_type = query.data.split("_")[1]
     draft['order_type'] = order_type
 
-    prompt = "<b>الخطوة 4/4: الأسعار</b>\nأدخل: <code>وقف الخسارة الأهداف...</code>" if order_type == 'MARKET' else "<b>الخطوة 4/4: الأسعار</b>\nأدخل: <code>سعر الدخول وقف الخسارة الأهداف...</code>"
-    await safe_edit_message(query, text=f"✅ نوع الطلب: <b>{order_type}</b>\n\n{prompt}")
+    # ✅ جلب السعر الحي للأصل وعرض الاسم
+    asset = draft.get("asset")
+    market = draft.get("market", "Futures")
+    live_price_str = ""
+    if asset:
+        try:
+            price_service = get_service(context, "price_service", PriceService)
+            # Use force_refresh=False to prefer cache; caller can force refresh elsewhere
+            live_price = await price_service.get_cached_price(asset, market)
+            if live_price is not None:
+                # Format with up to 8 significant digits but trim trailing zeros
+                try:
+                    # live_price may be float; format safely
+                    lp_dec = Decimal(str(live_price))
+                    # Choose number of decimal places based on magnitude
+                    if lp_dec >= 1000:
+                        live_price_str = f"— السعر الحالي: {lp_dec.normalize():f}"
+                    else:
+                        # show up to 4 decimal places for small prices, or no decimals for integers
+                        live_price_str = f"— السعر الحالي: {lp_dec:.4f}".rstrip('0').rstrip('.')
+                except Exception:
+                    live_price_str = f"— السعر الحالي: {live_price}"
+        except Exception as e:
+            log.warning(f"Failed to fetch live price for {asset}: {e}")
+
+    prompt = (
+        "<b>الخطوة 4/4: الأسعار</b>\nأدخل: <code>وقف الخسارة الأهداف...</code>"
+        if order_type == 'MARKET'
+        else "<b>الخطوة 4/4: الأسعار</b>\nأدخل: <code>سعر الدخول وقف الخسارة الأهداف...</code>"
+    )
+
+    asset_display = f"<b>{asset}</b> " if asset else ""
+    msg = f"✅ الأصل: {asset_display}{live_price_str}\n✅ نوع الطلب: <b>{order_type}</b>\n\n{prompt}"
+
+    await safe_edit_message(query, text=msg)
     return AWAITING_PRICES
 
 async def prices_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
