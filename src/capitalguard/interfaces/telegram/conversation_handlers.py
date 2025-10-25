@@ -1,7 +1,8 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.7 - SyntaxError Hotfix 2)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.8 - AttributeError Hotfix)
 """
 معالجات المحادثات النهائية والمستقرة لبيئة الإنتاج.
+✅ FIX: Corrected channel_picker_handler to check for 'toggle' string instead of 'CallbackAction.TOGGLE'.
 ✅ FIX: Removed invalid citation syntax causing a SyntaxError on startup (safe_edit_message).
 ✅ إصلاح شامل لمشكلة تجميد لوحة اختيار القنوات.
 ✅ تطبيق نظام مهلات قوي وإدارة جلسات آمنة عبر التوكن.
@@ -68,7 +69,6 @@ def update_activity(context: ContextTypes.DEFAULT_TYPE):
 async def safe_edit_message(query, text=None, reply_markup=None, parse_mode=ParseMode.HTML):
     """تحرير الرسالة بشكل آمن مع استعادة الأخطاء."""
     try:
-        # ✅ THE FIX: Removed invalid citation syntax
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode, disable_web_page_preview=True)
         return True
     except BadRequest as e:
@@ -414,7 +414,8 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
 
         else: # Handles TOGGLE and NAV
             page = 1
-            if action == CallbackAction.TOGGLE.value:
+            # ✅ FIX: Compare action to the string 'toggle' not the Enum
+            if action == "toggle":
                 channel_id_to_toggle = int(params[1])
                 if channel_id_to_toggle in selected_ids: selected_ids.remove(channel_id_to_toggle)
                 else: selected_ids.add(channel_id_to_toggle)
@@ -468,6 +469,7 @@ def register_conversation_handlers(app: Application):
         per_user=True,
         per_chat=True,
         conversation_timeout=CONVERSATION_TIMEOUT,
+        # per_message=False is the default and correct setting for this flow
     )
     app.add_handler(conv_handler)
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
