@@ -23,6 +23,7 @@ from capitalguard.application.services.audit_service import AuditService
 from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository, RecommendationRepository
 from capitalguard.infrastructure.db.models import UserType
 # (keyboards are imported by other handlers, not directly needed here)
+from .keyboards import build_subscription_keyboard # Import for subscription check
 
 log = logging.getLogger(__name__)
 
@@ -144,12 +145,25 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
     await update.message.reply_text("Preparing your export file...")
     
     repo = RecommendationRepository()
-    # This is a simplified export. A real implementation might need more complex data fetching.
-    # For now, it exports an analyst's open recommendations.
-    # TODO: This logic should be expanded to fetch UserTrades for TRADER role
-    recs = repo.get_open_recs_for_analyst(db_session, db_user.id)
     
-    if not recs:
+    # Logic based on user type
+    if db_user.user_type == UserType.ANALYST:
+        items_orm = repo.get_open_recs_for_analyst(db_session, db_user.id)
+        items = [repo._to_entity(rec) for rec in items_orm if repo._to_entity(rec)]
+    else: # TRADER
+        trades_orm = repo.get_open_trades_for_trader(db_session, db_user.id)
+        # Convert UserTrade to RecommendationEntity-like structure for export
+        items = []
+        for trade in trades_orm:
+             trade_entity = Recommendation(
+                id=trade.id, asset=Symbol(trade.asset), side=Side(trade.side),
+                entry=Price(trade.entry), stop_loss=Price(trade.stop_loss),
+                targets=Targets(trade.targets), status=RecommendationStatusEntity.ACTIVE,
+                order_type=OrderType.MARKET, created_at=trade.created_at
+             )
+             items.append(trade_entity)
+    
+    if not items:
         await update.message.reply_text("You have no data to export.")
         return
         
@@ -157,11 +171,11 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
     writer = csv.writer(output)
     header = ["id", "asset", "side", "status", "market", "entry_price", "stop_loss", "targets", "exit_price", "notes", "created_at", "closed_at"]
     writer.writerow(header)
-    for rec_orm in recs:
-        rec = repo._to_entity(rec_orm)
+    
+    for rec in items:
         if not rec: continue
         row = [
-            rec.id, rec.asset.value, rec.side.value, rec.status.value, rec.market, 
+            rec.id, rec.asset.value, rec.side.value, rec.status.value, getattr(rec, 'market', 'N/A'), 
             rec.entry.value, rec.stop_loss.value, 
             ", ".join(f"{t.price.value}" for t in rec.targets.values), 
             rec.exit_price, rec.notes, 
