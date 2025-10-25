@@ -16,7 +16,6 @@ from telegram import Update, InputFile
 from telegram.ext import (Application, ContextTypes, CommandHandler)
 
 from capitalguard.infrastructure.db.uow import uow_transaction
-from .helpers import get_service
 from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.audit_service import AuditService
