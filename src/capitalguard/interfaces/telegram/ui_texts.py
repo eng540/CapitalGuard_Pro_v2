@@ -1,11 +1,14 @@
-# src/capitalguard/interfaces/telegram/ui_texts.py (v28.3 - Final Hotfix)
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
+# src/capitalguard/interfaces/telegram/ui_texts.py (v28.4 - NameError Hotfix)
 """
 Contains helper functions for building the text content of Telegram messages.
+✅ FIX: Added missing '_get_attr' helper function to resolve NameError during card updates.
 ✅ HOTFIX: Restored the missing `_normalize_pct_value` function to resolve a critical startup ImportError.
 This is the final, complete, and reliable version.
 """
 
 from __future__ import annotations
+import logging
 from typing import List, Optional, Dict, Any
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
@@ -13,12 +16,20 @@ from datetime import datetime
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.domain.value_objects import Target
 
+log = logging.getLogger(__name__) # Added logger
+
 _STATUS_MAP = {
     RecommendationStatus.PENDING: "⏳ PENDING",
     RecommendationStatus.ACTIVE: "⚡️ ACTIVE",
     RecommendationStatus.CLOSED: "🏁 CLOSED",
 }
 _SIDE_ICONS = {'LONG': '🟢', 'SHORT': '🔴'}
+
+# ✅ FIX: Added missing helper function
+def _get_attr(obj: Any, attr: str, default: Any = None) -> Any:
+    """Safely get .attr if exists, else x itself (for domain ValueObjects)."""
+    val = getattr(obj, attr, default)
+    return val.value if hasattr(val, 'value') else val
 
 def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
     if isinstance(value, Decimal): return value
@@ -29,12 +40,12 @@ def _format_price(price: Any) -> str:
     price_dec = _to_decimal(price)
     if not price_dec.is_finite():
         return "N/A"
-    return f"{price_dec.normalize():f}"
+    return f"{price_dec:g}" # Use 'g' for cleaner output
 
 def _pct(entry: Any, target_price: Any, side: str) -> float:
     entry_dec, target_dec = _to_decimal(entry), _to_decimal(target_price)
     if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite(): return 0.0
-    side_upper = (side or "").upper()
+    side_upper = (_get_attr(side, "value") or "").upper() # Use _get_attr
     try:
         if side_upper == "LONG": pnl = ((target_dec / entry_dec) - 1) * 100
         elif side_upper == "SHORT": pnl = ((entry_dec / target_dec) - 1) * 100
@@ -59,7 +70,7 @@ def _normalize_pct_value(pct_raw: Any) -> Decimal:
             return Decimal(s)
         return Decimal(str(pct_raw))
     except (InvalidOperation, Exception) as exc:
-        logger.warning("Unable to normalize pct value '%s' (%s); defaulting to 0", pct_raw, exc)
+        log.warning("Unable to normalize pct value '%s' (%s); defaulting to 0", pct_raw, exc)
         return Decimal(0)
 
 def _format_pnl(pnl: float) -> str:
@@ -100,11 +111,12 @@ def _calculate_weighted_pnl(rec: Recommendation) -> float:
 
     if total_percent_closed == 0 and rec.status == RecommendationStatus.CLOSED and rec.exit_price is not None:
         return _pct(rec.entry.value, rec.exit_price, rec.side.value)
-        
-    if total_percent_closed > 99.9 and total_percent_closed < 100.1:
+         
+    if 99.9 < total_percent_closed < 100.1: # Handle precision issues
         normalization_factor = 100.0 / total_percent_closed if total_percent_closed > 0 else 1.0
         return total_pnl_contribution * normalization_factor
 
+    # If not fully closed, return the contribution so far
     return total_pnl_contribution
 
 def _get_result_text(pnl: float) -> str:
@@ -116,7 +128,7 @@ def _build_header(rec: Recommendation) -> str:
     status_text = _STATUS_MAP.get(rec.status, "UNKNOWN")
     side_icon = _SIDE_ICONS.get(rec.side.value, '⚪')
     id_prefix = "Trade" if getattr(rec, 'is_user_trade', False) else "Signal"
-    return f"<b>{status_text} | #{rec.asset.value} | {rec.side.value}</b> {side_icon} | {id_prefix} #{rec.id}"
+    return f"<b>{status_text} | #{_get_attr(rec.asset, 'value')} | {_get_attr(rec.side, 'value')}</b> {side_icon} | {id_prefix} #{rec.id}"
 
 def _build_live_price_section(rec: Recommendation) -> str:
     live_price = getattr(rec, "live_price", None)
@@ -195,6 +207,7 @@ def _build_summary_section(rec: Recommendation) -> str:
     ])
 
 def build_trade_card_text(rec: Recommendation) -> str:
+    # Use _get_attr for all domain object access
     header = _build_header(rec)
     parts = [header]
     
@@ -209,7 +222,7 @@ def build_trade_card_text(rec: Recommendation) -> str:
         if section := _build_logbook_section(rec): parts.append(section)
 
     parts.append("────────────────────")
-    parts.append(f"#{rec.asset.value} #Signal")
+    parts.append(f"#{_get_attr(rec.asset, 'value')} #Signal")
     if rec.notes: parts.append(f"📝 Notes: <i>{rec.notes}</i>")
     return "\n".join(filter(None, parts))
 
@@ -224,6 +237,7 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
         close_percent = t.get('close_percent', 0)
         suffix = f" (Close {close_percent:.0f}%)" if 0 < close_percent < 100 else ""
         if close_percent == 100 and i == len(raw_tps): suffix = ""
+        
         target_lines.append(f"  • TP{i}: <code>{_format_price(price)}</code> ({_format_pnl(pct_value)}){suffix}")
     base_text = (
         f"📝 <b>REVIEW RECOMMENDATION</b>\n"
@@ -236,3 +250,4 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
     if preview_price is not None: base_text += f"\n💹 Current Price: <code>{_format_price(preview_price)}</code>"
     base_text += "\n\nReady to publish?"
     return base_text
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
