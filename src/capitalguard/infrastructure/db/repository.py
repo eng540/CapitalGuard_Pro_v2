@@ -1,4 +1,4 @@
-# --- src/capitalguard/infrastructure/db/repository.py ---
+# --- src/capitalguard/infrastructure/db/repository.py --- V 2.3
 """
 Repository layer — provides clean data access abstractions.
 ✅ Includes ParsingRepository.
