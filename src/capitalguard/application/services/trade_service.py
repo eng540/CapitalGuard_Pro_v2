@@ -506,7 +506,7 @@ class TradeService:
         rec_orm = self.repo.get_for_update(db_session, rec_id);
         if not rec_orm: raise ValueError(f"Rec #{rec_id} not found.")
         if rec_orm.status == RecommendationStatusEnum.CLOSED: logger.warning(f"Closing already closed rec #{rec_id}"); return self.repo._to_entity(rec_orm)
-        if user_id is not None: user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id)) if not user or rec_orm.analyst_id != user.id: raise ValueError("Access denied.")
+        if user_id is not None:     user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))     if not user or rec_orm.analyst_id != user.id:         raise ValueError("Access denied.")
         if not exit_price.is_finite() or exit_price <= 0: raise ValueError("Exit price invalid.")
         remaining_percent = _to_decimal(rec_orm.open_size_percent);
         if remaining_percent > 0: pnl_on_part = _pct(rec_orm.entry, exit_price, rec_orm.side); event_data = {"price": float(exit_price), "closed_percent": float(remaining_percent), "pnl_on_part": pnl_on_part, "triggered_by": reason}; db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="FINAL_CLOSE", event_data=event_data));
