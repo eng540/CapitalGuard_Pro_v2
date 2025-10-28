@@ -10,6 +10,7 @@ import time
 from typing import Dict, Any, Optional, List, Tuple
 from decimal import Decimal, InvalidOperation
 import spacy # ✅ NEW import
+from dataclasses import dataclass  # ✅ REQUIRED FIX
 
 from sqlalchemy.orm import Session
 from capitalguard.infrastructure.db.uow import session_scope
