@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import inspect
-from typing import List, Optional, Tuple, Dict, Any, Set
+from typing import List, Optional, Tuple, Dict, Any, Set, Union
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session
