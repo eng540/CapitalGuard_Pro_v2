@@ -1,10 +1,9 @@
-# -.-- START OF FILE: requirements.txt (Updated) ---
+# --- requirements.txt ---
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.8.2
 SQLAlchemy==2.0.32
 psycopg[binary]==3.2.1
-# ✅ تعديل: تمت إضافة [job-queue] لتفعيل خدمة التنبيهات المتقدمة
 python-telegram-bot[persistence,job-queue]==21.4
 python-dotenv==1.0.1
 python-jose[cryptography]==3.3.0
@@ -20,5 +19,8 @@ websockets==12.0
 pytest==8.3.2
 pydantic-settings==2.3.4
 supervisor==4.2.5
-# ✅ NEW: Added Redis client for persistent sessions (THE CRITICAL FIX)
 redis==5.0.7
+# ✅ NEW: Added spaCy for NER fallback in parsing
+spacy==3.7.5 # (Using a specific version for stability)
+# Remember to run: python -m spacy download en_core_web_sm
+# --- END of requirements.txt ---
