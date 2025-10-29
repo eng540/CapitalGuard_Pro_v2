@@ -16,22 +16,26 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime
 
 # ❌ REMOVED: Imports related to trade_service or complex domain logic
+# from capitalguard.application.services.trade_service import TradeService (REMOVED)
 
 log = logging.getLogger(__name__)
 
 # --- Core Helpers (Still needed for review_text) ---
 
 def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
+    """Safely convert any value to a Decimal, returning default on failure."""
     if isinstance(value, Decimal): return value if value.is_finite() else default
     if value is None: return default
     try: d = Decimal(str(value)); return d if d.is_finite() else default
     except (InvalidOperation, TypeError, ValueError): return default
 
 def _format_price(price: Any) -> str:
+    """Formats a Decimal or number into a clean string (e.g., no trailing zeros)."""
     price_dec = _to_decimal(price)
     return "N/A" if not price_dec.is_finite() else f"{price_dec:g}"
 
 def _pct(entry: Any, target_price: Any, side: str) -> float:
+    """Computes percentage PnL from entry to target_price."""
     entry_dec, target_dec = _to_decimal(entry), _to_decimal(target_price)
     if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite(): return 0.0
     # Use simple string comparison, _get_attr is not needed here
@@ -44,7 +48,14 @@ def _pct(entry: Any, target_price: Any, side: str) -> float:
     except (InvalidOperation, TypeError, ZeroDivisionError): return 0.0
 
 def _format_pnl(pnl: float) -> str:
+    """Formats a PnL float into a string like '+5.23%'."""
     return f"{pnl:+.2f}%"
+
+# ❌ REMOVED: All functions related to build_trade_card_text
+# (_get_attr, _rr, _calculate_weighted_pnl, _get_result_text, _build_header,
+# _build_live_price_section, _build_performance_section, _build_exit_plan_section,
+# _build_logbook_section, _build_summary_section, build_trade_card_text)
+# These now live in infrastructure/notify/telegram.py
 
 # --- Build Review Text (Used by conversation_handlers) ---
 
@@ -81,5 +92,4 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
     
     base_text += "\n\nReady to publish?"
     return base_text
-
 # --- END OF FILE ---
