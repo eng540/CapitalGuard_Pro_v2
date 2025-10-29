@@ -98,7 +98,7 @@ class TradeService:
     # --- Internal DB / Notifier Helpers ---
     async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
         """Commits changes, refreshes ORM, updates alerts, notifies UI (if Recommendation)."""
-        # (v31.0.6 - SyntaxError fixed)
+        # ✅ HOTFIX: Corrected indentation (v31.0.3)
         item_id = getattr(orm_object, 'id', 'N/A'); item_type = type(orm_object).__name__;
         try:
             db_session.commit(); db_session.refresh(orm_object); logger.debug(f"Committed {item_type} ID {item_id}")
@@ -107,7 +107,6 @@ class TradeService:
         
         if isinstance(orm_object, Recommendation):
             rec_orm = orm_object
-            # ✅ HOTFIX: Corrected indentation (v31.0.3)
             if rebuild_alerts and self.alert_service:
                 try:
                     await self.alert_service.build_triggers_index()
@@ -278,8 +277,10 @@ class TradeService:
             db_session.rollback()
             return {'success': False, 'error': 'Internal error saving trade.'}
 
+
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
         """Creates a UserTrade by tracking an existing Recommendation."""
+        # ✅ HOTFIX: Corrected indentation
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not trader_user: return {'success': False, 'error': 'User not found'};
         rec_orm = self.repo.get(db_session, rec_id);
@@ -300,6 +301,7 @@ class TradeService:
         self, user_id: str, trade_id: int, exit_price: Decimal, db_session: Session
     ) -> Optional[UserTrade]:
         """Closes a UserTrade owned by the user. Returns updated ORM object or None."""
+        # ✅ HOTFIX: Corrected indentation
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.");
         trade = db_session.query(UserTrade).filter( UserTrade.id == trade_id, UserTrade.user_id == user.id ).with_for_update().first();
@@ -319,6 +321,7 @@ class TradeService:
 
     # --- Update Operations (Analyst) ---
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Optional[Session] = None) -> RecommendationEntity:
+        # ✅ HOTFIX: Corrected indentation
         if db_session is None:
             with session_scope() as s: return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
@@ -341,6 +344,7 @@ class TradeService:
         return self.repo._to_entity(rec_orm)
 
     async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, Any]], db_session: Session) -> RecommendationEntity:
+        # ✅ HOTFIX: Corrected indentation
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id);
@@ -361,6 +365,7 @@ class TradeService:
         return self.repo._to_entity(rec_orm)
 
     async def update_entry_and_notes_async(self, rec_id: int, user_id: str, new_entry: Optional[Decimal], new_notes: Optional[str], db_session: Session) -> RecommendationEntity:
+        # ✅ HOTFIX: Corrected indentation
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id);
@@ -391,6 +396,7 @@ class TradeService:
         return self.repo._to_entity(rec_orm)
 
     async def set_exit_strategy_async(self, rec_id: int, user_id: str, mode: str, price: Optional[Decimal] = None, trailing_value: Optional[Decimal] = None, active: bool = True, session: Optional[Session] = None) -> RecommendationEntity:
+        # ✅ HOTFIX: Corrected indentation
         if session is None:
             with session_scope() as s: return await self.set_exit_strategy_async(rec_id, user_id, mode, price, trailing_value, active, s)
         user = UserRepository(session).find_by_telegram_id(_parse_int_user_id(user_id));
@@ -451,6 +457,7 @@ class TradeService:
             logger.info(f"SL Rec #{rec_id} already at/better BE {new_sl_target:g}.")
             return self.repo._to_entity(rec_orm)
 
+
     # --- Closing Operations ---
     async def close_recommendation_async(self, rec_id: int, user_id: Optional[str], exit_price: Decimal, db_session: Optional[Session] = None, reason: str = "MANUAL_CLOSE") -> RecommendationEntity:
         """Closes a recommendation fully."""
@@ -471,7 +478,7 @@ class TradeService:
         self.notify_reply(rec_id, f"✅ Signal #{rec_orm.asset} closed at {_format_price(exit_price)}. Reason: {reason}", db_session); await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True); return self.repo._to_entity(rec_orm)
 
     async def partial_close_async(self, rec_id: int, user_id: str, close_percent: Decimal, price: Decimal, db_session: Session, triggered_by: str = "MANUAL") -> RecommendationEntity:
-        # (v31.0.6)
+        # ✅ HOTFIX: Corrected indentation
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id);
@@ -486,14 +493,17 @@ class TradeService:
         rec_orm.open_size_percent = current_open_percent - actual_close_percent; pnl_on_part = _pct(rec_orm.entry, price_dec, rec_orm.side); pnl_formatted = f"{pnl_on_part:+.2f}%";
         event_type = "PARTIAL_CLOSE_AUTO" if triggered_by.upper() == "AUTO" else "PARTIAL_CLOSE_MANUAL"; event_data = {"price": float(price_dec), "closed_percent": float(actual_close_percent), "remaining_percent": float(rec_orm.open_size_percent), "pnl_on_part": pnl_on_part}; db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type=event_type, event_data=event_data));
         notif_icon = "💰 Profit" if pnl_on_part >= 0 else "⚠️ Loss Mgt"; notif_text = f"{notif_icon} Partial Close #{rec_orm.asset}. Closed {actual_close_percent:g}% at {_format_price(price_dec)} ({pnl_formatted}).\nRemaining: {rec_orm.open_size_percent:g}%"; self.notify_reply(rec_id, notif_text, db_session);
-        if rec_orm.open_size_percent < Decimal('0.1'): logger.info(f"Rec #{rec_id} fully closed via partial."); return await self.close_recommendation_async(rec_id, user_id, price_dec, db_session, reason="PARTIAL_CLOSE_FINAL");
-        else: await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False); return self.repo._to_entity(rec_orm);
-
+        if rec_orm.open_size_percent < Decimal('0.1'):
+            logger.info(f"Rec #{rec_id} fully closed via partial.");
+            return await self.close_recommendation_async(rec_id, user_id, price_dec, db_session, reason="PARTIAL_CLOSE_FINAL");
+        else:
+            await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False);
+            return self.repo._to_entity(rec_orm);
 
     # --- Event Processors ---
     async def process_invalidation_event(self, item_id: int):
         """Called when a pending rec is invalidated (e.g., SL hit before entry)."""
-        # (v31.0.6 - SyntaxError fixed)
+        # ✅ HOTFIX: Corrected indentation (v31.0.6)
         with session_scope() as db_session:
             rec = self.repo.get_for_update(db_session, item_id)
             if not rec or rec.status != RecommendationStatusEnum.PENDING:
@@ -519,7 +529,7 @@ class TradeService:
 
     async def process_sl_hit_event(self, item_id: int, price: Decimal):
         """Handle SL hit by closing the recommendation."""
-        # (v31.0.6)
+        # ✅ HOTFIX: Corrected indentation
         with session_scope() as s:
             rec = self.repo.get_for_update(s, item_id)
             if not rec or rec.status != RecommendationStatusEnum.ACTIVE:
@@ -529,35 +539,67 @@ class TradeService:
 
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
         """Handle TP hit events."""
-        # (v31.0.6)
+        # ✅ HOTFIX: Corrected indentation
         with session_scope() as s:
             rec_orm = self.repo.get_for_update(s, item_id);
             if not rec_orm or rec_orm.status != RecommendationStatusEnum.ACTIVE: return
             event_type = f"TP{target_index}_HIT";
-            if any(e.event_type == event_type for e in (rec_orm.events or [])): logger.debug(f"TP event {event_type} processed {item_id}"); return
-            s.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type=event_type, event_data={"price": float(price)})); self.notify_reply(rec_orm.id, f"🎯 #{rec_orm.asset} hit TP{target_index} at {_format_price(price)}!", db_session=s);
-            try: target_info = rec_orm.targets[target_index - 1]
-            except Exception: target_info = {}
-            close_percent = _to_decimal(target_info.get("close_percent", 0)); analyst_uid_str = str(rec_orm.analyst.telegram_user_id) if rec_orm.analyst else None;
-            if not analyst_uid_str: logger.error(f"Cannot process TP {item_id}: Analyst missing."); await self._commit_and_dispatch(s, rec_orm, False); return
-            if close_percent > 0: await self.partial_close_async(rec_orm.id, analyst_uid_str, close_percent, price, s, triggered_by="AUTO"); s.refresh(rec_orm); # Refresh state
-            is_final_tp = (target_index == len(rec_orm.targets or [])); should_auto_close = (rec_orm.exit_strategy == ExitStrategyEnum.CLOSE_AT_FINAL_TP and is_final_tp); is_effectively_closed = (rec_orm.open_size_percent is not None and rec_orm.open_size_percent < Decimal('0.1'));
+            if any(e.event_type == event_type for e in (rec_orm.events or [])):
+                logger.debug(f"TP event {event_type} processed {item_id}");
+                return
+            s.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type=event_type, event_data={"price": float(price)}));
+            self.notify_reply(rec_orm.id, f"🎯 #{rec_orm.asset} hit TP{target_index} at {_format_price(price)}!", db_session=s);
+            try:
+                target_info = rec_orm.targets[target_index - 1]
+            except Exception:
+                target_info = {}
+            close_percent = _to_decimal(target_info.get("close_percent", 0));
+            analyst_uid_str = str(rec_orm.analyst.telegram_user_id) if rec_orm.analyst else None;
+            if not analyst_uid_str:
+                logger.error(f"Cannot process TP {item_id}: Analyst missing.");
+                await self._commit_and_dispatch(s, rec_orm, False);
+                return
+            if close_percent > 0:
+                await self.partial_close_async(rec_orm.id, analyst_uid_str, close_percent, price, s, triggered_by="AUTO");
+                s.refresh(rec_orm); # Refresh state
+            is_final_tp = (target_index == len(rec_orm.targets or []));
+            should_auto_close = (rec_orm.exit_strategy == ExitStrategyEnum.CLOSE_AT_FINAL_TP and is_final_tp);
+            is_effectively_closed = (rec_orm.open_size_percent is not None and rec_orm.open_size_percent < Decimal('0.1'));
             if should_auto_close or is_effectively_closed:
-                 if rec_orm.status == RecommendationStatusEnum.ACTIVE: reason = "AUTO_CLOSE_FINAL_TP" if should_auto_close else "CLOSED_VIA_PARTIAL"; await self.close_recommendation_async(rec_orm.id, analyst_uid_str, price, s, reason=reason);
-            elif close_percent <= 0: await self._commit_and_dispatch(s, rec_orm, False); # Commit event if no close
+                 if rec_orm.status == RecommendationStatusEnum.ACTIVE:
+                    reason = "AUTO_CLOSE_FINAL_TP" if should_auto_close else "CLOSED_VIA_PARTIAL";
+                    await self.close_recommendation_async(rec_orm.id, analyst_uid_str, price, s, reason=reason);
+            elif close_percent <= 0:
+                await self._commit_and_dispatch(s, rec_orm, False); # Commit event if no close
 
     # --- Read Utilities ---
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
         """Return combined list of open recommendations and user's trades."""
-        # (v31.0.6)
+        # ✅ HOTFIX: Corrected indentation
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id)); open_positions = [];
         if not user: return []
-        if user.user_type == UserTypeEntity.ANALYST: recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id); open_positions.extend([e for rec in recs_orm if (e := self.repo._to_entity(rec)) and setattr(e, 'is_user_trade', False) is None]);
+        if user.user_type == UserTypeEntity.ANALYST:
+            recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id);
+            open_positions.extend([e for rec in recs_orm if (e := self.repo._to_entity(rec)) and setattr(e, 'is_user_trade', False) is None]);
+        
         trades_orm = self.repo.get_open_trades_for_trader(db_session, user.id);
         for trade in trades_orm:
-            try: targets_data=trade.targets or [];targets_for_vo=[{'price':self._to_decimal(t.get('price')),'close_percent':t.get('close_percent',0.0)} for t in targets_data]; trade_entity=RecommendationEntity(id=trade.id,asset=Symbol(trade.asset),side=Side(trade.side),entry=Price(self._to_decimal(trade.entry)),stop_loss=Price(self._to_decimal(trade.stop_loss)),targets=Targets(targets_for_vo),status=RecommendationStatusEntity.ACTIVE,order_type=OrderType.MARKET,created_at=trade.created_at,exit_strategy=ExitStrategy.MANUAL_CLOSE_ONLY); setattr(trade_entity, 'is_user_trade', True); open_positions.append(trade_entity);
-            except Exception as conv_err: logger.error(f"Failed conv UserTrade {trade.id}: {conv_err}", exc_info=False);
-        open_positions.sort(key=lambda p: getattr(p, "created_at", datetime.min), reverse=True); return open_positions
+            try:
+                targets_data=trade.targets or [];targets_for_vo=[{'price':self._to_decimal(t.get('price')),'close_percent':t.get('close_percent',0.0)} for t in targets_data];
+                trade_entity=RecommendationEntity(
+                    id=trade.id,asset=Symbol(trade.asset),side=Side(trade.side),
+                    entry=Price(self._to_decimal(trade.entry)),stop_loss=Price(self._to_decimal(trade.stop_loss)),
+                    targets=Targets(targets_for_vo),status=RecommendationStatusEntity.ACTIVE,
+                    order_type=OrderType.MARKET,created_at=trade.created_at,
+                    exit_strategy=ExitStrategy.MANUAL_CLOSE_ONLY
+                );
+                setattr(trade_entity, 'is_user_trade', True);
+                open_positions.append(trade_entity);
+            except Exception as conv_err:
+                logger.error(f"Failed conv UserTrade {trade.id}: {conv_err}", exc_info=False);
+        
+        open_positions.sort(key=lambda p: getattr(p, "created_at", datetime.min), reverse=True);
+        return open_positions
 
     def get_position_details_for_user(self, db_session: Session, user_telegram_id: str, position_type: str, position_id: int) -> Optional[RecommendationEntity]:
         """Return details for a single position, checking ownership."""
@@ -581,7 +623,6 @@ class TradeService:
             trade_orm = self.repo.get_user_trade_by_id(db_session, position_id)
             if not trade_orm or trade_orm.user_id != user.id:
                 return None
-            # ✅ HOTFIX: Corrected indentation
             try:
                 targets_data=trade_orm.targets or []
                 targets_for_vo=[{'price':self._to_decimal(t.get('price')),'close_percent':t.get('close_percent',0.0)} for t in targets_data]
