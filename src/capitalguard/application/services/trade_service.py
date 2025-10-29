@@ -1,10 +1,10 @@
 # --- src/capitalguard/application/services/trade_service.py ---
-# src/capitalguard/application/services/trade_service.py v31.0.3 - SyntaxError Hotfix 3
+# src/capitalguard/application/services/trade_service.py v31.0.4 - SyntaxError Hotfix 4
 """
-TradeService v31.0.3 - Hotfix for SyntaxError in _commit_and_dispatch.
-✅ HOTFIX: Corrected indentation for the 'if rebuild_alerts...' block at line 106.
+TradeService v31.0.4 - Hotfix for SyntaxError in create_and_publish_recommendation_async.
+✅ HOTFIX: Corrected indentation for the 'elif isinstance(exit_strategy_val, str)' block at line 219.
 - Includes `create_trade_from_forwarding_async` and `close_user_trade_async`.
-- Contains fixes for Decimal handling, deep-linking, validation, and helpers.
+- Contains all previous fixes.
 """
 
 from __future__ import annotations
@@ -98,46 +98,34 @@ class TradeService:
     # --- Internal DB / Notifier Helpers ---
     async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
         """Commits changes, refreshes ORM, updates alerts, notifies UI (if Recommendation)."""
-        item_id = getattr(orm_object, 'id', 'N/A')
-        item_type = type(orm_object).__name__
+        # (Implementation remains same as v31.0.3 - SyntaxError fixed)
+        item_id = getattr(orm_object, 'id', 'N/A'); item_type = type(orm_object).__name__;
         try:
-            db_session.commit()
-            db_session.refresh(orm_object) # Refresh to get latest state after commit
-            logger.debug(f"Committed changes for {item_type} ID {item_id}")
+            db_session.commit(); db_session.refresh(orm_object); logger.debug(f"Committed {item_type} ID {item_id}")
         except Exception as commit_err:
-            logger.error(f"Commit failed for {item_type} ID {item_id}: {commit_err}", exc_info=True)
-            db_session.rollback() # Rollback on commit error
-            raise # Re-raise after rollback
-
-        # Only rebuild alerts and notify for Recommendations
+            logger.error(f"Commit failed {item_type} ID {item_id}: {commit_err}", exc_info=True); db_session.rollback(); raise
+        
         if isinstance(orm_object, Recommendation):
-            rec_orm = orm_object # Alias for clarity
-
-            # ✅ HOTFIX: Corrected indentation for this block
+            rec_orm = orm_object
             if rebuild_alerts and self.alert_service:
                 try:
                     await self.alert_service.build_triggers_index()
                 except Exception as alert_err:
-                    logger.exception(f"Failed to rebuild alerts index after commit for Rec ID {item_id}: {alert_err}")
-
-            # Convert to entity only after successful commit and refresh
-            updated_entity = self.repo._to_entity(rec_orm) # Use repo's converter
+                    logger.exception(f"Alert rebuild fail Rec ID {item_id}: {alert_err}")
+            
+            updated_entity = self.repo._to_entity(rec_orm);
             if updated_entity:
-                try:
-                    await self.notify_card_update(updated_entity, db_session)
-                except Exception as notify_err:
-                    logger.exception(f"Failed to notify card update for Rec ID {item_id}: {notify_err}")
-            else:
-                 logger.error(f"Failed to convert ORM Rec ID {item_id} to entity after commit.")
-        # No specific dispatch needed for UserTrade in this method for now
+                try: await self.notify_card_update(updated_entity, db_session)
+                except Exception as notify_err: logger.exception(f"Notify fail Rec ID {item_id}: {notify_err}")
+            else: logger.error(f"Failed conv ORM Rec {item_id} to entity")
 
     async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
-        # (Implementation remains same as v31.0.2)
+        # (Implementation remains same as v31.0.3)
         if inspect.iscoroutinefunction(fn): return await fn(*args, **kwargs)
         else: loop = asyncio.get_running_loop(); return await loop.run_in_executor(None, fn, *args, **kwargs)
 
     async def notify_card_update(self, rec_entity: RecommendationEntity, db_session: Session):
-        # (Implementation remains same as v31.0.2)
+        # (Implementation remains same as v31.0.3)
         if getattr(rec_entity, "is_shadow", False): return
         try:
             published_messages = self.repo.get_published_messages(db_session, rec_entity.id);
@@ -150,7 +138,7 @@ class TradeService:
 
 
     def notify_reply(self, rec_id: int, text: str, db_session: Session):
-        # (Implementation remains same as v31.0.2)
+        # (Implementation remains same as v31.0.3)
         rec_orm = self.repo.get(db_session, rec_id);
         if not rec_orm or getattr(rec_orm, "is_shadow", False): return
         published_messages = self.repo.get_published_messages(db_session, rec_id);
@@ -159,7 +147,7 @@ class TradeService:
     # --- Validation ---
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
         """Strict validation for recommendation/trade numerical integrity. Raises ValueError."""
-        # (Implementation remains same as v31.0.2 - includes try/except for close_pct)
+        # (Implementation remains same as v31.0.3 - SyntaxError fixed)
         side_upper = (str(side) or "").upper()
         if not all(v is not None and isinstance(v, Decimal) and v.is_finite() and v > 0 for v in [entry, stop_loss]): raise ValueError("Entry and SL must be positive finite Decimals.")
         if not targets or not isinstance(targets, list): raise ValueError("Targets must be a non-empty list.")
@@ -188,9 +176,10 @@ class TradeService:
         if len(target_prices) != len(set(target_prices)): raise ValueError("Target prices must be unique.")
         if target_prices != sorted(target_prices, reverse=(side_upper == 'SHORT')): raise ValueError("Targets must be sorted.")
 
+
     # --- Publishing ---
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_db_id: int, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
-        # (Implementation remains same as v31.0.2)
+        # (Implementation remains same as v31.0.3)
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}; channels_to_publish = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True);
         if target_channel_ids is not None: channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids];
         if not channels_to_publish: report["failed"].append({"reason": "No active channels linked/selected."}); return rec_entity, report;
@@ -208,24 +197,49 @@ class TradeService:
 
     # --- Public API - Create/Publish Recommendation ---
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
-        # (Implementation remains same as v31.0.2)
+        """Creates and publishes a new recommendation."""
+        # (Implementation remains same as v31.0.3)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user or user.user_type != UserTypeEntity.ANALYST: raise ValueError("Only analysts.");
         entry_price_in = _to_decimal(kwargs['entry']); sl_price = _to_decimal(kwargs['stop_loss']); targets_list_in = kwargs['targets']; targets_list_validated = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_in]; asset = kwargs['asset'].strip().upper(); side = kwargs['side'].upper(); market = kwargs.get('market', 'Futures'); order_type_enum = OrderTypeEnum[kwargs['order_type'].upper()];
+        
         exit_strategy_val = kwargs.get('exit_strategy');
         if exit_strategy_val is None: exit_strategy_enum = ExitStrategyEnum.CLOSE_AT_FINAL_TP
         elif isinstance(exit_strategy_val, ExitStrategyEnum): exit_strategy_enum = exit_strategy_val
         elif isinstance(exit_strategy_val, ExitStrategy): exit_strategy_enum = ExitStrategyEnum[exit_strategy_val.name]
-        elif isinstance(exit_strategy_val, str): try: exit_strategy_enum = ExitStrategyEnum[exit_strategy_val.upper()] except KeyError: raise ValueError(f"Unsupported exit_strategy: {exit_strategy_val}")
-        else: raise ValueError(f"Unsupported exit_strategy format: {type(exit_strategy_val)}")
-        if order_type_enum == OrderTypeEnum.MARKET: live_price = await self.price_service.get_cached_price(asset, market, force_refresh=True); status, final_entry = RecommendationStatusEnum.ACTIVE, _to_decimal(live_price) if live_price is not None else None; if final_entry is None or not final_entry.is_finite() or final_entry <= 0: raise RuntimeError(f"Could not fetch valid live price for {asset}.")
-        else: status, final_entry = RecommendationStatusEnum.PENDING, entry_price_in
-        self._validate_recommendation_data(side, final_entry, sl_price, targets_list_validated); targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated];
-        rec_orm = Recommendation( analyst_id=user.id, asset=asset, side=side, entry=final_entry, stop_loss=sl_price, targets=targets_for_db, order_type=order_type_enum, status=status, market=market, notes=kwargs.get('notes'), exit_strategy=exit_strategy_enum, activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None ); db_session.add(rec_orm); db_session.flush(); db_session.add(RecommendationEvent( recommendation_id=rec_orm.id, event_type="CREATED_ACTIVE" if status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING", event_data={'entry': str(final_entry)} )); db_session.flush(); db_session.refresh(rec_orm);
+        # ✅ HOTFIX: Corrected indentation for this block
+        elif isinstance(exit_strategy_val, str):
+            try:
+                exit_strategy_enum = ExitStrategyEnum[exit_strategy_val.upper()]
+            except KeyError:
+                raise ValueError(f"Unsupported exit_strategy: {exit_strategy_val}")
+        else:
+            raise ValueError(f"Unsupported exit_strategy format: {type(exit_strategy_val)}")
+        
+        if order_type_enum == OrderTypeEnum.MARKET:
+            live_price = await self.price_service.get_cached_price(asset, market, force_refresh=True);
+            status, final_entry = RecommendationStatusEnum.ACTIVE, _to_decimal(live_price) if live_price is not None else None;
+            if final_entry is None or not final_entry.is_finite() or final_entry <= 0: raise RuntimeError(f"Could not fetch valid live price for {asset}.")
+        else:
+            status, final_entry = RecommendationStatusEnum.PENDING, entry_price_in
+        
+        self._validate_recommendation_data(side, final_entry, sl_price, targets_list_validated);
+        targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated];
+        
+        rec_orm = Recommendation( analyst_id=user.id, asset=asset, side=side, entry=final_entry, stop_loss=sl_price, targets=targets_for_db, order_type=order_type_enum, status=status, market=market, notes=kwargs.get('notes'), exit_strategy=exit_strategy_enum, activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None );
+        db_session.add(rec_orm); db_session.flush();
+        db_session.add(RecommendationEvent( recommendation_id=rec_orm.id, event_type="CREATED_ACTIVE" if status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING", event_data={'entry': str(final_entry)} ));
+        db_session.flush(); db_session.refresh(rec_orm);
+        
         created_rec_entity = self.repo._to_entity(rec_orm);
         if not created_rec_entity: raise RuntimeError(f"Failed conv new ORM Rec {rec_orm.id} to entity.");
+        
         final_rec, report = await self._publish_recommendation( db_session, created_rec_entity, user.id, kwargs.get('target_channel_ids') );
-        if self.alert_service: try: await self.alert_service.build_triggers_index() except Exception: logger.exception("alert rebuild failed after create");
+        
+        if self.alert_service:
+            try: await self.alert_service.build_triggers_index()
+            except Exception: logger.exception("alert rebuild failed after create");
+        
         return final_rec, report
 
     # --- User Trade Functions ---
@@ -251,7 +265,7 @@ class TradeService:
         existing_trade = self.repo.find_user_trade_by_source_id(db_session, trader_user.id, rec_id);
         if existing_trade: return {'success': False, 'error': 'You are already tracking this signal.'};
         try: new_trade = UserTrade( user_id=trader_user.id, asset=rec_orm.asset, side=rec_orm.side, entry=rec_orm.entry, stop_loss=rec_orm.stop_loss, targets=rec_orm.targets, status=UserTradeStatus.OPEN, source_recommendation_id=rec_orm.id ); db_session.add(new_trade); db_session.flush(); log.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id}."); return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset};
-        except Exception as e: logger.error(f"Error create trade from rec user {user_id}, rec {rec_id}: {e}", exc_info=True); db_session.rollback(); return {'success': False, 'error': 'Internal error tracking signal.'};
+        except Exception as e: logger.error(f"Error create trade from rec user {userid}, rec {rec_id}: {e}", exc_info=True); db_session.rollback(); return {'success': False, 'error': 'Internal error tracking signal.'};
 
     async def close_user_trade_async(
         self, user_id: str, trade_id: int, exit_price: Decimal, db_session: Session
@@ -269,6 +283,7 @@ class TradeService:
         except Exception as calc_err: logger.error(f"Failed PnL calc UserTrade {trade_id}: {calc_err}"); trade.pnl_percentage = None;
         logger.info(f"UserTrade {trade_id} closed user {user_id} at {exit_price}"); db_session.flush(); # Let UOW commit
         return trade;
+
 
     # --- Update Operations (Analyst - Implementations remain same as v31.0.2) ---
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Optional[Session] = None) -> RecommendationEntity:
@@ -361,7 +376,7 @@ class TradeService:
     # --- Closing Operations ---
     async def close_recommendation_async(self, rec_id: int, user_id: Optional[str], exit_price: Decimal, db_session: Optional[Session] = None, reason: str = "MANUAL_CLOSE") -> RecommendationEntity:
         """Closes a recommendation fully."""
-        # (Implementation remains same as v31.0.2 - with SyntaxError fix)
+        # (Implementation remains same as v31.0.2 - SyntaxError fixed)
         if db_session is None:
             with session_scope() as s: return await self.close_recommendation_async(rec_id, user_id, exit_price, s, reason)
         rec_orm = self.repo.get_for_update(db_session, rec_id);
@@ -429,9 +444,9 @@ class TradeService:
             elif close_percent <= 0: await self._commit_and_dispatch(s, rec_orm, False); # Commit event if no close
 
 
-    # --- Read Utilities (Keep implementations from v31.0.2) ---
+    # --- Read Utilities ---
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
-        # (Implementation remains same)
+        # (Implementation remains same as v31.0.2)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id)); open_positions = [];
         if not user: return []
         if user.user_type == UserTypeEntity.ANALYST: recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id); open_positions.extend([e for rec in recs_orm if (e := self.repo._to_entity(rec)) and setattr(e, 'is_user_trade', False) is None]);
@@ -442,7 +457,7 @@ class TradeService:
         open_positions.sort(key=lambda p: getattr(p, "created_at", datetime.min), reverse=True); return open_positions
 
     def get_position_details_for_user(self, db_session: Session, user_telegram_id: str, position_type: str, position_id: int) -> Optional[RecommendationEntity]:
-        # (Implementation remains same)
+        # (Implementation remains same as v31.0.2)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id));
         if not user: return None
         if position_type == 'rec':
@@ -460,7 +475,7 @@ class TradeService:
         else: logger.warning(f"Unknown position_type '{position_type}'."); return None
 
     def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
-        # (Implementation remains same)
+        # (Implementation remains same as v31.0.2)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id)); assets = set();
         if not user: return []
         if user.user_type == UserTypeEntity.ANALYST: recs = db_session.query(Recommendation.asset).filter(Recommendation.analyst_id == user.id).order_by(Recommendation.created_at.desc()).limit(limit * 2).distinct().all(); assets.update(r.asset for r in recs);
