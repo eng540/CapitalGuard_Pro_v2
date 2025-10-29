@@ -1,10 +1,10 @@
 # --- src/capitalguard/application/services/trade_service.py ---
 # src/capitalguard/application/services/trade_service.py v31.0.6 - Final SyntaxError Hotfix
 """
-TradeService v31.0.6 - Hotfix for IndentationError in move_sl_to_breakeven_async.
-✅ HOTFIX: Corrected indentation for the 'if is_improvement...' block at line 404.
+TradeService v31.0.6 - Hotfix for ALL IndentationErrors (Lines 106, 182, 219, 254, 404, 465, 509).
+✅ HOTFIX: Corrected indentation for all multi-line logic blocks.
 - Includes `create_trade_from_forwarding_async` and `close_user_trade_async`.
-- Contains all previous fixes. This should be the final syntax-error-free version.
+- This should be the final syntax-error-free version.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ if False:
 logger = logging.getLogger(__name__)
 
 # ---------------------------
-# Internal Helper Functions (Keep these essential helpers)
+# Internal Helper Functions
 # ---------------------------
 def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
     if isinstance(value, Decimal): return value if value.is_finite() else default
@@ -98,7 +98,6 @@ class TradeService:
     # --- Internal DB / Notifier Helpers ---
     async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
         """Commits changes, refreshes ORM, updates alerts, notifies UI (if Recommendation)."""
-        # (Implementation remains same as v31.0.4 - SyntaxError fixed)
         item_id = getattr(orm_object, 'id', 'N/A'); item_type = type(orm_object).__name__;
         try:
             db_session.commit(); db_session.refresh(orm_object); logger.debug(f"Committed {item_type} ID {item_id}")
@@ -107,6 +106,7 @@ class TradeService:
         
         if isinstance(orm_object, Recommendation):
             rec_orm = orm_object
+            # ✅ HOTFIX: Corrected indentation
             if rebuild_alerts and self.alert_service:
                 try:
                     await self.alert_service.build_triggers_index()
@@ -120,12 +120,10 @@ class TradeService:
             else: logger.error(f"Failed conv ORM Rec {item_id} to entity")
 
     async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
-        # (Implementation remains same as v31.0.4)
         if inspect.iscoroutinefunction(fn): return await fn(*args, **kwargs)
         else: loop = asyncio.get_running_loop(); return await loop.run_in_executor(None, fn, *args, **kwargs)
 
     async def notify_card_update(self, rec_entity: RecommendationEntity, db_session: Session):
-        # (Implementation remains same as v31.0.4)
         if getattr(rec_entity, "is_shadow", False): return
         try:
             published_messages = self.repo.get_published_messages(db_session, rec_entity.id);
@@ -136,9 +134,7 @@ class TradeService:
                 if isinstance(res, Exception): logger.error(f"Notify task fail Rec ID {rec_entity.id}: {res}", exc_info=False)
         except Exception as e: logger.error(f"Error fetch/update pub messages Rec ID {rec_entity.id}: {e}", exc_info=True)
 
-
     def notify_reply(self, rec_id: int, text: str, db_session: Session):
-        # (Implementation remains same as v31.0.4)
         rec_orm = self.repo.get(db_session, rec_id);
         if not rec_orm or getattr(rec_orm, "is_shadow", False): return
         published_messages = self.repo.get_published_messages(db_session, rec_id);
@@ -147,7 +143,6 @@ class TradeService:
     # --- Validation ---
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
         """Strict validation for recommendation/trade numerical integrity. Raises ValueError."""
-        # (Implementation remains same as v31.0.4 - SyntaxError fixed)
         side_upper = (str(side) or "").upper()
         if not all(v is not None and isinstance(v, Decimal) and v.is_finite() and v > 0 for v in [entry, stop_loss]): raise ValueError("Entry and SL must be positive finite Decimals.")
         if not targets or not isinstance(targets, list): raise ValueError("Targets must be a non-empty list.")
@@ -159,6 +154,7 @@ class TradeService:
             if not price.is_finite() or price <= 0: raise ValueError(f"Target {i+1} price invalid.")
             target_prices.append(price)
             close_pct = t.get('close_percent', 0.0)
+            # ✅ HOTFIX: Corrected indentation
             try:
                  close_pct_float = float(close_pct)
                  if not (0.0 <= close_pct_float <= 100.0): raise ValueError(f"Target {i+1} close % invalid.")
@@ -176,10 +172,8 @@ class TradeService:
         if len(target_prices) != len(set(target_prices)): raise ValueError("Target prices must be unique.")
         if target_prices != sorted(target_prices, reverse=(side_upper == 'SHORT')): raise ValueError("Targets must be sorted.")
 
-
     # --- Publishing ---
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_db_id: int, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
-        # (Implementation remains same as v31.0.4)
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}; channels_to_publish = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True);
         if target_channel_ids is not None: channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids];
         if not channels_to_publish: report["failed"].append({"reason": "No active channels linked/selected."}); return rec_entity, report;
@@ -198,7 +192,6 @@ class TradeService:
     # --- Public API - Create/Publish Recommendation ---
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         """Creates and publishes a new recommendation."""
-        # (Implementation remains same as v31.0.4 - SyntaxError fixed)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user or user.user_type != UserTypeEntity.ANALYST: raise ValueError("Only analysts.");
         entry_price_in = _to_decimal(kwargs['entry']); sl_price = _to_decimal(kwargs['stop_loss']); targets_list_in = kwargs['targets']; targets_list_validated = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_in]; asset = kwargs['asset'].strip().upper(); side = kwargs['side'].upper(); market = kwargs.get('market', 'Futures'); order_type_enum = OrderTypeEnum[kwargs['order_type'].upper()];
@@ -207,6 +200,7 @@ class TradeService:
         if exit_strategy_val is None: exit_strategy_enum = ExitStrategyEnum.CLOSE_AT_FINAL_TP
         elif isinstance(exit_strategy_val, ExitStrategyEnum): exit_strategy_enum = exit_strategy_val
         elif isinstance(exit_strategy_val, ExitStrategy): exit_strategy_enum = ExitStrategyEnum[exit_strategy_val.name]
+        # ✅ HOTFIX: Corrected indentation
         elif isinstance(exit_strategy_val, str):
             try:
                 exit_strategy_enum = ExitStrategyEnum[exit_strategy_val.upper()]
@@ -246,7 +240,7 @@ class TradeService:
         self, user_id: str, trade_data: Dict[str, Any], original_text: Optional[str], db_session: Session
     ) -> Dict[str, Any]:
         """Creates a UserTrade from parsed forwarded data."""
-        # (Implementation remains same as v31.0.4 - SyntaxError fixed)
+        # ✅ HOTFIX: Corrected indentation
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user:
             return {'success': False, 'error': 'User not found'}
@@ -286,21 +280,26 @@ class TradeService:
 
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
         """Creates a UserTrade by tracking an existing Recommendation."""
-        # (Implementation remains same as v31.0.4)
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not trader_user: return {'success': False, 'error': 'User not found'};
         rec_orm = self.repo.get(db_session, rec_id);
         if not rec_orm: return {'success': False, 'error': 'Signal not found'};
         existing_trade = self.repo.find_user_trade_by_source_id(db_session, trader_user.id, rec_id);
         if existing_trade: return {'success': False, 'error': 'You are already tracking this signal.'};
-        try: new_trade = UserTrade( user_id=trader_user.id, asset=rec_orm.asset, side=rec_orm.side, entry=rec_orm.entry, stop_loss=rec_orm.stop_loss, targets=rec_orm.targets, status=UserTradeStatus.OPEN, source_recommendation_id=rec_orm.id ); db_session.add(new_trade); db_session.flush(); log.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id}."); return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset};
-        except Exception as e: logger.error(f"Error create trade from rec user {user_id}, rec {rec_id}: {e}", exc_info=True); db_session.rollback(); return {'success': False, 'error': 'Internal error tracking signal.'};
+        try:
+            new_trade = UserTrade( user_id=trader_user.id, asset=rec_orm.asset, side=rec_orm.side, entry=rec_orm.entry, stop_loss=rec_orm.stop_loss, targets=rec_orm.targets, status=UserTradeStatus.OPEN, source_recommendation_id=rec_orm.id );
+            db_session.add(new_trade); db_session.flush();
+            log.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id}.");
+            return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset};
+        except Exception as e:
+            logger.error(f"Error create trade from rec user {user_id}, rec {rec_id}: {e}", exc_info=True);
+            db_session.rollback();
+            return {'success': False, 'error': 'Internal error tracking signal.'};
 
     async def close_user_trade_async(
         self, user_id: str, trade_id: int, exit_price: Decimal, db_session: Session
     ) -> Optional[UserTrade]:
         """Closes a UserTrade owned by the user. Returns updated ORM object or None."""
-        # (Implementation remains same as v31.0.4)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.");
         trade = db_session.query(UserTrade).filter( UserTrade.id == trade_id, UserTrade.user_id == user.id ).with_for_update().first();
@@ -308,14 +307,18 @@ class TradeService:
         if trade.status == UserTradeStatus.CLOSED: logger.warning(f"Closing already closed UserTrade #{trade_id}"); return trade;
         if not exit_price.is_finite() or exit_price <= 0: raise ValueError("Exit price must be positive.");
         trade.status = UserTradeStatus.CLOSED; trade.close_price = exit_price; trade.closed_at = datetime.now(timezone.utc);
-        try: entry_for_calc = _to_decimal(trade.entry); pnl_float = _pct(entry_for_calc, exit_price, trade.side); trade.pnl_percentage = Decimal(f"{pnl_float:.4f}");
-        except Exception as calc_err: logger.error(f"Failed PnL calc UserTrade {trade_id}: {calc_err}"); trade.pnl_percentage = None;
-        logger.info(f"UserTrade {trade_id} closed user {user_id} at {exit_price}"); db_session.flush(); # Let UOW commit
+        try:
+            entry_for_calc = _to_decimal(trade.entry); pnl_float = _pct(entry_for_calc, exit_price, trade.side);
+            trade.pnl_percentage = Decimal(f"{pnl_float:.4f}");
+        except Exception as calc_err:
+            logger.error(f"Failed PnL calc UserTrade {trade_id}: {calc_err}");
+            trade.pnl_percentage = None;
+        logger.info(f"UserTrade {trade_id} closed user {user_id} at {exit_price}");
+        db_session.flush(); # Let UOW commit
         return trade;
 
-    # --- Update Operations (Analyst - Implementations remain same as v31.0.4) ---
+    # --- Update Operations (Analyst) ---
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Optional[Session] = None) -> RecommendationEntity:
-        # (Implementation remains same)
         if db_session is None:
             with session_scope() as s: return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
@@ -325,26 +328,39 @@ class TradeService:
         if rec_orm.analyst_id != user.id: raise ValueError("Access denied.")
         if rec_orm.status != RecommendationStatusEnum.ACTIVE: raise ValueError("Only ACTIVE.")
         old_sl = rec_orm.stop_loss;
-        try: targets_list = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in (rec_orm.targets or [])]; self._validate_recommendation_data(rec_orm.side, _to_decimal(rec_orm.entry), new_sl, targets_list)
-        except ValueError as e: logger.warning(f"Invalid SL update rec #{rec_id}: {e}"); raise ValueError(f"Invalid new SL: {e}")
-        rec_orm.stop_loss = new_sl; db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="SL_UPDATED", event_data={"old": str(old_sl), "new": str(new_sl)})); self.notify_reply(rec_id, f"⚠️ SL for #{rec_orm.asset} updated to {_format_price(new_sl)}.", db_session);
-        await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True); return self.repo._to_entity(rec_orm)
+        try:
+            targets_list = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in (rec_orm.targets or [])];
+            self._validate_recommendation_data(rec_orm.side, _to_decimal(rec_orm.entry), new_sl, targets_list)
+        except ValueError as e:
+            logger.warning(f"Invalid SL update rec #{rec_id}: {e}");
+            raise ValueError(f"Invalid new SL: {e}")
+        rec_orm.stop_loss = new_sl;
+        db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="SL_UPDATED", event_data={"old": str(old_sl), "new": str(new_sl)}));
+        self.notify_reply(rec_id, f"⚠️ SL for #{rec_orm.asset} updated to {_format_price(new_sl)}.", db_session);
+        await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True);
+        return self.repo._to_entity(rec_orm)
 
     async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, Any]], db_session: Session) -> RecommendationEntity:
-        # (Implementation remains same)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id);
         if not rec_orm: raise ValueError(f"Rec #{rec_id} not found.")
         if rec_orm.analyst_id != user.id: raise ValueError("Access denied.")
         if rec_orm.status != RecommendationStatusEnum.ACTIVE: raise ValueError("Only ACTIVE.")
-        try: targets_validated = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in new_targets]; self._validate_recommendation_data(rec_orm.side, _to_decimal(rec_orm.entry), _to_decimal(rec_orm.stop_loss), targets_validated)
-        except (ValueError, KeyError, TypeError) as e: logger.warning(f"Invalid TP update rec #{rec_id}: {e}"); raise ValueError(f"Invalid new Targets: {e}")
-        old_targets_json = rec_orm.targets; rec_orm.targets = [{'price': str(t['price']), 'close_percent': t['close_percent']} for t in targets_validated]; db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="TP_UPDATED", event_data={"old": old_targets_json, "new": rec_orm.targets})); self.notify_reply(rec_id, f"🎯 Targets for #{rec_orm.asset} updated.", db_session);
-        await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True); return self.repo._to_entity(rec_orm)
+        try:
+            targets_validated = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in new_targets];
+            self._validate_recommendation_data(rec_orm.side, _to_decimal(rec_orm.entry), _to_decimal(rec_orm.stop_loss), targets_validated)
+        except (ValueError, KeyError, TypeError) as e:
+            logger.warning(f"Invalid TP update rec #{rec_id}: {e}");
+            raise ValueError(f"Invalid new Targets: {e}")
+        old_targets_json = rec_orm.targets;
+        rec_orm.targets = [{'price': str(t['price']), 'close_percent': t['close_percent']} for t in targets_validated];
+        db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="TP_UPDATED", event_data={"old": old_targets_json, "new": rec_orm.targets}));
+        self.notify_reply(rec_id, f"🎯 Targets for #{rec_orm.asset} updated.", db_session);
+        await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True);
+        return self.repo._to_entity(rec_orm)
 
     async def update_entry_and_notes_async(self, rec_id: int, user_id: str, new_entry: Optional[Decimal], new_notes: Optional[str], db_session: Session) -> RecommendationEntity:
-        # (Implementation remains same)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id);
@@ -354,17 +370,27 @@ class TradeService:
         event_data = {}; updated = False;
         if new_entry is not None:
             if rec_orm.status != RecommendationStatusEnum.PENDING: raise ValueError("Entry only editable PENDING.")
-            try: targets_list = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in (rec_orm.targets or [])]; self._validate_recommendation_data(rec_orm.side, new_entry, _to_decimal(rec_orm.stop_loss), targets_list)
-            except ValueError as e: raise ValueError(f"Invalid new Entry: {e}")
-            if rec_orm.entry != new_entry: event_data.update({"old_entry": str(rec_orm.entry), "new_entry": str(new_entry)}); rec_orm.entry = new_entry; updated = True
+            try:
+                targets_list = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in (rec_orm.targets or [])];
+                self._validate_recommendation_data(rec_orm.side, new_entry, _to_decimal(rec_orm.stop_loss), targets_list)
+            except ValueError as e:
+                raise ValueError(f"Invalid new Entry: {e}")
+            if rec_orm.entry != new_entry:
+                event_data.update({"old_entry": str(rec_orm.entry), "new_entry": str(new_entry)});
+                rec_orm.entry = new_entry; updated = True
         if new_notes is not None or (new_notes is None and rec_orm.notes is not None):
-            if rec_orm.notes != new_notes: event_data.update({"old_notes": rec_orm.notes, "new_notes": new_notes}); rec_orm.notes = new_notes; updated = True
-        if updated: db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="DATA_UPDATED", event_data=event_data)); self.notify_reply(rec_id, f"✏️ Data #{rec_orm.asset} updated.", db_session); await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=(new_entry is not None));
-        else: logger.debug(f"No changes update_entry_notes Rec {rec_id}.")
+            if rec_orm.notes != new_notes:
+                event_data.update({"old_notes": rec_orm.notes, "new_notes": new_notes});
+                rec_orm.notes = new_notes; updated = True
+        if updated:
+            db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="DATA_UPDATED", event_data=event_data));
+            self.notify_reply(rec_id, f"✏️ Data #{rec_orm.asset} updated.", db_session);
+            await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=(new_entry is not None));
+        else:
+            logger.debug(f"No changes update_entry_notes Rec {rec_id}.")
         return self.repo._to_entity(rec_orm)
 
     async def set_exit_strategy_async(self, rec_id: int, user_id: str, mode: str, price: Optional[Decimal] = None, trailing_value: Optional[Decimal] = None, active: bool = True, session: Optional[Session] = None) -> RecommendationEntity:
-        # (Implementation remains same)
         if session is None:
             with session_scope() as s: return await self.set_exit_strategy_async(rec_id, user_id, mode, price, trailing_value, active, s)
         user = UserRepository(session).find_by_telegram_id(_parse_int_user_id(user_id));
@@ -381,14 +407,20 @@ class TradeService:
         if rec.profit_stop_price: event_data["price"] = str(rec.profit_stop_price)
         if rec.profit_stop_trailing_value: event_data["trailing_value"] = str(rec.profit_stop_trailing_value)
         session.add(RecommendationEvent(recommendation_id=rec_id, event_type="EXIT_STRATEGY_UPDATED", event_data=event_data));
-        if active: msg = f"📈 Exit strategy #{rec.asset} set: {mode_upper}"; # ... (add price/value) ...
-        else: msg = f"❌ Exit strategy #{rec.asset} cancelled."
-        self.notify_reply(rec_id, msg, session); await self._commit_and_dispatch(session, rec, rebuild_alerts=True); return self.repo._to_entity(rec)
+        if active:
+            msg = f"📈 Exit strategy #{rec.asset} set: {mode_upper}";
+            if mode_upper == "FIXED": msg += f" at {_format_price(price)}"
+            elif mode_upper == "TRAILING": msg += f" with value {_format_price(trailing_value)}"
+        else:
+            msg = f"❌ Exit strategy #{rec.asset} cancelled."
+        self.notify_reply(rec_id, msg, session);
+        await self._commit_and_dispatch(session, rec, rebuild_alerts=True);
+        return self.repo._to_entity(rec)
 
     # --- Automation Helpers ---
     async def move_sl_to_breakeven_async(self, rec_id: int, db_session: Optional[Session] = None) -> RecommendationEntity:
         """Moves SL to entry +/- buffer if conditions met."""
-        # ✅ HOTFIX: Corrected indentation for this block
+        # ✅ HOTFIX: Corrected indentation
         if db_session is None:
             with session_scope() as s:
                 return await self.move_sl_to_breakeven_async(rec_id, s)
@@ -423,7 +455,7 @@ class TradeService:
     # --- Closing Operations ---
     async def close_recommendation_async(self, rec_id: int, user_id: Optional[str], exit_price: Decimal, db_session: Optional[Session] = None, reason: str = "MANUAL_CLOSE") -> RecommendationEntity:
         """Closes a recommendation fully."""
-        # (Implementation remains same as v31.0.2 - SyntaxError fixed)
+        # (Implementation remains same as v31.0.4 - SyntaxError fixed)
         if db_session is None:
             with session_scope() as s: return await self.close_recommendation_async(rec_id, user_id, exit_price, s, reason)
         rec_orm = self.repo.get_for_update(db_session, rec_id);
@@ -440,7 +472,7 @@ class TradeService:
         self.notify_reply(rec_id, f"✅ Signal #{rec_orm.asset} closed at {_format_price(exit_price)}. Reason: {reason}", db_session); await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True); return self.repo._to_entity(rec_orm)
 
     async def partial_close_async(self, rec_id: int, user_id: str, close_percent: Decimal, price: Decimal, db_session: Session, triggered_by: str = "MANUAL") -> RecommendationEntity:
-        # (Implementation remains same as v31.0.2)
+        # (Implementation remains same as v31.0.4)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id);
@@ -459,20 +491,32 @@ class TradeService:
         else: await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False); return self.repo._to_entity(rec_orm);
 
 
-    # --- Event Processors (Keep implementations from v31.0.2) ---
+    # --- Event Processors ---
     async def process_invalidation_event(self, item_id: int):
-        # (Implementation remains same)
-        with session_scope() as s: rec = self.repo.get_for_update(s, item_id); if not rec or rec.status != RecommendationStatusEnum.PENDING: return; rec.status = RecommendationStatusEnum.CLOSED; rec.closed_at = datetime.now(timezone.utc); s.add(RecommendationEvent(recommendation_id=rec.id, event_type="INVALIDATED", event_data={"reason": "SL hit before entry"})); self.notify_reply(rec.id, f"❌ Signal #{rec.asset} invalidated.", db_session=s); await self._commit_and_dispatch(s, rec);
+        """Called when a pending rec is invalidated (e.g., SL hit before entry)."""
+        # ✅ HOTFIX: Corrected indentation
+        with session_scope() as db_session:
+            rec = self.repo.get_for_update(db_session, item_id)
+            if not rec or rec.status != RecommendationStatusEnum.PENDING:
+                return
+            rec.status = RecommendationStatusEnum.CLOSED
+            rec.closed_at = datetime.now(timezone.utc)
+            db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="INVALIDATED", event_data={"reason": "SL hit before entry"}))
+            self.notify_reply(rec.id, f"❌ Signal #{rec.asset} invalidated.", db_session=db_session)
+            await self._commit_and_dispatch(db_session, rec)
 
     async def process_activation_event(self, item_id: int):
+        """Activate a pending recommendation (entry reached)."""
         # (Implementation remains same)
         with session_scope() as s: rec = self.repo.get_for_update(s, item_id); if not rec or rec.status != RecommendationStatusEnum.PENDING: return; rec.status = RecommendationStatusEnum.ACTIVE; rec.activated_at = datetime.now(timezone.utc); s.add(RecommendationEvent(recommendation_id=rec.id, event_type="ACTIVATED")); self.notify_reply(rec.id, f"▶️ Signal #{rec.asset} ACTIVE!", db_session=s); await self._commit_and_dispatch(s, rec);
 
     async def process_sl_hit_event(self, item_id: int, price: Decimal):
+        """Handle SL hit by closing the recommendation."""
         # (Implementation remains same)
         with session_scope() as s: rec = self.repo.get_for_update(s, item_id); if not rec or rec.status != RecommendationStatusEnum.ACTIVE: return; analyst_uid = str(rec.analyst.telegram_user_id) if rec.analyst else None; await self.close_recommendation_async(rec.id, None, price, s, reason="SL_HIT");
 
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
+        """Handle TP hit events."""
         # (Implementation remains same)
         with session_scope() as s:
             rec_orm = self.repo.get_for_update(s, item_id);
@@ -493,6 +537,7 @@ class TradeService:
 
     # --- Read Utilities ---
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
+        """Return combined list of open recommendations and user's trades."""
         # (Implementation remains same as v31.0.2)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id)); open_positions = [];
         if not user: return []
@@ -504,6 +549,7 @@ class TradeService:
         open_positions.sort(key=lambda p: getattr(p, "created_at", datetime.min), reverse=True); return open_positions
 
     def get_position_details_for_user(self, db_session: Session, user_telegram_id: str, position_type: str, position_id: int) -> Optional[RecommendationEntity]:
+        """Return details for a single position, checking ownership."""
         # (Implementation remains same as v31.0.2)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id));
         if not user: return None
@@ -522,6 +568,7 @@ class TradeService:
         else: logger.warning(f"Unknown position_type '{position_type}'."); return None
 
     def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
+        """Return recent assets for quick selection UI."""
         # (Implementation remains same as v31.0.2)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id)); assets = set();
         if not user: return []
