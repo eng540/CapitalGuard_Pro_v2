@@ -16,7 +16,9 @@ from enum import Enum
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 # Assuming domain entities are correctly imported for type hints if needed
-from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
+
+from capitalguard.domain.entities import Recommendation as RecommendationEntity, RecommendationStatus, ExitStrategy
+
 from capitalguard.application.services.price_service import PriceService
 # Use internal helpers instead of importing from ui_texts directly if possible
 
