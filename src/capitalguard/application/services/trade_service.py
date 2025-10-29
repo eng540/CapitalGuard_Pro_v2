@@ -1,10 +1,10 @@
 # --- src/capitalguard/application/services/trade_service.py ---
-# src/capitalguard/application/services/trade_service.py v31.0.5 - SyntaxError Hotfix 5
+# src/capitalguard/application/services/trade_service.py v31.0.6 - Final SyntaxError Hotfix
 """
-TradeService v31.0.5 - Hotfix for SyntaxError in create_trade_from_forwarding_async.
-✅ HOTFIX: Corrected indentation for the 'try...except' block at line 254.
+TradeService v31.0.6 - Hotfix for IndentationError in move_sl_to_breakeven_async.
+✅ HOTFIX: Corrected indentation for the 'if is_improvement...' block at line 404.
 - Includes `create_trade_from_forwarding_async` and `close_user_trade_async`.
-- Contains all previous fixes.
+- Contains all previous fixes. This should be the final syntax-error-free version.
 """
 
 from __future__ import annotations
@@ -246,7 +246,7 @@ class TradeService:
         self, user_id: str, trade_data: Dict[str, Any], original_text: Optional[str], db_session: Session
     ) -> Dict[str, Any]:
         """Creates a UserTrade from parsed forwarded data."""
-        # ✅ HOTFIX: Corrected indentation for the 'try...except' block.
+        # (Implementation remains same as v31.0.4 - SyntaxError fixed)
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user:
             return {'success': False, 'error': 'User not found'}
@@ -254,26 +254,24 @@ class TradeService:
         try:
             entry_dec = trade_data['entry']
             sl_dec = trade_data['stop_loss']
-            targets_list_validated = trade_data['targets'] # Already list of dicts {'price': Decimal, '%': float}
+            targets_list_validated = trade_data['targets']
             
-            # Validate the structure and logic (using Decimals)
             self._validate_recommendation_data(trade_data['side'], entry_dec, sl_dec, targets_list_validated)
 
-            # Convert targets back to DB format (strings/floats) for JSONB
             targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated]
 
             new_trade = UserTrade(
                 user_id=trader_user.id,
                 asset=trade_data['asset'],
                 side=trade_data['side'],
-                entry=entry_dec, # Store Decimal directly
-                stop_loss=sl_dec, # Store Decimal directly
-                targets=targets_for_db, # Store JSON-compatible list
+                entry=entry_dec,
+                stop_loss=sl_dec,
+                targets=targets_for_db,
                 status=UserTradeStatus.OPEN,
-                source_forwarded_text=original_text # Store original text
+                source_forwarded_text=original_text
             )
             db_session.add(new_trade)
-            db_session.flush() # Get the new ID
+            db_session.flush()
             log.info(f"UserTrade {new_trade.id} created for user {user_id} from forwarded message.")
             return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
         except ValueError as e:
@@ -288,7 +286,7 @@ class TradeService:
 
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
         """Creates a UserTrade by tracking an existing Recommendation."""
-        # (Implementation remains same as v31.0.2)
+        # (Implementation remains same as v31.0.4)
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not trader_user: return {'success': False, 'error': 'User not found'};
         rec_orm = self.repo.get(db_session, rec_id);
@@ -302,7 +300,7 @@ class TradeService:
         self, user_id: str, trade_id: int, exit_price: Decimal, db_session: Session
     ) -> Optional[UserTrade]:
         """Closes a UserTrade owned by the user. Returns updated ORM object or None."""
-        # (Implementation remains same as v31.0.2)
+        # (Implementation remains same as v31.0.4)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.");
         trade = db_session.query(UserTrade).filter( UserTrade.id == trade_id, UserTrade.user_id == user.id ).with_for_update().first();
@@ -315,8 +313,7 @@ class TradeService:
         logger.info(f"UserTrade {trade_id} closed user {user_id} at {exit_price}"); db_session.flush(); # Let UOW commit
         return trade;
 
-
-    # --- Update Operations (Analyst - Implementations remain same as v31.0.2) ---
+    # --- Update Operations (Analyst - Implementations remain same as v31.0.4) ---
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Optional[Session] = None) -> RecommendationEntity:
         # (Implementation remains same)
         if db_session is None:
@@ -390,19 +387,38 @@ class TradeService:
 
     # --- Automation Helpers ---
     async def move_sl_to_breakeven_async(self, rec_id: int, db_session: Optional[Session] = None) -> RecommendationEntity:
-        # (Implementation remains same)
+        """Moves SL to entry +/- buffer if conditions met."""
+        # ✅ HOTFIX: Corrected indentation for this block
         if db_session is None:
-            with session_scope() as s: return await self.move_sl_to_breakeven_async(rec_id, s)
-        rec_orm = self.repo.get_for_update(db_session, rec_id);
-        if not rec_orm or rec_orm.status != RecommendationStatusEnum.ACTIVE: raise ValueError("Only ACTIVE.")
-        entry_dec = _to_decimal(rec_orm.entry); current_sl_dec = _to_decimal(rec_orm.stop_loss);
-        if not entry_dec.is_finite() or entry_dec <= 0 or not current_sl_dec.is_finite(): raise ValueError("Invalid entry/SL for BE.")
-        buffer = entry_dec * Decimal('0.0001'); # 0.01% buffer
-        new_sl_target = entry_dec + buffer if rec_orm.side == 'LONG' else entry_dec - buffer;
-        is_improvement = (rec_orm.side == 'LONG' and new_sl_target > current_sl_dec) or (rec_orm.side == 'SHORT' and new_sl_target < current_sl_dec);
-        if is_improvement: analyst_uid = str(rec_orm.analyst.telegram_user_id) if rec_orm.analyst else None;
-                          if not analyst_uid: raise RuntimeError(f"Cannot BE Rec {rec_id}: Analyst missing."); logger.info(f"Moving SL BE Rec #{rec_id} from {current_sl_dec:g} to {new_sl_target:g}"); return await self.update_sl_for_user_async(rec_id, analyst_uid, new_sl_target, db_session);
-        else: logger.info(f"SL Rec #{rec_id} already at/better BE {new_sl_target:g}."); return self.repo._to_entity(rec_orm);
+            with session_scope() as s:
+                return await self.move_sl_to_breakeven_async(rec_id, s)
+        
+        rec_orm = self.repo.get_for_update(db_session, rec_id)
+        if not rec_orm or rec_orm.status != RecommendationStatusEnum.ACTIVE:
+            raise ValueError("Only ACTIVE.")
+        
+        entry_dec = _to_decimal(rec_orm.entry)
+        current_sl_dec = _to_decimal(rec_orm.stop_loss)
+        
+        if not entry_dec.is_finite() or entry_dec <= 0 or not current_sl_dec.is_finite():
+            raise ValueError("Invalid entry/SL for BE.")
+        
+        buffer = entry_dec * Decimal('0.0001') # 0.01% buffer
+        new_sl_target = entry_dec + buffer if rec_orm.side == 'LONG' else entry_dec - buffer
+        
+        is_improvement = (rec_orm.side == 'LONG' and new_sl_target > current_sl_dec) or \
+                         (rec_orm.side == 'SHORT' and new_sl_target < current_sl_dec)
+        
+        if is_improvement:
+            analyst_uid = str(rec_orm.analyst.telegram_user_id) if rec_orm.analyst else None
+            if not analyst_uid:
+                raise RuntimeError(f"Cannot BE Rec {rec_id}: Analyst missing.")
+            logger.info(f"Moving SL BE Rec #{rec_id} from {current_sl_dec:g} to {new_sl_target:g}")
+            return await self.update_sl_for_user_async(rec_id, analyst_uid, new_sl_target, db_session)
+        else:
+            logger.info(f"SL Rec #{rec_id} already at/better BE {new_sl_target:g}.")
+            return self.repo._to_entity(rec_orm)
+
 
     # --- Closing Operations ---
     async def close_recommendation_async(self, rec_id: int, user_id: Optional[str], exit_price: Decimal, db_session: Optional[Session] = None, reason: str = "MANUAL_CLOSE") -> RecommendationEntity:
