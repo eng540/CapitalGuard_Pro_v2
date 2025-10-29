@@ -1,8 +1,8 @@
 # --- src/capitalguard/application/services/trade_service.py ---
-# src/capitalguard/application/services/trade_service.py v31.0.4 - SyntaxError Hotfix 4
+# src/capitalguard/application/services/trade_service.py v31.0.5 - SyntaxError Hotfix 5
 """
-TradeService v31.0.4 - Hotfix for SyntaxError in create_and_publish_recommendation_async.
-✅ HOTFIX: Corrected indentation for the 'elif isinstance(exit_strategy_val, str)' block at line 219.
+TradeService v31.0.5 - Hotfix for SyntaxError in create_trade_from_forwarding_async.
+✅ HOTFIX: Corrected indentation for the 'try...except' block at line 254.
 - Includes `create_trade_from_forwarding_async` and `close_user_trade_async`.
 - Contains all previous fixes.
 """
@@ -98,7 +98,7 @@ class TradeService:
     # --- Internal DB / Notifier Helpers ---
     async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
         """Commits changes, refreshes ORM, updates alerts, notifies UI (if Recommendation)."""
-        # (Implementation remains same as v31.0.3 - SyntaxError fixed)
+        # (Implementation remains same as v31.0.4 - SyntaxError fixed)
         item_id = getattr(orm_object, 'id', 'N/A'); item_type = type(orm_object).__name__;
         try:
             db_session.commit(); db_session.refresh(orm_object); logger.debug(f"Committed {item_type} ID {item_id}")
@@ -120,12 +120,12 @@ class TradeService:
             else: logger.error(f"Failed conv ORM Rec {item_id} to entity")
 
     async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
-        # (Implementation remains same as v31.0.3)
+        # (Implementation remains same as v31.0.4)
         if inspect.iscoroutinefunction(fn): return await fn(*args, **kwargs)
         else: loop = asyncio.get_running_loop(); return await loop.run_in_executor(None, fn, *args, **kwargs)
 
     async def notify_card_update(self, rec_entity: RecommendationEntity, db_session: Session):
-        # (Implementation remains same as v31.0.3)
+        # (Implementation remains same as v31.0.4)
         if getattr(rec_entity, "is_shadow", False): return
         try:
             published_messages = self.repo.get_published_messages(db_session, rec_entity.id);
@@ -138,7 +138,7 @@ class TradeService:
 
 
     def notify_reply(self, rec_id: int, text: str, db_session: Session):
-        # (Implementation remains same as v31.0.3)
+        # (Implementation remains same as v31.0.4)
         rec_orm = self.repo.get(db_session, rec_id);
         if not rec_orm or getattr(rec_orm, "is_shadow", False): return
         published_messages = self.repo.get_published_messages(db_session, rec_id);
@@ -147,7 +147,7 @@ class TradeService:
     # --- Validation ---
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
         """Strict validation for recommendation/trade numerical integrity. Raises ValueError."""
-        # (Implementation remains same as v31.0.3 - SyntaxError fixed)
+        # (Implementation remains same as v31.0.4 - SyntaxError fixed)
         side_upper = (str(side) or "").upper()
         if not all(v is not None and isinstance(v, Decimal) and v.is_finite() and v > 0 for v in [entry, stop_loss]): raise ValueError("Entry and SL must be positive finite Decimals.")
         if not targets or not isinstance(targets, list): raise ValueError("Targets must be a non-empty list.")
@@ -179,7 +179,7 @@ class TradeService:
 
     # --- Publishing ---
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_db_id: int, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
-        # (Implementation remains same as v31.0.3)
+        # (Implementation remains same as v31.0.4)
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}; channels_to_publish = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True);
         if target_channel_ids is not None: channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids];
         if not channels_to_publish: report["failed"].append({"reason": "No active channels linked/selected."}); return rec_entity, report;
@@ -198,7 +198,7 @@ class TradeService:
     # --- Public API - Create/Publish Recommendation ---
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         """Creates and publishes a new recommendation."""
-        # (Implementation remains same as v31.0.3)
+        # (Implementation remains same as v31.0.4 - SyntaxError fixed)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user or user.user_type != UserTypeEntity.ANALYST: raise ValueError("Only analysts.");
         entry_price_in = _to_decimal(kwargs['entry']); sl_price = _to_decimal(kwargs['stop_loss']); targets_list_in = kwargs['targets']; targets_list_validated = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_in]; asset = kwargs['asset'].strip().upper(); side = kwargs['side'].upper(); market = kwargs.get('market', 'Futures'); order_type_enum = OrderTypeEnum[kwargs['order_type'].upper()];
@@ -207,7 +207,6 @@ class TradeService:
         if exit_strategy_val is None: exit_strategy_enum = ExitStrategyEnum.CLOSE_AT_FINAL_TP
         elif isinstance(exit_strategy_val, ExitStrategyEnum): exit_strategy_enum = exit_strategy_val
         elif isinstance(exit_strategy_val, ExitStrategy): exit_strategy_enum = ExitStrategyEnum[exit_strategy_val.name]
-        # ✅ HOTFIX: Corrected indentation for this block
         elif isinstance(exit_strategy_val, str):
             try:
                 exit_strategy_enum = ExitStrategyEnum[exit_strategy_val.upper()]
@@ -247,13 +246,45 @@ class TradeService:
         self, user_id: str, trade_data: Dict[str, Any], original_text: Optional[str], db_session: Session
     ) -> Dict[str, Any]:
         """Creates a UserTrade from parsed forwarded data."""
-        # (Implementation remains same as v31.0.2)
-        trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
-        if not trader_user: return {'success': False, 'error': 'User not found'};
-        try: entry_dec = trade_data['entry']; sl_dec = trade_data['stop_loss']; targets_list_validated = trade_data['targets']; self._validate_recommendation_data(trade_data['side'], entry_dec, sl_dec, targets_list_validated); targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated];
-             new_trade = UserTrade( user_id=trader_user.id, asset=trade_data['asset'], side=trade_data['side'], entry=entry_dec, stop_loss=sl_dec, targets=targets_for_db, status=UserTradeStatus.OPEN, source_forwarded_text=original_text ); db_session.add(new_trade); db_session.flush(); log.info(f"UserTrade {new_trade.id} created user {user_id} from forward."); return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset};
-        except ValueError as e: logger.warning(f"Validation fail forward trade user {user_id}: {e}"); db_session.rollback(); return {'success': False, 'error': str(e)};
-        except Exception as e: logger.error(f"Error create trade forward user {user_id}: {e}", exc_info=True); db_session.rollback(); return {'success': False, 'error': 'Internal error saving trade.'};
+        # ✅ HOTFIX: Corrected indentation for the 'try...except' block.
+        trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not trader_user:
+            return {'success': False, 'error': 'User not found'}
+        
+        try:
+            entry_dec = trade_data['entry']
+            sl_dec = trade_data['stop_loss']
+            targets_list_validated = trade_data['targets'] # Already list of dicts {'price': Decimal, '%': float}
+            
+            # Validate the structure and logic (using Decimals)
+            self._validate_recommendation_data(trade_data['side'], entry_dec, sl_dec, targets_list_validated)
+
+            # Convert targets back to DB format (strings/floats) for JSONB
+            targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated]
+
+            new_trade = UserTrade(
+                user_id=trader_user.id,
+                asset=trade_data['asset'],
+                side=trade_data['side'],
+                entry=entry_dec, # Store Decimal directly
+                stop_loss=sl_dec, # Store Decimal directly
+                targets=targets_for_db, # Store JSON-compatible list
+                status=UserTradeStatus.OPEN,
+                source_forwarded_text=original_text # Store original text
+            )
+            db_session.add(new_trade)
+            db_session.flush() # Get the new ID
+            log.info(f"UserTrade {new_trade.id} created for user {user_id} from forwarded message.")
+            return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
+        except ValueError as e:
+            logger.warning(f"Validation fail forward trade user {user_id}: {e}")
+            db_session.rollback()
+            return {'success': False, 'error': str(e)}
+        except Exception as e:
+            logger.error(f"Error create trade forward user {user_id}: {e}", exc_info=True)
+            db_session.rollback()
+            return {'success': False, 'error': 'Internal error saving trade.'}
+
 
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
         """Creates a UserTrade by tracking an existing Recommendation."""
@@ -265,7 +296,7 @@ class TradeService:
         existing_trade = self.repo.find_user_trade_by_source_id(db_session, trader_user.id, rec_id);
         if existing_trade: return {'success': False, 'error': 'You are already tracking this signal.'};
         try: new_trade = UserTrade( user_id=trader_user.id, asset=rec_orm.asset, side=rec_orm.side, entry=rec_orm.entry, stop_loss=rec_orm.stop_loss, targets=rec_orm.targets, status=UserTradeStatus.OPEN, source_recommendation_id=rec_orm.id ); db_session.add(new_trade); db_session.flush(); log.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id}."); return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset};
-        except Exception as e: logger.error(f"Error create trade from rec user {userid}, rec {rec_id}: {e}", exc_info=True); db_session.rollback(); return {'success': False, 'error': 'Internal error tracking signal.'};
+        except Exception as e: logger.error(f"Error create trade from rec user {user_id}, rec {rec_id}: {e}", exc_info=True); db_session.rollback(); return {'success': False, 'error': 'Internal error tracking signal.'};
 
     async def close_user_trade_async(
         self, user_id: str, trade_id: int, exit_price: Decimal, db_session: Session
