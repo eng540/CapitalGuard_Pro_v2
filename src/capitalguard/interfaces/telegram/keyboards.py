@@ -17,6 +17,9 @@ from enum import Enum
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
+
+from capitalguard.domain.entities import RecommendationEntity
+
 from capitalguard.application.services.price_service import PriceService
 # ❌ REMOVED: from capitalguard.interfaces.telegram.ui_texts import _pct
 # (Helper functions like _pct, _format_price are now duplicated or imported from parsers)
