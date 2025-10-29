@@ -98,7 +98,7 @@ class TradeService:
     # --- Internal DB / Notifier Helpers ---
     async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
         """Commits changes, refreshes ORM, updates alerts, notifies UI (if Recommendation)."""
-        # ✅ HOTFIX: Corrected indentation (v31.0.3)
+        # (v31.0.6 - SyntaxError fixed)
         item_id = getattr(orm_object, 'id', 'N/A'); item_type = type(orm_object).__name__;
         try:
             db_session.commit(); db_session.refresh(orm_object); logger.debug(f"Committed {item_type} ID {item_id}")
@@ -107,6 +107,7 @@ class TradeService:
         
         if isinstance(orm_object, Recommendation):
             rec_orm = orm_object
+            # ✅ HOTFIX: Corrected indentation (v31.0.3)
             if rebuild_alerts and self.alert_service:
                 try:
                     await self.alert_service.build_triggers_index()
@@ -177,8 +178,9 @@ class TradeService:
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}; channels_to_publish = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True);
         if target_channel_ids is not None: channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids];
         if not channels_to_publish: report["failed"].append({"reason": "No active channels linked/selected."}); return rec_entity, report;
-        try: from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
-        except ImportError: public_channel_keyboard = lambda *_: None; logger.warning("public_channel_keyboard not found.")
+        # ✅ HOTFIX: Import moved to infrastructure/notify/telegram.py
+        # We rely on the notifier to have the keyboard logic now.
+        from capitalguard.infrastructure.notify.telegram import public_channel_keyboard # This import is now safe
         keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None)); tasks = []; channel_map = {ch.telegram_channel_id: ch for ch in channels_to_publish};
         for channel_id in channel_map.keys(): tasks.append(self._call_notifier_maybe_async( self.notifier.post_to_channel, channel_id, rec_entity, keyboard ));
         results = await asyncio.gather(*tasks, return_exceptions=True);
@@ -648,13 +650,22 @@ class TradeService:
 
     def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
         """Return recent assets for quick selection UI."""
-        # (v31.0.6)
+        # ✅ HOTFIX: Corrected indentation
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id)); assets = set();
         if not user: return []
-        if user.user_type == UserTypeEntity.ANALYST: recs = db_session.query(Recommendation.asset).filter(Recommendation.analyst_id == user.id).order_by(Recommendation.created_at.desc()).limit(limit * 2).distinct().all(); assets.update(r.asset for r in recs);
-        else: trades = db_session.query(UserTrade.asset).filter(UserTrade.user_id == user.id).order_by(UserTrade.created_at.desc()).limit(limit * 2).distinct().all(); assets.update(t.asset for t in trades);
+        if user.user_type == UserTypeEntity.ANALYST:
+            recs = db_session.query(Recommendation.asset).filter(Recommendation.analyst_id == user.id).order_by(Recommendation.created_at.desc()).limit(limit * 2).distinct().all();
+            assets.update(r.asset for r in recs);
+        else:
+            trades = db_session.query(UserTrade.asset).filter(UserTrade.user_id == user.id).order_by(UserTrade.created_at.desc()).limit(limit * 2).distinct().all();
+            assets.update(t.asset for t in trades);
+        
         asset_list = list(assets)[:limit];
-        if len(asset_list) < limit: default_assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]; [asset_list.append(a) for a in default_assets if a not in asset_list and len(asset_list) < limit];
+        if len(asset_list) < limit:
+            default_assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"];
+            for a in default_assets:
+                if a not in asset_list and len(asset_list) < limit:
+                    asset_list.append(a);
         return asset_list
 
 # --- END of TradeService ---
