@@ -12,7 +12,7 @@ from .autotrade_service import AutoTradeService
 from .risk_service import RiskService
 from .report_service import ReportService
 from .audit_service import AuditService
-#from .image_parsing_service import ImageParsingService  # ✅ NEW: خدمة تحليل الصور
+from .image_parsing_service import ImageParsingService  # ✅ NEW: خدمة تحليل الصور
 
 __all__ = [
     "TradeService",
@@ -24,5 +24,5 @@ __all__ = [
     "RiskService",
     "ReportService",
     "AuditService",
-    "#ImageParsingService",  # ✅ NEW: خدمة تحليل الصور
+    "ImageParsingService",  # ✅ NEW: خدمة تحليل الصور
 ]
