@@ -19,7 +19,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from capitalguard.domain.entities import Recommendation, RecommendationStatus, ExitStrategy
 from capitalguard.application.services.price_service import PriceService
 # ❌ REMOVED: from capitalguard.interfaces.telegram.ui_texts import _pct
-# (Helper functions like _pct, _format_price are now duplicated or imported from parsers)
 
 # ✅ NEW: Import helpers from a safe, non-circular location (parsers)
 from capitalguard.interfaces.telegram.parsers import parse_number
@@ -306,7 +305,6 @@ def build_confirmation_keyboard(
     cancel_cb = CallbackBuilder.create(namespace, CallbackAction.CANCEL, item_id)
     if len(confirm_cb.encode('utf-8')) > MAX_CALLBACK_DATA_LENGTH or len(cancel_cb.encode('utf-8')) > MAX_CALLBACK_DATA_LENGTH:
          logger.warning(f"Confirm CB data > 64 bytes for {namespace}:{item_id}.")
-         # Fallback to a shorter, generic callback if needed, or shorten item_id
     return InlineKeyboardMarkup([[ InlineKeyboardButton(confirm_text, callback_data=confirm_cb), InlineKeyboardButton(cancel_text, callback_data=cancel_cb), ]])
 
 # --- Recommendation Creation Flow Keyboards ---
@@ -385,7 +383,7 @@ def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineK
      if channel_link: return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Join Channel", url=channel_link)]])
      return None
 
-# --- Other keyboards (e.g., analyst submenus) ---
+# --- Other keyboards (analyst submenus) ---
 
 def build_close_options_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     ns = CallbackNamespace.RECOMMENDATION
@@ -433,7 +431,6 @@ def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     ])
 
 # ==================== EXPORTS ====================
-# (List all functions that handlers need to import)
 __all__ = [
     'build_open_recs_keyboard', 'main_creation_keyboard', 'analyst_control_panel_keyboard',
     'build_user_trade_control_keyboard', 'build_close_options_keyboard',
