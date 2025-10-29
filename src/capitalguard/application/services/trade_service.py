@@ -98,7 +98,7 @@ class TradeService:
     # --- Internal DB / Notifier Helpers ---
     async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
         """Commits changes, refreshes ORM, updates alerts, notifies UI (if Recommendation)."""
-        # ✅ HOTFIX: Corrected indentation (v31.0.3)
+        # (v31.0.6 - SyntaxError fixed)
         item_id = getattr(orm_object, 'id', 'N/A'); item_type = type(orm_object).__name__;
         try:
             db_session.commit(); db_session.refresh(orm_object); logger.debug(f"Committed {item_type} ID {item_id}")
@@ -107,6 +107,7 @@ class TradeService:
         
         if isinstance(orm_object, Recommendation):
             rec_orm = orm_object
+            # ✅ HOTFIX: Corrected indentation (v31.0.3)
             if rebuild_alerts and self.alert_service:
                 try:
                     await self.alert_service.build_triggers_index()
@@ -279,7 +280,6 @@ class TradeService:
 
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
         """Creates a UserTrade by tracking an existing Recommendation."""
-        # (v31.0.6)
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not trader_user: return {'success': False, 'error': 'User not found'};
         rec_orm = self.repo.get(db_session, rec_id);
@@ -300,7 +300,6 @@ class TradeService:
         self, user_id: str, trade_id: int, exit_price: Decimal, db_session: Session
     ) -> Optional[UserTrade]:
         """Closes a UserTrade owned by the user. Returns updated ORM object or None."""
-        # (v31.0.6)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.");
         trade = db_session.query(UserTrade).filter( UserTrade.id == trade_id, UserTrade.user_id == user.id ).with_for_update().first();
@@ -320,7 +319,6 @@ class TradeService:
 
     # --- Update Operations (Analyst) ---
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Optional[Session] = None) -> RecommendationEntity:
-        # (v31.0.6)
         if db_session is None:
             with session_scope() as s: return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
@@ -343,7 +341,6 @@ class TradeService:
         return self.repo._to_entity(rec_orm)
 
     async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, Any]], db_session: Session) -> RecommendationEntity:
-        # (v31.0.6)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id);
@@ -364,7 +361,6 @@ class TradeService:
         return self.repo._to_entity(rec_orm)
 
     async def update_entry_and_notes_async(self, rec_id: int, user_id: str, new_entry: Optional[Decimal], new_notes: Optional[str], db_session: Session) -> RecommendationEntity:
-        # (v31.0.6)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id));
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id);
@@ -395,7 +391,6 @@ class TradeService:
         return self.repo._to_entity(rec_orm)
 
     async def set_exit_strategy_async(self, rec_id: int, user_id: str, mode: str, price: Optional[Decimal] = None, trailing_value: Optional[Decimal] = None, active: bool = True, session: Optional[Session] = None) -> RecommendationEntity:
-        # (v31.0.6)
         if session is None:
             with session_scope() as s: return await self.set_exit_strategy_async(rec_id, user_id, mode, price, trailing_value, active, s)
         user = UserRepository(session).find_by_telegram_id(_parse_int_user_id(user_id));
@@ -425,7 +420,7 @@ class TradeService:
     # --- Automation Helpers ---
     async def move_sl_to_breakeven_async(self, rec_id: int, db_session: Optional[Session] = None) -> RecommendationEntity:
         """Moves SL to entry +/- buffer if conditions met."""
-        # (v31.0.6 - SyntaxError fixed)
+        # ✅ HOTFIX: Corrected indentation (v31.0.6)
         if db_session is None:
             with session_scope() as s:
                 return await self.move_sl_to_breakeven_async(rec_id, s)
@@ -459,7 +454,7 @@ class TradeService:
     # --- Closing Operations ---
     async def close_recommendation_async(self, rec_id: int, user_id: Optional[str], exit_price: Decimal, db_session: Optional[Session] = None, reason: str = "MANUAL_CLOSE") -> RecommendationEntity:
         """Closes a recommendation fully."""
-        # (v31.0.6 - SyntaxError fixed)
+        # ✅ HOTFIX: Corrected indentation (v31.0.2)
         if db_session is None:
             with session_scope() as s: return await self.close_recommendation_async(rec_id, user_id, exit_price, s, reason)
         rec_orm = self.repo.get_for_update(db_session, rec_id);
@@ -493,6 +488,7 @@ class TradeService:
         notif_icon = "💰 Profit" if pnl_on_part >= 0 else "⚠️ Loss Mgt"; notif_text = f"{notif_icon} Partial Close #{rec_orm.asset}. Closed {actual_close_percent:g}% at {_format_price(price_dec)} ({pnl_formatted}).\nRemaining: {rec_orm.open_size_percent:g}%"; self.notify_reply(rec_id, notif_text, db_session);
         if rec_orm.open_size_percent < Decimal('0.1'): logger.info(f"Rec #{rec_id} fully closed via partial."); return await self.close_recommendation_async(rec_id, user_id, price_dec, db_session, reason="PARTIAL_CLOSE_FINAL");
         else: await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False); return self.repo._to_entity(rec_orm);
+
 
     # --- Event Processors ---
     async def process_invalidation_event(self, item_id: int):
@@ -585,6 +581,7 @@ class TradeService:
             trade_orm = self.repo.get_user_trade_by_id(db_session, position_id)
             if not trade_orm or trade_orm.user_id != user.id:
                 return None
+            # ✅ HOTFIX: Corrected indentation
             try:
                 targets_data=trade_orm.targets or []
                 targets_for_vo=[{'price':self._to_decimal(t.get('price')),'close_percent':t.get('close_percent',0.0)} for t in targets_data]
