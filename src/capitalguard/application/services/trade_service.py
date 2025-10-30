@@ -1,4 +1,3 @@
---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/trade_service.py ---
 # src/capitalguard/application/services/trade_service.py v31.0.9 - FINAL SYNTAX-FREE & DECIMAL & AUTH VERSION
 """
 TradeService v31.0.9 - Final syntax error fix for ALL reported issues.
