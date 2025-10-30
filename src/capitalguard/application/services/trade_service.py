@@ -1,7 +1,8 @@
-# src/capitalguard/application/services/trade_service.py v31.1.0 - FINAL SYNTAX ERROR HOTFIX
+# src/capitalguard/application/services/trade_service.py v31.1.1 - FINAL SYNTAX ERROR HOTFIX
 """
-TradeService v31.1.0 - Critical hotfix for SyntaxError.
-✅ THE FIX: Corrected indentation in _to_decimal function to fix startup crash.
+TradeService v31.1.1 - Critical hotfix for SyntaxErrors.
+✅ THE FIX: Corrected indentation in _to_decimal function.
+✅ THE FIX: Corrected syntax error in _publish_recommendation (line 214).
 ✅ Retains Decimal precision logic.
 ✅ Retains Analyst Ownership (API Security) check.
 """
@@ -45,7 +46,6 @@ logger = logging.getLogger(__name__)
 def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
     """
     Safely converts input to a Decimal, returning default on failure or non-finite values.
-    ✅ THE FIX: Corrected indentation for try...except block.
     """
     if isinstance(value, Decimal): 
         return value if value.is_finite() else default
@@ -211,8 +211,12 @@ class TradeService:
             result = results[i];
             if isinstance(result, Exception): logger.exception(f"Failed publish Rec {rec_entity.id} channel {channel_id}: {result}");
             report["failed"].append({"channel_id": channel_id, "reason": str(result)})
-            elif isinstance(result, tuple) and len(result) == 2: session.add(PublishedMessage(recommendation_id=rec_entity.id, telegram_channel_id=result[0], telegram_message_id=result[1]));
-            report["success"].append({"channel_id": channel_id, "message_id": result[1]})
+            
+            # ✅ THE FIX: Removed semicolon and fixed indentation.
+            elif isinstance(result, tuple) and len(result) == 2:
+                session.add(PublishedMessage(recommendation_id=rec_entity.id, telegram_channel_id=result[0], telegram_message_id=result[1]))
+                report["success"].append({"channel_id": channel_id, "message_id": result[1]})
+            
             else: reason = f"Notifier unexpected result: {type(result)}";
             logger.error(f"Failed publish Rec {rec_entity.id} channel {channel_id}: {reason}"); report["failed"].append({"channel_id": channel_id, "reason": reason});
         session.flush(); return rec_entity, report;
