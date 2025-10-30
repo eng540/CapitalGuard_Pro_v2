@@ -1,4 +1,4 @@
-# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.3.0) ---
+# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.3.1 - Concurrency Fix) ---
 # src/capitalguard/application/services/price_service.py
 import logging
 import os
@@ -24,7 +24,8 @@ class PriceService:
 
     async def get_cached_price(self, symbol: str, market: str, force_refresh: bool = False) -> Optional[float]:
         """
-        Async: Return cached price if available; otherwise fetch from provider and cache it.
+        Async: Return cached price if available;
+        otherwise fetch from provider and cache it.
         
         Args:
             symbol (str): The trading symbol (e.g., "BTCUSDT").
@@ -61,31 +62,12 @@ class PriceService:
 
         return live_price
 
-    # -------- Sync bridges --------
+    # ❌ THE FIX: The unsafe blocking function using asyncio.run is REMOVED to prevent event loop crashes.
+    # def get_cached_price_blocking(self, symbol: str, market: str, force_refresh: bool = False) -> Optional[float]:
+    #     ...
 
-    def get_cached_price_blocking(self, symbol: str, market: str, force_refresh: bool = False) -> Optional[float]:
-        """
-        Sync (blocking): Safe to call ONLY when no event loop is running.
-        """
-        try:
-            loop = asyncio.get_running_loop()
-            if loop.is_running():
-                raise RuntimeError(
-                    "get_cached_price_blocking() cannot be called from within a running event loop. "
-                    "Use: `await price_service.get_cached_price(...)` in async code."
-                )
-            return asyncio.run(self.get_cached_price(symbol, market, force_refresh))
-        except RuntimeError as e:
-            if "no running event loop" in str(e).lower():
-                 return asyncio.run(self.get_cached_price(symbol, market, force_refresh))
-            else:
-                raise e
-
-    # Backward-compatible aliases
+    # Backward-compatible aliases (Blocking aliases removed, only async remain)
     async def get_preview_price(self, symbol: str, market: str, force_refresh: bool = False) -> Optional[float]:
         return await self.get_cached_price(symbol, market, force_refresh)
 
-    def get_preview_price_blocking(self, symbol: str, market: str, force_refresh: bool = False) -> Optional[float]:
-        return self.get_cached_price_blocking(symbol, market, force_refresh)
-
-# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.3.0) ---
+# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.3.1 - Concurrency Fix) ---
