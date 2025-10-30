@@ -1,5 +1,4 @@
---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/analytics_service.py ---
-# --- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 11.1.1 - Decimal Fix) ---
+#--- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 11.1.1 - Decimal Fix) ---
 # src/capitalguard/application/services/analytics_service.py
 
 from __future__ import annotations
