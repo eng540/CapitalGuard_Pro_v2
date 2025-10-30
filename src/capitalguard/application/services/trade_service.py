@@ -671,4 +671,3 @@ class TradeService:
         return asset_list
 
 # --- END of TradeService ---
---- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/trade_service.py ---
