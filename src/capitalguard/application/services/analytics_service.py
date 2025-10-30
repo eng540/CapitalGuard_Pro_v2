@@ -1,4 +1,4 @@
-#--- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 11.1.1 - Decimal Fix) ---
+# --- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 11.1.1 - Decimal Fix) ---
 # src/capitalguard/application/services/analytics_service.py
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ from capitalguard.application.services.trade_service import _pct, _to_decimal # 
 @dataclass
 class AnalyticsService:
     """
-    Provides advanced, user-scoped analytics.
+    [cite_start]Provides advanced, user-scoped analytics. [cite: 65]
     All methods now accept a `Session` object, adhering to the Unit of Work pattern,
-    ensuring consistent transaction management across the application.
+    [cite_start]ensuring consistent transaction management across the application. [cite: 66]
     """
     repo: RecommendationRepository
 
@@ -31,7 +31,7 @@ class AnalyticsService:
     @staticmethod
     def _val(x: Any, attr: str, default: Any = None) -> Any:
         """Safely get .attr if exists, else x itself (for domain ValueObjects)."""
-        if x is None: return default
+        [cite_start]if x is None: return default [cite: 67]
         return getattr(x, attr, x)
 
     # ❌ REMOVED: The old, unsafe _pnl_percent is removed. We use trade_service._pct
@@ -45,7 +45,7 @@ class AnalyticsService:
         
         closed = [r for r in items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
  
-        if not closed:
+        [cite_start]if not closed: [cite: 69]
             return 0.0
 
         wins = sum(1 for r in closed if _pct( # ✅ THE FIX: Use the universal, Decimal-safe _pct
@@ -55,7 +55,7 @@ class AnalyticsService:
         ) > 0)
         
         # NOTE: _pct returns float, so comparison is safe.
-        return wins * 100.0 / len(closed)
+        [cite_start]return wins * 100.0 / len(closed) [cite: 70]
 
     def pnl_curve_for_user(self, session: Session, user_id: Union[int, str]) -> List[Tuple[str, float]]:
         """Generates the cumulative PnL% curve over time for a specific user."""
@@ -63,7 +63,7 @@ class AnalyticsService:
         items = self.repo.list_all_for_user(session, user_telegram_id=uid)
         
         closed = [r for r in items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None and r.closed_at]
-        closed.sort(key=lambda r: r.closed_at)
+        [cite_start]closed.sort(key=lambda r: r.closed_at) [cite: 71]
 
         curve, cumulative_pnl = [], 0.0
         for r in closed:
@@ -77,16 +77,16 @@ class AnalyticsService:
             curve.append((day, cumulative_pnl))
         return curve
 
-    # ✅ FIX: The method now accepts a 'session' argument and no longer manages its own.
+    # [cite_start]✅ FIX: The method now accepts a 'session' argument and no longer manages its own. [cite: 73]
     def performance_summary_for_user(self, session: Session, user_id: Union[int, str]) -> Dict[str, Any]:
         """
-        Provides a comprehensive performance summary for a specific user using the provided session.
+        [cite_start]Provides a comprehensive performance summary for a specific user using the provided session. [cite: 73]
         """
         uid = self._to_int_user_id(user_id)
         all_items = self.repo.list_all_for_user(session, user_telegram_id=uid)
         
-        closed_items = [r for r in all_items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None]
-        open_items = [r for r in all_items if r.status != RecommendationStatus.CLOSED]
+        [cite_start]closed_items = [r for r in all_items if r.status == RecommendationStatus.CLOSED and r.exit_price is not None] [cite: 74]
+        [cite_start]open_items = [r for r in all_items if r.status != RecommendationStatus.CLOSED] [cite: 74]
 
         # ✅ THE FIX: Use the universal, Decimal-safe _pct (which returns float)
         total_pnl = sum(
@@ -95,7 +95,7 @@ class AnalyticsService:
                 _to_decimal(r.exit_price or 0),
                 self._val(r.side, "value")
             )
-            for r in closed_items
+            [cite_start]for r in closed_items [cite: 75]
         )
         
         win_rate = 0.0
@@ -105,14 +105,14 @@ class AnalyticsService:
                 _to_decimal(r.exit_price or 0), 
                 self._val(r.side, "value")
             ) > 0)
-            win_rate = wins * 100.0 / len(closed_items)
+            [cite_start]win_rate = wins * 100.0 / len(closed_items) [cite: 76]
 
         return {
             "total_recommendations": len(all_items),
             "open_recommendations": len(open_items),
             "closed_recommendations": len(closed_items),
             "overall_win_rate": f"{win_rate:.2f}%",
-            "total_pnl_percent": f"{total_pnl:.2f}%",
+            [cite_start]"total_pnl_percent": f"{total_pnl:.2f}%", [cite: 77]
         }
 
 # --- END OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 11.1.1 - Decimal Fix) ---
