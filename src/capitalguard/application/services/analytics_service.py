@@ -1,4 +1,4 @@
-# --- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 11.1.0) ---
+# --- START OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 11.1.1) ---
 # src/capitalguard/application/services/analytics_service.py
 
 from __future__ import annotations
@@ -7,8 +7,10 @@ from typing import List, Tuple, Dict, Any, Union
 from math import isfinite
 
 from sqlalchemy.orm import Session
+# ✅ FIX: AnalyticsService expects an *instance* of RecommendationRepository.
 from capitalguard.domain.entities import RecommendationStatus
 from capitalguard.infrastructure.db.repository import RecommendationRepository
+from capitalguard.domain.ports import RecommendationRepoPort # Import port for robustness
 
 @dataclass
 class AnalyticsService:
@@ -17,7 +19,8 @@ class AnalyticsService:
     All methods now accept a `Session` object, adhering to the Unit of Work pattern,
     ensuring consistent transaction management across the application.
     """
-    repo: RecommendationRepository
+    # ✅ FIX: Changed repo type hint to port for better domain alignment
+    repo: RecommendationRepoPort 
 
     # --- Private Helper Methods ---
     
@@ -113,5 +116,4 @@ class AnalyticsService:
             "overall_win_rate": f"{win_rate:.2f}%",
             "total_pnl_percent": f"{total_pnl:.2f}%",
         }
-
-# --- END OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE ---
+# --- END OF FINAL, COMPLETE, AND ARCHITECTURALLY-CORRECT FILE (Version 11.1.1) ---
