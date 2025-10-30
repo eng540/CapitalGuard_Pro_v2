@@ -1,4 +1,3 @@
---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/trade_service.py ---
 # src/capitalguard/application/services/trade_service.py v31.1.0 - FINAL SYNTAX ERROR HOTFIX
 """
 TradeService v31.1.0 - Critical hotfix for SyntaxError.
