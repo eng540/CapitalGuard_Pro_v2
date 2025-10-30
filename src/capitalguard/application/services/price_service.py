@@ -62,10 +62,7 @@ class PriceService:
 
         return live_price
 
-    # ❌ THE FIX: The unsafe blocking function using asyncio.run is REMOVED to prevent event loop crashes.
-    # def get_cached_price_blocking(self, symbol: str, market: str, force_refresh: bool = False) -> Optional[float]:
-    #     ...
-
+    # THE FIX: The unsafe blocking function using asyncio.run is REMOVED to prevent event loop crashes.
     # Backward-compatible aliases (Blocking aliases removed, only async remain)
     async def get_preview_price(self, symbol: str, market: str, force_refresh: bool = False) -> Optional[float]:
         return await self.get_cached_price(symbol, market, force_refresh)
