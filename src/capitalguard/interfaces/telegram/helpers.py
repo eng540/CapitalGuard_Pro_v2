@@ -1,11 +1,13 @@
-# src/capitalguard/interfaces/telegram/helpers.py (v25.5 - FINAL & DECOUPLED)
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/helpers.py ---
+# src/capitalguard/interfaces/telegram/helpers.py (v25.6 - _get_attr Unified)
 """
 Provides helper functions for Telegram handlers, primarily for service access.
-Decorators like uow_transaction must be imported directly by the handlers that need them.
+✅ FIX: Added the critical helper function _get_attr to resolve NameError in management_handlers.py 
+       by safely extracting values from Domain Value Objects.
 """
 
 import logging
-from typing import TypeVar, Callable, Optional, List
+from typing import TypeVar, Callable, Optional, List, Any
 
 from telegram.ext import ContextTypes
 
@@ -25,6 +27,13 @@ def get_service(context: ContextTypes.DEFAULT_TYPE, service_name: str, service_t
             service_name, list(context.bot_data.get('services', {}).keys())
         )
         raise RuntimeError(f"Service '{service_name}' is unavailable.")
+
+# --- Helper function needed across multiple handlers (copied from keyboards/ui_texts logic) ---
+def _get_attr(obj: Any, attr: str, default: Any = None) -> Any:
+    """Safely gets attribute, handles domain objects with .value."""
+    val = getattr(obj, attr, default)
+    # Check if val itself has a 'value' attribute (like domain value objects: Symbol, Price, Side)
+    return getattr(val, 'value', val)
 
 def parse_tail_int(data: str) -> Optional[int]:
     """Safely parses the last integer from a colon-separated string."""
