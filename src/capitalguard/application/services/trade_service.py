@@ -1,4 +1,4 @@
-# src/capitalguard/application/services/trade_service.py v31.1.4 - FINAL BUILD
+#  .src/capitalguard/application/services/trade_service.py v31.1.4 - FINAL BUILD
 """
 TradeService v31.1.4 - Syntax Stability Release
 ✅ FIX: Corrected syntax and indentation in get_recent_assets_for_user (removed inline else).
