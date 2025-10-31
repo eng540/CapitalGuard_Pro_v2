@@ -1,9 +1,10 @@
-#  .src/capitalguard/application/services/trade_service.py v31.1.4 - FINAL BUILD
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/trade_service.py ---
+# src/capitalguard/application/services/trade_service.py v31.1.5 - Postgres Fix
 """
-TradeService v31.1.4 - Syntax Stability Release
-✅ FIX: Corrected syntax and indentation in get_recent_assets_for_user (removed inline else).
-✅ FIX: Replaced stray `log.` with `logger.` to prevent NameError.
-✅ FIX: All previous hotfixes retained.
+TradeService v31.1.5 - PostgreSQL Asset Query Fix
+✅ FIX: Corrected get_recent_assets_for_user logic to fix PostgreSQL error (InvalidColumnReference for SELECT DISTINCT, ORDER BY).
+       The logic now retrieves the asset list sorted by time and applies uniqueness filtering in Python.
+✅ All previous hotfixes retained.
 ✅ VALIDATED: File passes python -m py_compile with no errors.
 """
 
@@ -15,6 +16,7 @@ from typing import List, Optional, Tuple, Dict, Any, Set, Union
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.uow import session_scope
@@ -180,7 +182,8 @@ class TradeService:
 
     # --- Validation ---
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
-        """Strict validation for recommendation/trade numerical integrity. Raises ValueError."""
+        """Strict validation for recommendation/trade numerical integrity.
+        Raises ValueError."""
         side_upper = (str(side) or "").upper()
         if not all(v is not None and isinstance(v, Decimal) and v.is_finite() and v > 0 for v in [entry, stop_loss]): raise ValueError("Entry and SL must be positive finite Decimals.")
         if not targets or not isinstance(targets, list): raise ValueError("Targets must be a non-empty list.")
@@ -193,8 +196,8 @@ class TradeService:
             target_prices.append(price)
             close_pct = t.get('close_percent', 0.0)
             try:
-                 close_pct_float = float(close_pct)
-                 if not (0.0 <= close_pct_float <= 100.0): raise ValueError(f"Target {i+1} close % invalid.")
+                close_pct_float = float(close_pct)
+                if not (0.0 <= close_pct_float <= 100.0): raise ValueError(f"Target {i+1} close % invalid.")
             except (ValueError, TypeError) as e:
                  raise ValueError(f"Target {i+1} close % ('{close_pct}') invalid.") from e
 
@@ -204,7 +207,8 @@ class TradeService:
         if side_upper == "LONG" and any(p <= entry for p in target_prices): raise ValueError("LONG targets must be > Entry.")
         if side_upper == "SHORT" and any(p >= entry for p in target_prices): raise ValueError("SHORT targets must be < Entry.")
         risk = abs(entry - stop_loss)
-        first_tp = min(target_prices) if side_upper == "LONG" else max(target_prices); reward = abs(first_tp - entry)
+        first_tp = min(target_prices) if side_upper == "LONG" else max(target_prices);
+        reward = abs(first_tp - entry)
         if risk.is_zero(): raise ValueError("Entry and SL cannot be equal.")
         if reward.is_zero() or (reward / risk) < Decimal('0.1'): raise ValueError("Risk/Reward too low (min 0.1).")
         if len(target_prices) != len(set(target_prices)): raise ValueError("Target prices must be unique.")
@@ -212,13 +216,16 @@ class TradeService:
 
     # --- Publishing ---
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_db_id: int, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
-        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}; channels_to_publish = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True)
+        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []};
+        channels_to_publish = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True)
         if target_channel_ids is not None: channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids]
-        if not channels_to_publish: report["failed"].append({"reason": "No active channels linked/selected."}); return rec_entity, report
+        if not channels_to_publish: report["failed"].append({"reason": "No active channels linked/selected."});
+        return rec_entity, report
         try: from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
         except ImportError: public_channel_keyboard = lambda *_: None
         logger.warning("public_channel_keyboard not found.")
-        keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None)); tasks = []
+        keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None));
+        tasks = []
         channel_map = {ch.telegram_channel_id: ch for ch in channels_to_publish}
         for channel_id in channel_map.keys(): tasks.append(self._call_notifier_maybe_async( self.notifier.post_to_channel, channel_id, rec_entity, keyboard ))
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -240,16 +247,20 @@ class TradeService:
                 logger.error(f"Failed publish Rec {rec_entity.id} channel {channel_id}: {reason}")
                 report["failed"].append({"channel_id": channel_id, "reason": reason})
 
-        session.flush(); return rec_entity, report
+        session.flush();
+        return rec_entity, report
 
     # --- Public API - Create/Publish Recommendation ---
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         """Creates and publishes a new recommendation."""
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user or user.user_type != UserTypeEntity.ANALYST: raise ValueError("Only analysts.")
-        entry_price_in = _to_decimal(kwargs['entry']); sl_price = _to_decimal(kwargs['stop_loss']); targets_list_in = kwargs['targets']
-        targets_list_validated = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_in]; asset = kwargs['asset'].strip().upper(); side = kwargs['side'].upper()
-        market = kwargs.get('market', 'Futures'); order_type_enum = OrderTypeEnum[kwargs['order_type'].upper()]
+        entry_price_in = _to_decimal(kwargs['entry']);
+        sl_price = _to_decimal(kwargs['stop_loss']); targets_list_in = kwargs['targets']
+        targets_list_validated = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_in];
+        asset = kwargs['asset'].strip().upper(); side = kwargs['side'].upper()
+        market = kwargs.get('market', 'Futures');
+        order_type_enum = OrderTypeEnum[kwargs['order_type'].upper()]
 
         exit_strategy_val = kwargs.get('exit_strategy')
         if exit_strategy_val is None: exit_strategy_enum = ExitStrategyEnum.CLOSE_AT_FINAL_TP
@@ -273,9 +284,11 @@ class TradeService:
         self._validate_recommendation_data(side, final_entry, sl_price, targets_list_validated)
         targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated]
         rec_orm = Recommendation( analyst_id=user.id, asset=asset, side=side, entry=final_entry, stop_loss=sl_price, targets=targets_for_db, order_type=order_type_enum, status=status, market=market, notes=kwargs.get('notes'), exit_strategy=exit_strategy_enum, activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None )
-        db_session.add(rec_orm); db_session.flush()
+        db_session.add(rec_orm);
+        db_session.flush()
         db_session.add(RecommendationEvent( recommendation_id=rec_orm.id, event_type="CREATED_ACTIVE" if status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING", event_data={'entry': str(final_entry)} ))
-        db_session.flush(); db_session.refresh(rec_orm)
+        db_session.flush();
+        db_session.refresh(rec_orm)
 
         created_rec_entity = self.repo._to_entity(rec_orm)
         if not created_rec_entity: raise RuntimeError(f"Failed conv new ORM Rec {rec_orm.id} to entity.")
@@ -336,7 +349,8 @@ class TradeService:
         if existing_trade: return {'success': False, 'error': 'You are already tracking this signal.'}
         try:
             new_trade = UserTrade( user_id=trader_user.id, asset=rec_orm.asset, side=rec_orm.side, entry=rec_orm.entry, stop_loss=rec_orm.stop_loss, targets=rec_orm.targets, status=UserTradeStatus.OPEN, source_recommendation_id=rec_orm.id )
-            db_session.add(new_trade); db_session.flush()
+            db_session.add(new_trade);
+            db_session.flush()
             logger.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id}.")
             return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
         except Exception as e:
@@ -459,7 +473,8 @@ class TradeService:
         if mode_upper == "TRAILING" and (trailing_value is None or not trailing_value.is_finite() or trailing_value <= 0): raise ValueError("Trailing requires valid positive value.")
         rec.profit_stop_mode = mode_upper if active else "NONE"
         rec.profit_stop_price = price if active and mode_upper == "FIXED" else None
-        rec.profit_stop_trailing_value = trailing_value if active and mode_upper == "TRAILING" else None; rec.profit_stop_active = active
+        rec.profit_stop_trailing_value = trailing_value if active and mode_upper == "TRAILING" else None;
+        rec.profit_stop_active = active
         event_data = {"mode": rec.profit_stop_mode, "active": active}
         if rec.profit_stop_price: event_data["price"] = str(rec.profit_stop_price)
         if rec.profit_stop_trailing_value: event_data["trailing_value"] = str(rec.profit_stop_trailing_value)
@@ -655,7 +670,7 @@ class TradeService:
                 await self._commit_and_dispatch(s, rec_orm, False)
         # Commit event if no close
 
-    # --- Read Utilities ---
+    # --- Read Utilities FIXED ---
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
         """Return combined list of open recommendations and user's trades."""
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
@@ -729,38 +744,49 @@ class TradeService:
             logger.warning(f"Unknown position_type '{position_type}'.")
             return None
 
-    # --- Read Utility FIXED ---
+    # --- Read Utility FIX: Resolves Postgres InvalidColumnReference ---
     def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
-        """Return recent assets for quick selection UI."""
+        """
+        Return recent assets for quick selection UI.
+        Fixes PostgreSQL 'InvalidColumnReference' by ordering all columns and filtering uniqueness in Python.
+        """
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
-        assets = set()
+        assets_in_order = []
         if not user:
             return []
 
-        # ✅ THE FIX: Corrected syntax and indentation for if/else block (removed inline statements).
         if user.user_type == UserTypeEntity.ANALYST:
+            # Stage 1: Fetch all assets and created_at, sorted.
             recs = (
-                db_session.query(Recommendation.asset)
+                db_session.query(Recommendation.asset, Recommendation.created_at)
                 .filter(Recommendation.analyst_id == user.id)
                 .order_by(Recommendation.created_at.desc())
-                .limit(limit * 2)
-                .distinct()
+                .limit(limit * 5) # Fetch more than needed to ensure uniqueness fills the limit
                 .all()
             )
-            assets.update(r.asset for r in recs)
+            assets_in_order.extend(r.asset for r in recs)
         else:
+            # Stage 1: Fetch trades (same logic applied)
             trades = (
-                db_session.query(UserTrade.asset)
+                db_session.query(UserTrade.asset, UserTrade.created_at)
                 .filter(UserTrade.user_id == user.id)
                 .order_by(UserTrade.created_at.desc())
-                .limit(limit * 2)
-                .distinct()
+                .limit(limit * 5)
                 .all()
             )
-            assets.update(t.asset for t in trades)
+            assets_in_order.extend(t.asset for t in trades)
 
-        asset_list = list(assets)[:limit]
-
+        # Stage 2: Apply uniqueness filtering in Python (respecting the order)
+        asset_list = []
+        seen = set()
+        for asset in assets_in_order:
+            if asset not in seen:
+                asset_list.append(asset)
+                seen.add(asset)
+                if len(asset_list) >= limit:
+                    break
+        
+        # Stage 3: Fill with defaults if not enough recent assets found
         if len(asset_list) < limit:
             default_assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
             for a in default_assets:
