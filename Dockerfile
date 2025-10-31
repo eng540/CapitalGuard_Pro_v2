@@ -6,15 +6,17 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential gcc libpq-dev curl ca-certificates dos2unix supervisor \
+    build-essential gcc libpq-dev curl ca-certificates dos2unix supervisor \
  && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 10001 appuser
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
+# ✅ THE FIX: تثبيت التبعيات وتنزيل نموذج Spacy لضمان عمل NER
 RUN python -m pip install --upgrade pip \
- && pip install --no-cache-dir -r /app/requirements.txt
+ && pip install --no-cache-dir -r /app/requirements.txt \
+ && python -m spacy download en_core_web_sm
 
 COPY src /app/src
 COPY alembic /app/alembic

@@ -1,10 +1,10 @@
 # --- src/capitalguard/interfaces/telegram/management_handlers.py ---
-# src/capitalguard/interfaces/telegram/management_handlers.py (v30.11 - UserTrade Close Final)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v30.12 - NameError Fix)
 """
 Handles all post-creation management of recommendations AND UserTrades.
-✅ NEW: Fully implemented ConversationHandler for closing personal UserTrades.
-✅ Integrates seamlessly with ParsingService correction flow cancellation.
-✅ Final, complete, and production-ready version.
+✅ FIX: Added missing ConversationHandler functions (partial_close_custom_start, partial_close_percent_received, partial_close_price_received, partial_close_cancel) to resolve the fatal 'partial_close_custom_start' NameError on startup.
+✅ FIX: Added missing ConversationHandler functions (user_trade_close_start, user_trade_close_price_received, cancel_user_trade_close) to resolve the fatal 'user_trade_close_start' NameError on startup.
+✅ FIX: Added `per_message=False` to ConversationHandler registrations to suppress PTBUserWarning noise in logs.
 """
 
 import logging
@@ -36,7 +36,7 @@ from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.domain.entities import RecommendationStatus, ExitStrategy
-from capitalguard.infrastructure.db.models import UserTradeStatus
+from capitalguard.infrastructure.db.models import UserTradeStatus, UserType as UserTypeEntity
 
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors") # Specific logger for errors
@@ -79,7 +79,7 @@ def clean_management_state(context: ContextTypes.DEFAULT_TYPE):
     keys_to_pop = [
         AWAITING_INPUT_KEY, PENDING_CHANGE_KEY, LAST_ACTIVITY_KEY,
         'partial_close_rec_id', 'partial_close_percent',
-        # Add any other specific state keys here
+        'user_trade_close_id', 'user_trade_close_msg_id', 'user_trade_close_chat_id'
     ]
     for key in keys_to_pop:
         context.user_data.pop(key, None)
@@ -144,7 +144,6 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
 
     if not message_target:
         log.error(f"_send_or_edit_position_panel failed for {position_type} #{position_id}: No message target found.")
-        # Maybe send a new message as fallback?
         await update.effective_chat.send_message("Error: Could not find the message to update.")
         return
 
@@ -349,7 +348,7 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Asks the user to send the new value as a reply, storing state."""
     query = update.callback_query
     await query.answer()
-    if await handle_management_timeout(update, context): return ConversationHandler.END # End conv if timed out
+    if await handle_management_timeout(update, context): return # Do not change state if timed out
     update_management_activity(context)
 
     parsed_data = CallbackBuilder.parse(query.data)
@@ -372,7 +371,7 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "original_message_chat_id": query.message.chat_id,
         "original_message_message_id": query.message.message_id,
         # Determine where to go back if user cancels input
-        "previous_callback": CallbackBuilder.create(namespace, "show_menu" if namespace == CallbackNamespace.EXIT_STRATEGY else f"{action.split('_')[0]}_menu", rec_id)
+        "previous_callback": CallbackBuilder.create(namespace, "show_menu" if namespace == CallbackNamespace.EXIT_STRATEGY.value else f"{action.split('_')[0]}_menu", rec_id)
     }
 
     # Define prompts based on action
@@ -406,10 +405,9 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @uow_transaction
 @require_active_user
 # Require analyst only if action requires it (most do)
-# @require_analyst_user # Applied conditionally inside
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     """Handles text reply with new value, validates, asks for confirmation."""
-    if await handle_management_timeout(update, context): return ConversationHandler.END
+    if await handle_management_timeout(update, context): return
     update_management_activity(context)
 
     state = context.user_data.get(AWAITING_INPUT_KEY)
@@ -460,17 +458,17 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
 
         # --- Input Validation Logic ---
         if namespace == CallbackNamespace.EXIT_STRATEGY.value:
-            if action == "set_fixed":
+             if action == "set_fixed":
                  price = parse_number(user_input)
                  if price is None: raise ValueError("Invalid price format.")
                  # Add validation: Fixed price must be profitable vs entry
-                 entry_dec = _to_decimal(_get_attr(current_item.entry, 'value'))
+                 entry_dec = _get_attr(current_item.entry, 'value')
                  if (_get_attr(current_item.side, 'value') == 'LONG' and price <= entry_dec) or \
                     (_get_attr(current_item.side, 'value') == 'SHORT' and price >= entry_dec):
                       raise ValueError("Fixed profit stop price must be beyond entry price.")
                  validated_value = {"mode": "FIXED", "price": price}
                  change_description = f"Activate Fixed Profit Stop at {_format_price(price)}"
-            elif action == "set_trailing":
+             elif action == "set_trailing":
                  config = parse_trailing_distance(user_input)
                  if config is None: raise ValueError("Invalid format. Use % (e.g., '1.5%') or value (e.g., '500').")
                  validated_value = {"mode": "TRAILING", "trailing_value": config["value"]} # Store Decimal
@@ -491,7 +489,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
                 elif action == "edit_entry":
                      if current_item.status != RecommendationStatus.PENDING: raise ValueError("Entry can only be edited for PENDING signals.")
                      trade_service._validate_recommendation_data(
-                          _get_attr(current_item.side, 'value'), price, _get_attr(current_item.stop_loss, 'value'), current_item.targets.values
+                         _get_attr(current_item.side, 'value'), price, _get_attr(current_item.stop_loss, 'value'), current_item.targets.values
                      )
                      validated_value = price
                      change_description = f"Update Entry Price to {_format_price(price)}"
@@ -504,11 +502,11 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
                 if not targets_list_dict: raise ValueError("Invalid targets format or no valid targets found.")
                 # Validate new targets against current state
                 trade_service._validate_recommendation_data(
-                     _get_attr(current_item.side, 'value'), _get_attr(current_item.entry, 'value'), _get_attr(current_item.stop_loss, 'value'), targets_list_dict
+                     _get_attr(current_item.side, 'value'), _get_attr(current_item.entry, 'value'), 
+                     _get_attr(current_item.stop_loss, 'value'), targets_list_dict
                 )
                 validated_value = targets_list_dict
-                # ✅ FIX: Correct f-string syntax (avoids backslash issue by separating list comprehension)
-                price_strings = [_format_price(t['price']) for t in validated_value] # Use double quotes for key
+                price_strings = [_format_price(t['price']) for t in validated_value]
                 change_description = f"Update Targets to: {', '.join(price_strings)}"
             elif action == "edit_notes":
                  if user_input.lower() in ['clear', 'مسح', 'remove', 'إزالة', '']:
@@ -541,7 +539,6 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
                 [InlineKeyboardButton("✏️ Re-enter Value", callback_data=reenter_callback)],
                 [InlineKeyboardButton(ButtonTexts.CANCEL + " Action", callback_data=cancel_callback)],
             ])
-            # ✅ FIX: Use new safe_edit_message signature
             await safe_edit_message(context.bot, chat_id, message_id, text=f"❓ <b>Confirm Action</b>\n\nDo you want to:\n➡️ {change_description}?", reply_markup=confirm_keyboard)
         else:
              # Should ideally not be reached if validation logic is correct
@@ -551,16 +548,20 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
         log.warning(f"Invalid input during reply for {action} on {item_type} #{item_id}: {e}")
         # Re-prompt, keeping state AWAITING_INPUT_KEY active
         cancel_button = InlineKeyboardButton("❌ Cancel Input", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", item_id))
-        # Fetch original prompt text if possible (might be complex without storing it)
-        # For simplicity, use a generic re-prompt message
-        # ✅ FIX: Use new safe_edit_message signature
-        # We need the original message text. Let's fetch it (less ideal) or reconstruct
         # Reconstruct prompt for simplicity
-        prompts = { "edit_sl": "✏️ Send the new Stop Loss price:", # ... (copy prompts dict from prompt_handler) ...
-                   "partial_close_custom": "💰 Send the custom partial close Percentage (e.g., 30):"}
+        prompts = {
+            "edit_sl": "✏️ Send the new Stop Loss price:",
+            "edit_tp": "🎯 Send the new list of Targets (e.g., 50k 52k@50):",
+            "edit_entry": "💰 Send the new Entry price (only for PENDING):",
+            "edit_notes": "📝 Send the new Notes (or send 'clear' to remove):",
+            "close_manual": "✍️ Send the final Exit Price:",
+            "set_fixed": "🔒 Send the fixed Profit Stop price:",
+            "set_trailing": "📈 Send the Trailing Stop distance (e.g., 1.5% or 500):",
+            "partial_close_custom": "💰 Send the custom partial close Percentage (e.g., 30):"
+        }
         prompt_text = prompts.get(action, 'Send the new value:')
         await safe_edit_message(
-            context.bot, chat_id, message_id,
+             context.bot, chat_id, message_id,
             text=f"⚠️ **Invalid Input:** {e}\n\n<b>{prompt_text}</b>",
             reply_markup=InlineKeyboardMarkup([[cancel_button]])
         )
@@ -595,9 +596,9 @@ async def confirm_change_handler(update: Update, context: ContextTypes.DEFAULT_T
     item_type = 'rec' # Default
     try:
         if len(params) >= 3:
-            namespace, action, item_id_str = params[0], params[1], params[2]
-            item_id = int(item_id_str)
-            item_type = 'rec' if namespace in [CallbackNamespace.RECOMMENDATION.value, CallbackNamespace.EXIT_STRATEGY.value] else 'trade' # Determine type
+             namespace, action, item_id_str = params[0], params[1], params[2]
+             item_id = int(item_id_str)
+             item_type = 'rec' if namespace in [CallbackNamespace.RECOMMENDATION.value, CallbackNamespace.EXIT_STRATEGY.value] else 'trade' # Determine type
         else: raise ValueError("Invalid confirmation callback format")
 
         if not pending_data or "value" not in pending_data:
@@ -702,7 +703,7 @@ async def cancel_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if item_id is not None:
          await _send_or_edit_position_panel(update, context, db_session, item_type, item_id)
     elif query and query.message: # Fallback
-        await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Action cancelled.")
+         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Action cancelled.")
 
 
 # --- Immediate Action Handlers ---
@@ -742,10 +743,10 @@ async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT
 
         # --- Execute Action ---
         if namespace == CallbackNamespace.EXIT_STRATEGY.value:
-            if action == "move_to_be":
+             if action == "move_to_be":
                 await trade_service.move_sl_to_breakeven_async(rec_id, db_session)
                 success_message = "✅ SL moved to Break Even."
-            elif action == "cancel":
+             elif action == "cancel":
                  # Check if a strategy is actually active before cancelling
                  # Use the fetched entity which now includes profit stop fields
                  if getattr(rec, 'profit_stop_active', False):
@@ -858,6 +859,288 @@ async def partial_close_fixed_handler(update: Update, context: ContextTypes.DEFA
          clean_management_state(context)
 
 
+# --- ✅ NEW: Conversation Handlers for Custom Partial Close (Analyst) ---
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def partial_close_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """Entry point for custom partial close conversation."""
+    query = update.callback_query
+    await query.answer()
+    if await handle_management_timeout(update, context): return ConversationHandler.END
+    update_management_activity(context)
+
+    parsed_data = CallbackBuilder.parse(query.data) # rec:partial_close_custom:<rec_id>
+    params = parsed_data.get('params', [])
+    rec_id = int(params[0]) if params and params[0].isdigit() else None
+
+    if rec_id is None:
+        loge.error(f"Could not get rec_id for partial_close_custom_start: {query.data}")
+        await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Invalid request.", reply_markup=None)
+        return ConversationHandler.END
+
+    # Store state for the conversation
+    context.user_data['partial_close_rec_id'] = rec_id
+    # Store message IDs to edit
+    context.user_data['original_message_chat_id'] = query.message.chat_id
+    context.user_data['original_message_message_id'] = query.message.message_id
+    
+    cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", rec_id))
+    await safe_edit_message(
+        context.bot, query.message.chat_id, query.message.message_id,
+        text=f"{query.message.text_html}\n\n<b>💰 Send the custom Percentage to close (e.g., 30):</b>",
+        reply_markup=InlineKeyboardMarkup([[cancel_button]])
+    )
+    return AWAIT_PARTIAL_PERCENT
+
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def partial_close_percent_received(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """Handles receiving the custom partial close percentage."""
+    if await handle_management_timeout(update, context): return ConversationHandler.END
+    update_management_activity(context)
+
+    rec_id = context.user_data.get('partial_close_rec_id')
+    chat_id = context.user_data.get('original_message_chat_id')
+    message_id = context.user_data.get('original_message_message_id')
+    user_input = update.message.text.strip() if update.message.text else ""
+    
+    try: await update.message.delete() # Delete user input
+    except Exception: log.debug("Could not delete user reply")
+    
+    if not (rec_id and chat_id and message_id):
+        loge.error(f"Partial close percent handler for user {update.effective_user.id} has corrupt state.")
+        clean_management_state(context)
+        return ConversationHandler.END
+        
+    try:
+        percent_val = parse_number(user_input.replace('%',''))
+        if percent_val is None or not (0 < percent_val <= Decimal('100')):
+            raise ValueError("Percentage must be between 0 and 100.")
+        
+        # Store percent and ask for price
+        context.user_data['partial_close_percent'] = percent_val
+        cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", rec_id))
+        await safe_edit_message(
+            context.bot, chat_id, message_id,
+            text=f"✅ Closing {percent_val:g}%.\n\n<b>✍️ Send the custom Exit Price:</b>\n(or send '<b>market</b>' to use live price)",
+            reply_markup=InlineKeyboardMarkup([[cancel_button]])
+        )
+        return AWAIT_PARTIAL_PRICE
+        
+    except (ValueError, Exception) as e:
+        # Re-prompt for percentage
+        cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", rec_id))
+        await safe_edit_message(
+            context.bot, chat_id, message_id,
+            text=f"⚠️ **Invalid Percentage:** {e}\n\n<b>💰 Send Percentage to close (e.g., 30):</b>",
+            reply_markup=InlineKeyboardMarkup([[cancel_button]])
+        )
+        return AWAIT_PARTIAL_PERCENT
+
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def partial_close_price_received(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """Handles receiving the custom partial close price (or 'market')."""
+    if await handle_management_timeout(update, context): return ConversationHandler.END
+    
+    rec_id = context.user_data.get('partial_close_rec_id')
+    percent_val = context.user_data.get('partial_close_percent')
+    chat_id = context.user_data.get('original_message_chat_id')
+    message_id = context.user_data.get('original_message_message_id')
+    user_input = update.message.text.strip() if update.message.text else ""
+
+    try: await update.message.delete()
+    except Exception: log.debug("Could not delete user reply")
+
+    if not (rec_id and percent_val and chat_id and message_id):
+        loge.error(f"Partial close price handler for user {update.effective_user.id} has corrupt state.")
+        clean_management_state(context)
+        return ConversationHandler.END
+
+    trade_service = get_service(context, "trade_service", TradeService)
+    user_telegram_id = str(db_user.telegram_user_id)
+    exit_price: Optional[Decimal] = None
+
+    try:
+        if user_input.lower() == 'market':
+            price_service = get_service(context, "price_service", PriceService)
+            rec = trade_service.get_position_details_for_user(db_session, user_telegram_id, 'rec', rec_id)
+            if not rec: raise ValueError("Recommendation not found.")
+            
+            live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
+            if not live_price: raise ValueError(f"Could not fetch market price for {rec.asset.value}.")
+            exit_price = Decimal(str(live_price))
+        else:
+            price_val = parse_number(user_input)
+            if price_val is None:
+                raise ValueError("Invalid price format. Send a number or 'market'.")
+            exit_price = price_val
+            
+        # --- Execute ---
+        await trade_service.partial_close_async(
+            rec_id, user_telegram_id, percent_val, exit_price, db_session, triggered_by="MANUAL_CUSTOM"
+        )
+        await context.bot.answer_callback_query(update.callback_query.id, f"✅ Closed {percent_val:g}% at {_format_price(exit_price)}.")
+        
+        # Update panel
+        await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id)
+
+    except (ValueError, Exception) as e:
+        loge.error(f"Error in custom partial close execution for rec #{rec_id}: {e}", exc_info=True)
+        # Re-prompt for price
+        cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", rec_id))
+        await safe_edit_message(
+            context.bot, chat_id, message_id,
+            text=f"⚠️ **Error:** {e}\n\n<b>✍️ Send the custom Exit Price:</b>\n(or send '<b>market</b>' to use live price)",
+            reply_markup=InlineKeyboardMarkup([[cancel_button]])
+        )
+        return AWAIT_PARTIAL_PRICE # Stay in price state
+
+    clean_management_state(context)
+    return ConversationHandler.END
+
+async def partial_close_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels the custom partial close conversation."""
+    chat_id = context.user_data.get('original_message_chat_id')
+    message_id = context.user_data.get('original_message_message_id')
+    
+    clean_management_state(context)
+    
+    if update.callback_query: await update.callback_query.answer("Cancelled")
+    
+    if chat_id and message_id:
+        # Try to edit the original panel back
+        await safe_edit_message(context.bot, chat_id, message_id, text="❌ Partial close cancelled.", reply_markup=None)
+    elif update.message:
+        await update.message.reply_text("❌ Partial close cancelled.", reply_markup=ReplyKeyboardRemove())
+        
+    return ConversationHandler.END
+    
+
+# --- ✅ NEW: Conversation Handlers for User Trade Closing ---
+@uow_transaction
+@require_active_user
+async def user_trade_close_start(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """Entry point for closing a personal UserTrade."""
+    query = update.callback_query
+    await query.answer()
+    if await handle_management_timeout(update, context): return ConversationHandler.END
+    update_management_activity(context)
+    
+    parsed_data = CallbackBuilder.parse(query.data) # pos:cl:trade:<trade_id>
+    params = parsed_data.get('params', [])
+    trade_id = int(params[0]) if params and params[0].isdigit() else None
+    
+    if trade_id is None:
+        loge.error(f"Could not get trade_id for user_trade_close_start: {query.data}")
+        await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Invalid request.", reply_markup=None)
+        return ConversationHandler.END
+        
+    # Verify trade exists and belongs to user
+    trade_service = get_service(context, "trade_service", TradeService)
+    position = trade_service.get_position_details_for_user(db_session, str(db_user.telegram_user_id), 'trade', trade_id)
+    
+    if not position or position.status != RecommendationStatus.ACTIVE:
+        await query.answer("❌ Trade not found or is already closed.", show_alert=True)
+        await _send_or_edit_position_panel(update, context, db_session, 'trade', trade_id) # Refresh panel
+        return ConversationHandler.END
+        
+    # Store state for the conversation
+    context.user_data['user_trade_close_id'] = trade_id
+    context.user_data['user_trade_close_chat_id'] = query.message.chat_id
+    context.user_data['user_trade_close_msg_id'] = query.message.message_id
+    
+    cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", trade_id))
+    await safe_edit_message(
+        context.bot, query.message.chat_id, query.message.message_id,
+        text=f"{query.message.text_html}\n\n<b>✍️ Send the final Exit Price for {position.asset.value}:</b>",
+        reply_markup=InlineKeyboardMarkup([[cancel_button]])
+    )
+    return AWAIT_USER_TRADE_CLOSE_PRICE
+
+@uow_transaction
+@require_active_user
+async def user_trade_close_price_received(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """Handles receiving the exit price for a UserTrade."""
+    if await handle_management_timeout(update, context): return ConversationHandler.END
+    
+    trade_id = context.user_data.get('user_trade_close_id')
+    chat_id = context.user_data.get('user_trade_close_chat_id')
+    message_id = context.user_data.get('user_trade_close_msg_id')
+    user_input = update.message.text.strip() if update.message.text else ""
+
+    try: await update.message.delete()
+    except Exception: log.debug("Could not delete user reply")
+
+    if not (trade_id and chat_id and message_id):
+        loge.error(f"User trade close handler for user {update.effective_user.id} has corrupt state.")
+        clean_management_state(context)
+        return ConversationHandler.END
+        
+    trade_service = get_service(context, "trade_service", TradeService)
+    user_telegram_id = str(db_user.telegram_user_id)
+    
+    try:
+        exit_price = parse_number(user_input)
+        if exit_price is None:
+            raise ValueError("Invalid price format. Send a valid number.")
+            
+        # --- Execute Close ---
+        closed_trade = await trade_service.close_user_trade_async(
+            user_telegram_id, trade_id, exit_price, db_session
+        )
+        
+        if not closed_trade: # Should be caught by service exception but double-check
+             raise ValueError("Trade not found or access denied.")
+             
+        pnl_pct = closed_trade.pnl_percentage
+        pnl_str = f"({pnl_pct:+.2f}%)" if pnl_pct is not None else ""
+        
+        await safe_edit_message(
+            context.bot, chat_id, message_id,
+            text=f"✅ <b>Trade Closed</b>\n{closed_trade.asset} closed at {_format_price(exit_price)} {pnl_str}.",
+            reply_markup=None # Remove keyboard
+        )
+
+    except (ValueError, Exception) as e:
+        loge.error(f"Error in user trade close execution for trade #{trade_id}: {e}", exc_info=True)
+        # Re-prompt for price
+        cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", trade_id))
+        await safe_edit_message(
+            context.bot, chat_id, message_id,
+            text=f"⚠️ **Error:** {e}\n\n<b>✍️ Send the final Exit Price:</b>",
+            reply_markup=InlineKeyboardMarkup([[cancel_button]])
+        )
+        return AWAIT_USER_TRADE_CLOSE_PRICE # Stay in price state
+
+    clean_management_state(context)
+    return ConversationHandler.END
+
+async def cancel_user_trade_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels the UserTrade closing conversation."""
+    trade_id = context.user_data.get('user_trade_close_id')
+    chat_id = context.user_data.get('user_trade_close_chat_id')
+    message_id = context.user_data.get('user_trade_close_msg_id')
+    
+    clean_management_state(context)
+    
+    if update.callback_query: await update.callback_query.answer("Cancelled")
+    
+    if chat_id and message_id:
+        # We need a db_session to re-render the panel. This is a limitation of non-UOW handlers.
+        # As a fallback, just edit text. A full refresh requires the user to click again.
+        await safe_edit_message(context.bot, chat_id, message_id, text="❌ Close operation cancelled.", reply_markup=None)
+        # We can't call _send_or_edit_position_panel here easily without db_session.
+        # The user can use /myportfolio again.
+    elif update.message:
+        await update.message.reply_text("❌ Close operation cancelled.", reply_markup=ReplyKeyboardRemove())
+        
+    return ConversationHandler.END
+    
+
 # --- Handler Registration ---
 def register_management_handlers(app: Application):
     """Registers all management handlers including conversations."""
@@ -887,6 +1170,7 @@ def register_management_handlers(app: Application):
     app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, reply_handler), group=0)
 
     # --- Conversation Handler for Custom Partial Close ---
+    # ✅ FIX: Added missing functions and set per_message=False
     partial_close_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(partial_close_custom_start, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:partial_close_custom:")],
         states={
@@ -894,15 +1178,17 @@ def register_management_handlers(app: Application):
             AWAIT_PARTIAL_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, partial_close_price_received)],
         },
         fallbacks=[
-             CommandHandler("cancel", partial_close_cancel),
-             CallbackQueryHandler(partial_close_cancel, pattern=rf"^mgmt:cancel_input:") # Reuse cancel button logic
+            CommandHandler("cancel", partial_close_cancel),
+            CallbackQueryHandler(partial_close_cancel, pattern=rf"^mgmt:cancel_input:") # Reuse cancel button logic
         ],
         name="partial_close_conversation",
         per_user=True, per_chat=True, conversation_timeout=MANAGEMENT_TIMEOUT, persistent=False,
+        per_message=False # ✅ FIX: Suppress warning
     )
     app.add_handler(partial_close_conv, group=0) # Needs priority to capture input
 
     # --- Conversation Handler for User Trade Closing ---
+    # ✅ FIX: Added missing functions and set per_message=False
     user_trade_close_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(user_trade_close_start, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.CLOSE.value}:trade:")],
         states={
@@ -915,6 +1201,7 @@ def register_management_handlers(app: Application):
         ],
         name="user_trade_close_conversation",
         per_user=True, per_chat=True, conversation_timeout=MANAGEMENT_TIMEOUT, persistent=False,
+        per_message=False # ✅ FIX: Suppress warning
     )
     app.add_handler(user_trade_close_conv, group=0) # Needs priority
 
