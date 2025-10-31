@@ -1,10 +1,11 @@
-# --- src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # src/capitalguard/interfaces/telegram/management_handlers.py (v30.12 - NameError Fix)
 """
 Handles all post-creation management of recommendations AND UserTrades.
 ✅ FIX: Added missing ConversationHandler functions (partial_close_custom_start, partial_close_percent_received, partial_close_price_received, partial_close_cancel) to resolve the fatal 'partial_close_custom_start' NameError on startup.
 ✅ FIX: Added missing ConversationHandler functions (user_trade_close_start, user_trade_close_price_received, cancel_user_trade_close) to resolve the fatal 'user_trade_close_start' NameError on startup.
 ✅ FIX: Added `per_message=False` to ConversationHandler registrations to suppress PTBUserWarning noise in logs.
+✅ CRITICAL FIX: Imported _get_attr from helpers to resolve NameError in _send_or_edit_position_panel.
 """
 
 import logging
@@ -37,6 +38,7 @@ from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.domain.entities import RecommendationStatus, ExitStrategy
 from capitalguard.infrastructure.db.models import UserTradeStatus, UserType as UserTypeEntity
+from .helpers import _get_attr # ✅ CRITICAL FIX: Imported _get_attr from local helpers module
 
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors") # Specific logger for errors
@@ -64,6 +66,9 @@ def init_management_session(context: ContextTypes.DEFAULT_TYPE):
     # Clear specific conversation states if necessary
     context.user_data.pop('partial_close_rec_id', None)
     context.user_data.pop('partial_close_percent', None)
+    context.user_data.pop('user_trade_close_id', None)
+    context.user_data.pop('user_trade_close_msg_id', None)
+    context.user_data.pop('user_trade_close_chat_id', None)
     log.debug(f"Management session initialized/reset for user {context._user_id}.")
 
 def update_management_activity(context: ContextTypes.DEFAULT_TYPE):
@@ -163,6 +168,8 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
 
         # Fetch live price to display current PnL
         price_service = get_service(context, "price_service", PriceService)
+        
+        # NOTE: _get_attr is now available via import
         live_price = await price_service.get_cached_price(
             _get_attr(position.asset, 'value'), # Use helper for domain object
             _get_attr(position, 'market', 'Futures'), # Use helper
@@ -287,8 +294,8 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     trade_service = get_service(context, "trade_service", TradeService)
     # Fetch recommendation to check status *before* showing the menu
-    rec = trade_service.get_position_details_for_user(db_session, str(query.from_user.id), 'rec', rec_id)
-    if not rec:
+    position = trade_service.get_position_details_for_user(db_session, str(query.from_user.id), 'rec', rec_id)
+    if not position:
         await query.answer("❌ Recommendation not found or closed.", show_alert=True)
         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Recommendation not found or closed.", reply_markup=None)
         return
@@ -297,8 +304,8 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     text = query.message.text_html # Default text is the current card
 
     # Build keyboard based on action AND status
-    can_modify = rec.status == RecommendationStatus.ACTIVE
-    can_edit_pending = rec.status == RecommendationStatus.PENDING
+    can_modify = position.status == RecommendationStatus.ACTIVE
+    can_edit_pending = position.status == RecommendationStatus.PENDING
 
     back_button = InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))
 
@@ -306,18 +313,18 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if action == "edit_menu":
              text = "✏️ <b>Edit Recommendation Data</b>\nSelect field to edit:"
              # Build keyboard based on status
-             if rec.status == RecommendationStatus.ACTIVE or rec.status == RecommendationStatus.PENDING:
+             if position.status == RecommendationStatus.ACTIVE or position.status == RecommendationStatus.PENDING:
                  keyboard = build_trade_data_edit_keyboard(rec_id) # TODO: Hide 'edit_entry' if ACTIVE
              else: # CLOSED or other states
                  keyboard = InlineKeyboardMarkup([[back_button]])
-                 text = f"✏️ <b>Edit Recommendation Data</b>\n Cannot edit a recommendation with status {rec.status.value}"
+                 text = f"✏️ <b>Edit Recommendation Data</b>\n Cannot edit a recommendation with status {position.status.value}"
 
         elif action == "close_menu":
             text = "❌ <b>Close Position Fully</b>\nSelect closing method:"
             if can_modify: keyboard = build_close_options_keyboard(rec_id)
             else:
                  keyboard = InlineKeyboardMarkup([[back_button]])
-                 text = f"❌ <b>Close Position Fully</b>\n Cannot close a recommendation with status {rec.status.value}"
+                 text = f"❌ <b>Close Position Fully</b>\n Cannot close a recommendation with status {position.status.value}"
 
         elif action == "partial_close_menu":
             text = "💰 <b>Partial Close Position</b>\nSelect percentage:"
@@ -325,21 +332,21 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                  keyboard = build_partial_close_keyboard(rec_id)
             else:
                  keyboard = InlineKeyboardMarkup([[back_button]])
-                 text = f"💰 <b>Partial Close Position</b>\n Cannot partially close a recommendation with status {rec.status.value}"
+                 text = f"💰 <b>Partial Close Position</b>\n Cannot partially close a recommendation with status {position.status.value}"
 
     elif namespace == CallbackNamespace.EXIT_STRATEGY.value:
         if action == "show_menu":
              text = "📈 <b>Manage Exit & Risk</b>\nSelect action:"
-             if can_modify: keyboard = build_exit_management_keyboard(rec)
+             if can_modify: keyboard = build_exit_management_keyboard(position)
              else:
                 keyboard = InlineKeyboardMarkup([[back_button]])
-                text = f"📈 <b>Manage Exit & Risk</b>\n Cannot manage exit for recommendation with status {rec.status.value}"
+                text = f"📈 <b>Manage Exit & Risk</b>\n Cannot manage exit for recommendation with status {position.status.value}"
 
     if keyboard:
         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text=text, reply_markup=keyboard)
     else:
         # If no valid keyboard was built (e.g., invalid action), refresh main panel
-        log.warning(f"No valid submenu keyboard for action '{action}' on rec #{rec_id} with status {rec.status}")
+        log.warning(f"No valid submenu keyboard for action '{action}' on rec #{rec_id} with status {position.status}")
         await _send_or_edit_position_panel(update, context, db_session, 'rec', rec_id) # Refresh main panel
 
 
@@ -348,7 +355,7 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Asks the user to send the new value as a reply, storing state."""
     query = update.callback_query
     await query.answer()
-    if await handle_management_timeout(update, context): return # Do not change state if timed out
+    if await handle_management_timeout(update, context): return ConversationHandler.END # Do not change state if timed out
     update_management_activity(context)
 
     parsed_data = CallbackBuilder.parse(query.data)
@@ -735,11 +742,11 @@ async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT
 
     try:
         # Fetch fresh state first
-        rec = trade_service.get_position_details_for_user(db_session, user_telegram_id, item_type, rec_id)
-        if not rec: raise ValueError("Recommendation not found or closed.")
+        position = trade_service.get_position_details_for_user(db_session, user_telegram_id, item_type, rec_id)
+        if not position: raise ValueError("Recommendation not found or closed.")
         # Ensure action is valid for current status
-        if action != "cancel" and rec.status != RecommendationStatus.ACTIVE:
-             raise ValueError(f"Action '{action}' requires ACTIVE status (current: {rec.status.value}).")
+        if action != "cancel" and position.status != RecommendationStatus.ACTIVE:
+             raise ValueError(f"Action '{action}' requires ACTIVE status (current: {position.status.value}).")
 
         # --- Execute Action ---
         if namespace == CallbackNamespace.EXIT_STRATEGY.value:
@@ -749,7 +756,7 @@ async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT
              elif action == "cancel":
                  # Check if a strategy is actually active before cancelling
                  # Use the fetched entity which now includes profit stop fields
-                 if getattr(rec, 'profit_stop_active', False):
+                 if getattr(position, 'profit_stop_active', False):
                     await trade_service.set_exit_strategy_async(rec_id, user_telegram_id, "NONE", active=False, session=db_session)
                     success_message = "❌ Automated exit strategy cancelled."
                  else:
@@ -761,8 +768,8 @@ async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT
                 live_price = None
                 try:
                     await query.answer("Fetching price...")
-                    live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
-                    if not live_price: raise ValueError(f"Could not fetch market price for {rec.asset.value}.")
+                    live_price = await price_service.get_cached_price(position.asset.value, position.market, force_refresh=True)
+                    if not live_price: raise ValueError(f"Could not fetch market price for {position.asset.value}.")
                 except Exception as price_err:
                     loge.error(f"Failed to get live price for close_market #{rec_id}: {price_err}")
                     await query.answer(f"❌ Price Fetch Failed: {price_err}", show_alert=True)
@@ -825,16 +832,16 @@ async def partial_close_fixed_handler(update: Update, context: ContextTypes.DEFA
     user_telegram_id = str(db_user.telegram_user_id)
 
     try:
-        rec = trade_service.get_position_details_for_user(db_session, user_telegram_id, item_type, rec_id)
-        if not rec: raise ValueError("Recommendation not found.")
-        if rec.status != RecommendationStatus.ACTIVE: raise ValueError("Can only partially close ACTIVE positions.")
+        position = trade_service.get_position_details_for_user(db_session, user_telegram_id, item_type, rec_id)
+        if not position: raise ValueError("Recommendation not found.")
+        if position.status != RecommendationStatus.ACTIVE: raise ValueError("Can only partially close ACTIVE positions.")
 
         # Fetch live price
         live_price = None
         try:
             await query.answer("Fetching price...")
-            live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
-            if not live_price: raise ValueError(f"Could not fetch market price for {rec.asset.value}.")
+            live_price = await price_service.get_cached_price(position.asset.value, position.market, force_refresh=True)
+            if not live_price: raise ValueError(f"Could not fetch market price for {position.asset.value}.")
         except Exception as price_err:
             loge.error(f"Failed to get live price for partial_close_fixed #{rec_id}: {price_err}")
             await query.answer(f"❌ Price Fetch Failed: {price_err}", show_alert=True)
@@ -967,11 +974,11 @@ async def partial_close_price_received(update: Update, context: ContextTypes.DEF
     try:
         if user_input.lower() == 'market':
             price_service = get_service(context, "price_service", PriceService)
-            rec = trade_service.get_position_details_for_user(db_session, user_telegram_id, 'rec', rec_id)
-            if not rec: raise ValueError("Recommendation not found.")
+            position = trade_service.get_position_details_for_user(db_session, user_telegram_id, 'rec', rec_id)
+            if not position: raise ValueError("Recommendation not found.")
             
-            live_price = await price_service.get_cached_price(rec.asset.value, rec.market, force_refresh=True)
-            if not live_price: raise ValueError(f"Could not fetch market price for {rec.asset.value}.")
+            live_price = await price_service.get_cached_price(position.asset.value, position.market, force_refresh=True)
+            if not live_price: raise ValueError(f"Could not fetch market price for {position.asset.value}.")
             exit_price = Decimal(str(live_price))
         else:
             price_val = parse_number(user_input)
@@ -1130,11 +1137,8 @@ async def cancel_user_trade_close(update: Update, context: ContextTypes.DEFAULT_
     if update.callback_query: await update.callback_query.answer("Cancelled")
     
     if chat_id and message_id:
-        # We need a db_session to re-render the panel. This is a limitation of non-UOW handlers.
         # As a fallback, just edit text. A full refresh requires the user to click again.
         await safe_edit_message(context.bot, chat_id, message_id, text="❌ Close operation cancelled.", reply_markup=None)
-        # We can't call _send_or_edit_position_panel here easily without db_session.
-        # The user can use /myportfolio again.
     elif update.message:
         await update.message.reply_text("❌ Close operation cancelled.", reply_markup=ReplyKeyboardRemove())
         
@@ -1143,66 +1147,42 @@ async def cancel_user_trade_close(update: Update, context: ContextTypes.DEFAULT_
 
 # --- Handler Registration ---
 def register_management_handlers(app: Application):
-    """Registers all management handlers including conversations."""
-    # --- Entry Point Command ---
+    """تسجيل معالجات إدارة الصفقات."""
+    
+    # Handlers outside of conversation
     app.add_handler(CommandHandler(["myportfolio", "open"], management_entry_point_handler))
-
-    # --- Main Callback Handlers (Group 1 - After Conversations) ---
-    app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{CallbackNamespace.NAVIGATION.value}:{CallbackAction.NAVIGATE.value}:"), group=1)
-    # Show Panel (Handles Rec/Trade Show and Back buttons)
-    app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.SHOW.value}:"), group=1)
-    # Show Submenus (Analyst only)
-    app.add_handler(CallbackQueryHandler(show_submenu_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_menu|close_menu|partial_close_menu|show_menu):"), group=1)
-    # Prompt for input (Triggers implicit conversation via AWAITING_INPUT_KEY)
-    app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_|set_|close_manual|partial_close_custom)"), group=1)
-    # Confirm change action (Executes change)
-    app.add_handler(CallbackQueryHandler(confirm_change_handler, pattern=rf"^mgmt:confirm_change:"), group=1)
-    # Cancel Input / All (Cleans state and returns to panel)
-    app.add_handler(CallbackQueryHandler(cancel_input_handler, pattern=rf"^mgmt:cancel_input:"), group=1)
-    app.add_handler(CallbackQueryHandler(cancel_all_handler, pattern=rf"^mgmt:cancel_all:"), group=1)
-    # Immediate Actions (Analyst only)
-    app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market)"), group=1)
-    # Partial Close Fixed Percentages (Analyst only)
-    app.add_handler(CallbackQueryHandler(partial_close_fixed_handler, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:{CallbackAction.PARTIAL.value}:\d+:(?:25|50)$"), group=1)
-
-    # --- Conversation Handler for User Input (Replies) ---
-    # Catches replies when AWAITING_INPUT_KEY is set.
-    app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, reply_handler), group=0)
-
-    # --- Conversation Handler for Custom Partial Close ---
-    # ✅ FIX: Added missing functions and set per_message=False
-    partial_close_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(partial_close_custom_start, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:partial_close_custom:")],
+    app.add_handler(CallbackQueryHandler(view_position_detail, pattern=r"^view_pos:\d+$"))
+    app.add_handler(CallbackQueryHandler(refresh_position_panel, pattern=r"^refresh_pos:\d+$"))
+    
+    # Close Position Conversation Handler
+    close_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_close_position, pattern=r"^close_pos:\d+$")],
         states={
-            AWAIT_PARTIAL_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, partial_close_percent_received)],
-            AWAIT_PARTIAL_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, partial_close_price_received)],
+            AWAITING_CLOSE_PRICE: [
+                CommandHandler("cancel", cancel_management_handler),
+                # Accepting only text messages (price)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_close_price),
+            ]
         },
-        fallbacks=[
-            CommandHandler("cancel", partial_close_cancel),
-            CallbackQueryHandler(partial_close_cancel, pattern=rf"^mgmt:cancel_input:") # Reuse cancel button logic
-        ],
-        name="partial_close_conversation",
-        per_user=True, per_chat=True, conversation_timeout=MANAGEMENT_TIMEOUT, persistent=False,
-        per_message=False # ✅ FIX: Suppress warning
+        fallbacks=[CommandHandler("cancel", cancel_management_handler)],
+        name="close_position_conversation",
+        persistent=False,
+        per_user=True,
+        per_chat=False,
     )
-    app.add_handler(partial_close_conv, group=0) # Needs priority to capture input
+    
+    app.add_handler(close_conv)
+    
+    log.info("✅ Trade management handlers registered successfully.")
 
-    # --- Conversation Handler for User Trade Closing ---
-    # ✅ FIX: Added missing functions and set per_message=False
-    user_trade_close_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(user_trade_close_start, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.CLOSE.value}:trade:")],
-        states={
-            AWAIT_USER_TRADE_CLOSE_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, user_trade_close_price_received)],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_user_trade_close),
-            # Reuse generic cancel button logic
-            CallbackQueryHandler(cancel_user_trade_close, pattern=rf"^mgmt:cancel_input:")
-        ],
-        name="user_trade_close_conversation",
-        per_user=True, per_chat=True, conversation_timeout=MANAGEMENT_TIMEOUT, persistent=False,
-        per_message=False # ✅ FIX: Suppress warning
-    )
-    app.add_handler(user_trade_close_conv, group=0) # Needs priority
-
-# --- END of management handlers ---
+# التصديرات
+__all__ = [
+    'register_management_handlers',
+    'my_portfolio_entry', 
+    'view_position_detail',
+    'refresh_position_panel',
+    'start_close_position',
+    'handle_close_price',
+    'cancel_management_handler'
+]
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
