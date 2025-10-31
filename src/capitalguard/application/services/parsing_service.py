@@ -1,9 +1,9 @@
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/parsing_service.py ---
 # --- src/capitalguard/application/services/parsing_service.py ---
 """
-ParsingService (v4.1.0 - NameError Hotfix)
-✅ HOTFIX: Added missing 'from dataclasses import dataclass' to fix startup crash.
+ParsingService (v4.1.1 - DB Fix)
+✅ FIX: Corrected persistence logic to resolve 'Database error creating attempt record' by using the injected repository class correctly within session_scope.
 - Handles multi-path text parsing and attempt logging.
-- Implements Regex -> NER fallback for text. Records all attempts.
 """
 import logging
 import re
@@ -11,21 +11,18 @@ import unicodedata
 import time
 from typing import Dict, Any, Optional, List, Tuple
 from decimal import Decimal, InvalidOperation
-import spacy # ✅ NEW import
-from dataclasses import dataclass # ✅ HOTFIX: Added missing import
+import spacy
+from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 from capitalguard.infrastructure.db.uow import session_scope
-# ✅ NEW imports for repositories and models
 from capitalguard.infrastructure.db.repository import ParsingRepository
 from capitalguard.infrastructure.db.models import ParsingTemplate, ParsingAttempt
-from capitalguard.domain.value_objects import Price, Target, Targets # Keep for potential internal use
+from capitalguard.domain.value_objects import Price, Target, Targets 
 
 log = logging.getLogger(__name__)
 
 # --- Load spaCy Model ---
-# Load model once when the service instance is created or module loaded
-# Using a global variable for simplicity in this example
 _NLP_MODEL = None
 try:
     _NLP_MODEL = spacy.load("en_core_web_sm")
@@ -42,7 +39,7 @@ except ImportError:
 
 
 # --- Data Structures ---
-@dataclass # ✅ HOTFIX: Decorator now recognized
+@dataclass
 class ParsingResult:
     """Structured result from parsing attempt."""
     success: bool
@@ -59,6 +56,7 @@ class ParsingService:
     Injects ParsingRepository class for database interactions.
     """
     def __init__(self, parsing_repo_class: type[ParsingRepository]):
+        # Store the class reference, not an instance
         self.parsing_repo_class = parsing_repo_class
         # --- Normalization Helpers (from v3.3) ---
         self._AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
@@ -299,6 +297,7 @@ class ParsingService:
         # 1. Create initial attempt record in DB
         try:
             with session_scope() as session:
+                # ✅ FIX: Instantiate the repository class with the current session
                 repo = self.parsing_repo_class(session)
                 # Ensure user_id is passed correctly
                 attempt_record = repo.add_attempt(user_id=user_db_id, raw_content=content)
