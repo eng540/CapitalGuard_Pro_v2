@@ -1,8 +1,8 @@
-# src/capitalguard/application/services/trade_service.py v31.1.1 - FINAL SYNTAX ERROR HOTFIX
+# src/capitalguard/application/services/trade_service.py v31.1.2 - FINAL SYNTAX ERROR HOTFIX
 """
-TradeService v31.1.1 - Critical hotfix for SyntaxErrors.
+TradeService v31.1.2 - Final hotfix for all reported SyntaxErrors.
 ✅ THE FIX: Corrected indentation in _to_decimal function.
-✅ THE FIX: Corrected syntax error in _publish_recommendation (line 214).
+✅ THE FIX: Rebuilt if/elif/else block in _publish_recommendation to fix SyntaxError.
 ✅ Retains Decimal precision logic.
 ✅ Retains Analyst Ownership (API Security) check.
 """
@@ -59,7 +59,7 @@ def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
 
 def _format_price(price: Any) -> str:
     """Formats a price (Decimal-safe) for display."""
-    price_dec = _to_decimal(price);
+    price_dec = _to_decimal(price)
     return "N/A" if not price_dec.is_finite() else f"{price_dec:g}"
 
 def _pct(entry: Any, target_price: Any, side: str) -> float:
@@ -67,8 +67,8 @@ def _pct(entry: Any, target_price: Any, side: str) -> float:
     Calculates PnL percentage using Decimal for precision, returning float for simplicity/storage.
     """
     try:
-        entry_dec = _to_decimal(entry);
-        target_dec = _to_decimal(target_price);
+        entry_dec = _to_decimal(entry)
+        target_dec = _to_decimal(target_price)
         if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite(): return 0.0
         side_upper = (str(side.value) if hasattr(side, 'value') else str(side) or "").upper()
         if side_upper == "LONG": pnl = ((target_dec / entry_dec) - 1) * 100
@@ -84,7 +84,7 @@ def _normalize_pct_value(pct_raw: Any) -> Decimal:
     try:
         if isinstance(pct_raw, Decimal): return pct_raw
         if isinstance(pct_raw, (int, float)): return Decimal(str(pct_raw))
-        if isinstance(pct_raw, str): s = pct_raw.strip().replace('%', '').replace('+', '').replace(',', '');
+        if isinstance(pct_raw, str): s = pct_raw.strip().replace('%', '').replace('+', '').replace(',', '')
         return Decimal(s)
         return Decimal(str(pct_raw))
     except (InvalidOperation, Exception) as exc: logger.warning(f"Unable normalize pct '{pct_raw}': {exc}");
@@ -94,7 +94,7 @@ def _parse_int_user_id(user_id: Any) -> Optional[int]:
     """Safely converts various representations of user ID to an integer."""
     try:
         if user_id is None: return None
-        user_str = str(user_id).strip();
+        user_str = str(user_id).strip()
         return int(user_str) if user_str.lstrip('-').isdigit() else None
     except (TypeError, ValueError, AttributeError): return None
 
@@ -119,12 +119,12 @@ class TradeService:
     # --- Internal DB / Notifier Helpers ---
     async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
         """Commits changes, refreshes ORM, updates alerts, notifies UI (if Recommendation)."""
-        item_id = getattr(orm_object, 'id', 'N/A'); item_type = type(orm_object).__name__;
+        item_id = getattr(orm_object, 'id', 'N/A'); item_type = type(orm_object).__name__
         try:
-            db_session.commit();
+            db_session.commit()
             db_session.refresh(orm_object); logger.debug(f"Committed {item_type} ID {item_id}")
         except Exception as commit_err:
-            logger.error(f"Commit failed {item_type} ID {item_id}: {commit_err}", exc_info=True);
+            logger.error(f"Commit failed {item_type} ID {item_id}: {commit_err}", exc_info=True)
             db_session.rollback(); raise
         
         if isinstance(orm_object, Recommendation):
@@ -135,7 +135,7 @@ class TradeService:
                 except Exception as alert_err:
                     logger.exception(f"Alert rebuild fail Rec ID {item_id}: {alert_err}")
             
-            updated_entity = self.repo._to_entity(rec_orm);
+            updated_entity = self.repo._to_entity(rec_orm)
             if updated_entity:
                 try: await self.notify_card_update(updated_entity, db_session)
                 except Exception as notify_err: logger.exception(f"Notify fail Rec ID {item_id}: {notify_err}")
@@ -143,24 +143,24 @@ class TradeService:
 
     async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
         if inspect.iscoroutinefunction(fn): return await fn(*args, **kwargs)
-        else: loop = asyncio.get_running_loop();
+        else: loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, fn, *args, **kwargs)
 
     async def notify_card_update(self, rec_entity: RecommendationEntity, db_session: Session):
         if getattr(rec_entity, "is_shadow", False): return
         try:
-            published_messages = self.repo.get_published_messages(db_session, rec_entity.id);
+            published_messages = self.repo.get_published_messages(db_session, rec_entity.id)
             if not published_messages: return
-            tasks = [ self._call_notifier_maybe_async( self.notifier.edit_recommendation_card_by_ids, channel_id=msg.telegram_channel_id, message_id=msg.telegram_message_id, rec=rec_entity) for msg in published_messages ];
-            results = await asyncio.gather(*tasks, return_exceptions=True);
+            tasks = [ self._call_notifier_maybe_async( self.notifier.edit_recommendation_card_by_ids, channel_id=msg.telegram_channel_id, message_id=msg.telegram_message_id, rec=rec_entity) for msg in published_messages ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
             for res in results:
                 if isinstance(res, Exception): logger.error(f"Notify task fail Rec ID {rec_entity.id}: {res}", exc_info=False)
         except Exception as e: logger.error(f"Error fetch/update pub messages Rec ID {rec_entity.id}: {e}", exc_info=True)
 
     def notify_reply(self, rec_id: int, text: str, db_session: Session):
-        rec_orm = self.repo.get(db_session, rec_id);
+        rec_orm = self.repo.get(db_session, rec_id)
         if not rec_orm or getattr(rec_orm, "is_shadow", False): return
-        published_messages = self.repo.get_published_messages(db_session, rec_id);
+        published_messages = self.repo.get_published_messages(db_session, rec_id)
         for msg in published_messages: asyncio.create_task(self._call_notifier_maybe_async( self.notifier.post_notification_reply, chat_id=msg.telegram_channel_id, message_id=msg.telegram_message_id, text=text ))
 
     # --- Validation ---
@@ -188,8 +188,8 @@ class TradeService:
         if side_upper == "SHORT" and stop_loss <= entry: raise ValueError("SHORT SL must be > Entry.")
         if side_upper == "LONG" and any(p <= entry for p in target_prices): raise ValueError("LONG targets must be > Entry.")
         if side_upper == "SHORT" and any(p >= entry for p in target_prices): raise ValueError("SHORT targets must be < Entry.")
-        risk = abs(entry - stop_loss);
-        first_tp = min(target_prices) if side_upper == "LONG" else max(target_prices); reward = abs(first_tp - entry);
+        risk = abs(entry - stop_loss)
+        first_tp = min(target_prices) if side_upper == "LONG" else max(target_prices); reward = abs(first_tp - entry)
         if risk.is_zero(): raise ValueError("Entry and SL cannot be equal.")
         if reward.is_zero() or (reward / risk) < Decimal('0.1'): raise ValueError("Risk/Reward too low (min 0.1).")
         if len(target_prices) != len(set(target_prices)): raise ValueError("Target prices must be unique.")
@@ -197,29 +197,35 @@ class TradeService:
 
     # --- Publishing ---
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_db_id: int, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
-        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}; channels_to_publish = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True);
-        if target_channel_ids is not None: channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids];
-        if not channels_to_publish: report["failed"].append({"reason": "No active channels linked/selected."}); return rec_entity, report;
+        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}; channels_to_publish = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True)
+        if target_channel_ids is not None: channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids]
+        if not channels_to_publish: report["failed"].append({"reason": "No active channels linked/selected."}); return rec_entity, report
         try: from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
         except ImportError: public_channel_keyboard = lambda *_: None;
         logger.warning("public_channel_keyboard not found.")
-        keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None)); tasks = [];
-        channel_map = {ch.telegram_channel_id: ch for ch in channels_to_publish};
-        for channel_id in channel_map.keys(): tasks.append(self._call_notifier_maybe_async( self.notifier.post_to_channel, channel_id, rec_entity, keyboard ));
-        results = await asyncio.gather(*tasks, return_exceptions=True);
+        keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None)); tasks = []
+        channel_map = {ch.telegram_channel_id: ch for ch in channels_to_publish}
+        for channel_id in channel_map.keys(): tasks.append(self._call_notifier_maybe_async( self.notifier.post_to_channel, channel_id, rec_entity, keyboard ))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # ✅ THE FIX: Rebuilt if/elif/else block with correct syntax and indentation.
         for i, channel_id in enumerate(channel_map.keys()):
-            result = results[i];
-            if isinstance(result, Exception): logger.exception(f"Failed publish Rec {rec_entity.id} channel {channel_id}: {result}");
-            report["failed"].append({"channel_id": channel_id, "reason": str(result)})
+            result = results[i]
             
-            # ✅ THE FIX: Removed semicolon and fixed indentation.
+            if isinstance(result, Exception): 
+                logger.exception(f"Failed publish Rec {rec_entity.id} channel {channel_id}: {result}")
+                report["failed"].append({"channel_id": channel_id, "reason": str(result)})
+            
             elif isinstance(result, tuple) and len(result) == 2:
                 session.add(PublishedMessage(recommendation_id=rec_entity.id, telegram_channel_id=result[0], telegram_message_id=result[1]))
                 report["success"].append({"channel_id": channel_id, "message_id": result[1]})
             
-            else: reason = f"Notifier unexpected result: {type(result)}";
-            logger.error(f"Failed publish Rec {rec_entity.id} channel {channel_id}: {reason}"); report["failed"].append({"channel_id": channel_id, "reason": reason});
-        session.flush(); return rec_entity, report;
+            else: 
+                reason = f"Notifier unexpected result: {type(result)}"
+                logger.error(f"Failed publish Rec {rec_entity.id} channel {channel_id}: {reason}")
+                report["failed"].append({"channel_id": channel_id, "reason": reason})
+                
+        session.flush(); return rec_entity, report
     # --- Public API - Create/Publish Recommendation ---
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         """Creates and publishes a new recommendation."""
