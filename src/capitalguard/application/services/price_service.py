@@ -1,5 +1,6 @@
 # --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.3.1 - Concurrency Fix) ---
 # src/capitalguard/application/services/price_service.py
+
 import logging
 import os
 import asyncio
@@ -26,7 +27,7 @@ class PriceService:
         """
         Async: Return cached price if available;
         otherwise fetch from provider and cache it.
-        
+
         Args:
             symbol (str): The trading symbol (e.g., "BTCUSDT").
             market (str): The market type (e.g., "Futures").
@@ -44,7 +45,6 @@ class PriceService:
 
         if provider == "binance":
             is_spot = str(market or "Spot").lower().startswith("spot")
-            # BinancePricing.get_price is a static method, safe for run_in_executor
             loop = asyncio.get_running_loop()
             live_price = await loop.run_in_executor(None, BinancePricing.get_price, symbol, is_spot)
 
@@ -62,9 +62,8 @@ class PriceService:
 
         return live_price
 
-    # THE FIX: The unsafe blocking function using asyncio.run is REMOVED to prevent event loop crashes.
-    # Backward-compatible aliases (Blocking aliases removed, only async remain)
     async def get_preview_price(self, symbol: str, market: str, force_refresh: bool = False) -> Optional[float]:
+        """Alias for get_cached_price, kept for backward compatibility."""
         return await self.get_cached_price(symbol, market, force_refresh)
 
 # --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 16.3.1 - Concurrency Fix) ---
