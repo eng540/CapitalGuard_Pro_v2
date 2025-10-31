@@ -1,14 +1,8 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.9 - Live Price in Type Step)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.10 - Warning Suppress)
 """
 معالجات المحادثات النهائية والمستقرة لبيئة الإنتاج.
-✅ FIX: Corrected channel_picker_handler to check for 'toggle' string instead of 'CallbackAction.TOGGLE'.
-✅ FIX: Removed invalid citation syntax causing a SyntaxError on startup (safe_edit_message).
-✅ إصلاح شامل لمشكلة تجميد لوحة اختيار القنوات.
-✅ تطبيق نظام مهلات قوي وإدارة جلسات آمنة عبر التوكن.
-✅ إعادة هيكلة المعالجات للاعتماد الكامل على CallbackBuilder.
-✅ تحسين معالجة الأخطاء لضمان تجربة مستخدم سلسة.
-✅ ENHANCEMENT: type_handler الآن يعرض السعر الحي واسم الأصل في رسالة الخطوة 4/4.
+✅ FIX: Added `per_message=False` to ConversationHandler registration to suppress PTBUserWarning noise in logs.
 """
 
 import logging
@@ -506,7 +500,7 @@ def register_conversation_handlers(app: Application):
         per_user=True,
         per_chat=True,
         conversation_timeout=CONVERSATION_TIMEOUT,
-        # per_message=False is the default and correct setting for this flow
+        per_message=False # ✅ FIX: Suppress warning
     )
     app.add_handler(conv_handler)
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/
