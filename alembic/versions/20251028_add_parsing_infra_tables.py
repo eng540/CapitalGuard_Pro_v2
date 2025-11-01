@@ -1,4 +1,4 @@
-"""add parsing infrastructure tables (fully self-healing version)"""
+"""add .parsing infrastructure tables (fully self-healing version)"""
 
 from alembic import op
 import sqlalchemy as sa
