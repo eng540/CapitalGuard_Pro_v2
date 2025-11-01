@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = '20251022_add_profit_stop_fields'
-down_revision = '2025_v3_full_schema'
+down_revision = '20251007_v3_baseline'
 branch_labels = None
 depends_on = None
 
