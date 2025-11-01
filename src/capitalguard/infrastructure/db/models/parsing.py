@@ -1,17 +1,19 @@
-# --- src/capitalguard/infrastructure/db/models/parsing.py --- v 1
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/models/parsing.py ---
 """SQLAlchemy ORM models for the parsing infrastructure."""
 
 import sqlalchemy as sa
 from sqlalchemy import Column, Integer, String, Text, Boolean, Numeric, DateTime, ForeignKey, func
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
-from .base import Base # Assuming Base is defined in models/base.py
+from .base import Base  # Assuming Base is defined in models/base.py
+
 
 class ParsingTemplate(Base):
     __tablename__ = 'parsing_templates'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    pattern_type = Column(String(50), nullable=False, server_default='regex') # e.g., 'regex', 'spacy_rule'
+    name = Column(String(100), nullable=True)  # NEW COLUMN to match DB
+    pattern_type = Column(String(50), nullable=False, server_default='regex')  # e.g., 'regex', 'spacy_rule'
     pattern_value = Column(Text, nullable=False)
     # Foreign key to users.id (analyst who created/owns it)
     analyst_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True, index=True)
@@ -31,7 +33,10 @@ class ParsingTemplate(Base):
     owner = relationship("User")
 
     def __repr__(self):
-        return f"<ParsingTemplate(id={self.id}, type='{self.pattern_type}', owner={self.analyst_id}, public={self.is_public})>"
+        return (
+            f"<ParsingTemplate(id={self.id}, name='{self.name}', "
+            f"type='{self.pattern_type}', owner={self.analyst_id}, public={self.is_public})>"
+        )
 
 
 class ParsingAttempt(Base):
@@ -63,6 +68,9 @@ class ParsingAttempt(Base):
     def __repr__(self):
         status = "Success" if self.was_successful else "Fail"
         corrected = " (Corrected)" if self.was_corrected else ""
-        return f"<ParsingAttempt(id={self.id}, user={self.user_id}, status='{status}{corrected}', path='{self.parser_path_used}')>"
+        return (
+            f"<ParsingAttempt(id={self.id}, user={self.user_id}, "
+            f"status='{status}{corrected}', path='{self.parser_path_used}')>"
+        )
 
-# --- END of parsing models ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/models/parsing.py ---
