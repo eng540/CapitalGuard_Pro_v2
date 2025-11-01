@@ -5,7 +5,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = '20251101_extend_alembic_version_length'
-down_revision = '20251101_remove_legacy_pattern_column'
+down_revision = '20251028_add_parsing_infra_fixed'
 branch_labels = None
 depends_on = None
 
