@@ -1,18 +1,11 @@
-# src/capitalguard/interfaces/api/main.py (v26.7 - The Final Architecture)
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
+# src/capitalguard/interfaces/api/main.py (v26.8 - Cache Init Fix)
 """
-The definitive, stable, and production-ready main entry point. This version incorporates
-all critical fixes identified through iterative debugging, resulting in a robust and
-resilient application startup sequence designed for a distributed environment like Railway.
-
-Changelog:
-- [FINAL FIX] Correctly clears stale conversations by directly deleting the Redis hash,
-  resolving the `TypeError` on startup and permanently fixing the "Immortal Conversation" bug.
-- [CONFIRM] The "just-in-time" reading of `REDIS_URL` from the environment is retained
-  to prevent startup race conditions.
-- [CONFIRM] The `RedisPersistence` class is 100% complete and compliant with PTB v21+,
-  ensuring correct state synchronization.
-- [CONFIRM] The `bootstrap_app` function is correctly modified to accept the persistence object,
-  maintaining a clean separation of concerns.
+The definitive, stable, and production-ready main entry point.
+✅ FIX: Added call to `market_data_service.refresh_symbols_cache()` during startup
+       to populate the symbol cache *before* the AlertService or API handlers need it.
+       This resolves the "Symbol cache is not populated" warning and ensures the
+       Geo-Blocking fallback to CoinGecko can function correctly.
 """
 
 import logging
@@ -35,6 +28,7 @@ from capitalguard.interfaces.telegram.handlers import register_all_handlers
 from capitalguard.interfaces.api.routers import auth as auth_router
 from capitalguard.interfaces.api.metrics import router as metrics_router
 from capitalguard.application.services.alert_service import AlertService
+from capitalguard.application.services.market_data_service import MarketDataService
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +114,7 @@ class RedisPersistence(BasePersistence):
 
 # --- FastAPI Application ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="26.7.0-persistent")
+app = FastAPI(title="CapitalGuard Pro API", version="26.8.0-persistent")
 app.state.ptb_app = None
 app.state.services = None
 
@@ -163,6 +157,16 @@ async def on_startup():
     ptb_app.bot_data["services"] = app.state.services
     register_all_handlers(ptb_app)
     ptb_app.add_error_handler(error_handler)
+
+    # --- ✅ GEO-BLOCK FIX: Populate symbol cache *before* starting alert service ---
+    market_data_service: MarketDataService = app.state.services.get("market_data_service")
+    if market_data_service:
+        log.info("Populating symbol cache (MarketDataService)...")
+        await market_data_service.refresh_symbols_cache()
+        log.info("Symbol cache population complete.")
+    else:
+        log.error("MarketDataService not found, cache will not be populated on startup.")
+    # --- End of Fix ---
 
     alert_service: AlertService = app.state.services.get("alert_service")
     if alert_service:
@@ -224,3 +228,4 @@ def health_check():
 
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
