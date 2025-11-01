@@ -1,4 +1,5 @@
-"""add parsing infrastructure tables (fully self-healing version, clean build without payload_raw)"""
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/migrations/versions/20251028_add_parsing_infra_fixed.py ---
+"""add parsing infrastructure tables (fully self-healing version, clean build without payload_raw, with name column)"""
 
 from alembic import op
 import sqlalchemy as sa
@@ -42,6 +43,7 @@ def upgrade() -> None:
         op.create_table(
             "parsing_templates",
             sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("name", sa.String(length=100), nullable=True),
             sa.Column("pattern_type", sa.String(length=50), server_default="regex", nullable=False),
             sa.Column("pattern_value", sa.Text(), nullable=False),
             sa.Column("analyst_id", sa.Integer(), nullable=True),
@@ -58,6 +60,7 @@ def upgrade() -> None:
     else:
         # تحقق من الأعمدة الناقصة في parsing_templates
         required_columns_templates = {
+            "name": sa.Column("name", sa.String(length=100), nullable=True),
             "pattern_type": sa.Column("pattern_type", sa.String(length=50), server_default="regex", nullable=False),
             "pattern_value": sa.Column("pattern_value", sa.Text(), nullable=False),
             "analyst_id": sa.Column("analyst_id", sa.Integer(), nullable=True),
@@ -119,3 +122,4 @@ def downgrade() -> None:
         op.drop_table("parsing_attempts")
     if table_exists(conn, "parsing_templates"):
         op.drop_table("parsing_templates")
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/migrations/versions/20251028_add_parsing_infra_fixed.py ---
