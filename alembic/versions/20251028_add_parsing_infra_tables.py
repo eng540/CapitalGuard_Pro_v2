@@ -1,4 +1,4 @@
-"""add .parsing infrastructure tables (fully self-healing version)"""
+"""add parsing infrastructure tables (fully self-healing version, clean build without payload_raw)"""
 
 from alembic import op
 import sqlalchemy as sa
@@ -14,7 +14,8 @@ depends_on = None
 def table_exists(conn, table_name: str) -> bool:
     """تحقق من وجود الجدول في قاعدة البيانات"""
     return conn.execute(
-        text("SELECT to_regclass(:tname) IS NOT NULL"), {"tname": table_name}
+        text("SELECT to_regclass(:tname) IS NOT NULL"),
+        {"tname": table_name}
     ).scalar()
 
 
@@ -23,8 +24,10 @@ def column_exists(conn, table_name: str, column_name: str) -> bool:
     return conn.execute(
         text("""
         SELECT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name=:tname AND column_name=:cname
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = :tname
+            AND column_name = :cname
         )
         """),
         {"tname": table_name, "cname": column_name},
@@ -53,7 +56,7 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("id")
         )
     else:
-        # التحقق من الأعمدة في parsing_templates
+        # تحقق من الأعمدة الناقصة في parsing_templates
         required_columns_templates = {
             "pattern_type": sa.Column("pattern_type", sa.String(length=50), server_default="regex", nullable=False),
             "pattern_value": sa.Column("pattern_value", sa.Text(), nullable=False),
@@ -91,10 +94,10 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("id")
         )
     else:
-        # التحقق من الأعمدة في parsing_attempts
+        # تحقق من الأعمدة الناقصة في parsing_attempts
         required_columns_attempts = {
             "user_id": sa.Column("user_id", sa.Integer(), nullable=False),
-            "raw_content": sa.Column("raw_content", sa.Text(), nullable=True),
+            "raw_content": sa.Column("raw_content", sa.Text(), nullable=False),
             "used_template_id": sa.Column("used_template_id", sa.Integer(), nullable=True),
             "result_data": sa.Column("result_data", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
             "was_successful": sa.Column("was_successful", sa.Boolean(), server_default=sa.text("false"), nullable=False),
