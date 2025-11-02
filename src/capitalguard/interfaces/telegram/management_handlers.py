@@ -1,12 +1,12 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
-# src/capitalguard/interfaces/telegram/management_handlers.py (v30.16 - Final Indentation/Parse Hotfix)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v30.15 - Final Indent/Parse Hotfix)
 """
 Handles all post-creation management of recommendations AND UserTrades.
 ✅ CRITICAL FIX: Imported _get_attr from helpers to resolve NameError in _send_or_edit_position_panel.
 ✅ RESTORED: Full logic for all submenus (partial close, exit strategy) and conversations (custom close, user trade close).
-✅ FIX (v30.16): Corrected callback parsing in `user_trade_close_start` to read ID from `params[1]`.
-✅ FIX (v30.16): Corrected IndentationError in `show_submenu_handler` under `elif action == "close_menu":`.
-✅ FIX (v30.16): Added `per_message=False` to all ConversationHandler registrations.
+✅ FIX (v30.15): Corrected callback parsing in `user_trade_close_start` to read ID from `params[1]`.
+✅ FIX (v30.15): Corrected IndentationError in `show_submenu_handler` under `elif action == "close_menu":`.
+✅ FIX (v30.15): Added `per_message=False` to ConversationHandler registrations.
 """
 
 import logging
@@ -321,7 +321,6 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         elif action == "close_menu":
             text = "❌ <b>Close Position Fully</b>\nSelect closing method:"
-            # ✅ INDENTATION FIX: This block is now correctly indented
             if can_modify:
                 keyboard = build_close_options_keyboard(rec_id)
             else:
@@ -329,12 +328,12 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 text = f"❌ <b>Close Position Fully</b>\n Cannot close a recommendation with status {position.status.value}"
 
         elif action == "partial_close_menu":
-             text = "💰 <b>Partial Close Position</b>\nSelect percentage:"
+            text = "💰 <b>Partial Close Position</b>\nSelect percentage:"
             if can_modify:
-                 keyboard = build_partial_close_keyboard(rec_id)
+                keyboard = build_partial_close_keyboard(rec_id)
             else:
-                 keyboard = InlineKeyboardMarkup([[back_button]])
-                 text = f"💰 <b>Partial Close Position</b>\n Cannot partially close a recommendation with status {position.status.value}"
+                keyboard = InlineKeyboardMarkup([[back_button]])
+                text = f"💰 <b>Partial Close Position</b>\n Cannot partially close a recommendation with status {position.status.value}"
 
     elif namespace == CallbackNamespace.EXIT_STRATEGY.value:
         if action == "show_menu":
@@ -1154,7 +1153,20 @@ async def cancel_user_trade_close(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("❌ Close operation cancelled.", reply_markup=ReplyKeyboardRemove())
         
     return ConversationHandler.END
-    
+
+
+# --- Helper Functions ---
+def _format_price(price: Union[Decimal, float, int]) -> str:
+    """Formats a price for display."""
+    if isinstance(price, Decimal):
+        return f"{price:g}"
+    return f"{price:g}"
+
+def _truncate_text(text: str, max_length: int) -> str:
+    """Truncates text and adds ellipsis if too long."""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length-3] + "..."
 
 # --- Handler Registration ---
 def register_management_handlers(app: Application):
