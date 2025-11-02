@@ -41,7 +41,7 @@ from telegram.ext import (
     ConversationHandler,
     CommandHandler,
 )
-
+from capitalguard.interfaces.telegram.keyboards import _format_price
 # Infrastructure & Application specific imports
 from capitalguard.infrastructure.db.uow import uow_transaction
 from capitalguard.interfaces.telegram.helpers import get_service, parse_cq_parts, _get_attr
