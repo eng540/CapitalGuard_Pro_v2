@@ -1,12 +1,12 @@
 # --- src/capitalguard/interfaces/telegram/keyboards.py ---
-# src/capitalguard/interfaces/telegram/keyboards.py (v21.16 - SyntaxError Hotfix)
+# src/capitalguard/interfaces/telegram/keyboards.py (v21.17 - Final Logic & Syntax Hotfix)
 """
 Builds all Telegram keyboards for the bot.
-✅ CRITICAL FIX: Corrected multiple SyntaxErrors caused by improper line merging (semicolons).
+✅ CRITICAL FIX (v21.17): Corrected multiple SyntaxErrors caused by improper line merging (semicolons).
        This resolves the fatal startup crash.
-✅ HOTFIX: Corrected logical comparison in `analyst_control_panel_keyboard`
-       to `status.value != RecommendationStatus.ACTIVE.value`.
-       This resolves the bug where the analyst panel never appeared.
+✅ CRITICAL FIX (v21.17): Corrected logical comparison in `analyst_control_panel_keyboard`
+       to `status.value != RecommendationStatus.ACTIVE.value` (Value comparison).
+       This resolves the critical bug where the analyst panel never appeared.
 """
 
 import math
@@ -221,9 +221,9 @@ async def build_open_recs_keyboard(items: List[Any], current_page: int, price_se
             # ✅ SYNTAX FIX: Split lines
             if live_price is not None and status_icon in [StatusIcons.PROFIT, StatusIcons.LOSS]:
                 pnl = _pct(_get_attr(item, 'entry'), live_price, side)
-                button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%" # ✅ SYNTAX FIX: Semicolon replaced
+                button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%"
             else:
-                button_text = f"{status_icon} {button_text}" # ✅ SYNTAX FIX: Semicolon replaced
+                button_text = f"{status_icon} {button_text}"
             
             # ✅ SYNTAX FIX: Split lines
             item_type = 'trade' if getattr(item, 'is_user_trade', False) else 'rec'
@@ -306,7 +306,7 @@ def analyst_control_panel_keyboard(rec: RecommendationEntity) -> InlineKeyboardM
     ns_exit = CallbackNamespace.EXIT_STRATEGY
     ns_nav = CallbackNamespace.NAVIGATION
 
-    # ✅ CRITICAL HOTFIX: Compare the status *value* (e.g., "ACTIVE") not the Enum object.
+    # ✅ CRITICAL HOTFIX (v21.17): Compare the status *value* (e.g., "ACTIVE") not the Enum object.
     status_value = _get_attr(status, 'value')
     if status_value != RecommendationStatus.ACTIVE.value:
          # Simplified keyboard for non-active states
