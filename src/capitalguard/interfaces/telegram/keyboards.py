@@ -1,10 +1,11 @@
 # --- src/capitalguard/interfaces/telegram/keyboards.py ---
-# src/capitalguard/interfaces/telegram/keyboards.py (v21.17 - Debug & Fix Panel Logic)
+# src/capitalguard/interfaces/telegram/keyboards.py (v21.18 - Final Debug & Logic Hotfix)
 """
 Builds all Telegram keyboards for the bot.
-✅ DEBUG: Added comprehensive debugging to diagnose why analyst panel doesn't show for ACTIVE recommendations.
-✅ FIX: Multiple comparison methods to handle different status formats (Enum, string, object).
-✅ CRITICAL: Fixed SyntaxErrors and logical comparison issues.
+✅ CRITICAL FIX (v21.18): Fixed SyntaxError in build_subscription_keyboard (missing bracket).
+✅ CRITICAL FIX (v21.18): Added comprehensive debugging to diagnose panel logic.
+✅ CRITICAL FIX (v21.18): Multiple comparison methods for status validation.
+✅ CRITICAL FIX (v21.18): Corrected logical comparison to status.value comparison.
 """
 
 import math
@@ -219,9 +220,9 @@ async def build_open_recs_keyboard(items: List[Any], current_page: int, price_se
             # ✅ SYNTAX FIX: Split lines
             if live_price is not None and status_icon in [StatusIcons.PROFIT, StatusIcons.LOSS]:
                 pnl = _pct(_get_attr(item, 'entry'), live_price, side)
-                button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%" # ✅ SYNTAX FIX: Semicolon replaced
+                button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%"
             else:
-                button_text = f"{status_icon} {button_text}" # ✅ SYNTAX FIX: Semicolon replaced
+                button_text = f"{status_icon} {button_text}"
             
             # ✅ SYNTAX FIX: Split lines
             item_type = 'trade' if getattr(item, 'is_user_trade', False) else 'rec'
@@ -311,19 +312,22 @@ def analyst_control_panel_keyboard(rec: RecommendationEntity) -> InlineKeyboardM
         status_value = status.value
         logger.info(f"🔍 DEBUG - Status value: {status_value}")
         is_active = (status_value == RecommendationStatus.ACTIVE.value)
+        logger.info(f"🔍 DEBUG - Method 1 (Enum value): {is_active}")
     
     # الطريقة 2: إذا كان status نصاً
     elif isinstance(status, str):
         status_value = status.upper()
         logger.info(f"🔍 DEBUG - Status string: {status_value}")
         is_active = (status_value == RecommendationStatus.ACTIVE.value.upper())
+        logger.info(f"🔍 DEBUG - Method 2 (String): {is_active}")
     
     # الطريقة 3: تحقق مباشرة من الكائن
     else:
         is_active = (status == RecommendationStatus.ACTIVE)
-        logger.info(f"🔍 DEBUG - Direct comparison: {status == RecommendationStatus.ACTIVE}")
+        logger.info(f"🔍 DEBUG - Method 3 (Direct object): {is_active}")
     
     logger.info(f"🔍 DEBUG - Final is_active: {is_active}")
+    logger.info(f"🔍 DEBUG - ACTIVE.value: {RecommendationStatus.ACTIVE.value}")
     
     ns_rec = CallbackNamespace.RECOMMENDATION
     ns_pos = CallbackNamespace.POSITION
@@ -482,16 +486,14 @@ def public_channel_keyboard(rec_id: int, bot_username: Optional[str]) -> Optiona
      # Consider if needed. For now, only track button.
      return InlineKeyboardMarkup([buttons]) if buttons else None
 
-def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineKeyboardMarkup:
-     if channel_link: return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Join Channel", url=channel_link)]])
+def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineKeyboardMarkup]:
+     # ✅ CRITICAL FIX: Fixed missing bracket in function signature
+     if channel_link: 
+         return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Join Channel", url=channel_link)]])
      return None
 
 
 # --- Ensure all other required keyboards exist and use CallbackBuilder ---
-# (e.g., build_close_options_keyboard, build_trade_data_edit_keyboard,
-#  build_exit_management_keyboard, build_partial_close_keyboard)
-# Add them here, converting callback data to use CallbackBuilder.create(...)
-
 def build_close_options_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     ns = CallbackNamespace.RECOMMENDATION
     return InlineKeyboardMarkup([
