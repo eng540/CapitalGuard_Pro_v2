@@ -1,9 +1,10 @@
-# --- src/capitalguard/infrastructure/db/repository.py --- V 2.4 (SA Hotfix)
+# --- src/capitalguard/infrastructure/db/repository.py --- V 2.5 (Indentation Hotfix)
 """
 Repository layer — provides clean data access abstractions.
 ✅ Includes ParsingRepository.
 ✅ Updated RecommendationRepository with Decimal handling and new methods.
 ✅ HOTFIX: Added missing 'import sqlalchemy as sa' to fix NameError.
+✅ HOTFIX (v2.5): Corrected IndentationError in `find_or_create` user method.
 """
 
 import logging
@@ -58,7 +59,7 @@ class UserRepository:
             updated = False
             if kwargs.get("first_name") and user.first_name != kwargs["first_name"]:
                  user.first_name = kwargs["first_name"]
-                updated = True
+                 updated = True
             if kwargs.get("username") and user.username != kwargs["username"]:
                 user.username = kwargs["username"]
                 updated = True
@@ -70,6 +71,8 @@ class UserRepository:
             if 'is_active' in kwargs and user.is_active != kwargs['is_active']:
                 user.is_active = kwargs['is_active']
                 updated = True
+            
+            # ✅ INDENTATION FIX: This block must be inside the `if user:` block
             if updated:
                 self.session.flush() # Persist updates if any
             return user
