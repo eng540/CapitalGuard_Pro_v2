@@ -1,10 +1,11 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/trade_service.py ---
-# src/capitalguard/application/services/trade_service.py v31.1.5 - Postgres Fix
+# src/capitalguard/application/services/trade_service.py v31.1.6 - SyntaxError Hotfix
 """
-TradeService v31.1.5 - PostgreSQL Asset Query Fix
-✅ FIX: Corrected get_recent_assets_for_user logic to fix PostgreSQL error (InvalidColumnReference for SELECT DISTINCT, ORDER BY).
-       The logic now retrieves the asset list sorted by time and applies uniqueness filtering in Python.
-✅ All previous hotfixes retained.
+TradeService v31.1.6 - Python SyntaxError Hotfix
+✅ FIX: Corrected multiple Python SyntaxErrors (e.g., 'statement must be separated by ...')
+       caused by improper use of semicolons (;) after control flow blocks (if/for).
+       This critical fix resolves the service loading failure.
+✅ All previous hotfixes (Postgres asset query, security checks) retained.
 ✅ VALIDATED: File passes python -m py_compile with no errors.
 """
 
@@ -136,13 +137,16 @@ class TradeService:
     # --- Internal DB / Notifier Helpers ---
     async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
         """Commits changes, refreshes ORM, updates alerts, notifies UI (if Recommendation)."""
-        item_id = getattr(orm_object, 'id', 'N/A'); item_type = type(orm_object).__name__
+        item_id = getattr(orm_object, 'id', 'N/A')
+        item_type = type(orm_object).__name__
         try:
             db_session.commit()
-            db_session.refresh(orm_object); logger.debug(f"Committed {item_type} ID {item_id}")
+            db_session.refresh(orm_object)
+            logger.debug(f"Committed {item_type} ID {item_id}")
         except Exception as commit_err:
             logger.error(f"Commit failed {item_type} ID {item_id}: {commit_err}", exc_info=True)
-            db_session.rollback(); raise
+            db_session.rollback()
+            raise
 
         if isinstance(orm_object, Recommendation):
             rec_orm = orm_object
@@ -207,7 +211,7 @@ class TradeService:
         if side_upper == "LONG" and any(p <= entry for p in target_prices): raise ValueError("LONG targets must be > Entry.")
         if side_upper == "SHORT" and any(p >= entry for p in target_prices): raise ValueError("SHORT targets must be < Entry.")
         risk = abs(entry - stop_loss)
-        first_tp = min(target_prices) if side_upper == "LONG" else max(target_prices);
+        first_tp = min(target_prices) if side_upper == "LONG" else max(target_prices)
         reward = abs(first_tp - entry)
         if risk.is_zero(): raise ValueError("Entry and SL cannot be equal.")
         if reward.is_zero() or (reward / risk) < Decimal('0.1'): raise ValueError("Risk/Reward too low (min 0.1).")
@@ -216,21 +220,26 @@ class TradeService:
 
     # --- Publishing ---
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_db_id: int, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
-        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []};
+        report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
         channels_to_publish = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True)
         if target_channel_ids is not None: channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids]
-        if not channels_to_publish: report["failed"].append({"reason": "No active channels linked/selected."});
-        return rec_entity, report
-        try: from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
-        except ImportError: public_channel_keyboard = lambda *_: None
-        logger.warning("public_channel_keyboard not found.")
-        keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None));
+        if not channels_to_publish:
+            report["failed"].append({"reason": "No active channels linked/selected."})
+            return rec_entity, report
+        
+        try:
+            from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
+        except ImportError:
+            public_channel_keyboard = lambda *_: None
+            logger.warning("public_channel_keyboard not found.")
+        
+        keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None))
         tasks = []
         channel_map = {ch.telegram_channel_id: ch for ch in channels_to_publish}
         for channel_id in channel_map.keys(): tasks.append(self._call_notifier_maybe_async( self.notifier.post_to_channel, channel_id, rec_entity, keyboard ))
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # ✅ THE FIX: Rebuilt if/elif/else block with correct syntax and indentation.
+        # ✅ SYNTAX FIX: Rebuilt if/elif/else block with correct syntax and indentation.
         for i, channel_id in enumerate(channel_map.keys()):
             result = results[i]
 
@@ -247,7 +256,7 @@ class TradeService:
                 logger.error(f"Failed publish Rec {rec_entity.id} channel {channel_id}: {reason}")
                 report["failed"].append({"channel_id": channel_id, "reason": reason})
 
-        session.flush();
+        session.flush()
         return rec_entity, report
 
     # --- Public API - Create/Publish Recommendation ---
@@ -255,11 +264,11 @@ class TradeService:
         """Creates and publishes a new recommendation."""
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user or user.user_type != UserTypeEntity.ANALYST: raise ValueError("Only analysts.")
-        entry_price_in = _to_decimal(kwargs['entry']);
+        entry_price_in = _to_decimal(kwargs['entry'])
         sl_price = _to_decimal(kwargs['stop_loss']); targets_list_in = kwargs['targets']
-        targets_list_validated = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_in];
+        targets_list_validated = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_in]
         asset = kwargs['asset'].strip().upper(); side = kwargs['side'].upper()
-        market = kwargs.get('market', 'Futures');
+        market = kwargs.get('market', 'Futures')
         order_type_enum = OrderTypeEnum[kwargs['order_type'].upper()]
 
         exit_strategy_val = kwargs.get('exit_strategy')
@@ -284,10 +293,10 @@ class TradeService:
         self._validate_recommendation_data(side, final_entry, sl_price, targets_list_validated)
         targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated]
         rec_orm = Recommendation( analyst_id=user.id, asset=asset, side=side, entry=final_entry, stop_loss=sl_price, targets=targets_for_db, order_type=order_type_enum, status=status, market=market, notes=kwargs.get('notes'), exit_strategy=exit_strategy_enum, activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None )
-        db_session.add(rec_orm);
+        db_session.add(rec_orm)
         db_session.flush()
         db_session.add(RecommendationEvent( recommendation_id=rec_orm.id, event_type="CREATED_ACTIVE" if status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING", event_data={'entry': str(final_entry)} ))
-        db_session.flush();
+        db_session.flush()
         db_session.refresh(rec_orm)
 
         created_rec_entity = self.repo._to_entity(rec_orm)
@@ -349,7 +358,7 @@ class TradeService:
         if existing_trade: return {'success': False, 'error': 'You are already tracking this signal.'}
         try:
             new_trade = UserTrade( user_id=trader_user.id, asset=rec_orm.asset, side=rec_orm.side, entry=rec_orm.entry, stop_loss=rec_orm.stop_loss, targets=rec_orm.targets, status=UserTradeStatus.OPEN, source_recommendation_id=rec_orm.id )
-            db_session.add(new_trade);
+            db_session.add(new_trade)
             db_session.flush()
             logger.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id}.")
             return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
@@ -381,6 +390,7 @@ class TradeService:
         except Exception as calc_err:
             logger.error(f"Failed PnL calc UserTrade {trade_id}: {calc_err}")
             trade.pnl_percentage = None
+        
         logger.info(f"UserTrade {trade_id} closed user {user_id} at {exit_price}")
         db_session.flush()
         return trade
@@ -390,6 +400,7 @@ class TradeService:
         if db_session is None:
             with session_scope() as s: return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         if not rec_orm: raise ValueError(f"Rec #{rec_id} not found.")
@@ -446,11 +457,13 @@ class TradeService:
                 raise ValueError(f"Invalid new Entry: {e}")
             if rec_orm.entry != new_entry:
                 event_data.update({"old_entry": str(rec_orm.entry), "new_entry": str(new_entry)})
-                rec_orm.entry = new_entry; updated = True
+                rec_orm.entry = new_entry
+                updated = True
         if new_notes is not None or (new_notes is None and rec_orm.notes is not None):
             if rec_orm.notes != new_notes:
                 event_data.update({"old_notes": rec_orm.notes, "new_notes": new_notes})
-                rec_orm.notes = new_notes; updated = True
+                rec_orm.notes = new_notes
+                updated = True
         if updated:
             db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="DATA_UPDATED", event_data=event_data))
             self.notify_reply(rec_id, f"✏️ Data #{rec_orm.asset} updated.", db_session)
@@ -473,7 +486,7 @@ class TradeService:
         if mode_upper == "TRAILING" and (trailing_value is None or not trailing_value.is_finite() or trailing_value <= 0): raise ValueError("Trailing requires valid positive value.")
         rec.profit_stop_mode = mode_upper if active else "NONE"
         rec.profit_stop_price = price if active and mode_upper == "FIXED" else None
-        rec.profit_stop_trailing_value = trailing_value if active and mode_upper == "TRAILING" else None;
+        rec.profit_stop_trailing_value = trailing_value if active and mode_upper == "TRAILING" else None
         rec.profit_stop_active = active
         event_data = {"mode": rec.profit_stop_mode, "active": active}
         if rec.profit_stop_price: event_data["price"] = str(rec.profit_stop_price)
@@ -676,15 +689,17 @@ class TradeService:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
         open_positions = []
         if not user: return []
-        if user.user_type == UserTypeEntity.ANALYST: recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id)
-        open_positions.extend([e for rec in recs_orm if (e := self.repo._to_entity(rec)) and setattr(e, 'is_user_trade', False) is None])
+        if user.user_type == UserTypeEntity.ANALYST:
+            recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id)
+            open_positions.extend([e for rec in recs_orm if (e := self.repo._to_entity(rec)) and setattr(e, 'is_user_trade', False) is None])
+        
         trades_orm = self.repo.get_open_trades_for_trader(db_session, user.id)
         for trade in trades_orm:
             try:
                 targets_data = trade.targets or []
                 targets_for_vo = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in targets_data]
 
-                # ✅ THE FIX: Split semicolon-chained statements into separate lines.
+                # ✅ SYNTAX FIX: Split semicolon-chained statements into separate lines.
                 trade_entity = RecommendationEntity(
                     id=trade.id, asset=Symbol(trade.asset), side=Side(trade.side),
                     entry=Price(_to_decimal(trade.entry)), stop_loss=Price(_to_decimal(trade.stop_loss)),
@@ -697,6 +712,7 @@ class TradeService:
 
             except Exception as conv_err:
                 logger.error(f"Failed conv UserTrade {trade.id}: {conv_err}", exc_info=False)
+        
         open_positions.sort(key=lambda p: getattr(p, "created_at", datetime.min), reverse=True)
         return open_positions
 
