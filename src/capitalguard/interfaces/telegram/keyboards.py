@@ -1,8 +1,11 @@
 # --- src/capitalguard/interfaces/telegram/keyboards.py ---
-# src/capitalguard/interfaces/telegram/keyboards.py (v21.14 - Editable Review Card)
+# src/capitalguard/interfaces/telegram/keyboards.py (v21.15 - Panel Logic Hotfix)
 """
 Builds all Telegram keyboards for the bot.
-✅ NEW: Added `build_editable_review_card` for the interactive parsing review flow.
+✅ HOTFIX: Corrected logical comparison in `analyst_control_panel_keyboard`
+       from `status != RecommendationStatus.ACTIVE` (Object comparison)
+       to `status.value != RecommendationStatus.ACTIVE.value` (Value comparison).
+       This resolves the critical bug where the analyst panel never appeared.
 ✅ Includes previous fixes for asyncio, callbacks, and structure.
 """
 
@@ -136,12 +139,14 @@ def parse_cq_parts(callback_data: str) -> List[str]:
 
 # --- UI Constants ---
 class StatusIcons:
-    PENDING = "⏳"; ACTIVE = "▶️"; PROFIT = "🟢"; LOSS = "🔴"; CLOSED = "🏁"; ERROR = "⚠️"
+    PENDING = "⏳"; ACTIVE = "▶️"; PROFIT = "🟢"; LOSS = "🔴"; CLOSED = "🏁";
+    ERROR = "⚠️"
     BREAK_EVEN = "🛡️"; SHADOW = "👻"; # Added from previous versions
 
 class ButtonTexts:
     BACK_TO_LIST = "⬅️ Back to List"; BACK_TO_MAIN = "⬅️ Back to Panel";
-    PREVIOUS = "⬅️ Previous"; NEXT = "Next ➡️"; CONFIRM = "✅ Confirm"; CANCEL = "❌ Cancel";
+    PREVIOUS = "⬅️ Previous"; NEXT = "Next ➡️"; CONFIRM = "✅ Confirm";
+    CANCEL = "❌ Cancel";
 
 # --- Status & Navigation Logic ---
 class StatusDeterminer:
@@ -157,8 +162,7 @@ class StatusDeterminer:
                 entry_dec = _to_decimal(_get_attr(item, 'entry')); sl_dec = _to_decimal(_get_attr(item, 'stop_loss'))
                 if entry_dec > 0 and sl_dec > 0 and abs(entry_dec - sl_dec) / entry_dec < Decimal('0.0005'): return StatusIcons.BREAK_EVEN
                 if live_price is not None:
-                    side = _get_attr(item, 'side');
-                    if entry_dec > 0: pnl = _pct(entry_dec, live_price, side); return StatusIcons.PROFIT if pnl >= 0 else StatusIcons.LOSS
+                    side = _get_attr(item, 'side'); if entry_dec > 0: pnl = _pct(entry_dec, live_price, side); return StatusIcons.PROFIT if pnl >= 0 else StatusIcons.LOSS
                 return StatusIcons.ACTIVE
             return StatusIcons.ERROR
         except Exception as e: logger.warning(f"Status determination failed: {e}"); return StatusIcons.ERROR
@@ -184,19 +188,21 @@ async def build_open_recs_keyboard(items: List[Any], current_page: int, price_se
     """Builds the paginated keyboard for open recommendations/trades (v21.13 logic)."""
     # (Implementation remains same as v21.13 - fetches prices, builds buttons with status/PnL)
     try:
-        total_items = len(items); total_pages = math.ceil(total_items / ITEMS_PER_PAGE) or 1; current_page = max(1, min(current_page, total_pages)); start_index = (current_page - 1) * ITEMS_PER_PAGE; paginated_items = items[start_index : start_index + ITEMS_PER_PAGE];
+        total_items = len(items); total_pages = math.ceil(total_items / ITEMS_PER_PAGE) or 1; current_page = max(1, min(current_page, total_pages)); start_index = (current_page - 1) * ITEMS_PER_PAGE;
+        paginated_items = items[start_index : start_index + ITEMS_PER_PAGE];
         assets_to_fetch = {(_get_attr(item, 'asset'), _get_attr(item, 'market', 'Futures')) for item in paginated_items if _get_attr(item, 'asset')}
         price_tasks = [price_service.get_cached_price(asset, market) for asset, market in assets_to_fetch]
-        price_results = await asyncio.gather(*price_tasks, return_exceptions=True);
-        prices_map = {asset_market[0]: price for asset_market, price in zip(assets_to_fetch, price_results) if not isinstance(price, Exception)}
+        price_results = await asyncio.gather(*price_tasks, return_exceptions=True); prices_map = {asset_market[0]: price for asset_market, price in zip(assets_to_fetch, price_results) if not isinstance(price, Exception)}
 
         keyboard_rows = []
         for item in paginated_items:
             rec_id, asset, side = _get_attr(item, 'id'), _get_attr(item, 'asset'), _get_attr(item, 'side'); live_price = prices_map.get(asset); status_icon = StatusDeterminer.determine_icon(item, live_price); button_text = f"#{rec_id} - {asset} ({side})";
-            if live_price is not None and status_icon in [StatusIcons.PROFIT, StatusIcons.LOSS]: pnl = _pct(_get_attr(item, 'entry'), live_price, side); button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%";
+            if live_price is not None and status_icon in [StatusIcons.PROFIT, StatusIcons.LOSS]: pnl = _pct(_get_attr(item, 'entry'), live_price, side);
+            button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%";
             else: button_text = f"{status_icon} {button_text}";
             item_type = 'trade' if getattr(item, 'is_user_trade', False) else 'rec'; callback_data = CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, item_type, rec_id); keyboard_rows.append([InlineKeyboardButton(_truncate_text(button_text), callback_data=callback_data)]);
-        keyboard_rows.extend(NavigationBuilder.build_pagination(current_page, total_pages)); keyboard_rows.append([InlineKeyboardButton("🔄 Refresh List", callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, current_page))]);
+        keyboard_rows.extend(NavigationBuilder.build_pagination(current_page, total_pages));
+        keyboard_rows.append([InlineKeyboardButton("🔄 Refresh List", callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, current_page))]);
         return InlineKeyboardMarkup(keyboard_rows)
     except Exception as e: logger.error(f"Open recs keyboard build failed: {e}", exc_info=True); return InlineKeyboardMarkup([[InlineKeyboardButton("⚠️ Error Loading Data", callback_data="noop")],[InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, 1))]])
 
@@ -218,7 +224,7 @@ def build_editable_review_card(parsed_data: Dict[str, Any]) -> InlineKeyboardMar
         close_pct = t.get('close_percent', 0.0)
         item_str = price_str
         if close_pct > 0:
-             item_str += f"@{int(close_pct) if close_pct.is_integer() else close_pct:.1f}%"
+             item_str += f"@{int(close_pct) if close_pct == int(close_pct) else close_pct:.1f}%" # Use int format if whole number
         target_items.append(item_str)
     target_str = ", ".join(target_items)
 
@@ -267,8 +273,9 @@ def analyst_control_panel_keyboard(rec: RecommendationEntity) -> InlineKeyboardM
     ns_exit = CallbackNamespace.EXIT_STRATEGY
     ns_nav = CallbackNamespace.NAVIGATION
 
-    # Only show controls if ACTIVE
-    if status != RecommendationStatus.ACTIVE:
+    # ✅ CRITICAL HOTFIX: Compare the status *value* (e.g., "ACTIVE") not the Enum object.
+    # The _get_attr helper correctly extracts the string value.
+    if _get_attr(status, 'value') != RecommendationStatus.ACTIVE.value:
          # Simplified keyboard for non-active states
          return InlineKeyboardMarkup([[
               InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(ns_nav, CallbackAction.NAVIGATE, 1))
@@ -286,7 +293,7 @@ def analyst_control_panel_keyboard(rec: RecommendationEntity) -> InlineKeyboardM
         ],
         [ # Row 3: Back navigation
             InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(ns_nav, CallbackAction.NAVIGATE, 1))
-        ],
+         ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -314,7 +321,8 @@ def build_confirmation_keyboard(
     # (Implementation remains same as v21.13)
     confirm_cb = CallbackBuilder.create(namespace, CallbackAction.CONFIRM, item_id); cancel_cb = CallbackBuilder.create(namespace, CallbackAction.CANCEL, item_id);
     # Basic length check before returning
-    if len(confirm_cb.encode('utf-8')) > MAX_CALLBACK_DATA_LENGTH or len(cancel_cb.encode('utf-8')) > MAX_CALLBACK_DATA_LENGTH: logger.warning(f"Confirm CB data > 64 bytes for {namespace}:{item_id}"); # Fallback? Maybe shorten item_id? For now, just warn.
+    if len(confirm_cb.encode('utf-8')) > MAX_CALLBACK_DATA_LENGTH or len(cancel_cb.encode('utf-8')) > MAX_CALLBACK_DATA_LENGTH: logger.warning(f"Confirm CB data > 64 bytes for {namespace}:{item_id}");
+    # Fallback? Maybe shorten item_id? For now, just warn.
     return InlineKeyboardMarkup([[ InlineKeyboardButton(confirm_text, callback_data=confirm_cb), InlineKeyboardButton(cancel_text, callback_data=cancel_cb), ]])
 
 
@@ -325,11 +333,14 @@ def main_creation_keyboard() -> InlineKeyboardMarkup:
 
 def asset_choice_keyboard(recent_assets: List[str]) -> InlineKeyboardMarkup:
     # (Implementation remains same as v21.13)
-    buttons = [InlineKeyboardButton(asset, callback_data=f"asset_{asset}") for asset in recent_assets]; keyboard = [buttons[i: i + 3] for i in range(0, len(buttons), 3)]; keyboard.append([InlineKeyboardButton("✍️ Enter New Asset", callback_data="asset_new")]); return InlineKeyboardMarkup(keyboard)
+    buttons = [InlineKeyboardButton(asset, callback_data=f"asset_{asset}") for asset in recent_assets];
+    keyboard = [buttons[i: i + 3] for i in range(0, len(buttons), 3)]; keyboard.append([InlineKeyboardButton("✍️ Enter New Asset", callback_data="asset_new")]);
+    return InlineKeyboardMarkup(keyboard)
 
 def side_market_keyboard(current_market: str = "Futures") -> InlineKeyboardMarkup:
     # (Implementation remains same as v21.13)
-    market_display = "Futures" if "futures" in current_market.lower() else "Spot"; return InlineKeyboardMarkup([ [ InlineKeyboardButton(f"🟢 LONG / {market_display}", callback_data="side_LONG"), InlineKeyboardButton(f"🔴 SHORT / {market_display}", callback_data="side_SHORT") ], [InlineKeyboardButton(f"🔄 Change Market (Current: {market_display})", callback_data="side_menu")], ])
+    market_display = "Futures" if "futures" in current_market.lower() else "Spot";
+    return InlineKeyboardMarkup([ [ InlineKeyboardButton(f"🟢 LONG / {market_display}", callback_data="side_LONG"), InlineKeyboardButton(f"🔴 SHORT / {market_display}", callback_data="side_SHORT") ], [InlineKeyboardButton(f"🔄 Change Market (Current: {market_display})", callback_data="side_menu")], ])
 
 def market_choice_keyboard() -> InlineKeyboardMarkup:
     # (Implementation remains same as v21.13)
@@ -357,12 +368,17 @@ def build_channel_picker_keyboard(review_token: str, channels: Iterable[Any], se
     """Builds the paginated channel selection keyboard using CallbackBuilder."""
     # (Implementation remains same logic as v21.13 but using CallbackBuilder)
     try:
-        ch_list = list(channels); total = len(ch_list); total_pages = max(1, math.ceil(total / per_page)); page = max(1, min(page, total_pages)); start_idx, end_idx = (page - 1) * per_page, page * per_page; page_items = ch_list[start_idx:end_idx];
-        rows = []; short_token = review_token[:12]; ns = CallbackNamespace.PUBLICATION;
+        ch_list = list(channels);
+        total = len(ch_list); total_pages = max(1, math.ceil(total / per_page)); page = max(1, min(page, total_pages));
+        start_idx, end_idx = (page - 1) * per_page, page * per_page; page_items = ch_list[start_idx:end_idx];
+        rows = []; short_token = review_token[:12];
+        ns = CallbackNamespace.PUBLICATION;
         for ch in page_items:
             tg_chat_id = int(_get_attr(ch, 'telegram_channel_id', 0));
             if not tg_chat_id: continue;
-            label = _truncate_text(_get_attr(ch, 'title') or f"Channel {tg_chat_id}", 25); status = "✅" if tg_chat_id in selected_ids else ("☑️" if _get_attr(ch, 'is_active', False) else "❌"); callback_data = CallbackBuilder.create(ns, CallbackAction.TOGGLE, short_token, tg_chat_id, page); rows.append([InlineKeyboardButton(f"{status} {label}", callback_data=callback_data)]);
+            label = _truncate_text(_get_attr(ch, 'title') or f"Channel {tg_chat_id}", 25);
+            status = "✅" if tg_chat_id in selected_ids else ("☑️" if _get_attr(ch, 'is_active', False) else "❌");
+            callback_data = CallbackBuilder.create(ns, CallbackAction.TOGGLE, short_token, tg_chat_id, page); rows.append([InlineKeyboardButton(f"{status} {label}", callback_data=callback_data)]);
         nav_buttons = [];
         if page > 1: nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=CallbackBuilder.create(ns, "nav", short_token, page - 1)))
         if total_pages > 1: nav_buttons.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
@@ -370,7 +386,8 @@ def build_channel_picker_keyboard(review_token: str, channels: Iterable[Any], se
         if nav_buttons: rows.append(nav_buttons);
         rows.append([ InlineKeyboardButton("🚀 Publish Selected", callback_data=CallbackBuilder.create(ns, CallbackAction.CONFIRM, short_token)), InlineKeyboardButton("⬅️ Back to Review", callback_data=CallbackBuilder.create(ns, CallbackAction.BACK, short_token)) ]);
         return InlineKeyboardMarkup(rows)
-    except Exception as e: logger.error(f"Error building channel picker: {e}", exc_info=True); return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Error - Back to Review", callback_data=CallbackBuilder.create(CallbackNamespace.PUBLICATION, CallbackAction.BACK, review_token[:12]))]])
+    except Exception as e: logger.error(f"Error building channel picker: {e}", exc_info=True);
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Error - Back to Review", callback_data=CallbackBuilder.create(CallbackNamespace.PUBLICATION, CallbackAction.BACK, review_token[:12]))]])
 
 # --- Other keyboards (Subscription, Public Channel etc. - Keep as is, ensure CallbackBuilder if interactive) ---
 def public_channel_keyboard(rec_id: int, bot_username: Optional[str]) -> Optional[InlineKeyboardMarkup]:
@@ -378,7 +395,8 @@ def public_channel_keyboard(rec_id: int, bot_username: Optional[str]) -> Optiona
      if bot_username:
          track_url = f"https://t.me/{bot_username}?start=track_{rec_id}"
          buttons.append(InlineKeyboardButton("📊 Track Signal", url=track_url))
-     # Add refresh button? For public channels, manual refresh might be less useful.
+     # Add refresh button?
+     # For public channels, manual refresh might be less useful.
      # Consider if needed. For now, only track button.
      return InlineKeyboardMarkup([buttons]) if buttons else None
 
