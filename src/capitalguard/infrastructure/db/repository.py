@@ -1,8 +1,9 @@
-# --- src/capitalguard/infrastructure/db/repository.py --- V 2.3
+# --- src/capitalguard/infrastructure/db/repository.py --- V 2.4 (SA Hotfix)
 """
 Repository layer — provides clean data access abstractions.
 ✅ Includes ParsingRepository.
 ✅ Updated RecommendationRepository with Decimal handling and new methods.
+✅ HOTFIX: Added missing 'import sqlalchemy as sa' to fix NameError.
 """
 
 import logging
@@ -10,6 +11,7 @@ from typing import List, Optional, Any, Dict
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session, joinedload, selectinload
+import sqlalchemy as sa # ✅ HOTFIX: Added missing import
 from sqlalchemy import and_ # Import 'and_' for combined filters
 
 # Import domain entities and value objects
@@ -55,7 +57,7 @@ class UserRepository:
             # Update user info if changed
             updated = False
             if kwargs.get("first_name") and user.first_name != kwargs["first_name"]:
-                user.first_name = kwargs["first_name"]
+                 user.first_name = kwargs["first_name"]
                 updated = True
             if kwargs.get("username") and user.username != kwargs["username"]:
                 user.username = kwargs["username"]
@@ -161,7 +163,7 @@ class ParsingRepository:
         Orders by confidence score descending (best first).
         """
         query = self.session.query(ParsingTemplate).filter(
-            sa.or_(
+            sa.or_( # ✅ HOTFIX: This line now works
                 ParsingTemplate.is_public == True,
                 ParsingTemplate.analyst_id == user_id
             )
@@ -308,6 +310,7 @@ class RecommendationRepository:
                     "market": rec.market,
                     "is_user_trade": False, # Explicitly mark as not a user trade
                     "processed_events": {e.event_type for e in rec.events},
+                    
                     # Add profit stop fields using getattr for safety
                     "profit_stop_mode": getattr(rec, 'profit_stop_mode', 'NONE'),
                     "profit_stop_price": self._to_decimal(getattr(rec, 'profit_stop_price', None)) if getattr(rec, 'profit_stop_price', None) is not None else None,
