@@ -1,12 +1,12 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
-# src/capitalguard/interfaces/telegram/management_handlers.py (v30.15 - Final Indent/Parse Hotfix)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v30.16 - Final Indentation/Parse Hotfix)
 """
 Handles all post-creation management of recommendations AND UserTrades.
 ✅ CRITICAL FIX: Imported _get_attr from helpers to resolve NameError in _send_or_edit_position_panel.
 ✅ RESTORED: Full logic for all submenus (partial close, exit strategy) and conversations (custom close, user trade close).
-✅ FIX (v30.15): Corrected callback parsing in `user_trade_close_start` to read ID from `params[1]`.
-✅ FIX (v30.15): Corrected IndentationError in `show_submenu_handler` under `elif action == "close_menu":`.
-✅ FIX (v30.15): Added `per_message=False` to ConversationHandler registrations.
+✅ FIX (v30.16): Corrected callback parsing in `user_trade_close_start` to read ID from `params[1]`.
+✅ FIX (v30.16): Corrected IndentationError in `show_submenu_handler` under `elif action == "close_menu":`.
+✅ FIX (v30.16): Added `per_message=False` to all ConversationHandler registrations.
 """
 
 import logging
