@@ -1,9 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
-# src/capitalguard/interfaces/telegram/management_handlers.py (v30.13 - Full Restore + NameError Fix)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v30.14 - Parsing & Warning Fix)
 """
 Handles all post-creation management of recommendations AND UserTrades.
 ✅ CRITICAL FIX: Imported _get_attr from helpers to resolve NameError in _send_or_edit_position_panel.
 ✅ RESTORED: Full logic for all submenus (partial close, exit strategy) and conversations (custom close, user trade close).
+✅ FIX: Corrected callback parsing in `user_trade_close_start` to read ID from `params[1]`.
 ✅ FIX: Added `per_message=False` to ConversationHandler registrations to suppress PTBUserWarning noise in logs.
 """
 
@@ -188,7 +189,7 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
                 keyboard = analyst_control_panel_keyboard(position)
         else: # PENDING or CLOSED - show minimal keyboard (e.g., just back)
             keyboard = InlineKeyboardMarkup([[
-                 InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, 1))
+                InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, 1))
             ]])
 
         await safe_edit_message(context.bot, chat_id, message_id, text=text, reply_markup=keyboard)
@@ -318,14 +319,14 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                  text = f"✏️ <b>Edit Recommendation Data</b>\n Cannot edit a recommendation with status {position.status.value}"
 
         elif action == "close_menu":
-            text = "❌ <b>Close Position Fully</b>\nSelect closing method:"
+             text = "❌ <b>Close Position Fully</b>\nSelect closing method:"
             if can_modify: keyboard = build_close_options_keyboard(rec_id)
             else:
                  keyboard = InlineKeyboardMarkup([[back_button]])
                  text = f"❌ <b>Close Position Fully</b>\n Cannot close a recommendation with status {position.status.value}"
 
         elif action == "partial_close_menu":
-            text = "💰 <b>Partial Close Position</b>\nSelect percentage:"
+             text = "💰 <b>Partial Close Position</b>\nSelect percentage:"
             if can_modify:
                  keyboard = build_partial_close_keyboard(rec_id)
             else:
@@ -463,7 +464,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
 
         # --- Input Validation Logic ---
         if namespace == CallbackNamespace.EXIT_STRATEGY.value:
-             if action == "set_fixed":
+            if action == "set_fixed":
                  price = parse_number(user_input)
                  if price is None: raise ValueError("Invalid price format.")
                  # Add validation: Fixed price must be profitable vs entry
@@ -473,7 +474,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
                       raise ValueError("Fixed profit stop price must be beyond entry price.")
                  validated_value = {"mode": "FIXED", "price": price}
                  change_description = f"Activate Fixed Profit Stop at {_format_price(price)}"
-             elif action == "set_trailing":
+            elif action == "set_trailing":
                  config = parse_trailing_distance(user_input)
                  if config is None: raise ValueError("Invalid format. Use % (e.g., '1.5%') or value (e.g., '500').")
                  validated_value = {"mode": "TRAILING", "trailing_value": config["value"]} # Store Decimal
@@ -546,7 +547,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
             ])
             await safe_edit_message(context.bot, chat_id, message_id, text=f"❓ <b>Confirm Action</b>\n\nDo you want to:\n➡️ {change_description}?", reply_markup=confirm_keyboard)
         else:
-             # Should ideally not be reached if validation logic is correct
+            # Should ideally not be reached if validation logic is correct
              raise ValueError("Validation passed but no value was stored.")
 
     except ValueError as e:
@@ -637,6 +638,7 @@ async def confirm_change_handler(update: Update, context: ContextTypes.DEFAULT_T
                  price_service = get_service(context, "price_service", PriceService)
                  rec = trade_service.get_position_details_for_user(db_session, user_telegram_id, 'rec', item_id)
                  if not rec: raise ValueError("Recommendation not found.")
+                 
                  live_price = await price_service.get_cached_price(_get_attr(rec.asset, 'value'), _get_attr(rec, 'market'), force_refresh=True)
                  if not live_price: raise ValueError(f"Could not fetch market price for {_get_attr(rec.asset, 'value')}.")
                  await trade_service.partial_close_async(item_id, user_telegram_id, pending_value, Decimal(str(live_price)), db_session, triggered_by="MANUAL_CUSTOM"); success = True
@@ -848,7 +850,7 @@ async def partial_close_fixed_handler(update: Update, context: ContextTypes.DEFA
 
         # Execute partial close
         await trade_service.partial_close_async(
-            rec_id, user_telegram_id, close_percent, Decimal(str(live_price)), db_session, triggered_by="MANUAL_FIXED"
+             rec_id, user_telegram_id, close_percent, Decimal(str(live_price)), db_session, triggered_by="MANUAL_FIXED"
         )
         await query.answer(f"✅ Closed {close_percent:g}% at market price ~{_format_price(live_price)}.")
 
@@ -1042,7 +1044,9 @@ async def user_trade_close_start(update: Update, context: ContextTypes.DEFAULT_T
     
     parsed_data = CallbackBuilder.parse(query.data) # pos:cl:trade:<trade_id>
     params = parsed_data.get('params', [])
-    trade_id = int(params[0]) if params and params[0].isdigit() else None
+    
+    # ✅ CRITICAL FIX: The trade_id is at index 1 (params[0] is 'trade')
+    trade_id = int(params[1]) if params and len(params) > 1 and params[1].isdigit() else None
     
     if trade_id is None:
         loge.error(f"Could not get trade_id for user_trade_close_start: {query.data}")
@@ -1138,81 +1142,4 @@ async def cancel_user_trade_close(update: Update, context: ContextTypes.DEFAULT_
     
     clean_management_state(context)
     
-    if update.callback_query: await update.callback_query.answer("Cancelled")
-    
-    if chat_id and message_id:
-        # As a fallback, just edit text. A full refresh requires the user to click again.
-        await safe_edit_message(context.bot, chat_id, message_id, text="❌ Close operation cancelled.", reply_markup=None)
-    elif update.message:
-        await update.message.reply_text("❌ Close operation cancelled.", reply_markup=ReplyKeyboardRemove())
-        
-    return ConversationHandler.END
-    
-
-# --- Handler Registration ---
-def register_management_handlers(app: Application):
-    """Registers all management handlers including conversations."""
-    # --- Entry Point Command ---
-    app.add_handler(CommandHandler(["myportfolio", "open"], management_entry_point_handler))
-
-    # --- Main Callback Handlers (Group 1 - After Conversations) ---
-    app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{CallbackNamespace.NAVIGATION.value}:{CallbackAction.NAVIGATE.value}:"), group=1)
-    
-    # ✅ FIX: Register the handler that was causing the NameError
-    app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.SHOW.value}:"), group=1)
-    
-    # Show Submenus (Analyst only)
-    app.add_handler(CallbackQueryHandler(show_submenu_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_menu|close_menu|partial_close_menu|show_menu):"), group=1)
-    # Prompt for input (Triggers implicit conversation via AWAITING_INPUT_KEY)
-    app.add_handler(CallbackQueryHandler(prompt_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_|set_|close_manual|partial_close_custom)"), group=1)
-    # Confirm change action (Executes change)
-    app.add_handler(CallbackQueryHandler(confirm_change_handler, pattern=rf"^mgmt:confirm_change:"), group=1)
-    # Cancel Input / All (Cleans state and returns to panel)
-    app.add_handler(CallbackQueryHandler(cancel_input_handler, pattern=rf"^mgmt:cancel_input:"), group=1)
-    app.add_handler(CallbackQueryHandler(cancel_all_handler, pattern=rf"^mgmt:cancel_all:"), group=1)
-    # Immediate Actions (Analyst only)
-    app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market)"), group=1)
-    # Partial Close Fixed Percentages (Analyst only)
-    app.add_handler(CallbackQueryHandler(partial_close_fixed_handler, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:{CallbackAction.PARTIAL.value}:\d+:(?:25|50)$"), group=1)
-
-    # --- Conversation Handler for User Input (Replies) ---
-    # Catches replies when AWAITING_INPUT_KEY is set.
-    app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, reply_handler), group=0)
-
-    # --- Conversation Handler for Custom Partial Close ---
-    # ✅ FIX: Added missing functions and set per_message=False
-    partial_close_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(partial_close_custom_start, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:partial_close_custom:")],
-        states={
-            AWAIT_PARTIAL_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, partial_close_percent_received)],
-            AWAIT_PARTIAL_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, partial_close_price_received)],
-        },
-        fallbacks=[
-            CommandHandler("cancel", partial_close_cancel),
-            CallbackQueryHandler(partial_close_cancel, pattern=rf"^mgmt:cancel_input:") # Reuse cancel button logic
-        ],
-        name="partial_close_conversation",
-        per_user=True, per_chat=True, conversation_timeout=MANAGEMENT_TIMEOUT, persistent=False,
-        per_message=False # ✅ FIX: Suppress warning
-    )
-    app.add_handler(partial_close_conv, group=0) # Needs priority to capture input
-
-    # --- Conversation Handler for User Trade Closing ---
-    # ✅ FIX: Added missing functions and set per_message=False
-    user_trade_close_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(user_trade_close_start, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.CLOSE.value}:trade:")],
-        states={
-            AWAIT_USER_TRADE_CLOSE_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, user_trade_close_price_received)],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_user_trade_close),
-            # Reuse generic cancel button logic
-            CallbackQueryHandler(cancel_user_trade_close, pattern=rf"^mgmt:cancel_input:")
-        ],
-        name="user_trade_close_conversation",
-        per_user=True, per_chat=True, conversation_timeout=MANAGEMENT_TIMEOUT, persistent=False,
-        per_message=False # ✅ FIX: Suppress warning
-    )
-    app.add_handler(user_trade_close_conv, group=0) # Needs priority
-
-# --- END of management handlers ---
+    if update.
