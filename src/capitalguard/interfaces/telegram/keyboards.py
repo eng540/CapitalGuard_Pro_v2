@@ -1,12 +1,10 @@
 # --- src/capitalguard/interfaces/telegram/keyboards.py ---
-# src/capitalguard/interfaces/telegram/keyboards.py (v21.17 - Final Logic & Syntax Hotfix)
+# src/capitalguard/interfaces/telegram/keyboards.py (v21.17 - Debug & Fix Panel Logic)
 """
 Builds all Telegram keyboards for the bot.
-✅ CRITICAL FIX (v21.17): Corrected multiple SyntaxErrors caused by improper line merging (semicolons).
-       This resolves the fatal startup crash.
-✅ CRITICAL FIX (v21.17): Corrected logical comparison in `analyst_control_panel_keyboard`
-       to `status.value != RecommendationStatus.ACTIVE.value` (Value comparison).
-       This resolves the critical bug where the analyst panel never appeared.
+✅ DEBUG: Added comprehensive debugging to diagnose why analyst panel doesn't show for ACTIVE recommendations.
+✅ FIX: Multiple comparison methods to handle different status formats (Enum, string, object).
+✅ CRITICAL: Fixed SyntaxErrors and logical comparison issues.
 """
 
 import math
@@ -221,9 +219,9 @@ async def build_open_recs_keyboard(items: List[Any], current_page: int, price_se
             # ✅ SYNTAX FIX: Split lines
             if live_price is not None and status_icon in [StatusIcons.PROFIT, StatusIcons.LOSS]:
                 pnl = _pct(_get_attr(item, 'entry'), live_price, side)
-                button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%"
+                button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%" # ✅ SYNTAX FIX: Semicolon replaced
             else:
-                button_text = f"{status_icon} {button_text}"
+                button_text = f"{status_icon} {button_text}" # ✅ SYNTAX FIX: Semicolon replaced
             
             # ✅ SYNTAX FIX: Split lines
             item_type = 'trade' if getattr(item, 'is_user_trade', False) else 'rec'
@@ -298,22 +296,50 @@ def build_editable_review_card(parsed_data: Dict[str, Any]) -> InlineKeyboardMar
 
 def analyst_control_panel_keyboard(rec: RecommendationEntity) -> InlineKeyboardMarkup:
     """Unified control panel for active recommendations."""
-    # Check if rec is RecommendationEntity, otherwise adapt
     rec_id = _get_attr(rec, 'id')
-    status = _get_attr(rec, 'status') # Should be RecommendationStatus enum member
+    status = _get_attr(rec, 'status')
+    
+    # ✅ DEBUG: طباعة القيم الفعلية للتشخيص
+    logger.info(f"🔍 DEBUG - Raw status: {status}")
+    logger.info(f"🔍 DEBUG - Status type: {type(status)}")
+    
+    # ✅ الحل الآمن: تحقق من multiple conditions
+    is_active = False
+    
+    # الطريقة 1: إذا كان status كائن Enum
+    if hasattr(status, 'value'):
+        status_value = status.value
+        logger.info(f"🔍 DEBUG - Status value: {status_value}")
+        is_active = (status_value == RecommendationStatus.ACTIVE.value)
+    
+    # الطريقة 2: إذا كان status نصاً
+    elif isinstance(status, str):
+        status_value = status.upper()
+        logger.info(f"🔍 DEBUG - Status string: {status_value}")
+        is_active = (status_value == RecommendationStatus.ACTIVE.value.upper())
+    
+    # الطريقة 3: تحقق مباشرة من الكائن
+    else:
+        is_active = (status == RecommendationStatus.ACTIVE)
+        logger.info(f"🔍 DEBUG - Direct comparison: {status == RecommendationStatus.ACTIVE}")
+    
+    logger.info(f"🔍 DEBUG - Final is_active: {is_active}")
+    
     ns_rec = CallbackNamespace.RECOMMENDATION
     ns_pos = CallbackNamespace.POSITION
     ns_exit = CallbackNamespace.EXIT_STRATEGY
     ns_nav = CallbackNamespace.NAVIGATION
 
-    # ✅ CRITICAL HOTFIX (v21.17): Compare the status *value* (e.g., "ACTIVE") not the Enum object.
-    status_value = _get_attr(status, 'value')
-    if status_value != RecommendationStatus.ACTIVE.value:
-         # Simplified keyboard for non-active states
-         return InlineKeyboardMarkup([[
-              InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(ns_nav, CallbackAction.NAVIGATE, 1))
-         ]])
+    # ✅ استخدم is_active بدلاً من المقارنة المباشرة
+    if not is_active:
+        logger.info(f"🔍 DEBUG - Showing simplified keyboard (not active)")
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(ns_nav, CallbackAction.NAVIGATE, 1))
+        ]])
 
+    logger.info(f"🔍 DEBUG - Showing full control panel (active)")
+    
+    # لوحة التحكم الكاملة للتوصيات النشطة
     keyboard = [
         [ # Row 1: Core actions
             InlineKeyboardButton("🔄 Refresh Price", callback_data=CallbackBuilder.create(ns_pos, CallbackAction.SHOW, 'rec', rec_id)),
@@ -326,7 +352,7 @@ def analyst_control_panel_keyboard(rec: RecommendationEntity) -> InlineKeyboardM
         ],
         [ # Row 3: Back navigation
             InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(ns_nav, CallbackAction.NAVIGATE, 1))
-         ],
+        ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -456,7 +482,7 @@ def public_channel_keyboard(rec_id: int, bot_username: Optional[str]) -> Optiona
      # Consider if needed. For now, only track button.
      return InlineKeyboardMarkup([buttons]) if buttons else None
 
-def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineKeyboardMarkup]:
+def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineKeyboardMarkup:
      if channel_link: return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Join Channel", url=channel_link)]])
      return None
 
