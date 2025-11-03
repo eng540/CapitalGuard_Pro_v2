@@ -1,9 +1,12 @@
-# src/capitalguard/application/services/alert_service.py (v26.5 - Final Architecture)
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/alert_service.py ---
+# src/capitalguard/application/services/alert_service.py (v26.6 - Notification Reliability Hotfix)
 """
 AlertService - Orchestrates price updates, delegating complex exit strategy
 logic to the StrategyEngine, while handling core SL/TP/Entry triggers.
-This version is high-performance, relying on an in-memory index for all tick processing,
-and correctly handles the state lifecycle.
+✅ HOTFIX (v26.6): Refactored `_evaluate_core_triggers` to be `async def`.
+✅ HOTFIX (v26.6): Replaced all unreliable `asyncio.create_task` calls with direct `await`
+       calls to `trade_service` event processors. This fixes the critical bug
+       where notifications (TP hit, SL hit, Activation) were lost.
 """
 
 import logging
@@ -135,7 +138,9 @@ class AlertService:
                 for trigger in triggers_for_key:
                     # --- Evaluation Phase ---
                     strategy_actions = self.strategy_engine.evaluate(trigger, high_price, low_price)
-                    core_actions = self._evaluate_core_triggers(trigger, high_price, low_price)
+                    
+                    # ✅ HOTFIX: Call the new async version and await it
+                    core_actions = await self._evaluate_core_triggers(trigger, high_price, low_price)
                     
                     # --- Execution Phase ---
                     all_actions = strategy_actions + core_actions
@@ -143,6 +148,7 @@ class AlertService:
 
                     close_action = next((a for a in all_actions if isinstance(a, CloseAction)), None)
                     if close_action:
+                        # This is a high-priority action that must complete
                         await self.trade_service.close_recommendation_async(
                             rec_id=close_action.rec_id, 
                             user_id=trigger['user_id'], 
@@ -150,10 +156,11 @@ class AlertService:
                             reason=close_action.reason
                         )
                         self.strategy_engine.clear_state(close_action.rec_id)
-                        continue
+                        continue # Move to next trigger, this one is closed
 
                     for action in all_actions:
                         if isinstance(action, MoveSLAction):
+                            # This is also high-priority
                             await self.trade_service.update_sl_for_user_async(
                                 rec_id=action.rec_id, 
                                 user_id=trigger['user_id'], 
@@ -192,8 +199,12 @@ class AlertService:
             if cond == "ENTRY": return high_price >= target_price
         return False
 
-    def _evaluate_core_triggers(self, trigger: Dict[str, Any], high_price: Decimal, low_price: Decimal) -> List[BaseAction]:
-        """Evaluates core triggers and returns a list of actions. Does NOT execute them."""
+    # ✅ HOTFIX: Changed to `async def`
+    async def _evaluate_core_triggers(self, trigger: Dict[str, Any], high_price: Decimal, low_price: Decimal) -> List[BaseAction]:
+        """
+        Evaluates core triggers and returns a list of actions.
+        This function now reliably awaits event processing.
+        """
         actions: List[BaseAction] = []
         item_id = trigger["id"]
         status = trigger["status"]
@@ -203,23 +214,28 @@ class AlertService:
             if status == RecommendationStatusEnum.PENDING:
                 entry_price, sl_price = trigger["entry"], trigger["stop_loss"]
                 if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
-                    asyncio.create_task(self.trade_service.process_invalidation_event(item_id))
+                    # ✅ HOTFIX: Removed asyncio.create_task, use direct await
+                    await self.trade_service.process_invalidation_event(item_id)
                 elif self._is_price_condition_met(side, low_price, high_price, entry_price, "ENTRY"):
-                    asyncio.create_task(self.trade_service.process_activation_event(item_id))
+                    # ✅ HOTFIX: Removed asyncio.create_task, use direct await
+                    await self.trade_service.process_activation_event(item_id)
 
             elif status == RecommendationStatusEnum.ACTIVE:
                 sl_price = trigger["stop_loss"]
                 if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
+                    # Return a CloseAction for the main loop to process
                     actions.append(CloseAction(rec_id=item_id, price=sl_price, reason="SL_HIT"))
-                    return actions
+                    return actions # Stop further processing if SL hit
 
                 for i, target in enumerate(trigger["targets"], 1):
                     if f"TP{i}_HIT" in trigger["processed_events"]: continue
                     target_price = Decimal(str(target['price']))
                     if self._is_price_condition_met(side, low_price, high_price, target_price, "TP"):
-                        asyncio.create_task(self.trade_service.process_tp_hit_event(item_id, i, target_price))
+                        # ✅ HOTFIX: Removed asyncio.create_task, use direct await
+                        await self.trade_service.process_tp_hit_event(item_id, i, target_price)
         
         except Exception as e:
             log.error("Error evaluating core trigger for item #%s: %s", item_id, e, exc_info=True)
         
         return actions
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/alert_service.py ---
