@@ -1,14 +1,13 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/parsing_service.py ---
-# --- src/capitalguard/application/services/parsing_service.py (v4.2.1 - DB Model Compatibility Hotfix) ---
+# src/capitalguard/application/services/parsing_service.py (v4.2.1-R2 - Stable, Snapshot + Idempotency)
 """
-ParsingService (v4.2.1)
-Compatibility hotfix to match provided DB models (no idempotency_key column).
-- Uses time-windowed raw_content matching for idempotency.
-- Defensive repo usage with direct model query fallbacks.
-- Returns only serializable primitives to avoid DetachedInstance issues.
-- Safe DB access via session_scope().
+ParsingService v4.2.1-R2
+- Solves DetachedInstanceError by snapshotting ORM templates inside session.
+- Returns ParsingResult.data with Decimal objects (caller-ready).
+- Idempotency via time-windowed raw_content matching.
+- Safe DB interactions via session_scope and defensive repo fallbacks.
+- Includes record_correction and suggest_template_save utilities.
 """
-
 from __future__ import annotations
 
 import logging
@@ -28,11 +27,12 @@ from sqlalchemy import select, and_
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import ParsingRepository
 from capitalguard.infrastructure.db.models import ParsingTemplate, ParsingAttempt
-from capitalguard.domain.value_objects import Price, Target, Targets
+# domain.value_objects may define Price/Target types; we keep Decimal usage here
+# from capitalguard.domain.value_objects import Price, Target, Targets
 
 log = logging.getLogger(__name__)
 
-# optional NER model
+# Optional NER model (graceful fallback if unavailable)
 _NLP_MODEL = None
 try:
     _NLP_MODEL = spacy.load("en_core_web_sm")
@@ -53,7 +53,7 @@ class DatabaseError(Exception):
 @dataclass
 class ParsingResult:
     success: bool
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[Dict[str, Any]] = None  # keeps Decimal for entry/stop_loss and price in targets
     parser_path_used: Optional[str] = None
     template_id_used: Optional[int] = None
     attempt_id: Optional[int] = None
@@ -64,13 +64,9 @@ class ParsingResult:
 
 class ParsingService:
     """
-    ParsingService v4.2.1 - uses raw_content matching for idempotency (since ParsingAttempt model
-    does not include idempotency_key).
-    Repository class (parsing_repo_class) is optional but expected to follow:
-      - add_attempt(user_id, raw_content, **kwargs)
-      - update_attempt(attempt_id, **kwargs)
-      - get_active_templates(user_id)
-    The service will fallback to direct model queries if repo methods are missing.
+    ParsingService v4.2.1-R2
+    - parsing_repo_class: class reference for repository (instantiated per session)
+    - idempotency_window_seconds: window to consider duplicate forwarded content
     """
 
     def __init__(self, parsing_repo_class: type[ParsingRepository], idempotency_window_seconds: int = 300):
@@ -84,7 +80,7 @@ class ParsingService:
         }
         self.ASSET_BLACKLIST = {'ACTIVE', 'SIGNAL', 'PERFORMANCE', 'ENTRY', 'STOP', 'PLAN', 'EXIT', 'NOTES', 'LONG', 'SHORT'}
 
-    # --- Normalization & parsing helpers ---
+    # ---------------- Normalization & Numeric Helpers ----------------
     def _normalize_text(self, text: str) -> str:
         if not text: return ""
         s = unicodedata.normalize("NFKC", text)
@@ -99,21 +95,23 @@ class ParsingService:
         return self._normalize_text(text).upper()
 
     def _compute_hint_hash(self, content: str) -> str:
-        # For debug/inspection only; not stored in DB by default
         h = hashlib.sha256(self._normalize_for_key(content).encode('utf-8')).hexdigest()
         return h
 
     def _parse_one_number(self, token: str) -> Optional[Decimal]:
-        if not token: return None
+        if token is None: return None
         try:
-            t = token.strip().replace(",", "").upper()
-            multiplier = Decimal("1")
-            if t and t[-1].isalpha() and t[-1] in self._SUFFIXES:
-                multiplier = self._SUFFIXES[t[-1]]
-                t = t[:-1]
-            if not re.fullmatch(r"[+\-]?\d*\.?\d+", t):
+            t = str(token).strip().replace(",", "").upper()
+            if not t:
                 return None
-            val = Decimal(t) * multiplier
+            multiplier = Decimal("1")
+            num_part = t
+            if t[-1].isalpha() and t[-1] in self._SUFFIXES:
+                multiplier = self._SUFFIXES[t[-1]]
+                num_part = t[:-1]
+            if not re.fullmatch(r"[+\-]?\d*\.?\d+", num_part):
+                return None
+            val = Decimal(num_part) * multiplier
             return val if val.is_finite() and val > 0 else None
         except Exception:
             return None
@@ -129,9 +127,13 @@ class ParsingService:
                 pct_str = ""
                 if '@' in token:
                     parts = token.split('@', 1)
-                    price_str, pct_str = parts[0].strip(), parts[1].strip().replace('%','')
+                    if len(parts) != 2:
+                        price_str = parts[0].strip()
+                        pct_str = ""
+                    else:
+                        price_str, pct_str = parts[0].strip(), parts[1].strip().replace('%','')
                 price = self._parse_one_number(price_str)
-                pct = self._parse_one_number(pct_str) if pct_str else None
+                pct = self._parse_one_number(pct_str) if pct_str else Decimal("0")
                 pct_f = float(pct) if pct is not None and 0 <= pct <= 100 else 0.0
                 if price is not None:
                     parsed_targets.append({"price": price, "close_percent": pct_f})
@@ -145,7 +147,7 @@ class ParsingService:
         asset, side = None, None
         txt = text.upper()
         for s, keywords in self._side_maps.items():
-            if any(re.search(r'\b' + kw.upper() + r'\b', txt) for kw in keywords):
+            if any(re.search(r'\b' + re.escape(kw.upper()) + r'\b', txt) for kw in keywords):
                 side = s
                 break
         hashtag_match = re.search(r'#([A-Z0-9]{3,12})', txt)
@@ -162,32 +164,44 @@ class ParsingService:
                         asset = fallback.group(1).upper()
         return asset, side
 
-    def _apply_regex_template(self, text: str, template: ParsingTemplate) -> Optional[Dict[str, Any]]:
+    def _apply_regex_template(self, text: str, template_snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Apply regex using a snapshot dict {id, pattern} to avoid ORM lazy-loading.
+        Returns parsed dict with Decimal values or None.
+        """
         try:
-            pattern = getattr(template, 'pattern_value', getattr(template, 'pattern', None))
-            if not pattern: return None
+            pattern = template_snapshot.get("pattern")
+            if not pattern:
+                return None
             match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-            if not match: return None
+            if not match:
+                return None
             data = match.groupdict()
             parsed = {}
             asset_cand = (data.get('asset') or '').strip().upper()
             side_cand = (data.get('side') or '').strip().upper()
+
             parsed['asset'], parsed['side'] = self._find_asset_and_side(text)
-            if not parsed['asset'] and asset_cand: parsed['asset'] = asset_cand
+            if not parsed['asset'] and asset_cand:
+                parsed['asset'] = asset_cand
             if not parsed['side'] and side_cand:
-                parsed['side'] = 'LONG' if any(s in side_cand for s in self._side_maps['LONG']) else ('SHORT' if any(s in side_cand for s in self._side_maps['SHORT']) else None)
+                parsed['side'] = 'LONG' if any(s.upper() in side_cand for s in self._side_maps['LONG']) else ('SHORT' if any(s.upper() in side_cand for s in self._side_maps['SHORT']) else None)
+
             if not parsed['asset'] or not parsed['side']:
                 return None
+
             parsed['entry'] = self._parse_one_number(data.get('entry',''))
             parsed['stop_loss'] = self._parse_one_number(data.get('sl', data.get('stop_loss','')))
             target_str = (data.get('targets') or data.get('targets_str') or '').strip()
-            tokens = [t for t in re.split(r'[\s,\n]+', target_str) if t]
+            tokens = [t for t in re.split(r'[\s,\n,]+', target_str) if t]
             parsed['targets'] = self._parse_targets_list(tokens)
+
             required = ['asset','side','entry','stop_loss','targets']
             if not all(parsed.get(k) for k in required):
                 return None
             return parsed
-        except Exception:
+        except Exception as e:
+            log.warning(f"Error applying regex template snapshot {template_snapshot.get('id')}: {e}")
             return None
 
     def _apply_ner_fallback(self, text: str) -> Optional[Dict[str, Any]]:
@@ -205,7 +219,7 @@ class ParsingService:
             tpat = r'(?:TARGETS?|TPS?|هدف|اهداف)\s*\d*\s*[:=>]?\s*((?:[\d.,]+[KMB]?\s*(?:@\d+%?)?\s*[\s,\n]*)+)'
             tm = re.search(tpat, text, re.IGNORECASE)
             if tm:
-                tokens = [t for t in re.split(r'[\s,\n]+', tm.group(1)) if t]
+                tokens = [t for t in re.split(r'[\s,\n,]+', tm.group(1)) if t]
                 parsed['targets'] = self._parse_targets_list(tokens)
             else:
                 parsed['targets'] = []
@@ -213,10 +227,11 @@ class ParsingService:
             if any(not parsed.get(k) for k in req):
                 return None
             return parsed
-        except Exception:
+        except Exception as e:
+            log.debug(f"NER fallback error: {e}")
             return None
 
-    # --- Repo / DB helpers ---
+    # ---------------- Repo / DB helpers ----------------
     def _repo_instance(self, session: Session) -> ParsingRepository:
         try:
             return self.parsing_repo_class(session)
@@ -225,7 +240,7 @@ class ParsingService:
 
     def _find_recent_same_content_attempt(self, session: Session, user_id: int, raw_content: str) -> Optional[ParsingAttempt]:
         """
-        Since model has no idempotency_key, find attempts matching same raw_content for user within window.
+        Find attempts with identical raw_content within idempotency window for user.
         """
         try:
             cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.idempotency_window_seconds)
@@ -242,7 +257,7 @@ class ParsingService:
             log.debug("Direct recent-attempt query failed.")
             return None
 
-    # --- Public API ---
+    # ---------------- Public API ----------------
     async def extract_trade_data(self, content: str, user_db_id: int) -> ParsingResult:
         start = time.monotonic()
         cleaned = self._normalize_text(content)
@@ -250,31 +265,40 @@ class ParsingService:
         attempt_id = None
         parser_path_used = "failed"
         template_id_used = None
-        parsed_result: Optional[Dict[str,Any]] = None
+        parsed_result: Optional[Dict[str,Any]] = None  # contains Decimals
         success = False
         error_message = None
 
-        # 1) Create attempt record safely, avoid duplicate processing by content/time window
+        # Step 1: create attempt record safely and avoid duplicate processing
         try:
             with session_scope() as session:
-                # check recent same content
                 existing = self._find_recent_same_content_attempt(session, user_db_id, content)
                 if existing:
                     attempt_id = existing.id
-                    if existing.was_successful:
-                        # return stored result_data (already serializable)
+                    if existing.was_successful and existing.result_data:
+                        # Rehydrate result_data into DECIMALS for caller compatibility
+                        try:
+                            rehydrated = {
+                                "asset": existing.result_data.get("asset"),
+                                "side": existing.result_data.get("side"),
+                                "entry": self._parse_one_number(existing.result_data.get("entry")),
+                                "stop_loss": self._parse_one_number(existing.result_data.get("stop_loss")),
+                                "targets": self._parse_targets_list([f"{t.get('price')}@{t.get('close_percent')}" for t in existing.result_data.get("targets", [])])
+                            }
+                        except Exception:
+                            rehydrated = None
                         latency_ms = int((time.monotonic() - start) * 1000)
                         return ParsingResult(
-                            success=True,
-                            data=existing.result_data,
+                            success=True if rehydrated else False,
+                            data=rehydrated,
                             parser_path_used=existing.parser_path_used,
                             template_id_used=getattr(existing, "used_template_id", None),
                             attempt_id=attempt_id,
-                            error_message=None,
+                            error_message=None if rehydrated else "Failed to rehydrate cached data",
                             latency_ms=latency_ms,
                             idempotency_hint=hint_hash
                         )
-                # create attempt record via repo if possible
+                # create attempt record
                 repo = self._repo_instance(session)
                 if hasattr(repo, "add_attempt"):
                     try:
@@ -291,35 +315,36 @@ class ParsingService:
             log.error("DB error creating attempt record: %s", e, exc_info=True)
             return ParsingResult(success=False, error_message="Database error creating attempt record.")
 
-        # 2) Load templates
-        templates: List[ParsingTemplate] = []
+        # Step 2: load templates and apply them INSIDE a session (snapshot to avoid DetachedInstance)
         try:
             with session_scope() as session:
                 repo = self._repo_instance(session)
+                templates: List[ParsingTemplate] = []
                 if hasattr(repo, "get_active_templates"):
                     templates = repo.get_active_templates(user_id=user_db_id) or []
                 else:
                     stmt = select(ParsingTemplate).where(getattr(ParsingTemplate, "is_public", True) == True)
                     templates = session.execute(stmt).scalars().all()
-        except Exception as e:
-            log.warning("Failed fetching templates: %s", e)
 
-        # 3) Try regex templates
-        try:
-            if templates:
-                for template in templates:
-                    tpl_snapshot = {"id": getattr(template, "id", None), "pattern": getattr(template, "pattern_value", getattr(template, "pattern", None))}
-                    if not tpl_snapshot["pattern"]:
-                        continue
-                    parsed = self._apply_regex_template(self._normalize_for_key(cleaned), template)
-                    if parsed:
-                        success = True
-                        parsed_result = parsed
-                        parser_path_used = "regex"
-                        template_id_used = tpl_snapshot["id"]
-                        break
+                # Build safe snapshots (id + pattern) while session is active
+                template_snapshots = [
+                    {"id": getattr(t, "id", None), "pattern": getattr(t, "pattern_value", None)}
+                    for t in templates
+                ]
 
-            # 4) NER fallback
+                if template_snapshots:
+                    # iterate snapshots to find a match; apply regex on normalized (upper) cleaned text
+                    normalized_upper = self._normalize_for_key(cleaned)
+                    for t_snap in template_snapshots:
+                        parsed = self._apply_regex_template(normalized_upper, t_snap)
+                        if parsed:
+                            success = True
+                            parsed_result = parsed
+                            parser_path_used = "regex"
+                            template_id_used = t_snap.get("id")
+                            break
+
+            # Step 3: NER fallback outside DB session (no ORM access required)
             if not success and _NLP_MODEL:
                 parsed = self._apply_ner_fallback(cleaned)
                 if parsed:
@@ -327,7 +352,7 @@ class ParsingService:
                     parsed_result = parsed
                     parser_path_used = "ner"
 
-            # 5) Serialize result for DB
+            # Step 4: prepare result JSON for DB storage (serialize Decimal -> str)
             result_json = None
             if success and parsed_result:
                 try:
@@ -342,7 +367,7 @@ class ParsingService:
                         ]
                     }
                 except Exception as e:
-                    log.error("Result serialization error: %s", e)
+                    log.error("Result serialization error: %s", e, exc_info=True)
                     success = False
                     result_json = None
                     error_message = "Internal serialization error."
@@ -351,7 +376,7 @@ class ParsingService:
                 if not error_message:
                     error_message = "Could not recognize a valid trade signal."
 
-            # 6) Update attempt record final state
+            # Step 5: update attempt final state (safe)
             latency_ms = int((time.monotonic() - start) * 1000)
             update_kwargs = {
                 "was_successful": success,
@@ -377,12 +402,12 @@ class ParsingService:
 
             return ParsingResult(
                 success=success,
-                data=result_json,
+                data=parsed_result,  # Caller receives Decimal values
                 parser_path_used=parser_path_used,
                 template_id_used=template_id_used,
                 attempt_id=attempt_id,
                 error_message=None if success else error_message,
-                latency_ms=int((time.monotonic() - start) * 1000),
+                latency_ms=latency_ms,
                 idempotency_hint=hint_hash
             )
 
@@ -398,27 +423,42 @@ class ParsingService:
                 log.debug("Failed to mark attempt as errored.")
             return ParsingResult(success=False, error_message=str(e), latency_ms=latency_ms, attempt_id=attempt_id, idempotency_hint=hint_hash)
 
-    # --- Corrections / Template suggestions remain similar, using safe DB fallbacks ---
+    # ---------------- Corrections / Template suggestion ----------------
     async def record_correction(self, attempt_id: int, corrected_data: Dict[str, Any], original_data: Optional[Dict[str, Any]]):
         if not attempt_id or original_data is None:
             log.warning("record_correction skipped: missing data.")
             return
         diff = {}
         keys = set(original_data.keys()) | set(corrected_data.keys())
+
         def norm(v):
             if isinstance(v, Decimal): return float(v)
-            return v
-        for k in keys:
-            if norm(original_data.get(k)) != norm(corrected_data.get(k)):
-                def ser(v):
-                    if isinstance(v, Decimal): return str(v)
-                    if isinstance(v, list):
-                        return [[str(t.get('price')), t.get('close_percent', 0.0)] for t in v]
+            if isinstance(v, list):
+                try:
+                    return sorted([(float(t['price']), t.get('close_percent', 0.0)) for t in v])
+                except Exception:
                     return v
+            return v
+
+        def ser(v):
+            if isinstance(v, Decimal): return str(v)
+            if isinstance(v, list):
+                try:
+                    return [[str(t['price']), t.get('close_percent', 0.0)] for t in v]
+                except Exception:
+                    return v
+            return v
+
+        for k in keys:
+            norm_old = norm(original_data.get(k))
+            norm_new = norm(corrected_data.get(k))
+            if norm_old != norm_new:
                 diff[k] = {"old": ser(original_data.get(k)), "new": ser(corrected_data.get(k))}
+
         if not diff:
-            log.info("No differences to record for correction.")
+            log.info("No differences to record for correction on attempt %s.", attempt_id)
             return
+
         try:
             with session_scope() as session:
                 repo = self._repo_instance(session)
@@ -433,7 +473,7 @@ class ParsingService:
                         session.flush()
             log.info("Recorded correction for attempt %s", attempt_id)
         except Exception as e:
-            log.error("Failed to record correction: %s", e)
+            log.error("Failed to record correction: %s", e, exc_info=True)
 
     async def suggest_template_save(self, attempt_id: int) -> Optional[Dict[str, Any]]:
         if not attempt_id:
@@ -446,15 +486,23 @@ class ParsingService:
                 else:
                     stmt = select(ParsingAttempt).where(ParsingAttempt.id == attempt_id)
                     attempt = session.execute(stmt).scalar_one_or_none()
-                if not attempt: return None
-                if getattr(attempt, "was_corrected", False) and getattr(attempt, "used_template_id", None) is None:
-                    return {
-                        "attempt_id": attempt_id,
-                        "raw_content": getattr(attempt, "raw_content", ""),
-                        "corrections_diff": getattr(attempt, "corrections_diff", None)
-                    }
+
+                if not attempt:
+                    return None
+
+                was_corrected = getattr(attempt, "was_corrected", False)
+                used_template_id = getattr(attempt, "used_template_id", None)
+                raw_content = getattr(attempt, "raw_content", "")
+                corrections_diff = getattr(attempt, "corrections_diff", None)
+
+            if was_corrected and used_template_id is None:
+                return {
+                    "attempt_id": attempt_id,
+                    "raw_content": raw_content,
+                    "corrections_diff": corrections_diff
+                }
         except Exception as e:
-            log.error("Error suggesting template: %s", e)
+            log.error("Error suggesting template: %s", e, exc_info=True)
         return None
 
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/parsing_service.py ---
