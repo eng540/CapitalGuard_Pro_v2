@@ -15,7 +15,7 @@ from sqlalchemy import text
 
 # Alembic revision identifiers
 revision = '20251104_optimize_parsing_db_performance'
-down_revision = '20251101_extend_alembic_version_length''
+down_revision = '20251101_extend_alembic_version_length'
 branch_labels = None
 depends_on = None
 
