@@ -1,5 +1,7 @@
-# --- START OF FINAL, UNIFIED AND CORRECTED FILE (Version 12.2.0) ---
 # docker-compose.yml
+# --- START OF FINAL, UNIFIED AND CORRECTED FILE (Version 13.0.0 - AI Service) ---
+# ✅ NEW: Adds the 'ai-service' container for decoupled parsing.
+# ✅ MODIFIED: Adds 'AI_SERVICE_URL' to the 'api' container environment.
 
 version: "3.9"
 
@@ -21,10 +23,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # The 'api' service is now the single application service.
-  # It runs the FastAPI application and the integrated AlertService.
-  # The separate 'watcher' service has been REMOVED to prevent redundant logic
-  # and potential race conditions.
   api:
     build:
       context: .
@@ -35,10 +33,30 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql+psycopg://cg:cgpass@db:5432/capitalguard
+      # ✅ NEW: Pass the AI service URL to the main API
+      - AI_SERVICE_URL=${AI_SERVICE_URL}
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
+
+  # --- ✅ NEW: AI PARSING MICROSERVICE ---
+  ai-service:
+    build:
+      # المسار إلى مجلد الخدمة الجديدة
+      context: ./ai_service 
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env # تمرير نفس ملف .env (سيقرأ DATABASE_URL و LLM_API_KEY)
+    environment:
+      # تأكد من أن الخدمة تستخدم نفس قاعدة البيانات
+      - DATABASE_URL=postgresql+psycopg://cg:cgpass@db:5432/capitalguard
+    depends_on:
+      db:
+        condition: service_healthy
+    # لا حاجة لـ 'ports' خارجية، هذه خدمة داخلية
+    # سيعمل على المنفذ 8001 (كما هو محدد في Dockerfile الخاص به)
 
 volumes:
   pgdata:
