@@ -1,8 +1,9 @@
 # ai_service/services/llm_parser.py
 """
-خدمة الاتصال بـ LLM (v2.0.0 - متعدد المنصات).
-✅ مرن: يقرأ LLM_PROVIDER (google, openai, openrouter) لاختيار المنطق الصحيح.
-✅ لا يحتاج لتعديل الكود للتبديل بين المزودين.
+خدمة الاتصال بـ LLM (v2.1.0 - Prompt Engineering Hotfix).
+✅ مُحسَّن: تم تحديث SYSTEM_PROMPT بشكل كبير.
+✅ تمت إضافة أمثلة (Few-shot learning) بالعربية والإنجليزية لتدريب النموذج.
+✅ تحسين التعليمات للتعامل مع "الاهداف" و "مناطق الدخول".
 """
 
 import os
@@ -17,26 +18,84 @@ log = logging.getLogger(__name__)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google").lower()
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_API_URL = os.getenv("LLM_API_URL")
-LLM_MODEL = os.getenv("LLM_MODEL") # (e.g., "gemini-1.5-flash" or "gpt-3.5-turbo")
+LLM_MODEL = os.getenv("LLM_MODEL") 
 
 if not LLM_API_KEY or not LLM_API_URL or not LLM_MODEL:
     log.warning("LLM environment variables (KEY, URL, MODEL) are not fully set. LLM parser will be disabled.")
 
-# --- موجه النظام الموحد ---
+# --- ✅ UPDATED: موجه النظام الموحد (v2) ---
 SYSTEM_PROMPT = """
 You are an expert financial analyst. Your task is to extract structured data from a forwarded trade signal.
 Analyze the user's text and return ONLY a valid JSON object with the following keys:
 - "asset": string (e.g., "BTCUSDT", "ETHUSDT")
 - "side": string ("LONG" or "SHORT")
-- "entry": string (The first or primary entry price, as a number)
-- "stop_loss": string (The stop loss price, as a number)
-- "targets": list[dict] (A list of targets, e.g., [{"price": "61000", "close_percent": 0.0}, {"price": "62000", "close_percent": 50.0}])
-- "market": string (Default to "Futures" if not specified)
-- "order_type": string (Default to "LIMIT" if not specified)
-- "notes": string (Any extra text or notes)
+- "entry": string (The first or primary entry price. Look for "Entry" or "مناطق الدخول". Use the *first* number if it's a range.)
+- "stop_loss": string (The stop loss price. Look for "SL" or "ايقاف خسارة".)
+- "targets": list[dict] (A list of targets. Look for "Targets", "TP", or "الاهداف". Each target *must* have a "price" key. "close_percent" is optional, default to 0.0. If no targets are found, return an empty list [].)
+- "market": string (Default to "Futures")
+- "order_type": string (Default to "LIMIT")
+- "notes": string (Any extra text or notes, like "10X-20X")
 
-If a value is not found, omit the key or set it to null.
-Respond ONLY with the JSON object.
+--- EXAMPLE 1 (English) ---
+USER TEXT:
+Signal #BTCUSDT LONG
+Entry: 60000
+SL: 59000
+Targets:
+61000
+62000@50
+63000
+
+YOUR JSON RESPONSE:
+{
+  "asset": "BTCUSDT",
+  "side": "LONG",
+  "entry": "60000",
+  "stop_loss": "59000",
+  "targets": [
+    {"price": "61000", "close_percent": 0.0},
+    {"price": "62000", "close_percent": 50.0},
+    {"price": "63000", "close_percent": 0.0}
+  ],
+  "market": "Futures",
+  "order_type": "LIMIT",
+  "notes": null
+}
+--- EXAMPLE 2 (Arabic) ---
+USER TEXT:
+#ETH
+Long
+مناطق الدخول
+3875
+الاهداف
+3900✅
+3950✅
+4000
+4300
+4600
+ايقاف خسارة 3800 لللحماية
+الرافعة المالية 10X-20X
+
+YOUR JSON RESPONSE:
+{
+  "asset": "ETHUSDT",
+  "side": "LONG",
+  "entry": "3875",
+  "stop_loss": "3800",
+  "targets": [
+    {"price": "3900", "close_percent": 0.0},
+    {"price": "3950", "close_percent": 0.0},
+    {"price": "4000", "close_percent": 0.0},
+    {"price": "4300", "close_percent": 0.0},
+    {"price": "4600", "close_percent": 0.0}
+  ],
+  "market": "Futures",
+  "order_type": "LIMIT",
+  "notes": "الرافعة المالية 10X-20X"
+}
+---
+
+The user's text will be provided next. Respond ONLY with the JSON object.
 """
 
 # --- المنطق الخاص بـ Google ---
@@ -53,9 +112,9 @@ def _build_google_payload(text: str) -> Dict[str, Any]:
             {
                 "parts": [
                     {"text": SYSTEM_PROMPT},
-                    {"text": "--- USER TEXT START ---"},
+                    {"text": "--- ACTUAL USER TEXT START ---"},
                     {"text": text},
-                    {"text": "--- USER TEXT END ---"}
+                    {"text": "--- ACTUAL USER TEXT END ---"}
                 ]
             }
         ],
@@ -66,8 +125,13 @@ def _build_google_payload(text: str) -> Dict[str, Any]:
     }
 
 def _extract_google_response(response_json: Dict[str, Any]) -> str:
-    # يستخرج النص الذي يحتوي على JSON من رد Gemini
-    return response_json["candidates"][0]["content"]["parts"][0]["text"]
+    try:
+        # يستخرج النص الذي يحتوي على JSON من رد Gemini
+        return response_json["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError, TypeError) as e:
+        log.error(f"Failed to extract text from Google response structure: {e}. Response: {response_json}")
+        raise ValueError("Invalid response structure from Google API.") from e
+
 
 # --- المنطق الخاص بـ OpenAI / OpenRouter ---
 def _build_openai_headers(api_key: str) -> Dict[str, str]:
@@ -88,8 +152,12 @@ def _build_openai_payload(text: str) -> Dict[str, Any]:
     }
 
 def _extract_openai_response(response_json: Dict[str, Any]) -> str:
-    # يستخرج النص الذي يحتوي على JSON من رد OpenAI
-    return response_json["choices"][0]["message"]["content"]
+    try:
+        # يستخرج النص الذي يحتوي على JSON من رد OpenAI
+        return response_json["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        log.error(f"Failed to extract text from OpenAI response structure: {e}. Response: {response_json}")
+        raise ValueError("Invalid response structure from OpenAI API.") from e
 
 
 # --- الدالة الرئيسية (الموزع) ---
@@ -124,6 +192,7 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
         return None
 
     # 2. إرسال الطلب
+    content_str = "" # لطباعة الأخطاء
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(LLM_API_URL, headers=headers, json=payload, timeout=20.0)
@@ -133,7 +202,6 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
                 return None
             
             response_json = response.json()
-            content_str: str
 
             # 3. استخراج الرد بناءً على المزود
             if LLM_PROVIDER == "google":
@@ -142,20 +210,29 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
                 content_str = _extract_openai_response(response_json)
             
             # 4. تحليل الـ JSON النهائي
+            # إزالة أي علامات markdown قد يضيفها النموذج حول الـ JSON
+            content_str = content_str.strip().removeprefix("```json").removesuffix("```")
             parsed_data = json.loads(content_str)
             
+            # التحقق من وجود الحقول الأساسية
             if not all(k in parsed_data for k in ["asset", "side", "entry", "stop_loss", "targets"]):
                 log.warning(f"LLM returned incomplete data: {parsed_data}")
                 return None
-                
+            
+            # التحقق من أن الأهداف ليست فارغة (كما في الصورة)
+            if not parsed_data["targets"]:
+                log.warning(f"LLM returned 0 targets for text: {text[:50]}...")
+                # لا نعتبر هذا فشلاً، بل تحليل دقيق (لا توجد أهداف واضحة)
+                # ولكن في هذه الحالة، المثال العربي واضح، لذا يجب أن يعمل
+
             log.info(f"LLM ({LLM_PROVIDER}) parsing successful for text snippet: {text[:50]}...")
             return parsed_data
 
     except httpx.RequestError as e:
         log.error(f"HTTP error while calling LLM API ({LLM_PROVIDER}): {e}")
         return None
-    except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
-        log.error(f"Failed to parse LLM JSON response ({LLM_PROVIDER}): {e}. Response snippet: {response.text[:200]}")
+    except (json.JSONDecodeError, KeyError, TypeError, IndexError, ValueError) as e:
+        log.error(f"Failed to parse LLM JSON response ({LLM_PROVIDER}): {e}. Response snippet: {content_str[:200]}")
         return None
     except Exception as e:
         log.error(f"Unexpected error in LLM parser ({LLM_PROVIDER}): {e}", exc_info=True)
