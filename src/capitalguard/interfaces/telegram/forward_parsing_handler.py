@@ -1,18 +1,17 @@
 # --- src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
 """
-Handles the user flow for parsing a forwarded text message, including review and correction (v3.0.0 - AI Service Decoupling).
-✅ RE-ARCHITECTED: This handler no longer calls the local ParsingService.
-✅ It now acts as a client to an external AI_SERVICE_URL (Microservice), sending the text and user_id via HTTP POST.
-✅ It receives the parsed JSON data and proceeds with the existing review/correction flow.
-This fully decouples the parsing logic from the main bot application.
+Handles the user flow for parsing a forwarded text message (v3.0.1 - Correction Hotfix).
+✅ HOTFIX: Updated correction_value_handler to use `re.split` instead of `user_input.split()`.
+This now correctly parses multi-line inputs (like target lists) during correction.
 """
 
 import logging
 import time
-import json # For diff comparison if needed
+import json 
 import asyncio
-import httpx # ✅ NEW: Added for external HTTP calls
-import os # ✅ NEW: Added to get environment variable
+import httpx 
+import os 
+import re # ✅ NEW: Import Regex library
 from decimal import Decimal
 from typing import Dict, Any, Optional
 
@@ -28,9 +27,7 @@ from telegram.error import TelegramError, BadRequest
 from capitalguard.infrastructure.db.uow import session_scope, uow_transaction
 from capitalguard.interfaces.telegram.helpers import get_service, parse_cq_parts
 from capitalguard.interfaces.telegram.auth import require_active_user, get_db_user
-# ✅ REMOVED: No longer import ParsingService
-# from capitalguard.application.services.parsing_service import ParsingService
-from capitalguard.application.services.parsing_service import ParsingResult # ✅ KEPT: Still need the data class
+from capitalguard.application.services.parsing_service import ParsingResult 
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.interfaces.telegram.keyboards import (
     CallbackBuilder, CallbackNamespace, CallbackAction, build_confirmation_keyboard,
@@ -40,11 +37,11 @@ from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets
 from capitalguard.interfaces.telegram.management_handlers import (
      safe_edit_message, handle_management_timeout, update_management_activity, MANAGEMENT_TIMEOUT
 )
-from capitalguard.infrastructure.db.repository import ParsingRepository # Keep for template saving
-from capitalguard.infrastructure.db.models import ParsingAttempt # Keep for template saving
+from capitalguard.infrastructure.db.repository import ParsingRepository 
+from capitalguard.infrastructure.db.models import ParsingAttempt 
 
 log = logging.getLogger(__name__)
-loge = logging.getLogger("capitalguard.errors") # Error logger
+loge = logging.getLogger("capitalguard.errors")
 
 # --- Conversation States ---
 (AWAIT_REVIEW, AWAIT_CORRECTION_VALUE, AWAIT_SAVE_TEMPLATE_CONFIRM) = range(3)
@@ -56,14 +53,11 @@ CURRENT_EDIT_DATA_KEY = "current_edit_data"
 EDITING_FIELD_KEY = "editing_field_key"
 RAW_FORWARDED_TEXT_KEY = "raw_forwarded_text"
 ORIGINAL_MESSAGE_ID_KEY = "parsing_review_message_id"
-
 LAST_ACTIVITY_KEY = "last_activity_management"
-
-# ✅ NEW: Get AI Service URL from environment
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL")
+
 if not AI_SERVICE_URL:
     log.critical("AI_SERVICE_URL environment variable is not set! Forward parsing will fail.")
-    # We don't raise an error here, to allow the app to start, but parsing will fail.
 
 def clean_parsing_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     """Cleans up all keys related to the parsing conversation."""
@@ -78,9 +72,8 @@ def clean_parsing_conversation_state(context: ContextTypes.DEFAULT_TYPE):
 
 # --- Entry Point ---
 @uow_transaction
-@require_active_user
+@require_active_user 
 async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
-    """Detects forwarded message, calls external AI_SERVICE, and enters review conversation."""
     message = update.message
     if not message or not message.text or len(message.text) < 10: return ConversationHandler.END
 
@@ -93,41 +86,32 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
     clean_parsing_conversation_state(context)
     update_management_activity(context)
 
-    # ✅ THE FIX: Check if the AI_SERVICE_URL is configured
     if not AI_SERVICE_URL:
         log.error("Forwarded message received, but AI_SERVICE_URL is not configured.")
         await message.reply_text("❌ Feature unavailable: The analysis service is not configured.")
         return ConversationHandler.END
 
-    # Store raw text for later use
     context.user_data[RAW_FORWARDED_TEXT_KEY] = message.text
-
     analyzing_message = await message.reply_text("⏳ Analyzing forwarded message...")
     context.user_data[ORIGINAL_MESSAGE_ID_KEY] = analyzing_message.message_id
-
     user_db_id = db_user.id
-    parsing_result: ParsingResult # Initialize
+    parsing_result: ParsingResult 
 
     try:
-        # ✅ THE FIX: Call the external microservice instead of the local service
         log.debug(f"Calling AI Service at {AI_SERVICE_URL} for user {user_db_id}")
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 AI_SERVICE_URL,
                 json={"text": message.text, "user_id": user_db_id},
-                timeout=20.0 # Give AI service up to 20 seconds
+                timeout=20.0
             )
             
-            # Check for HTTP errors from the AI service
             if response.status_code >= 400:
                 log.error(f"AI Service returned HTTP {response.status_code}: {response.text[:200]}")
                 error_detail = response.json().get("detail", "Analysis service failed.")
                 parsing_result = ParsingResult(success=False, error_message=f"Error {response.status_code}: {error_detail}")
             else:
-                # Service responded successfully
                 json_data = response.json()
-                
-                # Re-hydrate Decimals (service returns strings for JSON safety)
                 hydrated_data = None
                 if json_data.get("data"):
                     try:
@@ -149,7 +133,7 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
                     data=hydrated_data,
                     parser_path_used=json_data.get("parser_path_used", "ai_service"),
                     template_id_used=json_data.get("template_id_used"),
-                    attempt_id=json_data.get("attempt_id"), # Get the attempt_id created by the AI service
+                    attempt_id=json_data.get("attempt_id"),
                     error_message=json_data.get("error", "Unknown analysis error.")
                 )
 
@@ -160,7 +144,6 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         log.error(f"Critical error during AI service call: {e}", exc_info=True)
         parsing_result = ParsingResult(success=False, error_message=f"An unexpected error occurred: {e}")
 
-    # --- Proceed with the result (same logic as before) ---
     if parsing_result.success and parsing_result.data:
         context.user_data[PARSING_ATTEMPT_ID_KEY] = parsing_result.attempt_id
         context.user_data[ORIGINAL_PARSED_DATA_KEY] = parsing_result.data
@@ -189,7 +172,6 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
 @uow_transaction
 @require_active_user
 async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """Handles button presses on the editable review card (Confirm, Edit Field, Cancel)."""
     query = update.callback_query
     await query.answer()
     if await handle_management_timeout(update, context): return ConversationHandler.END
@@ -209,18 +191,12 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
 
     if action == CallbackAction.CONFIRM.value:
-        # --- Final Confirmation Logic ---
-        
-        # ✅ THE FIX: We no longer need the local ParsingService here for correction.
-        # We will call a *new* endpoint on the AI service to record the correction.
         trade_service: TradeService = get_service(context, "trade_service", TradeService)
         attempt_id = context.user_data.get(PARSING_ATTEMPT_ID_KEY)
         original_data = context.user_data.get(ORIGINAL_PARSED_DATA_KEY)
         raw_text = context.user_data.get(RAW_FORWARDED_TEXT_KEY)
-
         was_corrected = (original_data != current_data)
 
-        # 1. Save the trade using the potentially corrected data (LOCAL ACTION)
         result = await trade_service.create_trade_from_forwarding_async(
             user_id=str(db_user.telegram_user_id),
             trade_data=current_data,
@@ -228,12 +204,10 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             db_session=db_session
         )
 
-        # 2. Update attempt record & record correction if needed (EXTERNAL ACTION)
         correction_task = None
         if attempt_id and was_corrected:
             log.debug(f"Recording correction for attempt {attempt_id} via AI Service...")
             
-            # Helper function to serialize Decimals in correction data
             def serialize_data(data):
                 if not data: return {}
                 return {
@@ -246,10 +220,8 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             
             async def record_correction_external(attempt_id, corrected_data, original_data):
                 try:
-                    # Use the base URL, derive correction endpoint
                     base_url = AI_SERVICE_URL.rsplit('/', 1)[0]
                     correction_url = f"{base_url}/record_correction"
-                    
                     async with httpx.AsyncClient() as client:
                         await client.post(
                             correction_url,
@@ -268,24 +240,19 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 record_correction_external(attempt_id, current_data, original_data)
             )
 
-        # 3. Respond to user about saving result
         if result.get('success'):
             success_msg = f"✅ **Trade #{result['trade_id']}** for **{result['asset']}** tracked successfully!"
             await safe_edit_message(context.bot, query.message.chat_id, original_message_id, text=success_msg, reply_markup=None)
 
-            # 4. Ask about saving template IF corrected
             if correction_task: await correction_task
 
             template_used_initially = False
             if was_corrected and attempt_id:
                  try:
-                      # We already know the attempt_id, but need to check if a template was used
-                      # We can rely on the parsing_result we got initially
                       template_used_initially = context.user_data.get(ORIGINAL_PARSED_DATA_KEY, {}).get("template_id_used") is not None
                  except Exception as e:
                       log.error(f"Error checking template usage for suggestion on attempt {attempt_id}: {e}")
 
-            # Only suggest saving if corrected AND no template was used initially
             if was_corrected and not template_used_initially:
                  confirm_kb = build_confirmation_keyboard(
                       CallbackNamespace.SAVE_TEMPLATE, attempt_id,
@@ -388,7 +355,9 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             temp_data[field_to_edit] = price
             validated = True
         elif field_to_edit == "targets":
-            targets = parse_targets_list(user_input.split())
+            # ✅ THE FIX: Use a robust tokenizer that splits on spaces, newlines, and commas
+            tokens = re.split(r'[\s\n,]+', user_input)
+            targets = parse_targets_list(tokens)
             if not targets: raise ValueError("Invalid targets format or no valid targets found.")
             temp_data['targets'] = targets
             validated = True
@@ -401,7 +370,6 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             temp_data.setdefault('stop_loss', current_data.get('stop_loss'))
             temp_data.setdefault('targets', current_data.get('targets'))
 
-            # Call validation using Decimals
             trade_service._validate_recommendation_data(
                  temp_data['side'], temp_data['entry'], temp_data['stop_loss'], temp_data['targets']
             )
@@ -451,8 +419,7 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
 async def save_template_confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     """
     Handles Yes/No response for saving a template.
-    ✅ THE FIX: This now calls the AI Service to suggest/save the template, as the
-    local ParsingService no longer handles this logic directly.
+    ✅ THE FIX: This now calls the AI Service to suggest/save the template.
     """
     query = update.callback_query
     await query.answer()
@@ -467,7 +434,6 @@ async def save_template_confirm_handler(update: Update, context: ContextTypes.DE
     if action == CallbackAction.CONFIRM.value and attempt_id:
         log.debug(f"User confirmed saving template for attempt {attempt_id}. Calling AI Service.")
         try:
-            # Use the base URL, derive template suggestion endpoint
             base_url = AI_SERVICE_URL.rsplit('/', 1)[0]
             suggest_url = f"{base_url}/suggest_template"
             
@@ -477,7 +443,7 @@ async def save_template_confirm_handler(update: Update, context: ContextTypes.DE
                     json={"attempt_id": attempt_id, "user_id": db_user.id},
                     timeout=10.0
                 )
-                response.raise_for_status() # Raise error on 4xx/5xx
+                response.raise_for_status()
                 
                 res_json = response.json()
                 if res_json.get("success"):
