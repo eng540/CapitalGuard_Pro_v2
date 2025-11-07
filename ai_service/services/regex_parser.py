@@ -1,6 +1,7 @@
 # ai_service/services/regex_parser.py
 """
-محلل Regex (المسار السريع).
+محلل Regex (المسار السريع). (v1.1 - Arabic Keywords)
+✅ UPDATED: يدعم الآن الكلمات الرئيسية العربية الأساسية (الاهداف، مناطق الدخول، ايقاف الخسارة)
 يقرأ القوالب (Templates) من جدول `parsing_templates` المشترك
 ويحاول مطابقتها.
 """
@@ -20,7 +21,7 @@ from database import session_scope
 
 log = logging.getLogger(__name__)
 
-# --- دوال مساعدة منسوخة من النظام الرئيسي [compare: 164-181] ---
+# --- دوال مساعدة منسوخة من النظام الرئيسي ---
 
 _AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _SUFFIXES = {"K": Decimal("1000"), "M": Decimal("1000000"), "B": Decimal("1000000000")}
@@ -89,86 +90,147 @@ def _parse_targets_list(tokens: List[str]) -> List[Dict[str, Any]]:
         parsed_targets[-1]["close_percent"] = 100.0
     return parsed_targets
 
+# ✅ UPDATED: Added Arabic keywords
 def _find_side(text: str) -> Optional[str]:
     txt = text.upper()
     side_maps = {
-        'LONG': ('long', 'buy', 'شراء', 'صعود'),
-        'SHORT': ('short', 'sell', 'بيع', 'هبوط'),
+        'LONG': ('LONG', 'BUY', 'شراء', 'صعود'),
+        'SHORT': ('SHORT', 'SELL', 'بيع', 'هبوط'),
     }
     for s, keywords in side_maps.items():
-        if any(re.search(r'\b' + re.escape(kw.upper()) + r'\b', txt) for kw in keywords):
+        if any(re.search(r'\b' + re.escape(kw) + r'\b', txt) for kw in keywords):
             return s
     return None
+
+# ✅ NEW: Fallback parser for simple Arabic/English key-value
+def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
+    """
+    A simple fallback parser that looks for common Arabic/English keys.
+    This runs if no regex templates match, before giving up to the LLM.
+    """
+    try:
+        normalized_upper = _normalize_for_key(text)
+        
+        # Define keywords (Regex compatible)
+        keys = {
+            'asset': r'#([A-Z0-9]{3,12})', # Find hashtag asset first
+            'side': r'(LONG|BUY|شراء|صعود|SHORT|SELL|بيع|هبوط)',
+            'entry': r'(ENTRY|دخول|مناطق الدخول)[:\s]+([\d.,KMB]+)',
+            'stop_loss': r'(SL|STOP|ايقاف الخسارة)[:\s]+([\d.,KMB]+)',
+            'targets': r'(TARGETS|TP|الاهداف|اهداف)[:\s\n]+((?:[\d.,KMB@%\s\n]+))'
+        }
+
+        parsed = {}
+
+        # 1. Find Side
+        side_match = re.search(keys['side'], normalized_upper)
+        if side_match:
+            parsed['side'] = _find_side(side_match.group(1))
+
+        # 2. Find Asset
+        asset_match = re.search(keys['asset'], normalized_upper)
+        if asset_match:
+            parsed['asset'] = asset_match.group(1)
+        
+        # 3. Find Entry
+        entry_match = re.search(keys['entry'], normalized_upper)
+        if entry_match:
+            parsed['entry'] = _parse_one_number(entry_match.group(2))
+
+        # 4. Find Stop Loss
+        sl_match = re.search(keys['stop_loss'], normalized_upper)
+        if sl_match:
+            parsed['stop_loss'] = _parse_one_number(sl_match.group(2))
+
+        # 5. Find Targets
+        targets_match = re.search(keys['targets'], normalized_upper, re.DOTALL)
+        if targets_match:
+            # Split targets by space, newline, or comma
+            target_tokens = re.split(r'[\s\n,]+', targets_match.group(2))
+            parsed['targets'] = _parse_targets_list(target_tokens)
+        
+        # Check for required fields
+        required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
+        if not all(parsed.get(k) for k in required_keys):
+            log.debug(f"Simple KV parser found data, but missing required keys. Found: {parsed.keys()}")
+            return None # Missing required data
+        
+        log.info(f"Simple KV parser successfully extracted data (Asset: {parsed['asset']})")
+        parsed.setdefault("market", "Futures")
+        parsed.setdefault("order_type", "LIMIT")
+        return parsed
+
+    except Exception as e:
+        log.warning(f"Error in _parse_simple_key_value: {e}", exc_info=False)
+        return None
+
 
 # --- الوظيفة الرئيسية للمحلل ---
 
 def parse_with_regex(text: str, session: Session) -> Optional[Dict[str, Any]]:
     """
-    يحاول تحليل النص باستخدام جميع قوالب Regex النشطة من قاعدة البيانات المشتركة.
+    يحاول تحليل النص باستخدام جميع قوالب Regex النشطة، ثم
+    يستخدم محلل Key-Value البسيط كخيار احتياطي.
     """
     try:
-        # قراءة القوالب (Templates) من قاعدة البيانات
-        stmt = select(ParsingTemplate).where(ParsingTemplate.is_public == True) # مثال: استخدام القوالب العامة فقط
+        stmt = select(ParsingTemplate).where(ParsingTemplate.is_public == True)
         templates = session.execute(stmt).scalars().all()
     except Exception as e:
         log.error(f"RegexParser: Failed to query templates from DB: {e}")
-        return None # لا يمكن المتابعة بدون قوالب
-
-    if not templates:
-        log.debug("RegexParser: No public templates found in DB.")
-        return None
+        templates = [] # Continue without DB templates
 
     normalized_upper = _normalize_for_key(text)
     
-    for template in templates:
-        try:
-            pattern = template.pattern_value
-            if not pattern: continue
-            
-            match = re.search(pattern, normalized_upper, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-            if not match: continue
+    # --- 1. المسار السريع (قوالب DB) ---
+    if templates:
+        for template in templates:
+            try:
+                pattern = template.pattern_value
+                if not pattern: continue
+                
+                match = re.search(pattern, normalized_upper, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+                if not match: continue
 
-            data = match.groupdict()
-            parsed = {}
+                data = match.groupdict()
+                parsed = {}
+                parsed['asset'] = (data.get('asset') or '').strip().upper()
+                side_cand = (data.get('side') or '').strip().upper()
+                parsed['side'] = _find_side(normalized_upper)
+                if not parsed['side'] and side_cand:
+                     parsed['side'] = 'LONG' if 'LONG' in side_cand else ('SHORT' if 'SHORT' in side_cand else None)
 
-            # استخراج الحقول الأساسية
-            parsed['asset'] = (data.get('asset') or '').strip().upper()
-            side_cand = (data.get('side') or '').strip().upper()
-            
-            # استخدام _find_side للتحقق
-            parsed['side'] = _find_side(normalized_upper)
-            if not parsed['side'] and side_cand:
-                 parsed['side'] = 'LONG' if 'LONG' in side_cand else ('SHORT' if 'SHORT' in side_cand else None)
+                if not parsed['asset'] or not parsed['side']:
+                    continue
 
-            if not parsed['asset'] or not parsed['side']:
-                continue # القالب طابق ولكن الحقول الأساسية مفقودة
+                parsed['entry'] = _parse_one_number(data.get('entry',''))
+                parsed['stop_loss'] = _parse_one_number(data.get('sl', data.get('stop_loss','')))
+                
+                target_str = (data.get('targets') or data.get('targets_str') or '').strip()
+                tokens = [t for t in re.split(r'[\s,\n,]+', target_str) if t]
+                parsed['targets'] = _parse_targets_list(tokens)
 
-            # تحليل الأرقام كنصوص
-            parsed['entry'] = _parse_one_number(data.get('entry',''))
-            parsed['stop_loss'] = _parse_one_number(data.get('sl', data.get('stop_loss','')))
-            
-            target_str = (data.get('targets') or data.get('targets_str') or '').strip()
-            tokens = [t for t in re.split(r'[\s,\n,]+', target_str) if t]
-            parsed['targets'] = _parse_targets_list(tokens)
+                required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
+                if not all(parsed.get(k) for k in required_keys):
+                    continue
 
-            # التحقق من وجود جميع الحقول المطلوبة (كنصوص)
-            required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
-            if not all(parsed.get(k) for k in required_keys):
-                continue # لم يتم العثور على جميع الحقول
+                log.info(f"RegexParser: Matched DB template ID {template.id} for text snippet: {text[:50]}...")
+                
+                parsed.setdefault("market", "Futures")
+                parsed.setdefault("order_type", "LIMIT")
+                parsed.setdefault("notes", data.get('notes'))
 
-            log.info(f"RegexParser: Matched template ID {template.id} for text snippet: {text[:50]}...")
-            
-            # إضافة حقول افتراضية إذا لم تكن موجودة
-            parsed.setdefault("market", "Futures")
-            parsed.setdefault("order_type", "LIMIT")
-            parsed.setdefault("notes", data.get('notes'))
+                return parsed
 
-            return parsed # إرجاع أول مطابقة ناجحة
-
-        except Exception as e:
-            log.warning(f"RegexParser: Error applying template ID {template.id}: {e}")
-            continue # انتقل إلى القالب التالي
+            except Exception as e:
+                log.warning(f"RegexParser: Error applying template ID {template.id}: {e}")
+                continue 
+    
+    # --- 2. المسار الاحتياطي (محلل Key-Value البسيط) ---
+    log.debug("No DB template matched. Trying simple Key-Value parser...")
+    simple_result = _parse_simple_key_value(text)
+    if simple_result:
+        return simple_result
 
     # لم يتم العثور على أي قالب مطابق
-    log.debug("RegexParser: No templates matched.")
+    log.debug("RegexParser: All regex paths failed.")
     return None
