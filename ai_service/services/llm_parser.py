@@ -1,11 +1,12 @@
 # ai_service/services/llm_parser.py
 """
-خدمة الاتصال بـ LLM (v2.6.0 - Smart Adaptive Parser).
-✅ (Point 1) يضيف تحليل JSON عميق (لمنع JSON المزدوج).
-✅ (Point 2) يضيف تحققًا ماليًا محسنًا (الأهداف المكررة/المتقاربة).
-✅ (Point 3 & 4) يضيف Telemetry Logger مستقل ومراقبة زمن الاستجابة.
-✅ (Point 6) يضيف موجه (Prompt) v2.6 مع وعي سياقي عربي محسن.
-❌ (Point 5) تم رفض "Fallback Targets Extraction" لخطورته المنطقية.
+خدمة الاتصال بـ LLM (v2.7.0 - Data Normalization Hotfix).
+✅ HOTFIX: تم إصلاح خطأ 'float object is not subscriptable'.
+✅ (Point 1) إضافة `_normalize_llm_targets`: تقوم هذه الدالة بتصحيح
+ردود LLM الخاطئة (مثل "targets": [3500, 3650]) وتحويلها إلى
+التنسيق الصحيح ("targets": [{"price": "3500", ...}]).
+✅ (Point 2) تم تحصين `_financial_consistency_check` للتعامل بذكاء
+مع قوائم الأرقام أو قوائم الكائنات (objects).
 """
 
 import os
@@ -13,12 +14,10 @@ import httpx
 import logging
 import json
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Union
 
 log = logging.getLogger(__name__)
-# ✅ (Point 3) سجل Telemetry مستقل
 telemetry_log = logging.getLogger("ai_service.telemetry")
-# (يجب تهيئة هذا Logger في main.py أو إعدادات اللوغاريتمات لتوجيهه إلى ملف jsonl)
 
 # --- قراءة جميع متغيرات البيئة ---
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google").lower()
@@ -29,7 +28,7 @@ LLM_MODEL = os.getenv("LLM_MODEL")
 if not LLM_API_KEY or not LLM_API_URL or not LLM_MODEL:
     log.warning("LLM environment variables (KEY, URL, MODEL) are not fully set. LLM parser will be disabled.")
 
-# --- ✅ (Point 6) UPDATED: موجه النظام الموحد (v2.6) ---
+# --- موجه النظام الموحد (v2.6) ---
 SYSTEM_PROMPT = """
 You are an expert financial analyst. Your task is to extract structured data from a forwarded trade signal.
 You must analyze the user's text and return ONLY a valid JSON object.
@@ -64,39 +63,82 @@ You must analyze the user's text and return ONLY a valid JSON object.
 The user's text will be provided next. Respond ONLY with the JSON object.
 """
 
-# --- ✅ (Point 2) Enhanced Hard-coded Financial Validation ---
+# --- ✅ (Point 1) NEW: دالة تصحيح تنسيق الأهداف ---
+def _normalize_llm_targets(targets_raw: Any) -> List[Dict[str, Any]]:
+    """
+    يصحح الأهداف التي أرجعها الـ LLM.
+    يحول ["3500", 3650.0] إلى [{"price": "3500", "close_percent": 0.0}, ...]
+    """
+    if not targets_raw or not isinstance(targets_raw, list):
+        return []
+
+    normalized_targets = []
+    
+    # التحقق من أول عنصر لتحديد التنسيق
+    if isinstance(targets_raw[0], dict):
+        # التنسيق صحيح بالفعل (كما هو متوقع)
+        # نقوم فقط بتنظيف البيانات
+        for t in targets_raw:
+            if isinstance(t, dict) and t.get("price") is not None:
+                normalized_targets.append({
+                    "price": str(t["price"]),
+                    "close_percent": float(t.get("close_percent", 0.0))
+                })
+        return normalized_targets
+
+    # --- ✅ (Point 1) منطق التصحيح ---
+    # التنسيق خاطئ (قائمة من الأرقام/النصوص)
+    log.warning(f"LLM returned malformed targets (list of primitives). Normalizing... Data: {targets_raw}")
+    for t_price in targets_raw:
+        price_str = str(t_price).strip()
+        if price_str:
+            normalized_targets.append({
+                "price": price_str,
+                "close_percent": 0.0
+            })
+    
+    # تطبيق منطق الـ 100% للهدف الأخير إذا لزم الأمر
+    if normalized_targets and all(t["close_percent"] == 0.0 for t in normalized_targets):
+        normalized_targets[-1]["close_percent"] = 100.0
+        
+    return normalized_targets
+
+
+# --- ✅ (Point 2) UPDATED: التحقق المالي المحصّن ---
 def _financial_consistency_check(data: Dict[str, Any]) -> bool:
     """
-    يقوم بإجراء تحقق رقمي صارم بعد استلام الـ JSON. (v2.6)
-    يتحقق الآن من الأهداف المكررة/المتقاربة.
+    يقوم بإجراء تحقق رقمي صارم بعد استلام الـ JSON. (v2.7)
+    يتحقق الآن من الأهداف المكررة/المتقاربة ويتعامل مع البيانات المصححة.
     """
     try:
         entry = float(data["entry"])
         sl = float(data["stop_loss"])
         side = data["side"].upper()
+        
+        # ✅ (Point 2) استخدام الدالة الآمنة للوصول إلى الأسعار
         targets_raw = data.get("targets")
         
-        if not targets_raw or not isinstance(targets_raw, list):
-             log.warning("Post-validation failed: Targets are missing or not a list.")
-             return False
-             
-        targets = [float(t["price"]) for t in targets_raw]
+        def get_price(target_entry: Any) -> float:
+            if isinstance(target_entry, dict):
+                return float(target_entry["price"])
+            # Fallback للتعامل مع التنسيق الخاطئ [3500.0, 3650.0]
+            return float(target_entry)
+
+        targets = [get_price(t) for t in targets_raw]
+        
         if not targets:
              log.warning("Post-validation failed: Targets list is empty.")
              return False
 
-        # --- (Point 2) التحقق الجديد ---
         if len(set(targets)) != len(targets):
             log.warning("Post-validation failed: Duplicate targets found.")
             return False
         
-        # (اختياري) التحقق من تقارب الأهداف
         if len(targets) > 1:
             target_range = abs(targets[-1] - targets[0])
-            if target_range < (entry * 0.002): # (أقل من 0.2% من سعر الدخول)
+            if target_range < (entry * 0.002):
                 log.warning("Post-validation failed: Targets are too close together (range < 0.2%).")
                 return False
-        # --- نهاية التحقق الجديد ---
 
         if side == "LONG":
             if sl >= entry:
@@ -122,7 +164,7 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
         return False
 
 
-# --- المنطق الخاص بـ Google ---
+# --- (باقي الدوال المساعدة لـ Google/OpenAI تبقى كما هي) ---
 def _build_google_headers(api_key: str) -> Dict[str, str]:
     return {"Content-Type": "application/json", "X-goog-api-key": api_key}
 
@@ -139,7 +181,6 @@ def _extract_google_response(response_json: Dict[str, Any]) -> str:
         log.error(f"Failed to extract text from Google response structure: {e}. Response: {response_json}")
         raise ValueError("Invalid response structure from Google API.") from e
 
-# --- المنطق الخاص بـ OpenAI / OpenRouter ---
 def _build_openai_headers(api_key: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -169,13 +210,7 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
 
     headers: Dict[str, str]
     payload: Dict[str, Any]
-    # ✅ (Point 3) إعداد بيانات Telemetry الأولية
-    log_meta = {
-        "event": "llm_parse", 
-        "provider": LLM_PROVIDER, 
-        "model": LLM_MODEL,
-        "text_snippet": text[:80] # سجل مقتطف من النص
-    }
+    log_meta = {"event": "llm_parse", "provider": LLM_PROVIDER, "model": LLM_MODEL, "text_snippet": text[:80]}
 
     try:
         if LLM_PROVIDER == "google":
@@ -196,10 +231,9 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
         async with httpx.AsyncClient() as client:
             response = await client.post(LLM_API_URL, headers=headers, json=payload, timeout=20.0)
             
-            # ✅ (Point 4) مراقبة زمن الاستجابة
             latency_ms = response.elapsed.total_seconds() * 1000
             log_meta["latency_ms"] = latency_ms
-            if latency_ms > 10000: # أكثر من 10 ثوانٍ
+            if latency_ms > 10000:
                 log.warning(f"LLM slow response: {latency_ms:.0f}ms", extra=log_meta)
 
             if response.status_code != 200:
@@ -213,24 +247,19 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
             else: 
                 content_str = _extract_openai_response(response_json)
             
-            # --- ✅ (Point 4) مرشح Non-JSON ---
             json_match = re.search(r'\{.*\}', content_str, re.DOTALL)
             if not json_match:
                 log.warning(f"LLM did not return a valid JSON block. Response: {content_str[:200]}")
                 telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "json_format"}))
                 return None
             content_str = json_match.group(0)
-            # --- نهاية المرشح ---
             
             parsed_data = json.loads(content_str)
 
-            # --- ✅ (Point 1) تحليل JSON المزدوج ---
             if isinstance(parsed_data, str) and parsed_data.strip().startswith('{'):
                 log.debug("Detected nested JSON string, reparsing...")
                 parsed_data = json.loads(parsed_data)
-            # --- نهاية تحليل JSON المزدوج ---
             
-            # --- ✅ (Point 2) تصنيف الأخطاء ---
             if "error" in parsed_data:
                 reason = parsed_data.get("error", "Unknown LLM-side error")
                 error_type = "other"
@@ -247,13 +276,15 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
                 telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "missing_keys_hard"}))
                 return None
             
+            # --- ✅ (Point 1) HOTFIX: تصحيح الأهداف قبل التحقق ---
+            parsed_data["targets"] = _normalize_llm_targets(parsed_data.get("targets"))
+            
             # --- ✅ (Point 2) التحقق المالي الصارم ---
             if not _financial_consistency_check(parsed_data):
                 log.warning("LLMParseFailure: FinancialConsistency", extra={**log_meta, "data": parsed_data, "error_type": "financial_hard"})
                 telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "financial_hard"}))
                 return None 
 
-            # --- ✅ (Point 3) سجل الميتاداتا للنجاح ---
             telemetry_log.info(json.dumps({
                 **log_meta,
                 "success": True,
