@@ -1,10 +1,9 @@
 # ai_service/services/parsing_utils.py
 """
-(v1.1.0) - Smart Percentage Extraction.
-✅ UPDATED: `_extract_each_percentage_from_text` now supports more
-Arabic and English variations (e.g., "لكل هدف", "per target").
-✅ UPDATED: `normalize_targets` now passes the *full* source text
-to the percentage extractor for better context awareness.
+(v1.1.0 - Syntax Hotfix)
+✅ HOTFIX: تم إصلاح خطأ `SyntaxError: unterminated string literal`
+في الدالة `_extract_each_percentage_from_text`.
+يحتوي هذا الملف على المنطق الموحد لتحليل الأرقام والأهداف.
 """
 
 import re
@@ -49,7 +48,7 @@ def parse_decimal_token(token: str) -> Optional[Decimal]:
             multiplier = _SUFFIXES["B"]
             num_part = s[:-1]
 
-        if not num_part:
+        if not num_part: 
              return None
              
         if not re.fullmatch(r"[+\-]?\d*\.?\d+", num_part):
@@ -87,54 +86,43 @@ def _parse_token_price_and_pct(token: str) -> Dict[str, Optional[Decimal]]:
 def _extract_each_percentage_from_text(source_text: str) -> Optional[Decimal]:
     """
     (v1.1) يبحث عن أنماط النسبة المئوية العامة.
-    يدعم الآن "(20% each)", "20% per target", "كل هدف 25%"
     """
     if not source_text:
         return None
     
-    # ✅ HOTFIX: Regex محسن للتعامل مع صيغ متعددة
     normalized_text = _normalize_arabic_numerals(source_text)
     
-    # (20% each), 20% each, (20% per target), كل هدف 25%, النسبة 25% لكل هدف
-    pattern = r'\(?(\d{1,3}(?:\.\d+)?)\s*%\s*(?:each|per target|لكل هدف)\)?'
+    patterns = [
+        r'\(?\s*(\d{1,3}(?:\.\d+)?)\s*%\s*(?:each|per target|لكل هدف)\)?',
+        r'(?:النسبة|بنسبة)\s*(\d{1,3}(?:\.\d+)?)\s*%\s*لكل هدف',
+        r'Close\s*(\d{1,3}(?:\.\d+)?)\s*%\s*each\s*TP'
+    ]
     
-    m = re.search(pattern, normalized_text, re.IGNORECASE)
-    
-    # حالة خاصة: "النسبة 25% لكل هدف"
-    if not m:
-        m_arabic = re.search(r'(?:النسبة|بنسبة)\s*(\d{1,3}(?:\.\d+)?)\s*%\s*لكل هدف', normalized_text, re.IGNORECASE)
-        m = m_arabic
-    
-    # حالة خاصة: "Close 30% each TP"
-    if not m:
-         m_close = re.search(r'Close\s*(\d{1,3}(?:\.\d+)?)\s*%
-\s*each\s*TP', normalized_text, re.IGNORECASE)
-         m = m_close
-
-    if m:
-        try:
-            val = Decimal(m.group(1))
-            if 0 <= val <= 100:
-                log.debug(f"Found global percentage: {val}%")
-                return val
-        except Exception:
-            return None
+    for pattern in patterns:
+        # ✅ HOTFIX: تم إغلاق الـ regex string بشكل صحيح
+        m = re.search(pattern, normalized_text, re.IGNORECASE)
+        if m:
+            try:
+                val = Decimal(m.group(1))
+                if 0 <= val <= 100:
+                    log.debug(f"Found global percentage: {val}%")
+                    return val
+            except Exception:
+                continue # جرب النمط التالي
     return None
 
 def normalize_targets(
     targets_raw: Any, 
-    source_text: str = "" # النص الأصلي الكامل للمساعدة في اكتشاف السياق
+    source_text: str = ""
 ) -> List[Dict[str, Any]]:
     """
     (مصدر الحقيقة - v1.1)
     يطبع قائمة الأهداف.
-    يستخدم الآن `source_text` لتحديد النسب المئوية العامة.
     """
     normalized: List[Dict[str, Any]] = []
     if not targets_raw:
         return normalized
 
-    # ✅ HOTFIX: ابحث عن النسبة المئوية العامة في النص المصدر *الكامل*
     each_pct = _extract_each_percentage_from_text(source_text)
 
     # الحالة 1: قائمة من الكائنات (التنسيق الصحيح)
