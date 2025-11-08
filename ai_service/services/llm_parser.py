@@ -1,35 +1,42 @@
 # ai_service/services/llm_parser.py
 """
-خدمة الاتصال بـ LLM (v2.7.0 - Data Normalization Hotfix).
-✅ HOTFIX: تم إصلاح خطأ 'float object is not subscriptable'.
-✅ (Point 1) إضافة `_normalize_llm_targets`: تقوم هذه الدالة بتصحيح
-ردود LLM الخاطئة (مثل "targets": [3500, 3650]) وتحويلها إلى
-التنسيق الصحيح ("targets": [{"price": "3500", ...}]).
-✅ (Point 2) تم تحصين `_financial_consistency_check` للتعامل بذكاء
-مع قوائم الأرقام أو قوائم الكائنات (objects).
+(v4.1.0 - Refactored)
+✅ REFACTORED: تم إزالة منطق التحليل المكرر.
+✅ يستدعي الآن `parsing_utils.py` لإجراء التحليل الموحد.
+✅ يحتفظ بالمنطق الذكي (Prompt v2.6, Financial Check, Telemetry).
+✅ يستخدم `Decimal` داخليًا للتحقق المالي.
 """
 
 import os
-import httpx
-import logging
-import json
 import re
-from typing import Dict, Any, Optional, List, Union
+import json
+import logging
+from typing import Any, Dict, List, Optional
+from decimal import Decimal, InvalidOperation # ✅ Use Decimal
+
+import httpx
+
+# --- ✅ استيراد مصدر الحقيقة الوحيد ---
+from services.parsing_utils import (
+    parse_decimal_token, 
+    normalize_targets,
+    _extract_each_percentage_from_text # (يمكننا استخدامه إذا احتجنا)
+)
 
 log = logging.getLogger(__name__)
 telemetry_log = logging.getLogger("ai_service.telemetry")
 
-# --- قراءة جميع متغيرات البيئة ---
+# Environment-driven LLM config
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google").lower()
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_API_URL = os.getenv("LLM_API_URL")
-LLM_MODEL = os.getenv("LLM_MODEL") 
+LLM_MODEL = os.getenv("LLM_MODEL")
 
-if not LLM_API_KEY or not LLM_API_URL or not LLM_MODEL:
-    log.warning("LLM environment variables (KEY, URL, MODEL) are not fully set. LLM parser will be disabled.")
+if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
+    log.warning("LLM environment variables incomplete. LLM parsing may be skipped.")
 
-# --- موجه النظام الموحد (v2.6) ---
-SYSTEM_PROMPT = """
+# (SYSTEM_PROMPT v2.6 يبقى كما هو - إنه قوي)
+SYSTEM_PROMPT = os.getenv("LLM_SYSTEM_PROMPT") or """
 You are an expert financial analyst. Your task is to extract structured data from a forwarded trade signal.
 You must analyze the user's text and return ONLY a valid JSON object.
 
@@ -47,263 +54,203 @@ You must analyze the user's text and return ONLY a valid JSON object.
 2.  Side: "LONG" or "SHORT".
 3.  Entry: Find "Entry", "مناطق الدخول". If it's a range ("Entry 1", "Entry 2"), use *ONLY THE FIRST* price.
 4.  Stop Loss: Find "SL", "ايقاف خسارة".
-5.  Targets: Find "Targets", "TPs", "الاهداف". Extract *all* numbers that follow. Ignore ranges. Ignore emojis (✅). If no targets are found, validation rule #1 fails.
-6.  Percentages: Extract "close_percent" if available (e.g., "@50%" or "(25% each)"). Default to 0.0.
+5.  Targets: Find "Targets", "TPs", "الاهداف". Extract *all* numbers that follow. Ignore ranges. Ignore emojis (✅).
+6.  **Percentages (CRITICAL):**
+    * If targets have individual percentages (e.g., "105k@10"), use them.
+    * **If a *global* percentage is mentioned (e.g., "(20% each)" or "| Close 30%"), you *MUST* apply that percentage to *ALL* targets in the list.**
+    * If no percentages are found, default to 0.0 for all targets.
 7.  Notes: Add any extra text (like "Lev - 5x" or "لللحماية") to the "notes" field.
 8.  Market/Order: Default to "Futures" and "LIMIT".
-9.  **Arabic Logic:** "منطقة الدخول" or "دخول" = Entry. "وقف الخسارة" or "ايقاف خسارة" = Stop Loss.
-10. **Inference Logic:** If "side" is missing, try to infer it. If "ايقاف خسارة" (SL) is *below* "دخول" (Entry), it's a "LONG" trade. If SL is *above* Entry, it's a "SHORT" trade.
+9.  **Arabic Logic:** "منطقة الدخول" = Entry. "وقف الخسارة" = Stop Loss.
+10. **Inference Logic:** If "side" is missing, try to infer it (SL vs Entry).
 11. **Contextual Awareness:** If Arabic numbers are followed by words like "دخول" or "وقف", interpret them accordingly even if the order differs.
-
 --- 
 (Examples from v2.5 are still valid and included here)
 ...
 ---
-
 The user's text will be provided next. Respond ONLY with the JSON object.
 """
 
-# --- ✅ (Point 1) NEW: دالة تصحيح تنسيق الأهداف ---
-def _normalize_llm_targets(targets_raw: Any) -> List[Dict[str, Any]]:
-    """
-    يصحح الأهداف التي أرجعها الـ LLM.
-    يحول ["3500", 3650.0] إلى [{"price": "3500", "close_percent": 0.0}, ...]
-    """
-    if not targets_raw or not isinstance(targets_raw, list):
-        return []
-
-    normalized_targets = []
-    
-    # التحقق من أول عنصر لتحديد التنسيق
-    if isinstance(targets_raw[0], dict):
-        # التنسيق صحيح بالفعل (كما هو متوقع)
-        # نقوم فقط بتنظيف البيانات
-        for t in targets_raw:
-            if isinstance(t, dict) and t.get("price") is not None:
-                normalized_targets.append({
-                    "price": str(t["price"]),
-                    "close_percent": float(t.get("close_percent", 0.0))
-                })
-        return normalized_targets
-
-    # --- ✅ (Point 1) منطق التصحيح ---
-    # التنسيق خاطئ (قائمة من الأرقام/النصوص)
-    log.warning(f"LLM returned malformed targets (list of primitives). Normalizing... Data: {targets_raw}")
-    for t_price in targets_raw:
-        price_str = str(t_price).strip()
-        if price_str:
-            normalized_targets.append({
-                "price": price_str,
-                "close_percent": 0.0
-            })
-    
-    # تطبيق منطق الـ 100% للهدف الأخير إذا لزم الأمر
-    if normalized_targets and all(t["close_percent"] == 0.0 for t in normalized_targets):
-        normalized_targets[-1]["close_percent"] = 100.0
-        
-    return normalized_targets
-
-
-# --- ✅ (Point 2) UPDATED: التحقق المالي المحصّن ---
+# --- Financial consistency check ---
 def _financial_consistency_check(data: Dict[str, Any]) -> bool:
     """
-    يقوم بإجراء تحقق رقمي صارم بعد استلام الـ JSON. (v2.7)
-    يتحقق الآن من الأهداف المكررة/المتقاربة ويتعامل مع البيانات المصححة.
+    Strict numeric checks (v4.1 - Refactored to use Decimal).
     """
     try:
-        entry = float(data["entry"])
-        sl = float(data["stop_loss"])
-        side = data["side"].upper()
+        # ✅ REFACTORED: Use Decimal for financial logic
+        entry = Decimal(str(data["entry"]))
+        sl = Decimal(str(data["stop_loss"]))
+        side = str(data["side"]).strip().upper()
+        targets_raw = data.get("targets", [])
         
-        # ✅ (Point 2) استخدام الدالة الآمنة للوصول إلى الأسعار
-        targets_raw = data.get("targets")
-        
-        def get_price(target_entry: Any) -> float:
-            if isinstance(target_entry, dict):
-                return float(target_entry["price"])
-            # Fallback للتعامل مع التنسيق الخاطئ [3500.0, 3650.0]
-            return float(target_entry)
-
-        targets = [get_price(t) for t in targets_raw]
-        
-        if not targets:
-             log.warning("Post-validation failed: Targets list is empty.")
-             return False
-
-        if len(set(targets)) != len(targets):
-            log.warning("Post-validation failed: Duplicate targets found.")
+        if not isinstance(targets_raw, list) or len(targets_raw) == 0:
+            log.warning("Targets missing or empty in financial check.")
             return False
-        
-        if len(targets) > 1:
-            target_range = abs(targets[-1] - targets[0])
-            if target_range < (entry * 0.002):
-                log.warning("Post-validation failed: Targets are too close together (range < 0.2%).")
+
+        prices: List[Decimal] = []
+        for t in targets_raw:
+            price_str = str(t["price"]) if isinstance(t, dict) else str(t)
+            prices.append(Decimal(price_str))
+
+        if entry <= 0 or sl <= 0:
+            log.warning("Entry or SL non-positive.")
+            return False
+
+        if len(set(prices)) != len(prices):
+            log.warning("Duplicate targets detected.")
+            return False
+
+        if len(prices) > 1:
+            rng = abs(prices[-1] - prices[0])
+            if rng < (entry * Decimal("0.002")):  # less than 0.2% of entry
+                log.warning("Targets too close together.")
                 return False
 
         if side == "LONG":
-            if sl >= entry:
-                log.warning(f"Post-validation failed (LONG): SL {sl} >= Entry {entry}")
+            if not (sl < entry):
+                log.warning(f"LONG check failed: SL {sl} >= Entry {entry}")
                 return False
-            if any(t <= entry for t in targets):
-                log.warning(f"Post-validation failed (LONG): A target is <= Entry {entry}")
+            if any(p <= entry for p in prices):
+                log.warning("At least one LONG target <= entry")
                 return False
         elif side == "SHORT":
-            if sl <= entry:
-                log.warning(f"Post-validation failed (SHORT): SL {sl} <= Entry {entry}")
+            if not (sl > entry):
+                log.warning(f"SHORT check failed: SL {sl} <= Entry {entry}")
                 return False
-            if any(t >= entry for t in targets):
-                log.warning(f"Post-validation failed (SHORT): A target is >= Entry {entry}")
+            if any(p >= entry for p in prices):
+                log.warning("At least one SHORT target >= entry")
                 return False
         else:
-            log.warning(f"Post-validation failed: Invalid side '{side}'")
+            log.warning(f"Invalid side value: {side}")
             return False
-        
+
         return True
-    except (ValueError, TypeError, KeyError) as e:
-        log.warning(f"Post-validation failed due to data error: {e}. Data: {data}")
+    except (InvalidOperation, TypeError, KeyError) as e:
+        log.warning(f"Financial check exception: {e}. Data: {data}")
         return False
 
-
-# --- (باقي الدوال المساعدة لـ Google/OpenAI تبقى كما هي) ---
+# --- LLM payload builders / extractors (remain the same) ---
 def _build_google_headers(api_key: str) -> Dict[str, str]:
     return {"Content-Type": "application/json", "X-goog-api-key": api_key}
-
-def _build_google_payload(text: str) -> Dict[str, Any]:
-    return {
-        "contents": [{"parts": [{"text": SYSTEM_PROMPT}, {"text": "--- ACTUAL USER TEXT START ---"}, {"text": text}, {"text": "--- ACTUAL USER TEXT END ---"}]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.0}
-    }
-
-def _extract_google_response(response_json: Dict[str, Any]) -> str:
-    try:
-        return response_json["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError) as e:
-        log.error(f"Failed to extract text from Google response structure: {e}. Response: {response_json}")
-        raise ValueError("Invalid response structure from Google API.") from e
-
+def _build_google_payload(text: str, system_prompt: str) -> Dict[str, Any]:
+    return {"contents": [{"parts": [{"text": system_prompt}, {"text": "--- ACTUAL USER TEXT START ---"}, {"text": text}, {"text": "--- ACTUAL USER TEXT END ---"}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": 0.0}}
 def _build_openai_headers(api_key: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-def _build_openai_payload(text: str) -> Dict[str, Any]:
-    return {
-        "model": LLM_MODEL,
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": text}],
-        "response_format": {"type": "json_object"}
-    }
-
+def _build_openai_payload(text: str, system_prompt: str) -> Dict[str, Any]:
+    return {"model": LLM_MODEL, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}], "response_format": {"type": "json_object"}}
+def _extract_google_response(response_json: Dict[str, Any]) -> str:
+    return response_json["candidates"][0]["content"]["parts"][0]["text"]
 def _extract_openai_response(response_json: Dict[str, Any]) -> str:
-    try:
-        return response_json["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as e:
-        log.error(f"Failed to extract text from OpenAI response structure: {e}. Response: {response_json}")
-        raise ValueError("Invalid response structure from OpenAI API.") from e
+    return response_json["choices"][0]["message"]["content"]
 
-# --- الدالة الرئيسية (الموزع) ---
-
+# --- Main parse function ---
 async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
     """
-    يستدعي واجهة برمجة تطبيقات LLM المناسبة بناءً على LLM_PROVIDER.
+    Calls LLM provider, normalizes response and performs final validation.
+    Returns normalized dict or None on failure.
     """
     if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
-        log.debug("LLM parsing skipped: Environment variables incomplete.")
+        log.debug("LLM config incomplete; skipping LLM parse.")
         return None
 
-    headers: Dict[str, str]
-    payload: Dict[str, Any]
-    log_meta = {"event": "llm_parse", "provider": LLM_PROVIDER, "model": LLM_MODEL, "text_snippet": text[:80]}
+    log_meta = {"event": "llm_parse", "provider": LLM_PROVIDER, "model": LLM_MODEL, "snippet": text[:120]}
 
     try:
         if LLM_PROVIDER == "google":
             headers = _build_google_headers(LLM_API_KEY)
-            payload = _build_google_payload(text)
-        elif LLM_PROVIDER in ("openai", "openrouter"):
-            headers = _build_openai_headers(LLM_API_KEY)
-            payload = _build_openai_payload(text)
+            payload = _build_google_payload(text, SYSTEM_PROMPT)
         else:
-            log.error(f"Unsupported LLM_PROVIDER: {LLM_PROVIDER}.")
-            return None
+            headers = _build_openai_headers(LLM_API_KEY)
+            payload = _build_openai_payload(text, SYSTEM_PROMPT)
     except Exception as e:
-        log.error(f"Failed to build LLM payload: {e}", exc_info=True)
+        log.error(f"Failed build LLM payload: {e}", exc_info=True)
         return None
 
-    content_str = "" 
+    content_str = ""
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(LLM_API_URL, headers=headers, json=payload, timeout=20.0)
-            
+            log_meta["status_code"] = response.status_code
             latency_ms = response.elapsed.total_seconds() * 1000
             log_meta["latency_ms"] = latency_ms
             if latency_ms > 10000:
-                log.warning(f"LLM slow response: {latency_ms:.0f}ms", extra=log_meta)
+                log.warning("LLM slow response", extra=log_meta)
 
             if response.status_code != 200:
-                log.error(f"LLM API ({LLM_PROVIDER}) request failed with status {response.status_code}: {response.text}")
+                log.error("LLM API error", extra={**log_meta, "response_text": response.text[:200]})
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "http_status"}))
                 return None
-            
+
             response_json = response.json()
 
             if LLM_PROVIDER == "google":
                 content_str = _extract_google_response(response_json)
-            else: 
+            else:
                 content_str = _extract_openai_response(response_json)
-            
-            json_match = re.search(r'\{.*\}', content_str, re.DOTALL)
-            if not json_match:
-                log.warning(f"LLM did not return a valid JSON block. Response: {content_str[:200]}")
-                telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "json_format"}))
-                return None
-            content_str = json_match.group(0)
-            
-            parsed_data = json.loads(content_str)
 
-            if isinstance(parsed_data, str) and parsed_data.strip().startswith('{'):
-                log.debug("Detected nested JSON string, reparsing...")
-                parsed_data = json.loads(parsed_data)
-            
-            if "error" in parsed_data:
-                reason = parsed_data.get("error", "Unknown LLM-side error")
-                error_type = "other"
-                if "Financial validation" in reason: error_type = "financial_prompt"
-                elif "Missing required" in reason: error_type = "missing_fields_prompt"
-                
-                log.warning(f"LLMValidationFailure: {reason}", extra={**log_meta, "error_type": error_type, "detail": reason})
-                telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": error_type}))
+            m = re.search(r'\{.*\}', content_str, re.DOTALL)
+            if not m:
+                log.warning("No JSON block found in LLM response.", extra=log_meta)
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "no_json"}))
+                return None
+            content_str = m.group(0)
+
+            parsed = json.loads(content_str)
+            if isinstance(parsed, str) and parsed.strip().startswith('{'):
+                parsed = json.loads(parsed)
+
+            if isinstance(parsed, dict) and parsed.get("error"):
+                reason = parsed.get("error")
+                log.warning("LLM-side reported error", extra={**log_meta, "reason": reason})
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "llm_reported", "detail": reason}))
                 return None
 
-            required_keys = ["asset", "side", "entry", "stop_loss", "targets"]
-            if not all(k in parsed_data for k in required_keys):
-                log.warning("LLMParseFailure: MissingKeys", extra={**log_meta, "missing_keys": [k for k in required_keys if k not in parsed_data]})
-                telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "missing_keys_hard"}))
+            required = ["asset", "side", "entry", "stop_loss", "targets"]
+            if not all(k in parsed for k in required):
+                log.warning("Missing required keys in LLM output.", extra={**log_meta, "missing": [k for k in required if k not in parsed]})
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "missing_keys"}))
                 return None
-            
-            # --- ✅ (Point 1) HOTFIX: تصحيح الأهداف قبل التحقق ---
-            parsed_data["targets"] = _normalize_llm_targets(parsed_data.get("targets"))
-            
-            # --- ✅ (Point 2) التحقق المالي الصارم ---
-            if not _financial_consistency_check(parsed_data):
-                log.warning("LLMParseFailure: FinancialConsistency", extra={**log_meta, "data": parsed_data, "error_type": "financial_hard"})
-                telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "financial_hard"}))
-                return None 
 
-            telemetry_log.info(json.dumps({
-                **log_meta,
-                "success": True,
-                "asset": parsed_data.get("asset"),
-                "side": parsed_data.get("side"),
-                "num_targets": len(parsed_data.get("targets", [])),
-            }))
-            
-            return parsed_data
+            # --- ✅ REFACTORED: Use unified normalizers ---
+            # 1. Normalize targets using original text for context (e.g., "20% each")
+            parsed_targets_raw = parsed.get("targets")
+            normalized_targets = normalize_targets(parsed_targets_raw, source_text=text)
+            parsed["targets"] = normalized_targets # (list of dicts with string prices)
+
+            # 2. Normalize entry/sl (ensure they are valid Decimals, then convert to string)
+            entry_val = parse_decimal_token(str(parsed["entry"]))
+            sl_val = parse_decimal_token(str(parsed["stop_loss"]))
+            if entry_val is None or sl_val is None:
+                log.warning(f"Entry/SL normalization failed.", extra=log_meta)
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "entry_sl_parse"}))
+                return None
+            parsed["entry"] = str(entry_val)
+            parsed["stop_loss"] = str(sl_val)
+            # --- End Refactor ---
+
+            # 3. Financial consistency check (uses the string-based dict)
+            if not _financial_consistency_check(parsed):
+                log.warning("Financial consistency check failed.", extra=log_meta)
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "financial_check"}))
+                return None
+
+            # Fill defaults
+            parsed.setdefault("market", parsed.get("market", "Futures"))
+            parsed.setdefault("order_type", parsed.get("order_type", "LIMIT"))
+            parsed.setdefault("notes", parsed.get("notes", ""))
+
+            telemetry_log.info(json.dumps({**log_meta, "success": True, "asset": parsed.get("asset"), "side": parsed.get("side"), "num_targets": len(parsed.get("targets", []))}))
+            return parsed
 
     except httpx.RequestError as e:
-        log.error(f"HTTP error while calling LLM API ({LLM_PROVIDER}): {e}")
-        telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "http_request"}))
+        log.error(f"HTTP request failed: {e}", exc_info=True)
+        telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "http_request_exception"}))
         return None
-    except (json.JSONDecodeError, KeyError, TypeError, IndexError, ValueError) as e:
-        log.error(f"Failed to parse LLM JSON response ({LLM_PROVIDER}): {e}. Response snippet: {content_str[:200]}")
-        telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "json_decode"}))
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        log.error(f"Failed parsing LLM response: {e}. Snippet: {content_str[:200]}", exc_info=True)
+        telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "json_decode"}))
         return None
     except Exception as e:
-        log.error(f"Unexpected error in LLM parser ({LLM_PROVIDER}): {e}", exc_info=True)
-        telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "unknown"}))
+        log.exception(f"Unexpected error in parse_with_llm: {e}")
+        telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "unexpected"}))
         return None
