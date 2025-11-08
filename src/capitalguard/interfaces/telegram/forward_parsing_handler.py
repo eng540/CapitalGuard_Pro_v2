@@ -1,8 +1,10 @@
 # src/capitalguard/interfaces/telegram/forward_parsing_handler.py
 """
-Handles the user flow for parsing a forwarded text message (v3.0.2 - Smart Correction).
-✅ HOTFIX: Updated correction_value_handler to use a smarter regex tokenizer.
-This correctly parses complex user inputs like "0.105 - 0.112 - 0.15 (25% each)".
+Handles the user flow for parsing a forwarded text message (v3.1.0 - Pre-Validation & Freeze Fix).
+✅ HOTFIX: Added pre-validation. Calls trade_service._validate_recommendation_data *before*
+showing the review card, preventing users from confirming invalid data.
+✅ HOTFIX: Added html.escape() to error messages to prevent Telegram
+BadRequest errors (the "freeze" bug).
 """
 
 import logging
@@ -11,7 +13,8 @@ import json
 import asyncio
 import httpx 
 import os 
-import re # ✅ NEW: Import Regex library
+import re 
+import html # ✅ NEW: Import HTML for escaping
 from decimal import Decimal
 from typing import Dict, Any, Optional
 
@@ -96,6 +99,7 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
     context.user_data[ORIGINAL_MESSAGE_ID_KEY] = analyzing_message.message_id
     user_db_id = db_user.id
     parsing_result: ParsingResult 
+    hydrated_data = None # Store hydrated data here
 
     try:
         log.debug(f"Calling AI Service at {AI_SERVICE_URL} for user {user_db_id}")
@@ -112,8 +116,8 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
                 parsing_result = ParsingResult(success=False, error_message=f"Error {response.status_code}: {error_detail}")
             else:
                 json_data = response.json()
-                hydrated_data = None
-                if json_data.get("data"):
+                
+                if json_data.get("status") == "success" and json_data.get("data"):
                     try:
                         raw = json_data["data"]
                         hydrated_data = {
@@ -123,19 +127,39 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
                             "stop_loss": parse_number(raw.get("stop_loss")),
                             "targets": parse_targets_list([f"{t.get('price')}@{t.get('close_percent')}" for t in raw.get("targets", [])])
                         }
+                        
+                        # ✅ --- PRE-VALIDATION ---
+                        # التحقق من صحة البيانات *قبل* عرضها
+                        trade_service: TradeService = get_service(context, "trade_service", TradeService)
+                        trade_service._validate_recommendation_data(
+                            hydrated_data['side'], hydrated_data['entry'],
+                            hydrated_data['stop_loss'], hydrated_data['targets']
+                        )
+                        # --- End Pre-validation ---
+                        
+                        parsing_result = ParsingResult(
+                            success=True, data=hydrated_data,
+                            parser_path_used=json_data.get("parser_path_used", "ai_service"),
+                            template_id_used=json_data.get("template_id_used"),
+                            attempt_id=json_data.get("attempt_id")
+                        )
+
+                    except (ValueError, TypeError) as e:
+                        # فشل التحقق المسبق (Pre-validation failed)
+                        log.warning(f"AI Service returned invalid data for attempt {json_data.get('attempt_id')}: {e}")
+                        parsing_result = ParsingResult(success=False, error_message=f"Analysis Failed: {e}")
+                        hydrated_data = None
                     except Exception as e:
                         log.error(f"Failed to re-hydrate JSON from AI service: {e}")
                         parsing_result = ParsingResult(success=False, error_message="Failed to process valid response from AI.")
                         hydrated_data = None
-
-                parsing_result = ParsingResult(
-                    success=json_data.get("status") == "success" and hydrated_data is not None,
-                    data=hydrated_data,
-                    parser_path_used=json_data.get("parser_path_used", "ai_service"),
-                    template_id_used=json_data.get("template_id_used"),
-                    attempt_id=json_data.get("attempt_id"),
-                    error_message=json_data.get("error", "Unknown analysis error.")
-                )
+                
+                else: # (AI service returned status: "error")
+                     parsing_result = ParsingResult(
+                        success=False,
+                        attempt_id=json_data.get("attempt_id"),
+                        error_message=json_data.get("error", "Unknown analysis error.")
+                    )
 
     except httpx.RequestError as e:
         log.error(f"HTTP request to AI Service failed: {e}")
@@ -144,12 +168,13 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         log.error(f"Critical error during AI service call: {e}", exc_info=True)
         parsing_result = ParsingResult(success=False, error_message=f"An unexpected error occurred: {e}")
 
-    if parsing_result.success and parsing_result.data:
+    # --- Proceed with the result ---
+    if parsing_result.success and hydrated_data: # Use hydrated_data
         context.user_data[PARSING_ATTEMPT_ID_KEY] = parsing_result.attempt_id
-        context.user_data[ORIGINAL_PARSED_DATA_KEY] = parsing_result.data
-        context.user_data[CURRENT_EDIT_DATA_KEY] = parsing_result.data.copy()
+        context.user_data[ORIGINAL_PARSED_DATA_KEY] = hydrated_data
+        context.user_data[CURRENT_EDIT_DATA_KEY] = hydrated_data.copy()
 
-        keyboard = build_editable_review_card(parsing_result.data)
+        keyboard = build_editable_review_card(hydrated_data)
         await safe_edit_message(
             context.bot, analyzing_message.chat_id, analyzing_message.message_id,
             text="📊 **Review Parsed Data**\nPlease verify the extracted information:",
@@ -158,7 +183,8 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         )
         return AWAIT_REVIEW
     else:
-        error_msg = parsing_result.error_message or "Could not recognize a valid trade signal."
+        # ✅ FREEZE FIX: Escape the error message
+        error_msg = html.escape(parsing_result.error_message or "Could not recognize a valid trade signal.")
         await safe_edit_message(
              context.bot, analyzing_message.chat_id, analyzing_message.message_id,
              text=f"❌ **Analysis Failed**\n{error_msg}",
@@ -197,16 +223,17 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         raw_text = context.user_data.get(RAW_FORWARDED_TEXT_KEY)
         was_corrected = (original_data != current_data)
 
-        # ✅ HOTFIX: Validate data *before* saving
+        # ✅ HOTFIX: Validate data *before* saving (This is the backup check)
         try:
             trade_service._validate_recommendation_data(
                 current_data['side'], current_data['entry'], 
                 current_data['stop_loss'], current_data['targets']
             )
         except ValueError as e:
-            # This happens if user confirms empty targets from a failed parse
             log.warning(f"User confirmed invalid data. Error: {e}")
-            await safe_edit_message(context.bot, query.message.chat_id, original_message_id, text=f"❌ **Error saving trade:** {e}", reply_markup=None)
+            # ✅ FREEZE FIX: Escape the error message
+            error_text = f"❌ **Error saving trade:** {html.escape(str(e))}"
+            await safe_edit_message(context.bot, query.message.chat_id, original_message_id, text=error_text, reply_markup=None, parse_mode=ParseMode.HTML)
             clean_parsing_conversation_state(context)
             return ConversationHandler.END
 
@@ -285,7 +312,9 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                  clean_parsing_conversation_state(context)
                  return ConversationHandler.END
         else:
-            await safe_edit_message(context.bot, query.message.chat_id, original_message_id, text=f"❌ **Error saving trade:** {result.get('error', 'Unknown')}", reply_markup=None)
+            # ✅ FREEZE FIX: Escape the error message
+            error_text = f"❌ **Error saving trade:** {html.escape(result.get('error', 'Unknown'))}"
+            await safe_edit_message(context.bot, query.message.chat_id, original_message_id, text=error_text, reply_markup=None, parse_mode=ParseMode.HTML)
             clean_parsing_conversation_state(context)
             return ConversationHandler.END
 
@@ -369,21 +398,13 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             validated = True
         elif field_to_edit == "targets":
             # ✅ THE FIX (v3.0.2): Use a smarter regex to find numbers and @percentages
-            # This finds "0.105", "0.112", "0.12", "0.15", "25%" from the TURTLE example
-            # Or "3900", "3950", "4000" from the ETH example
-            
-            # This regex finds numbers (with decimals/suffixes) optionally followed by @ or %
             pattern = r'([\d.,KMB]+(?:@[\d.,]+%?)?)'
             tokens = re.findall(pattern, user_input, re.IGNORECASE)
             
-            # Handle "0.15 (25% each)" case
             if not tokens and "(25% each)" in user_input.lower():
-                # Fallback for complex text: split by common delimiters and extract numbers
                 just_numbers = re.findall(r'([\d.,KMB]+)', user_input)
-                # Apply the percentage to all found numbers
                 tokens = [f"{num}@25" for num in just_numbers]
             elif not tokens:
-                # Fallback for simple lists like "1 2 3"
                 tokens = re.split(r'[\s\n,]+', user_input)
 
             log.debug(f"Smart tokenizer found tokens: {tokens}")
@@ -428,9 +449,11 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             ButtonTexts.CANCEL + " Edit",
             callback_data=CallbackBuilder.create(CallbackNamespace.FORWARD_PARSE, CallbackAction.CANCEL, "edit")
         )
+        # ✅ FREEZE FIX: Escape the error message
+        error_text = f"⚠️ **Invalid Input:** {html.escape(str(e))}\nPlease try again for **{field_to_edit.replace('_',' ').title()}** or cancel:"
         await safe_edit_message(
             context.bot, update.effective_chat.id, original_message_id,
-            text=f"⚠️ **Invalid Input:** {e}\nPlease try again for **{field_to_edit.replace('_',' ').title()}** or cancel:",
+            text=error_text,
             reply_markup=InlineKeyboardMarkup([[cancel_edit_button]]),
             parse_mode=ParseMode.HTML
         )
