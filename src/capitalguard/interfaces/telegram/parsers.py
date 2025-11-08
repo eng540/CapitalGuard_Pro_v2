@@ -31,7 +31,6 @@ def _normalize_text(s: str) -> str:
 def parse_number(token: str) -> Optional[Decimal]:
     """
     Parses a single numeric token into a Decimal, supporting suffixes like K, M, B.
-    Returns None if the token is invalid or represents a non-positive number.
     ✅ HOTFIX v1.7.0: Now allows zero (for close_percent=0).
     """
     if token is None:
@@ -51,18 +50,7 @@ def parse_number(token: str) -> Optional[Decimal]:
 
         result = Decimal(num_part) * multiplier
         
-        # ✅ THE FIX: Allow 0 (e.g., for percentages) but reject negative numbers
-        # for prices/SL. We'll check for price > 0 in the validation layer.
-        # This function should just parse numbers.
-        # Let's refine: allow 0 only if it's exactly "0".
-        # A price (like 100k) should still be > 0.
-        
-        # New logic: Allow zero *only if* the original token was zero (for percentages)
-        if result.is_zero() and num_part != "0":
-             # This means a price like "0k" was entered, which is invalid
-             return None
-        
-        # Allow positive numbers or exactly zero
+        # ✅ THE FIX: Allow positive numbers or exactly zero (for percentages)
         return result if result.is_finite() and result >= 0 else None
         
     except (InvalidOperation, TypeError, ValueError) as e:
@@ -87,14 +75,14 @@ def parse_targets_list(tokens: List[str]) -> List[Dict[str, Any]]:
             if '@' in token:
                 parts = token.split('@', 1)
                 if len(parts) != 2:
-                    log.warning(f"Skipping malformed target token: {token}")
-                    continue
-                price_str, close_pct_str = parts[0].strip(), parts[1].strip()
+                    price_str, close_pct_str = parts[0].strip(), "0"
+                else:
+                    price_str, close_pct_str = parts[0].strip(), parts[1].strip().replace('%','')
 
             price = parse_number(price_str)
             close_pct = parse_number(close_pct_str) if close_pct_str else Decimal("0")
 
-            # ✅ THE FIX: parse_number(price_str) must be > 0
+            # ✅ THE FIX: price must be > 0, but close_pct can be >= 0
             if price is not None and price > 0 and close_pct is not None:
                 parsed_targets.append({
                     "price": price, 
@@ -115,7 +103,6 @@ def parse_targets_list(tokens: List[str]) -> List[Dict[str, Any]]:
 def parse_trailing_distance(input_str: str) -> Optional[Dict[str, Union[str, Decimal]]]:
     """
     Parses a trailing stop distance string like "2%" or "500".
-    Returns a dictionary specifying the type ('percentage' or 'price_distance') and the value.
     """
     normalized = _normalize_text(input_str).strip().upper()
     if not normalized:
@@ -158,7 +145,9 @@ def parse_rec_command(text: str) -> Optional[Dict[str, Any]]:
         target_tokens = parts[4:]
 
         targets = parse_targets_list(target_tokens)
-        if not all([asset, side, entry, stop_loss, targets]):
+        
+        # ✅ THE FIX: Check if entry/sl are valid
+        if not all([asset, side, entry, stop_loss, targets, entry > 0, stop_loss > 0]):
             return None
 
         return {
@@ -171,7 +160,7 @@ def parse_rec_command(text: str) -> Optional[Dict[str, Any]]:
         return None
 
 def parse_editor_command(text: str) -> Optional[Dict[str, Any]]:
-    """Parses a key:value formatted text block."""
+    """ParsES a key:value formatted text block."""
     data: Dict[str, Any] = {}
     key_map = {
         "asset": ["asset", "symbol", "أصل", "رمز"],
