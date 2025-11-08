@@ -1,11 +1,9 @@
-# src/capitalguard/interfaces/telegram/parsers.py (v1.6.0 - Production Ready & Final)
+# src/capitalguard/interfaces/telegram/parsers.py
 """
-Robust and production-ready text parsers for handling user input.
-- Handles Arabic and English numerals.
-- Supports financial suffixes (K, M, B).
-- Safely parses complex target lists (e.g., price@percentage).
-- Includes a flexible parser for trailing stop distances (% or absolute value).
-- All functions are designed to be safe and never crash on invalid input.
+Robust and production-ready text parsers (v1.7.0 - Zero Fix).
+✅ HOTFIX: Modified parse_number to correctly accept '0' as a valid number.
+This fixes the bug where parse_targets_list would fail if no explicit
+percentages (which default to 0) were provided.
 """
 
 import re
@@ -34,8 +32,9 @@ def parse_number(token: str) -> Optional[Decimal]:
     """
     Parses a single numeric token into a Decimal, supporting suffixes like K, M, B.
     Returns None if the token is invalid or represents a non-positive number.
+    ✅ HOTFIX v1.7.0: Now allows zero (for close_percent=0).
     """
-    if not token:
+    if token is None:
         return None
         
     try:
@@ -51,7 +50,20 @@ def parse_number(token: str) -> Optional[Decimal]:
             return None
 
         result = Decimal(num_part) * multiplier
-        return result if result.is_finite() and result > 0 else None
+        
+        # ✅ THE FIX: Allow 0 (e.g., for percentages) but reject negative numbers
+        # for prices/SL. We'll check for price > 0 in the validation layer.
+        # This function should just parse numbers.
+        # Let's refine: allow 0 only if it's exactly "0".
+        # A price (like 100k) should still be > 0.
+        
+        # New logic: Allow zero *only if* the original token was zero (for percentages)
+        if result.is_zero() and num_part != "0":
+             # This means a price like "0k" was entered, which is invalid
+             return None
+        
+        # Allow positive numbers or exactly zero
+        return result if result.is_finite() and result >= 0 else None
         
     except (InvalidOperation, TypeError, ValueError) as e:
         log.debug(f"Failed to parse number: '{token}', error: {e}")
@@ -82,11 +94,14 @@ def parse_targets_list(tokens: List[str]) -> List[Dict[str, Any]]:
             price = parse_number(price_str)
             close_pct = parse_number(close_pct_str) if close_pct_str else Decimal("0")
 
-            if price is not None and close_pct is not None:
+            # ✅ THE FIX: parse_number(price_str) must be > 0
+            if price is not None and price > 0 and close_pct is not None:
                 parsed_targets.append({
                     "price": price, 
                     "close_percent": float(close_pct)
                 })
+            elif price is None or price <= 0:
+                 log.warning(f"Ignoring invalid target price: {price_str}")
                 
         except Exception as e:
             log.warning(f"Failed to parse target token: '{token}', error: {e}")
