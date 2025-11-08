@@ -1,9 +1,10 @@
 # ai_service/services/parsing_utils.py
 """
-(v1.2.0 - Delimiter Hotfix)
-✅ HOTFIX: تم إصلاح `SyntaxError` (v1.1).
-✅ HOTFIX: تم تحديث `normalize_targets` (Case 3) لاستخدام `re.split`
-بدلاً من `re.findall`، مما يسمح بمعالجة فواصل مثل / و -.
+(v1.3.0) - Advanced Percentage Extraction.
+✅ HOTFIX: (Based on user technical report)
+✅ Implemented vastly improved Regex patterns in `_extract_each_percentage_from_text`
+to understand complex Arabic and English global percentage formats
+(e.g., "كل هدف 25%", "20% per target", "Close 30% each TP").
 """
 
 import re
@@ -85,17 +86,27 @@ def _parse_token_price_and_pct(token: str) -> Dict[str, Optional[Decimal]]:
 
 def _extract_each_percentage_from_text(source_text: str) -> Optional[Decimal]:
     """
-    (v1.1) يبحث عن أنماط النسبة المئوية العامة.
+    (v1.3.0) يبحث عن أنماط النسبة المئوية العامة (بناءً على تقرير المراجعة).
     """
     if not source_text:
         return None
     
     normalized_text = _normalize_arabic_numerals(source_text)
     
+    # ✅ (Point 1) الأنماط الجديدة المقترحة
     patterns = [
-        r'\(?\s*(\d{1,3}(?:\.\d+)?)\s*%\s*(?:each|per target|لكل هدف)\)?',
-        r'(?:النسبة|بنسبة)\s*(\d{1,3}(?:\.\d+)?)\s*%\s*لكل هدف',
-        r'Close\s*(\d{1,3}(?:\.\d+)?)\s*%\s*each\s*TP'
+        # (20% each), 20% per target, كل هدف 20%, 20% كل منها
+        r'\(?\s*(\d{1,3}(?:\.\d+)?)\s*%\s*(?:each|per target|لكل هدف|كل هدف|كل منها)\)?',
+        
+        # (Close 30% each TP), (اغلاق 25% عند كل هدف)
+        # (ملاحظة: هذا قد يلتقط النسبة حتى لو لم تكن "each")
+        r'(?:(?:close|اغلاق|إغلاق)\s*)(\d{1,3}(?:\.\d+)?)\s*%?(?:\s*(?:each|TP|هدف|targets|عند كل هدف))?',
+        
+        # (النسبة 25%) , (بنسبة 25%)
+        r'(?:(?:لكل|بنسبة|النسبة)\s*)(\d{1,3}(?:\.\d+)?)\s*%?',
+        
+        # (20 each target) - بدون رمز %
+        r'(\d{1,3}(?:\.\d+)?)\s*(?:each|لكل)\s*(?:هدف|TP|target)'
     ]
     
     for pattern in patterns:
@@ -104,10 +115,10 @@ def _extract_each_percentage_from_text(source_text: str) -> Optional[Decimal]:
             try:
                 val = Decimal(m.group(1))
                 if 0 <= val <= 100:
-                    log.debug(f"Found global percentage: {val}%")
+                    log.debug(f"Found global percentage: {val}% using pattern: {pattern}")
                     return val
             except Exception:
-                continue
+                continue # جرب النمط التالي
     return None
 
 def normalize_targets(
@@ -117,12 +128,12 @@ def normalize_targets(
     """
     (مصدر الحقيقة - v1.2)
     يطبع قائمة الأهداف.
-    يستخدم الآن `re.split` في الحالة 3.
     """
     normalized: List[Dict[str, Any]] = []
     if not targets_raw:
         return normalized
 
+    # ✅ (Point 1) سيتم الآن العثور على النسب الصحيحة هنا
     each_pct = _extract_each_percentage_from_text(source_text)
 
     # الحالة 1: قائمة من الكائنات (التنسيق الصحيح)
@@ -152,7 +163,6 @@ def normalize_targets(
         for item in targets_raw:
             if item is None: continue
             s = _normalize_arabic_numerals(str(item)).strip()
-            # ✅ HOTFIX (v1.2): استخدام نفس منطق التقسيم مثل الحالة 3
             parts = re.split(r'[\s\n,/\-→]+', s)
             tokens_flat.extend([p.strip() for p in parts if p.strip()])
 
@@ -176,7 +186,6 @@ def normalize_targets(
     # الحالة 3: نص واحد يحتوي على عدة أرقام
     elif isinstance(targets_raw, str):
         s = _normalize_arabic_numerals(targets_raw).strip()
-        # ✅ HOTFIX (v1.2): استخدام re.split لتقسيم السلسلة بشكل صحيح
         tokens = re.split(r'[\s\n,/\-→]+', s)
         
         for tok in tokens:
@@ -200,6 +209,8 @@ def normalize_targets(
                 continue
 
     # تطبيق قاعدة الهدف الأخير (100%)
+    # ✅ (Point 3) هذا المنطق سليم الآن، لأنه لن يتم تشغيله
+    # إلا إذا فشل each_pct (المُحسَّن) *و* فشلت كل النسب الفردية.
     if normalized and all(t["close_percent"] == 0.0 for t in normalized):
         normalized[-1]["close_percent"] = 100.0
         
