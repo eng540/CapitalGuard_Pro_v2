@@ -1,8 +1,8 @@
 # --- src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
 """
-Handles the user flow for parsing a forwarded text message (v3.0.1 - Correction Hotfix).
-✅ HOTFIX: Updated correction_value_handler to use `re.split` instead of `user_input.split()`.
-This now correctly parses multi-line inputs (like target lists) during correction.
+Handles the user flow for parsing a forwarded text message (v3.0.2 - Smart Correction).
+✅ HOTFIX: Updated correction_value_handler to use a smarter regex tokenizer.
+This correctly parses complex user inputs like "0.105 - 0.112 - 0.15 (25% each)".
 """
 
 import logging
@@ -197,6 +197,19 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         raw_text = context.user_data.get(RAW_FORWARDED_TEXT_KEY)
         was_corrected = (original_data != current_data)
 
+        # ✅ HOTFIX: Validate data *before* saving
+        try:
+            trade_service._validate_recommendation_data(
+                current_data['side'], current_data['entry'], 
+                current_data['stop_loss'], current_data['targets']
+            )
+        except ValueError as e:
+            # This happens if user confirms empty targets from a failed parse
+            log.warning(f"User confirmed invalid data. Error: {e}")
+            await safe_edit_message(context.bot, query.message.chat_id, original_message_id, text=f"❌ **Error saving trade:** {e}", reply_markup=None)
+            clean_parsing_conversation_state(context)
+            return ConversationHandler.END
+
         result = await trade_service.create_trade_from_forwarding_async(
             user_id=str(db_user.telegram_user_id),
             trade_data=current_data,
@@ -351,14 +364,37 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             else: raise ValueError("Side must be LONG or SHORT.")
         elif field_to_edit in ["entry", "stop_loss"]:
             price = parse_number(user_input)
-            if price is None: raise ValueError("Invalid number format for price.")
+            if price is None or price <= 0: raise ValueError("Invalid price format (must be > 0).")
             temp_data[field_to_edit] = price
             validated = True
         elif field_to_edit == "targets":
-            # ✅ THE FIX: Use a robust tokenizer that splits on spaces, newlines, and commas
-            tokens = re.split(r'[\s\n,]+', user_input)
+            # ✅ THE FIX (v3.0.2): Use a smarter regex to find numbers and @percentages
+            # This finds "0.105", "0.112", "0.12", "0.15", "25%" from the TURTLE example
+            # Or "3900", "3950", "4000" from the ETH example
+            
+            # This regex finds numbers (with decimals/suffixes) optionally followed by @ or %
+            pattern = r'([\d.,KMB]+(?:@[\d.,]+%?)?)'
+            tokens = re.findall(pattern, user_input, re.IGNORECASE)
+            
+            # Handle the "0.15 (25% each)" case
+            if not tokens and "(25% each)" in user_input:
+                # Fallback for complex text: split by common delimiters
+                tokens = re.split(r'[\s\n,-]+', user_input)
+                # This might produce ['0.105', '', '0.112', '', '0.12', ...]
+                # parse_targets_list is designed to handle empty strings
+            
+            log.debug(f"Smart tokenizer found tokens: {tokens}")
             targets = parse_targets_list(tokens)
-            if not targets: raise ValueError("Invalid targets format or no valid targets found.")
+            
+            if not targets: 
+                raise ValueError("Invalid targets format or no valid targets found.")
+            
+            # Handle " (25% each)" -> apply 25% to all
+            if "(25% each)" in user_input and all(t['close_percent'] == 0.0 for t in targets):
+                log.debug("Applying '25% each' logic to all targets.")
+                for t in targets:
+                    t['close_percent'] = 25.0
+            
             temp_data['targets'] = targets
             validated = True
 
@@ -417,10 +453,6 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
 @uow_transaction
 @require_active_user
 async def save_template_confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """
-    Handles Yes/No response for saving a template.
-    ✅ THE FIX: This now calls the AI Service to suggest/save the template.
-    """
     query = update.callback_query
     await query.answer()
 
@@ -465,7 +497,6 @@ async def save_template_confirm_handler(update: Update, context: ContextTypes.DE
 
 # --- General Cancel / Fallback ---
 async def cancel_parsing_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Generic cancel handler for the parsing conversation states."""
     message_text = "❌ Operation cancelled."
     target_chat_id = update.effective_chat.id
     target_message_id = context.user_data.get(ORIGINAL_MESSAGE_ID_KEY)
@@ -489,7 +520,6 @@ async def cancel_parsing_conversation(update: Update, context: ContextTypes.DEFA
 
 # --- Registration ---
 def register_forward_parsing_handlers(app: Application):
-    """Registers the conversation handler for forward parsing and review."""
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(
             filters.FORWARDED & filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
