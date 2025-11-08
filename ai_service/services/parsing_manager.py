@@ -3,7 +3,7 @@
 المنسق (Orchestrator) لعملية التحليل (v1.2 - Validation Hotfix).
 ✅ HOTFIX: تم تعديل فحص `all()` للتحقق من *وجود* المفتاح
 (key existence) بدلاً من قيمة الحقيقة (truthiness).
-هذا يمنع الفشل إذا أرجع LLM قائمة `targets: []` فارغة.
+✅ HOTFIX (v1.1) Check: يرفض الآن نتائج Regex/LLM التي لا تحتوي على أهداف.
 """
 
 import logging
@@ -142,15 +142,15 @@ class ParsingManager:
                     "status": "error",
                     "error": "Failed to initialize parsing attempt (DB error)."
                 }
+        
+        required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
 
         # --- الخطوة 2: المسار السريع (Regex) ---
         try:
             with session_scope() as regex_session:
                 regex_result = regex_parser.parse_with_regex(self.text, regex_session)
             
-            required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
-            
-            # ✅ HOTFIX (v1.1): Check for *key existence* and that *targets is not empty*
+            # ✅ HOTFIX (v1.2): Check for *key existence* and that *targets is not empty*
             if regex_result and all(k in regex_result for k in required_keys) and regex_result.get('targets'):
                 log.info(f"Regex parser succeeded and found all required keys for attempt {self.attempt_id}.")
                 self.parser_path_used = "regex"
@@ -171,11 +171,10 @@ class ParsingManager:
             try:
                 llm_result = await llm_parser.parse_with_llm(self.text)
                 if llm_result:
-                    # ✅ HOTFIX (v1.2): Check for *key existence*, not truthiness.
-                    # This allows `targets: []` to be a valid (though maybe undesirable) result.
+                    # ✅ HOTFIX (v1.2): Check for *key existence*
                     if all(k in llm_result for k in required_keys):
                         
-                        # ✅ HOTFIX (v1.1) Check: Did LLM also fail to find targets?
+                        # ✅ HOTFIX (v1.2) Check: Did LLM also fail to find targets?
                         if not llm_result.get("targets"):
                              log.warning(f"LLM result for attempt {self.attempt_id} returned 0 targets. Failing.")
                              self.parser_path_used = "failed"
