@@ -1,10 +1,9 @@
 # ai_service/services/parsing_manager.py
 """
-المنسق (Orchestrator) لعملية التحليل (v1.1 - Logic Hotfix).
-✅ HOTFIX: تعديل دالة `analyze` للتحقق من أن نتيجة Regex تحتوي على *جميع*
-الحقول المطلوبة (بما في ذلك 'targets') قبل قبولها.
-✅ إذا كانت نتيجة Regex غير مكتملة (مثل عدم وجود أهداف)، فسيتم تجاهلها
-والانتقال إلى LLM fallback.
+المنسق (Orchestrator) لعملية التحليل (v1.2 - Validation Hotfix).
+✅ HOTFIX: تم تعديل فحص `all()` للتحقق من *وجود* المفتاح
+(key existence) بدلاً من قيمة الحقيقة (truthiness).
+هذا يمنع الفشل إذا أرجع LLM قائمة `targets: []` فارغة.
 """
 
 import logging
@@ -34,7 +33,6 @@ def _serialize_data_for_db(data: Dict[str, Any]) -> Dict[str, Any]:
     if not data:
         return {}
     
-    # يضمن أن جميع الأسعار هي نصوص
     entry = str(data.get("entry", "0"))
     stop_loss = str(data.get("stop_loss", "0"))
     targets = [
@@ -150,37 +148,43 @@ class ParsingManager:
             with session_scope() as regex_session:
                 regex_result = regex_parser.parse_with_regex(self.text, regex_session)
             
-            # ✅ HOTFIX: التحقق من اكتمال البيانات من Regex
             required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
-            if regex_result and all(regex_result.get(k) for k in required_keys):
+            
+            # ✅ HOTFIX (v1.1): Check for *key existence* and that *targets is not empty*
+            if regex_result and all(k in regex_result for k in required_keys) and regex_result.get('targets'):
                 log.info(f"Regex parser succeeded and found all required keys for attempt {self.attempt_id}.")
                 self.parser_path_used = "regex"
-                # (template_id_used يتم تعيينه داخل regex_parser إذا وجد)
                 self.parsed_data = regex_result
             elif regex_result:
-                # نجح Regex جزئيًا ولكنه ليس كاملاً (مثل عدم وجود أهداف)
                 log.warning(f"Regex parser result for attempt {self.attempt_id} was incomplete. Discarding and falling back to LLM.")
-                self.parsed_data = None # تجاهل النتيجة غير المكتملة
+                self.parsed_data = None
             else:
-                # Regex فشل تمامًا (أعاد None)
                 self.parsed_data = None
                 
         except Exception as e:
             log.error(f"Regex parser failed unexpectedly: {e}", exc_info=True)
-            self.parsed_data = None # تأكد من الفشل والانتقال إلى LLM
+            self.parsed_data = None
 
         # --- الخطوة 3: المسار الذكي (LLM) ---
-        if not self.parsed_data: # ✅ سيتم تشغيل هذا الآن إذا كان Regex غير مكتمل
+        if not self.parsed_data:
             log.info(f"Attempt {self.attempt_id}: Regex failed or incomplete, falling back to LLM.")
             try:
                 llm_result = await llm_parser.parse_with_llm(self.text)
                 if llm_result:
-                    # ✅ HOTFIX: التحقق من اكتمال LLM أيضًا (كإجراء احترازي)
-                    if all(llm_result.get(k) for k in required_keys):
-                        self.parser_path_used = "llm"
-                        self.parsed_data = llm_result
+                    # ✅ HOTFIX (v1.2): Check for *key existence*, not truthiness.
+                    # This allows `targets: []` to be a valid (though maybe undesirable) result.
+                    if all(k in llm_result for k in required_keys):
+                        
+                        # ✅ HOTFIX (v1.1) Check: Did LLM also fail to find targets?
+                        if not llm_result.get("targets"):
+                             log.warning(f"LLM result for attempt {self.attempt_id} returned 0 targets. Failing.")
+                             self.parser_path_used = "failed"
+                             self.parsed_data = None
+                        else:
+                            self.parser_path_used = "llm"
+                            self.parsed_data = llm_result
                     else:
-                        log.error(f"LLM result for attempt {self.attempt_id} was incomplete. Failing.")
+                        log.error(f"LLM result for attempt {self.attempt_id} was incomplete (missing keys). Failing.")
                         self.parser_path_used = "failed"
                         self.parsed_data = None
             except Exception as e:
