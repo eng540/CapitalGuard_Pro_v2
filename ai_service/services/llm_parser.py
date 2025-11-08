@@ -1,9 +1,9 @@
 # ai_service/services/llm_parser.py
 """
-(v2.9.0 - Percentage Prompting Hotfix)
-✅ HOTFIX: تم تحديث SYSTEM_PROMPT (v2.9) ليتضمن أمثلة صريحة
-لكل من "(20% each)" و "كل هدف 25%" و "Close 30% each TP".
-✅ REFACTORED: يعتمد الآن بشكل كامل على `parsing_utils.py` للتحليل.
+(v4.1.1 - Refactored w/ Syntax Fix)
+✅ REFACTORED: يعتمد الآن بشكل كامل على `parsing_utils.py` (v1.1)
+الذي تم إصلاح الخطأ النحوي فيه.
+✅ يحتفظ بالمنطق الذكي (Prompt v2.9, Financial Check, Telemetry).
 """
 
 import os
@@ -33,7 +33,7 @@ LLM_MODEL = os.getenv("LLM_MODEL")
 if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
     log.warning("LLM environment variables incomplete. LLM parsing may be skipped.")
 
-# --- ✅ (Point 6) UPDATED: موجه النظام الموحد (v2.9) ---
+# --- ✅ UPDATED: موجه النظام الموحد (v2.9) ---
 SYSTEM_PROMPT = os.getenv("LLM_SYSTEM_PROMPT") or """
 You are an expert financial analyst. Your task is to extract structured data from a forwarded trade signal.
 You must analyze the user's text and return ONLY a valid JSON object.
