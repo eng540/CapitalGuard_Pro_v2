@@ -1,16 +1,17 @@
 # ai_service/main.py
 """
-نقطة الدخول الرئيسية (Main Entrypoint) لخدمة ai_service.
-توفر واجهة برمجة تطبيقات FastAPI (API) التي يستدعيها النظام الرئيسي.
+نقطة الدخول الرئيسية (Main Entrypoint) لخدمة ai_service (v1.1 - NameError Hotfix).
+✅ HOTFIX: إضافة `import json` المفقود لإصلاح NameError
+في نقطة نهاية `suggest_template`.
 """
 
 import logging
 import os
+import json # ✅ HOTFIX: إضافة الاستيراد المفقود
 from fastapi import FastAPI, Request, HTTPException, status
 from pydantic import ValidationError
 
-# إعداد التسجيل (يجب أن يتم أولاً)
-# (في بيئة الإنتاج، يتم تكوين هذا بشكل أفضل عبر uvicorn)
+# إعداد التسجيل
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ from schemas import (
     ParseRequest, ParseResponse,
     CorrectionRequest, CorrectionResponse,
     TemplateSuggestRequest, TemplateSuggestResponse,
-    ParsedDataResponse # لاستخدامه داخليًا
+    ParsedDataResponse
 )
 from services.parsing_manager import ParsingManager
 from database import session_scope
@@ -28,7 +29,7 @@ from models import ParsingAttempt, ParsingTemplate
 # --- تهيئة التطبيق ---
 app = FastAPI(
     title="CapitalGuard AI Parsing Service",
-    version="1.0.0",
+    version="1.1.0",
     description="خدمة مستقلة لتحليل وتفسير توصيات التداول."
 )
 
@@ -39,29 +40,25 @@ async def startup_event():
         log.warning("LLM_API_KEY is not set. LLM fallback will be disabled.")
     if not os.getenv("DATABASE_URL"):
         log.critical("DATABASE_URL is not set. Service will not function.")
-        # (في بيئة حقيقية، قد نرغب في إيقاف التشغيل هنا)
     log.info("AI Service startup complete.")
 
 # --- نقاط النهاية (Endpoints) ---
 
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health_check():
-    """نقطة نهاية للتحقق من صحة الخدمة (تستخدمها Docker Healthcheck)."""
-    # يمكن إضافة المزيد من الفحوصات هنا (مثل الاتصال بقاعدة البيانات)
+    """نقطة نهاية للتحقق من صحة الخدمة."""
     return {"status": "ok"}
 
 @app.post("/ai/parse", response_model=ParseResponse)
 async def parse_trade_text(request: ParseRequest):
     """
     نقطة النهاية الرئيسية لتحليل نص التوصية.
-    يستدعيها النظام الرئيسي.
     """
     log.info(f"Received parse request for user {request.user_id}, snippet: {request.text[:50]}...")
     try:
         manager = ParsingManager(text=request.text, user_id=request.user_id)
         result_dict = await manager.analyze()
         
-        # تحويل القاموس الداخلي إلى نموذج Pydantic للتحقق من صحة المخرجات
         if result_dict.get("status") == "success":
             return ParseResponse(
                 status="success",
@@ -86,7 +83,6 @@ async def parse_trade_text(request: ParseRequest):
         )
     except Exception as e:
         log.critical(f"Unexpected error in /ai/parse endpoint: {e}", exc_info=True)
-        # هذا خطأ 500 عام
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected internal error occurred: {e}"
@@ -96,7 +92,6 @@ async def parse_trade_text(request: ParseRequest):
 async def record_correction(request: CorrectionRequest):
     """
     نقطة نهاية لتسجيل التصحيحات التي أجراها المستخدم.
-    يستدعيها النظام الرئيسي بعد تأكيد المستخدم للتعديلات.
     """
     log.info(f"Received correction request for attempt {request.attempt_id}")
     try:
@@ -107,7 +102,6 @@ async def record_correction(request: CorrectionRequest):
                 log.warning(f"Correction request for non-existent attempt {request.attempt_id}")
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attempt ID not found")
             
-            # حساب الفروقات (Diff) - يمكن أن يكون أبسط أو أكثر تعقيدًا
             diff = {
                 "original": request.original_data,
                 "corrected": request.corrected_data
@@ -128,7 +122,6 @@ async def record_correction(request: CorrectionRequest):
 async def suggest_template(request: TemplateSuggestRequest):
     """
     نقطة نهاية لإنشاء قالب جديد مقترح بناءً على تصحيح.
-    يستدعيها النظام الرئيسي عندما يوافق المستخدم على "حفظ التنسيق".
     """
     log.info(f"Received template suggestion request for attempt {request.attempt_id} from user {request.user_id}")
     try:
@@ -141,9 +134,8 @@ async def suggest_template(request: TemplateSuggestRequest):
                 log.warning(f"Invalid template suggestion for attempt {request.attempt_id}. Corrected: {attempt.was_corrected}, User: {attempt.user_id}")
                 return TemplateSuggestResponse(success=False, message="Invalid suggestion request.")
 
-            # إنشاء قالب جديد للمراجعة
             template_name = f"User {request.user_id} Suggestion (Attempt {attempt.id})"
-            # تخزين المحتوى الخام + التصحيحات ليقوم المسؤول بمراجعته
+            # ✅ HOTFIX: `json` is now defined thanks to `import json` at the top
             pattern_placeholder = (
                 f"# REVIEW NEEDED: Source Attempt ID {attempt.id}\n"
                 f"# User ID: {request.user_id}\n"
@@ -153,14 +145,14 @@ async def suggest_template(request: TemplateSuggestRequest):
 
             new_template = ParsingTemplate(
                 name=template_name,
-                pattern_type="regex_review_needed", # علامة للمسؤول
+                pattern_type="regex_review_needed",
                 pattern_value=pattern_placeholder,
-                analyst_id=request.user_id, # المالك هو المستخدم الذي اقترح
-                is_public=False, # يتطلب مراجعة
+                analyst_id=request.user_id,
+                is_public=False,
                 stats={"source_attempt_id": attempt.id}
             )
             session.add(new_template)
-            session.flush() # الحصول على ID
+            session.flush()
             
             template_id = new_template.id
         
@@ -169,4 +161,7 @@ async def suggest_template(request: TemplateSuggestRequest):
 
     except Exception as e:
         log.error(f"Failed to suggest template for attempt {request.attempt_id}: {e}", exc_info=True)
+        # ✅ HOTFIX: Check for NameError specifically if json import failed (fallback)
+        if isinstance(e, NameError) and 'json' in str(e):
+             log.critical("FATAL: json module not imported in main.py")
         return TemplateSuggestResponse(success=False, message=str(e))
