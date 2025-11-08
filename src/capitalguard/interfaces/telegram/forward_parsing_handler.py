@@ -1,10 +1,12 @@
 # src/capitalguard/interfaces/telegram/forward_parsing_handler.py
 """
-Handles the user flow for parsing a forwarded text message (v3.1.0 - Pre-Validation & Freeze Fix).
-✅ HOTFIX: Added pre-validation. Calls trade_service._validate_recommendation_data *before*
-showing the review card, preventing users from confirming invalid data.
-✅ HOTFIX: Added html.escape() to error messages to prevent Telegram
-BadRequest errors (the "freeze" bug).
+Handles the user flow for parsing a forwarded text message (v3.2.0 - Resiliency & State Hotfix).
+✅ HOTFIX (Point 1): Implemented `smart_safe_edit` to retry with parse_mode=None 
+if HTML entity parsing fails, preventing the "freeze" bug.
+✅ HOTFIX (Point 2): Added DB State Recovery. If context is lost, the handler
+attempts to reload the state from the `ParsingAttempt` record.
+✅ HOTFIX (Point 4): Implemented structured logging for validation errors
+to improve observability.
 """
 
 import logging
@@ -14,11 +16,11 @@ import asyncio
 import httpx 
 import os 
 import re 
-import html # ✅ NEW: Import HTML for escaping
+import html # For escaping
 from decimal import Decimal
 from typing import Dict, Any, Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     Application, MessageHandler, CallbackQueryHandler, ContextTypes, filters,
     ConversationHandler, CommandHandler
@@ -38,9 +40,9 @@ from capitalguard.interfaces.telegram.keyboards import (
 )
 from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets_list
 from capitalguard.interfaces.telegram.management_handlers import (
-     safe_edit_message, handle_management_timeout, update_management_activity, MANAGEMENT_TIMEOUT
+     handle_management_timeout, update_management_activity, MANAGEMENT_TIMEOUT
 )
-from capitalguard.infrastructure.db.repository import ParsingRepository 
+# ✅ (Point 2) Import DB model for state recovery
 from capitalguard.infrastructure.db.models import ParsingAttempt 
 
 log = logging.getLogger(__name__)
@@ -73,6 +75,58 @@ def clean_parsing_conversation_state(context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(key, None)
     log.debug(f"Parsing conversation state cleared for user {context._user_id}.")
 
+# --- ✅ (Point 1) Resilient Edit Function ---
+async def smart_safe_edit(
+    bot: Bot, chat_id: int, message_id: int, 
+    text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML
+) -> bool:
+    """
+    Tries to edit a message, falling back to parse_mode=None if HTML/Markdown fails.
+    This prevents the "unsupported start tag" freeze.
+    """
+    try:
+        # First attempt (usually HTML)
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+            disable_web_page_preview=True,
+        )
+        return True
+    except BadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        # Check for the specific entity parsing error
+        if "can't parse entities" in str(e) or "unsupported start tag" in str(e):
+            log.warning(f"HTML parse failed for msg {chat_id}:{message_id}. Retrying with parse_mode=None. Error: {e}")
+            try:
+                # Fallback: Strip tags and send as plain text
+                clean_text = re.sub(r'<[^>]+>', '', text) # Basic tag stripping
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=clean_text,
+                    reply_markup=reply_markup,
+                    parse_mode=None, # Send as plain text
+                    disable_web_page_preview=True,
+                )
+                return True
+            except Exception as e_retry:
+                loge.error(f"Failed to edit message {chat_id}:{message_id} even after retry: {e_retry}", exc_info=True)
+                return False
+        
+        # Other BadRequests
+        loge.warning(f"Handled BadRequest in smart_safe_edit: {e}")
+        return False
+    except TelegramError as e:
+        loge.error(f"TelegramError in smart_safe_edit {chat_id}:{message_id}: {e}")
+        return False
+    except Exception as e_other:
+        loge.exception(f"Unexpected error in smart_safe_edit {chat_id}:{message_id}: {e_other}")
+        return False
+
 # --- Entry Point ---
 @uow_transaction
 @require_active_user 
@@ -99,7 +153,7 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
     context.user_data[ORIGINAL_MESSAGE_ID_KEY] = analyzing_message.message_id
     user_db_id = db_user.id
     parsing_result: ParsingResult 
-    hydrated_data = None # Store hydrated data here
+    hydrated_data = None 
 
     try:
         log.debug(f"Calling AI Service at {AI_SERVICE_URL} for user {user_db_id}")
@@ -128,14 +182,11 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
                             "targets": parse_targets_list([f"{t.get('price')}@{t.get('close_percent')}" for t in raw.get("targets", [])])
                         }
                         
-                        # ✅ --- PRE-VALIDATION ---
-                        # التحقق من صحة البيانات *قبل* عرضها
                         trade_service: TradeService = get_service(context, "trade_service", TradeService)
                         trade_service._validate_recommendation_data(
                             hydrated_data['side'], hydrated_data['entry'],
                             hydrated_data['stop_loss'], hydrated_data['targets']
                         )
-                        # --- End Pre-validation ---
                         
                         parsing_result = ParsingResult(
                             success=True, data=hydrated_data,
@@ -145,7 +196,6 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
                         )
 
                     except (ValueError, TypeError) as e:
-                        # فشل التحقق المسبق (Pre-validation failed)
                         log.warning(f"AI Service returned invalid data for attempt {json_data.get('attempt_id')}: {e}")
                         parsing_result = ParsingResult(success=False, error_message=f"Analysis Failed: {e}")
                         hydrated_data = None
@@ -154,7 +204,7 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
                         parsing_result = ParsingResult(success=False, error_message="Failed to process valid response from AI.")
                         hydrated_data = None
                 
-                else: # (AI service returned status: "error")
+                else: 
                      parsing_result = ParsingResult(
                         success=False,
                         attempt_id=json_data.get("attempt_id"),
@@ -169,13 +219,15 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         parsing_result = ParsingResult(success=False, error_message=f"An unexpected error occurred: {e}")
 
     # --- Proceed with the result ---
-    if parsing_result.success and hydrated_data: # Use hydrated_data
+    if parsing_result.success and hydrated_data:
+        # ✅ (Point 2) Save attempt_id for state recovery
         context.user_data[PARSING_ATTEMPT_ID_KEY] = parsing_result.attempt_id
         context.user_data[ORIGINAL_PARSED_DATA_KEY] = hydrated_data
         context.user_data[CURRENT_EDIT_DATA_KEY] = hydrated_data.copy()
 
         keyboard = build_editable_review_card(hydrated_data)
-        await safe_edit_message(
+        # Use smart edit
+        await smart_safe_edit(
             context.bot, analyzing_message.chat_id, analyzing_message.message_id,
             text="📊 **Review Parsed Data**\nPlease verify the extracted information:",
             reply_markup=keyboard,
@@ -183,9 +235,9 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         )
         return AWAIT_REVIEW
     else:
-        # ✅ FREEZE FIX: Escape the error message
+        # ✅ (Point 1) FREEZE FIX: Escape the error message
         error_msg = html.escape(parsing_result.error_message or "Could not recognize a valid trade signal.")
-        await safe_edit_message(
+        await smart_safe_edit(
              context.bot, analyzing_message.chat_id, analyzing_message.message_id,
              text=f"❌ **Analysis Failed**\n{error_msg}",
              parse_mode=ParseMode.HTML,
@@ -210,11 +262,51 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     current_data = context.user_data.get(CURRENT_EDIT_DATA_KEY)
     original_message_id = context.user_data.get(ORIGINAL_MESSAGE_ID_KEY)
 
+    # ✅ --- (Point 2) State Recovery Logic ---
     if not current_data or not original_message_id:
-        log.warning(f"Parsing review handler called with missing state for user {update.effective_user.id}")
-        await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Session expired or data lost. Please forward again.", reply_markup=None)
-        clean_parsing_conversation_state(context)
-        return ConversationHandler.END
+        log.warning(f"State lost for user {update.effective_user.id}. Attempting DB recovery...")
+        attempt_id = context.user_data.get(PARSING_ATTEMPT_ID_KEY)
+        
+        # We also need the message ID, which might be the current one
+        if not original_message_id and query.message:
+             original_message_id = query.message.message_id
+             context.user_data[ORIGINAL_MESSAGE_ID_KEY] = original_message_id
+
+        if attempt_id and original_message_id:
+            try:
+                attempt = db_session.get(ParsingAttempt, attempt_id)
+                if attempt and attempt.result_data:
+                    # Re-hydrate data (JSON strings -> Decimal)
+                    raw = attempt.result_data
+                    restored = {
+                        "asset": raw.get("asset"),
+                        "side": raw.get("side"),
+                        "entry": parse_number(raw.get("entry")),
+                        "stop_loss": parse_number(raw.get("stop_loss")),
+                        "targets": parse_targets_list([f"{t.get('price')}@{t.get('close_percent')}" for t in raw.get("targets", [])])
+                    }
+                    context.user_data[CURRENT_EDIT_DATA_KEY] = restored
+                    context.user_data[ORIGINAL_PARSED_DATA_KEY] = restored
+                    current_data = restored # Set for use below
+                    
+                    keyboard = build_editable_review_card(restored)
+                    await smart_safe_edit(context.bot, query.message.chat_id, original_message_id,
+                        text="🔄 Session recovered from database. Please review again:", reply_markup=keyboard)
+                    log.info(f"Successfully recovered session for user {update.effective_user.id} from attempt {attempt_id}")
+                    # Don't return yet, continue with the logic
+                else:
+                    raise ValueError("Attempt not found or has no result data.")
+            except Exception as e_recover:
+                log.error(f"Failed to recover session from DB for attempt {attempt_id}: {e_recover}")
+                await smart_safe_edit(context.bot, query.message.chat_id, query.message.message_id, text="❌ Session expired or data lost. Please forward again.", reply_markup=None)
+                clean_parsing_conversation_state(context)
+                return ConversationHandler.END
+        else:
+            # If recovery fails (no attempt_id), then fail
+            await smart_safe_edit(context.bot, query.message.chat_id, query.message.message_id, text="❌ Session expired or data lost. Please forward again.", reply_markup=None)
+            clean_parsing_conversation_state(context)
+            return ConversationHandler.END
+    # --- End State Recovery ---
 
     if action == CallbackAction.CONFIRM.value:
         trade_service: TradeService = get_service(context, "trade_service", TradeService)
@@ -223,17 +315,22 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         raw_text = context.user_data.get(RAW_FORWARDED_TEXT_KEY)
         was_corrected = (original_data != current_data)
 
-        # ✅ HOTFIX: Validate data *before* saving (This is the backup check)
         try:
             trade_service._validate_recommendation_data(
                 current_data['side'], current_data['entry'], 
                 current_data['stop_loss'], current_data['targets']
             )
         except ValueError as e:
-            log.warning(f"User confirmed invalid data. Error: {e}")
-            # ✅ FREEZE FIX: Escape the error message
+            # ✅ (Point 4) Structured Logging
+            log.warning("ValidationFailureOnConfirm", extra={
+                "user": db_user.telegram_user_id,
+                "attempt_id": attempt_id,
+                "error": str(e),
+                "context": "forward_parsing.review_callback_handler"
+            })
+            # ✅ (Point 1) FREEZE FIX: Escape the error message
             error_text = f"❌ **Error saving trade:** {html.escape(str(e))}"
-            await safe_edit_message(context.bot, query.message.chat_id, original_message_id, text=error_text, reply_markup=None, parse_mode=ParseMode.HTML)
+            await smart_safe_edit(context.bot, query.message.chat_id, original_message_id, text=error_text, reply_markup=None, parse_mode=ParseMode.HTML)
             clean_parsing_conversation_state(context)
             return ConversationHandler.END
 
@@ -282,7 +379,7 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 
         if result.get('success'):
             success_msg = f"✅ **Trade #{result['trade_id']}** for **{result['asset']}** tracked successfully!"
-            await safe_edit_message(context.bot, query.message.chat_id, original_message_id, text=success_msg, reply_markup=None)
+            await smart_safe_edit(context.bot, query.message.chat_id, original_message_id, text=success_msg, reply_markup=None)
 
             if correction_task: await correction_task
 
@@ -312,9 +409,8 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                  clean_parsing_conversation_state(context)
                  return ConversationHandler.END
         else:
-            # ✅ FREEZE FIX: Escape the error message
             error_text = f"❌ **Error saving trade:** {html.escape(result.get('error', 'Unknown'))}"
-            await safe_edit_message(context.bot, query.message.chat_id, original_message_id, text=error_text, reply_markup=None, parse_mode=ParseMode.HTML)
+            await smart_safe_edit(context.bot, query.message.chat_id, original_message_id, text=error_text, reply_markup=None, parse_mode=ParseMode.HTML)
             clean_parsing_conversation_state(context)
             return ConversationHandler.END
 
@@ -341,7 +437,7 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         )
         input_keyboard = InlineKeyboardMarkup([[cancel_edit_button]])
 
-        await safe_edit_message(
+        await smart_safe_edit(
             context.bot, query.message.chat_id, original_message_id,
             text=f"📝 **Editing Field: {field_to_edit.replace('_',' ').title()}**\n\n{prompt_text}",
             reply_markup=input_keyboard
@@ -349,7 +445,7 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         return AWAIT_CORRECTION_VALUE
 
     elif action == CallbackAction.CANCEL.value:
-        await safe_edit_message(context.bot, query.message.chat_id, original_message_id, text="❌ Operation cancelled.", reply_markup=None)
+        await smart_safe_edit(context.bot, query.message.chat_id, original_message_id, text="❌ Operation cancelled.", reply_markup=None)
         clean_parsing_conversation_state(context)
         return ConversationHandler.END
 
@@ -360,7 +456,6 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 @uow_transaction
 @require_active_user
 async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
-    """Handles the user's text reply with the corrected value for a specific field."""
     if await handle_management_timeout(update, context): return ConversationHandler.END
     update_management_activity(context)
 
@@ -397,7 +492,6 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             temp_data[field_to_edit] = price
             validated = True
         elif field_to_edit == "targets":
-            # ✅ THE FIX (v3.0.2): Use a smarter regex to find numbers and @percentages
             pattern = r'([\d.,KMB]+(?:@[\d.,]+%?)?)'
             tokens = re.findall(pattern, user_input, re.IGNORECASE)
             
@@ -433,7 +527,7 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             context.user_data.pop(EDITING_FIELD_KEY, None)
 
             keyboard = build_editable_review_card(current_data)
-            await safe_edit_message(
+            await smart_safe_edit(
                  context.bot, update.effective_chat.id, original_message_id,
                  text="✅ Value updated. Please review again:",
                  reply_markup=keyboard,
@@ -444,14 +538,22 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
              raise ValueError(f"Internal validation failed for field '{field_to_edit}'.")
 
     except ValueError as e:
-        log.warning(f"Invalid correction input by user {update.effective_user.id} for field '{field_to_edit}': {e}")
+        # ✅ (Point 4) Structured Logging
+        log.warning("ValidationFailureOnCorrection", extra={
+            "user": db_user.telegram_user_id,
+            "attempt_id": context.user_data.get(PARSING_ATTEMPT_ID_KEY),
+            "field": field_to_edit,
+            "input": user_input,
+            "error": str(e),
+            "context": "forward_parsing.correction_value_handler"
+        })
         cancel_edit_button = InlineKeyboardButton(
             ButtonTexts.CANCEL + " Edit",
             callback_data=CallbackBuilder.create(CallbackNamespace.FORWARD_PARSE, CallbackAction.CANCEL, "edit")
         )
-        # ✅ FREEZE FIX: Escape the error message
+        # ✅ (Point 1) FREEZE FIX: Escape the error message
         error_text = f"⚠️ **Invalid Input:** {html.escape(str(e))}\nPlease try again for **{field_to_edit.replace('_',' ').title()}** or cancel:"
-        await safe_edit_message(
+        await smart_safe_edit(
             context.bot, update.effective_chat.id, original_message_id,
             text=error_text,
             reply_markup=InlineKeyboardMarkup([[cancel_edit_button]]),
@@ -481,7 +583,7 @@ async def save_template_confirm_handler(update: Update, context: ContextTypes.DE
     params = callback_data.get('params', [])
     attempt_id = int(params[0]) if params and params[0].isdigit() else None
 
-    await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text=query.message.text_html, reply_markup=None)
+    await smart_safe_edit(context.bot, query.message.chat_id, query.message.message_id, text=query.message.text_html, reply_markup=None)
 
     if action == CallbackAction.CONFIRM.value and attempt_id:
         log.debug(f"User confirmed saving template for attempt {attempt_id}. Calling AI Service.")
@@ -529,7 +631,7 @@ async def cancel_parsing_conversation(update: Update, context: ContextTypes.DEFA
     clean_parsing_conversation_state(context)
 
     if target_message_id:
-        await safe_edit_message(context.bot, target_chat_id, target_message_id, text=message_text, reply_markup=None)
+        await smart_safe_edit(context.bot, target_chat_id, target_message_id, text=message_text, reply_markup=None)
     elif update.message:
         await update.message.reply_text(message_text)
     else:
