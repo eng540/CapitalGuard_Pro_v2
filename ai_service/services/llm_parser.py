@@ -1,10 +1,9 @@
 # ai_service/services/llm_parser.py
 """
-(v4.1.0 - Refactored)
-✅ REFACTORED: تم إزالة منطق التحليل المكرر.
-✅ يستدعي الآن `parsing_utils.py` لإجراء التحليل الموحد.
-✅ يحتفظ بالمنطق الذكي (Prompt v2.6, Financial Check, Telemetry).
-✅ يستخدم `Decimal` داخليًا للتحقق المالي.
+(v2.9.0 - Percentage Prompting Hotfix)
+✅ HOTFIX: تم تحديث SYSTEM_PROMPT (v2.9) ليتضمن أمثلة صريحة
+لكل من "(20% each)" و "كل هدف 25%" و "Close 30% each TP".
+✅ REFACTORED: يعتمد الآن بشكل كامل على `parsing_utils.py` للتحليل.
 """
 
 import os
@@ -12,15 +11,14 @@ import re
 import json
 import logging
 from typing import Any, Dict, List, Optional
-from decimal import Decimal, InvalidOperation # ✅ Use Decimal
+from decimal import Decimal, InvalidOperation 
 
 import httpx
 
 # --- ✅ استيراد مصدر الحقيقة الوحيد ---
 from services.parsing_utils import (
     parse_decimal_token, 
-    normalize_targets,
-    _extract_each_percentage_from_text # (يمكننا استخدامه إذا احتجنا)
+    normalize_targets
 )
 
 log = logging.getLogger(__name__)
@@ -35,7 +33,7 @@ LLM_MODEL = os.getenv("LLM_MODEL")
 if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
     log.warning("LLM environment variables incomplete. LLM parsing may be skipped.")
 
-# (SYSTEM_PROMPT v2.6 يبقى كما هو - إنه قوي)
+# --- ✅ (Point 6) UPDATED: موجه النظام الموحد (v2.9) ---
 SYSTEM_PROMPT = os.getenv("LLM_SYSTEM_PROMPT") or """
 You are an expert financial analyst. Your task is to extract structured data from a forwarded trade signal.
 You must analyze the user's text and return ONLY a valid JSON object.
@@ -57,17 +55,65 @@ You must analyze the user's text and return ONLY a valid JSON object.
 5.  Targets: Find "Targets", "TPs", "الاهداف". Extract *all* numbers that follow. Ignore ranges. Ignore emojis (✅).
 6.  **Percentages (CRITICAL):**
     * If targets have individual percentages (e.g., "105k@10"), use them.
-    * **If a *global* percentage is mentioned (e.g., "(20% each)" or "| Close 30%"), you *MUST* apply that percentage to *ALL* targets in the list.**
-    * If no percentages are found, default to 0.0 for all targets.
+    * **If a *global* percentage is mentioned (e.g., "(20% each)", "(20% per target)", "Close 30% each TP", "كل هدف 25%"), you *MUST* apply that percentage to *ALL* targets in the list.**
+    * If no percentages are found, default to 0.0 for all targets (the normalizer will handle the 100% rule).
 7.  Notes: Add any extra text (like "Lev - 5x" or "لللحماية") to the "notes" field.
 8.  Market/Order: Default to "Futures" and "LIMIT".
 9.  **Arabic Logic:** "منطقة الدخول" = Entry. "وقف الخسارة" = Stop Loss.
 10. **Inference Logic:** If "side" is missing, try to infer it (SL vs Entry).
-11. **Contextual Awareness:** If Arabic numbers are followed by words like "دخول" or "وقف", interpret them accordingly even if the order differs.
+
 --- 
-(Examples from v2.5 are still valid and included here)
-...
+### EXAMPLE 1 (Arabic - Global Percentage) ---
+USER TEXT:
+توصية عملة BNB
+شراء من 940 إلى 960
+وقف خسارة 910
+الاهداف 1000 - 1100 - 1200 - 1400
+كل هدف 25%
+
+YOUR JSON RESPONSE:
+{
+  "asset": "BNBUSDT",
+  "side": "LONG",
+  "entry": "940",
+  "stop_loss": "910",
+  "targets": [
+    {"price": "1000", "close_percent": 25.0},
+    {"price": "1100", "close_percent": 25.0},
+    {"price": "1200", "close_percent": 25.0},
+    {"price": "1400", "close_percent": 25.0}
+  ],
+  "market": "Futures",
+  "order_type": "LIMIT",
+  "notes": null
+}
+--- 
+### EXAMPLE 2 (English - Global Percentage) ---
+USER TEXT:
+#SOL LONG
+Entry 172
+Targets 185 - 200 - 220 - 250
+SL 165
+(20% per target)
+
+YOUR JSON RESPONSE:
+{
+  "asset": "SOLUSDT",
+  "side": "LONG",
+  "entry": "172",
+  "stop_loss": "165",
+  "targets": [
+    {"price": "185", "close_percent": 20.0},
+    {"price": "200", "close_percent": 20.0},
+    {"price": "220", "close_percent": 20.0},
+    {"price": "250", "close_percent": 20.0}
+  ],
+  "market": "Futures",
+  "order_type": "LIMIT",
+  "notes": "(20% per target)"
+}
 ---
+
 The user's text will be provided next. Respond ONLY with the JSON object.
 """
 
@@ -77,7 +123,6 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
     Strict numeric checks (v4.1 - Refactored to use Decimal).
     """
     try:
-        # ✅ REFACTORED: Use Decimal for financial logic
         entry = Decimal(str(data["entry"]))
         sl = Decimal(str(data["stop_loss"]))
         side = str(data["side"]).strip().upper()
@@ -102,7 +147,7 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
 
         if len(prices) > 1:
             rng = abs(prices[-1] - prices[0])
-            if rng < (entry * Decimal("0.002")):  # less than 0.2% of entry
+            if rng < (entry * Decimal("0.002")):
                 log.warning("Targets too close together.")
                 return False
 
@@ -234,7 +279,6 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
                 telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "financial_check"}))
                 return None
 
-            # Fill defaults
             parsed.setdefault("market", parsed.get("market", "Futures"))
             parsed.setdefault("order_type", parsed.get("order_type", "LIMIT"))
             parsed.setdefault("notes", parsed.get("notes", ""))
