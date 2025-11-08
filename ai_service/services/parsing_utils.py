@@ -1,9 +1,9 @@
 # ai_service/services/parsing_utils.py
 """
-(v1.1.0 - Syntax Hotfix)
-✅ HOTFIX: تم إصلاح خطأ `SyntaxError: unterminated string literal`
-في الدالة `_extract_each_percentage_from_text`.
-يحتوي هذا الملف على المنطق الموحد لتحليل الأرقام والأهداف.
+(v1.2.0 - Delimiter Hotfix)
+✅ HOTFIX: تم إصلاح `SyntaxError` (v1.1).
+✅ HOTFIX: تم تحديث `normalize_targets` (Case 3) لاستخدام `re.split`
+بدلاً من `re.findall`، مما يسمح بمعالجة فواصل مثل / و -.
 """
 
 import re
@@ -99,7 +99,6 @@ def _extract_each_percentage_from_text(source_text: str) -> Optional[Decimal]:
     ]
     
     for pattern in patterns:
-        # ✅ HOTFIX: تم إغلاق الـ regex string بشكل صحيح
         m = re.search(pattern, normalized_text, re.IGNORECASE)
         if m:
             try:
@@ -108,7 +107,7 @@ def _extract_each_percentage_from_text(source_text: str) -> Optional[Decimal]:
                     log.debug(f"Found global percentage: {val}%")
                     return val
             except Exception:
-                continue # جرب النمط التالي
+                continue
     return None
 
 def normalize_targets(
@@ -116,8 +115,9 @@ def normalize_targets(
     source_text: str = ""
 ) -> List[Dict[str, Any]]:
     """
-    (مصدر الحقيقة - v1.1)
+    (مصدر الحقيقة - v1.2)
     يطبع قائمة الأهداف.
+    يستخدم الآن `re.split` في الحالة 3.
     """
     normalized: List[Dict[str, Any]] = []
     if not targets_raw:
@@ -152,11 +152,9 @@ def normalize_targets(
         for item in targets_raw:
             if item is None: continue
             s = _normalize_arabic_numerals(str(item)).strip()
-            if re.search(r'[\-\–\—,/]+', s):
-                parts = re.split(r'[\-\–\—,/]+', s)
-                tokens_flat.extend([p.strip() for p in parts if p.strip()])
-            else:
-                tokens_flat.append(s)
+            # ✅ HOTFIX (v1.2): استخدام نفس منطق التقسيم مثل الحالة 3
+            parts = re.split(r'[\s\n,/\-→]+', s)
+            tokens_flat.extend([p.strip() for p in parts if p.strip()])
 
         for tok in tokens_flat:
             try:
@@ -178,8 +176,13 @@ def normalize_targets(
     # الحالة 3: نص واحد يحتوي على عدة أرقام
     elif isinstance(targets_raw, str):
         s = _normalize_arabic_numerals(targets_raw).strip()
-        tokens = re.findall(r'[\d.,]+[kKmMbB]?@?\d*%?|[\d.,]+[kKmMbB]?', s)
+        # ✅ HOTFIX (v1.2): استخدام re.split لتقسيم السلسلة بشكل صحيح
+        tokens = re.split(r'[\s\n,/\-→]+', s)
+        
         for tok in tokens:
+            tok = tok.strip()
+            if not tok:
+                continue
             try:
                 parsed = _parse_token_price_and_pct(tok)
                 price = parsed["price"]
