@@ -1,13 +1,15 @@
 # ai_service/main.py
 """
-نقطة الدخول الرئيسية (Main Entrypoint) لخدمة ai_service (v1.1 - NameError Hotfix).
-✅ HOTFIX: إضافة `import json` المفقود لإصلاح NameError
+(v1.2.0 - DetachedInstanceError Hotfix)
+✅ HOTFIX: تم إصلاح خطأ sqlalchemy.orm.exc.DetachedInstanceError
 في نقطة نهاية `suggest_template`.
+✅ يتم الآن قراءة `attempt.id` و `template_id` وتخزينهما في متغيرات
+محلية *قبل* إغلاق (commit) الجلسة.
 """
 
 import logging
 import os
-import json # ✅ HOTFIX: إضافة الاستيراد المفقود
+import json 
 from fastapi import FastAPI, Request, HTTPException, status
 from pydantic import ValidationError
 
@@ -29,7 +31,7 @@ from models import ParsingAttempt, ParsingTemplate
 # --- تهيئة التطبيق ---
 app = FastAPI(
     title="CapitalGuard AI Parsing Service",
-    version="1.1.0",
+    version="1.2.0",
     description="خدمة مستقلة لتحليل وتفسير توصيات التداول."
 )
 
@@ -124,6 +126,9 @@ async def suggest_template(request: TemplateSuggestRequest):
     نقطة نهاية لإنشاء قالب جديد مقترح بناءً على تصحيح.
     """
     log.info(f"Received template suggestion request for attempt {request.attempt_id} from user {request.user_id}")
+    template_id = None
+    attempt_id_log = request.attempt_id # للتسجيل في حال فشل
+    
     try:
         with session_scope() as session:
             attempt = session.get(ParsingAttempt, request.attempt_id)
@@ -135,7 +140,6 @@ async def suggest_template(request: TemplateSuggestRequest):
                 return TemplateSuggestResponse(success=False, message="Invalid suggestion request.")
 
             template_name = f"User {request.user_id} Suggestion (Attempt {attempt.id})"
-            # ✅ HOTFIX: `json` is now defined thanks to `import json` at the top
             pattern_placeholder = (
                 f"# REVIEW NEEDED: Source Attempt ID {attempt.id}\n"
                 f"# User ID: {request.user_id}\n"
@@ -154,14 +158,16 @@ async def suggest_template(request: TemplateSuggestRequest):
             session.add(new_template)
             session.flush()
             
+            # ✅ HOTFIX: اقرأ الـ ID *قبل* إغلاق الجلسة
             template_id = new_template.id
+            attempt_id_log = attempt.id
         
-        log.info(f"Created new template (ID: {template_id}) for review from attempt {attempt.id}")
+        # ✅ HOTFIX: تم نقل التسجيل إلى *خارج* نطاق الجلسة
+        log.info(f"Created new template (ID: {template_id}) for review from attempt {attempt_id_log}")
         return TemplateSuggestResponse(success=True, template_id=template_id)
 
     except Exception as e:
-        log.error(f"Failed to suggest template for attempt {request.attempt_id}: {e}", exc_info=True)
-        # ✅ HOTFIX: Check for NameError specifically if json import failed (fallback)
+        log.error(f"Failed to suggest template for attempt {attempt_id_log}: {e}", exc_info=True)
         if isinstance(e, NameError) and 'json' in str(e):
              log.critical("FATAL: json module not imported in main.py")
         return TemplateSuggestResponse(success=False, message=str(e))
