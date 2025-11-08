@@ -1,8 +1,8 @@
 # ai_service/services/regex_parser.py
 """
-محلل Regex (المسار السريع). (v1.3 - Refactored).
-✅ REFACTORED: تم إزالة منطق التحليل المكرر.
-✅ يستدعي الآن `parsing_utils.py` لإجراء التحليل الموحد.
+محلل Regex (المسار السريع). (v1.4 - Target Delimiter Hotfix).
+✅ HOTFIX: تم تحديث Regex الخاص بـ 'targets' في `_parse_simple_key_value`
+ليشمل الفواصل الشائعة مثل '/' و '-' و '→'.
 """
 
 import re
@@ -35,7 +35,8 @@ def _normalize_text(text: str) -> str:
     s = unicodedata.normalize("NFKC", text)
     s = s.translate(_AR_TO_EN_DIGITS)
     s = s.replace("،", ",")
-    s = re.sub(r'[^\w\s\u0600-\u06FF@:.,\d\-+%$#/|]', ' ', s, flags=re.UNICODE)
+    # ✅ HOTFIX: أضفنا '→' إلى الأحرف المسموح بها
+    s = re.sub(r'[^\w\s\u0600-\u06FF@:.,\d\-+%$#/|→]', ' ', s, flags=re.UNICODE)
     s = re.sub(r'(\r\n|\r|\n){2,}', '\n', s)
     s = re.sub(r'\s{2,}', ' ', s)
     return s.strip()
@@ -61,12 +62,13 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
     try:
         normalized_upper = _normalize_for_key(text)
         
+        # ✅ HOTFIX (v1.4): تم توسيع Regex الخاص بالأهداف ليشمل / - →
         keys = {
             'asset': r'#([A-Z0-9]{3,12})',
             'side': r'(LONG|BUY|شراء|صعود|SHORT|SELL|بيع|هبوط)',
-            'entry': r'(ENTRY|دخول|مناطق الدخول)[:\s]+([\d.,KMB]+)',
-            'stop_loss': r'(SL|STOP|ايقاف الخسارة)[:\s]+([\d.,KMB]+)',
-            'targets': r'(TARGETS|TP|الاهداف|اهداف)[:\s\n]+((?:[\d.,KMB@%\s\n]+))'
+            'entry': r'(ENTRY|دخول|مناطق الدخول|BUY)[:\s→]+([\d.,KMB]+)',
+            'stop_loss': r'(SL|STOP|ايقاف خسارة|STOP LOSS)[:\s→]+([\d.,KMB]+)',
+            'targets': r'(TARGETS|TP|الاهداف|اهداف|SELL TARGETS)[:\s\n→]+((?:[\d.,KMB@%\s\n/\-→]+))'
         }
 
         parsed = {}
@@ -78,7 +80,8 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
         asset_match = re.search(keys['asset'], normalized_upper)
         if asset_match:
             asset_str = asset_match.group(1)
-            if asset_str in ["BTC", "ETH"]:
+            # استنتاج USDT إذا كان الأصل هو رمز شائع
+            if asset_str in ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOT", "LINK", "MATIC", "AVAX", "TURTLE"]:
                 parsed['asset'] = f"{asset_str}USDT"
             else:
                 parsed['asset'] = asset_str
@@ -96,7 +99,7 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
         targets_match = re.search(keys['targets'], normalized_upper, re.DOTALL)
         if targets_match:
             target_tokens_str = targets_match.group(2)
-            # Pass original text for context (e.g., "20% each")
+            # تمرير النص الأصلي الكامل لاكتشاف النسب المئوية العامة
             parsed['targets'] = normalize_targets(target_tokens_str, source_text=text)
         
         required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
@@ -107,6 +110,9 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
         log.info(f"Simple KV parser successfully extracted data (Asset: {parsed['asset']})")
         parsed.setdefault("market", "Futures")
         parsed.setdefault("order_type", "LIMIT")
+        # استخراج الملاحظات (أي نص متبقي) - تحسين مستقبلي
+        parsed.setdefault("notes", None) 
+        
         return parsed
 
     except Exception as e:
