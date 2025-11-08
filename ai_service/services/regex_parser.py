@@ -1,8 +1,8 @@
 # ai_service/services/regex_parser.py
 """
-محلل Regex (المسار السريع). (v1.2 - Zero Fix)
-✅ HOTFIX: تم تعديل _parse_one_number ليقبل 0 (للنسب المئوية)،
-وتم تعديل _parse_targets_list لضمان أن أسعار الأهداف > 0.
+محلل Regex (المسار السريع). (v1.3 - Refactored).
+✅ REFACTORED: تم إزالة منطق التحليل المكرر.
+✅ يستدعي الآن `parsing_utils.py` لإجراء التحليل الموحد.
 """
 
 import re
@@ -14,16 +14,21 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
-# استيراد النماذج وقاعدة البيانات المحلية لهذه الخدمة
+# استيراد النماذج وقاعدة البيانات المحلية
 from models import ParsingTemplate
 from database import session_scope
 
+# --- ✅ استيراد مصدر الحقيقة الوحيد ---
+from services.parsing_utils import (
+    parse_decimal_token, 
+    normalize_targets
+)
+
 log = logging.getLogger(__name__)
 
-# --- دوال مساعدة منسوخة من النظام الرئيسي ---
+# --- دوال مساعدة (للتطبيع والبحث فقط) ---
 
 _AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-_SUFFIXES = {"K": Decimal("1000"), "M": Decimal("1000000"), "B": Decimal("1000000000")}
 
 def _normalize_text(text: str) -> str:
     if not text: return ""
@@ -38,67 +43,6 @@ def _normalize_text(text: str) -> str:
 def _normalize_for_key(text: str) -> str:
     return _normalize_text(text).upper()
 
-def _parse_one_number(token: str) -> Optional[str]:
-    """
-    يحلل الرقم ويعيده كنص (string) لسلامة JSON.
-    ✅ HOTFIX v1.2: يسمح الآن بـ 0 (للنسب المئوية).
-    """
-    if token is None: return None
-    try:
-        t = str(token).strip().replace(",", "").upper()
-        if not t: return None
-        multiplier = Decimal("1")
-        num_part = t
-        if t[-1].isalpha() and t[-1] in _SUFFIXES:
-            multiplier = _SUFFIXES[t[-1]]
-            num_part = t[:-1]
-        if not re.fullmatch(r"[+\-]?\d*\.?\d+", num_part):
-            return None
-        
-        val = Decimal(num_part) * multiplier
-        
-        # ✅ THE FIX: Allow 0 (e.g., for percentages)
-        return str(val) if val.is_finite() and val >= 0 else None
-    except Exception:
-        return None
-
-def _parse_targets_list(tokens: List[str]) -> List[Dict[str, Any]]:
-    parsed_targets = []
-    if not tokens: return parsed_targets
-    for token in tokens:
-        if not token: continue
-        try:
-            price_str, pct_str = token, "0"
-            if '@' in token:
-                parts = token.split('@', 1)
-                if len(parts) != 2: price_str = parts[0].strip(); pct_str = "0"
-                else: price_str, pct_str = parts[0].strip(), parts[1].strip().replace('%','')
-            
-            price_val_str = _parse_one_number(price_str)
-            pct_val_str = _parse_one_number(pct_str) if pct_str else "0"
-            
-            pct_f = 0.0
-            price_d = Decimal(0)
-            
-            if pct_val_str:
-                try: pct_f = float(pct_val_str)
-                except (ValueError, TypeError): pct_f = 0.0
-            
-            if price_val_str:
-                try: price_d = Decimal(price_val_str)
-                except (InvalidOperation, TypeError): price_d = Decimal(0)
-
-            # ✅ THE FIX: Ensure price is valid and > 0, but percentage can be 0
-            if price_d > 0:
-                parsed_targets.append({"price": price_val_str, "close_percent": pct_f})
-        except Exception:
-            continue
-    
-    if parsed_targets and all(t["close_percent"] == 0.0 for t in parsed_targets):
-        parsed_targets[-1]["close_percent"] = 100.0
-    return parsed_targets
-
-# ✅ UPDATED: Added Arabic keywords
 def _find_side(text: str) -> Optional[str]:
     txt = text.upper()
     side_maps = {
@@ -110,18 +54,15 @@ def _find_side(text: str) -> Optional[str]:
             return s
     return None
 
-# ✅ NEW: Fallback parser for simple Arabic/English key-value
 def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
     """
     A simple fallback parser that looks for common Arabic/English keys.
-    This runs if no regex templates match, before giving up to the LLM.
     """
     try:
         normalized_upper = _normalize_for_key(text)
         
-        # Define keywords (Regex compatible)
         keys = {
-            'asset': r'#([A-Z0-9]{3,12})', # Find hashtag asset first
+            'asset': r'#([A-Z0-9]{3,12})',
             'side': r'(LONG|BUY|شراء|صعود|SHORT|SELL|بيع|هبوط)',
             'entry': r'(ENTRY|دخول|مناطق الدخول)[:\s]+([\d.,KMB]+)',
             'stop_loss': r'(SL|STOP|ايقاف الخسارة)[:\s]+([\d.,KMB]+)',
@@ -130,44 +71,41 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
 
         parsed = {}
 
-        # 1. Find Side
         side_match = re.search(keys['side'], normalized_upper)
         if side_match:
             parsed['side'] = _find_side(side_match.group(1))
 
-        # 2. Find Asset
         asset_match = re.search(keys['asset'], normalized_upper)
         if asset_match:
-            # Handle assets like #ETH -> ETHUSDT
             asset_str = asset_match.group(1)
-            if asset_str in ["BTC", "ETH"]: # Common ones
+            if asset_str in ["BTC", "ETH"]:
                 parsed['asset'] = f"{asset_str}USDT"
             else:
                 parsed['asset'] = asset_str
         
-        # 3. Find Entry
         entry_match = re.search(keys['entry'], normalized_upper)
         if entry_match:
-            parsed['entry'] = _parse_one_number(entry_match.group(2))
+            # ✅ REFACTORED: Use unified parser
+            entry_val = parse_decimal_token(entry_match.group(2))
+            parsed['entry'] = str(entry_val) if entry_val is not None else None
 
-        # 4. Find Stop Loss
         sl_match = re.search(keys['stop_loss'], normalized_upper)
         if sl_match:
-            parsed['stop_loss'] = _parse_one_number(sl_match.group(2))
+            # ✅ REFACTORED: Use unified parser
+            sl_val = parse_decimal_token(sl_match.group(2))
+            parsed['stop_loss'] = str(sl_val) if sl_val is not None else None
 
-        # 5. Find Targets
         targets_match = re.search(keys['targets'], normalized_upper, re.DOTALL)
         if targets_match:
-            target_tokens = re.split(r'[\s\n,]+', targets_match.group(2))
-            # إزالة أي رموز تعبيرية أو فراغات متبقية
-            clean_tokens = [re.sub(r'[^\d@.,KMB]', '', t) for t in target_tokens if t]
-            parsed['targets'] = _parse_targets_list(clean_tokens)
+            target_tokens_str = targets_match.group(2)
+            # ✅ REFACTORED: Use unified normalizer
+            # Pass original text for context (e.g., "20% each")
+            parsed['targets'] = normalize_targets(target_tokens_str, source_text=text)
         
-        # Check for required fields
         required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
         if not all(parsed.get(k) for k in required_keys):
             log.debug(f"Simple KV parser found data, but missing required keys. Found: {parsed.keys()}")
-            return None # Missing required data
+            return None
         
         log.info(f"Simple KV parser successfully extracted data (Asset: {parsed['asset']})")
         parsed.setdefault("market", "Futures")
@@ -183,15 +121,14 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
 
 def parse_with_regex(text: str, session: Session) -> Optional[Dict[str, Any]]:
     """
-    يحاول تحليل النص باستخدام جميع قوالب Regex النشطة، ثم
-    يستخدم محلل Key-Value البسيط كخيار احتياطي.
+    يحاول تحليل النص باستخدام قوالب Regex، ثم Key-Value البسيط.
     """
     try:
         stmt = select(ParsingTemplate).where(ParsingTemplate.is_public == True)
         templates = session.execute(stmt).scalars().all()
     except Exception as e:
         log.error(f"RegexParser: Failed to query templates from DB: {e}")
-        templates = [] # Continue without DB templates
+        templates = []
 
     normalized_upper = _normalize_for_key(text)
     
@@ -216,12 +153,15 @@ def parse_with_regex(text: str, session: Session) -> Optional[Dict[str, Any]]:
                 if not parsed['asset'] or not parsed['side']:
                     continue
 
-                parsed['entry'] = _parse_one_number(data.get('entry',''))
-                parsed['stop_loss'] = _parse_one_number(data.get('sl', data.get('stop_loss','')))
+                # ✅ REFACTORED: Use unified parser (returns Decimal, convert to str)
+                entry_val = parse_decimal_token(data.get('entry',''))
+                sl_val = parse_decimal_token(data.get('sl', data.get('stop_loss','')))
+                parsed['entry'] = str(entry_val) if entry_val is not None else None
+                parsed['stop_loss'] = str(sl_val) if sl_val is not None else None
                 
                 target_str = (data.get('targets') or data.get('targets_str') or '').strip()
-                tokens = [t for t in re.split(r'[\s,\n,]+', target_str) if t]
-                parsed['targets'] = _parse_targets_list(tokens)
+                # ✅ REFACTORED: Use unified normalizer
+                parsed['targets'] = normalize_targets(target_str, source_text=text)
 
                 required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
                 if not all(parsed.get(k) for k in required_keys):
@@ -245,6 +185,5 @@ def parse_with_regex(text: str, session: Session) -> Optional[Dict[str, Any]]:
     if simple_result:
         return simple_result
 
-    # لم يتم العثور على أي قالب مطابق
     log.debug("RegexParser: All regex paths failed.")
     return None
