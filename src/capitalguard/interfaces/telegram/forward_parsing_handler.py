@@ -1,4 +1,4 @@
-# --- src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
+# src/capitalguard/interfaces/telegram/forward_parsing_handler.py
 """
 Handles the user flow for parsing a forwarded text message (v3.0.2 - Smart Correction).
 ✅ HOTFIX: Updated correction_value_handler to use a smarter regex tokenizer.
@@ -376,24 +376,21 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             pattern = r'([\d.,KMB]+(?:@[\d.,]+%?)?)'
             tokens = re.findall(pattern, user_input, re.IGNORECASE)
             
-            # Handle the "0.15 (25% each)" case
-            if not tokens and "(25% each)" in user_input:
-                # Fallback for complex text: split by common delimiters
-                tokens = re.split(r'[\s\n,-]+', user_input)
-                # This might produce ['0.105', '', '0.112', '', '0.12', ...]
-                # parse_targets_list is designed to handle empty strings
-            
+            # Handle "0.15 (25% each)" case
+            if not tokens and "(25% each)" in user_input.lower():
+                # Fallback for complex text: split by common delimiters and extract numbers
+                just_numbers = re.findall(r'([\d.,KMB]+)', user_input)
+                # Apply the percentage to all found numbers
+                tokens = [f"{num}@25" for num in just_numbers]
+            elif not tokens:
+                # Fallback for simple lists like "1 2 3"
+                tokens = re.split(r'[\s\n,]+', user_input)
+
             log.debug(f"Smart tokenizer found tokens: {tokens}")
             targets = parse_targets_list(tokens)
             
             if not targets: 
                 raise ValueError("Invalid targets format or no valid targets found.")
-            
-            # Handle " (25% each)" -> apply 25% to all
-            if "(25% each)" in user_input and all(t['close_percent'] == 0.0 for t in targets):
-                log.debug("Applying '25% each' logic to all targets.")
-                for t in targets:
-                    t['close_percent'] = 25.0
             
             temp_data['targets'] = targets
             validated = True
