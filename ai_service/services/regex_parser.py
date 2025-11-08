@@ -85,20 +85,17 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
         
         entry_match = re.search(keys['entry'], normalized_upper)
         if entry_match:
-            # ✅ REFACTORED: Use unified parser
             entry_val = parse_decimal_token(entry_match.group(2))
             parsed['entry'] = str(entry_val) if entry_val is not None else None
 
         sl_match = re.search(keys['stop_loss'], normalized_upper)
         if sl_match:
-            # ✅ REFACTORED: Use unified parser
             sl_val = parse_decimal_token(sl_match.group(2))
             parsed['stop_loss'] = str(sl_val) if sl_val is not None else None
 
         targets_match = re.search(keys['targets'], normalized_upper, re.DOTALL)
         if targets_match:
             target_tokens_str = targets_match.group(2)
-            # ✅ REFACTORED: Use unified normalizer
             # Pass original text for context (e.g., "20% each")
             parsed['targets'] = normalize_targets(target_tokens_str, source_text=text)
         
@@ -153,14 +150,12 @@ def parse_with_regex(text: str, session: Session) -> Optional[Dict[str, Any]]:
                 if not parsed['asset'] or not parsed['side']:
                     continue
 
-                # ✅ REFACTORED: Use unified parser (returns Decimal, convert to str)
                 entry_val = parse_decimal_token(data.get('entry',''))
                 sl_val = parse_decimal_token(data.get('sl', data.get('stop_loss','')))
                 parsed['entry'] = str(entry_val) if entry_val is not None else None
                 parsed['stop_loss'] = str(sl_val) if sl_val is not None else None
                 
                 target_str = (data.get('targets') or data.get('targets_str') or '').strip()
-                # ✅ REFACTORED: Use unified normalizer
                 parsed['targets'] = normalize_targets(target_str, source_text=text)
 
                 required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
