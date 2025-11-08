@@ -1,9 +1,8 @@
 # ai_service/services/regex_parser.py
 """
-محلل Regex (المسار السريع). (v1.1 - Arabic Keywords)
-✅ UPDATED: يدعم الآن الكلمات الرئيسية العربية الأساسية (الاهداف، مناطق الدخول، ايقاف الخسارة)
-يقرأ القوالب (Templates) من جدول `parsing_templates` المشترك
-ويحاول مطابقتها.
+محلل Regex (المسار السريع). (v1.2 - Zero Fix)
+✅ HOTFIX: تم تعديل _parse_one_number ليقبل 0 (للنسب المئوية)،
+وتم تعديل _parse_targets_list لضمان أن أسعار الأهداف > 0.
 """
 
 import re
@@ -42,7 +41,7 @@ def _normalize_for_key(text: str) -> str:
 def _parse_one_number(token: str) -> Optional[str]:
     """
     يحلل الرقم ويعيده كنص (string) لسلامة JSON.
-    يعيد None إذا كان غير صالح.
+    ✅ HOTFIX v1.2: يسمح الآن بـ 0 (للنسب المئوية).
     """
     if token is None: return None
     try:
@@ -57,7 +56,9 @@ def _parse_one_number(token: str) -> Optional[str]:
             return None
         
         val = Decimal(num_part) * multiplier
-        return str(val) if val.is_finite() and val > 0 else None
+        
+        # ✅ THE FIX: Allow 0 (e.g., for percentages)
+        return str(val) if val.is_finite() and val >= 0 else None
     except Exception:
         return None
 
@@ -67,21 +68,28 @@ def _parse_targets_list(tokens: List[str]) -> List[Dict[str, Any]]:
     for token in tokens:
         if not token: continue
         try:
-            price_str, pct_str = token, ""
+            price_str, pct_str = token, "0"
             if '@' in token:
                 parts = token.split('@', 1)
-                if len(parts) != 2: price_str = parts[0].strip(); pct_str = ""
+                if len(parts) != 2: price_str = parts[0].strip(); pct_str = "0"
                 else: price_str, pct_str = parts[0].strip(), parts[1].strip().replace('%','')
             
             price_val_str = _parse_one_number(price_str)
             pct_val_str = _parse_one_number(pct_str) if pct_str else "0"
             
             pct_f = 0.0
+            price_d = Decimal(0)
+            
             if pct_val_str:
                 try: pct_f = float(pct_val_str)
-                except ValueError: pct_f = 0.0
+                except (ValueError, TypeError): pct_f = 0.0
             
-            if price_val_str is not None:
+            if price_val_str:
+                try: price_d = Decimal(price_val_str)
+                except (InvalidOperation, TypeError): price_d = Decimal(0)
+
+            # ✅ THE FIX: Ensure price is valid and > 0, but percentage can be 0
+            if price_d > 0:
                 parsed_targets.append({"price": price_val_str, "close_percent": pct_f})
         except Exception:
             continue
@@ -130,7 +138,12 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
         # 2. Find Asset
         asset_match = re.search(keys['asset'], normalized_upper)
         if asset_match:
-            parsed['asset'] = asset_match.group(1)
+            # Handle assets like #ETH -> ETHUSDT
+            asset_str = asset_match.group(1)
+            if asset_str in ["BTC", "ETH"]: # Common ones
+                parsed['asset'] = f"{asset_str}USDT"
+            else:
+                parsed['asset'] = asset_str
         
         # 3. Find Entry
         entry_match = re.search(keys['entry'], normalized_upper)
@@ -145,9 +158,10 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
         # 5. Find Targets
         targets_match = re.search(keys['targets'], normalized_upper, re.DOTALL)
         if targets_match:
-            # Split targets by space, newline, or comma
             target_tokens = re.split(r'[\s\n,]+', targets_match.group(2))
-            parsed['targets'] = _parse_targets_list(target_tokens)
+            # إزالة أي رموز تعبيرية أو فراغات متبقية
+            clean_tokens = [re.sub(r'[^\d@.,KMB]', '', t) for t in target_tokens if t]
+            parsed['targets'] = _parse_targets_list(clean_tokens)
         
         # Check for required fields
         required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
