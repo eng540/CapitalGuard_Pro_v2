@@ -1,20 +1,24 @@
 # ai_service/services/llm_parser.py
 """
-خدمة الاتصال بـ LLM (v2.5.0 - Smart Financial Parser).
-✅ (Point 1) يضيف التحقق المالي الرقمي (`_financial_consistency_check`).
-✅ (Point 2 & 5) يضيف تصنيف الأخطاء والتسجيل المنظم (Structured Logging).
-✅ (Point 3) يضيف موجه (Prompt) v2.5 مع قواعد استدلال عربية محسنة.
-✅ (Point 4) يضيف مرشح Non-JSON (`re.search`) لزيادة الموثوقية.
+خدمة الاتصال بـ LLM (v2.6.0 - Smart Adaptive Parser).
+✅ (Point 1) يضيف تحليل JSON عميق (لمنع JSON المزدوج).
+✅ (Point 2) يضيف تحققًا ماليًا محسنًا (الأهداف المكررة/المتقاربة).
+✅ (Point 3 & 4) يضيف Telemetry Logger مستقل ومراقبة زمن الاستجابة.
+✅ (Point 6) يضيف موجه (Prompt) v2.6 مع وعي سياقي عربي محسن.
+❌ (Point 5) تم رفض "Fallback Targets Extraction" لخطورته المنطقية.
 """
 
 import os
 import httpx
 import logging
 import json
-import re # ✅ (Point 4)
+import re
 from typing import Dict, Any, Optional
 
 log = logging.getLogger(__name__)
+# ✅ (Point 3) سجل Telemetry مستقل
+telemetry_log = logging.getLogger("ai_service.telemetry")
+# (يجب تهيئة هذا Logger في main.py أو إعدادات اللوغاريتمات لتوجيهه إلى ملف jsonl)
 
 # --- قراءة جميع متغيرات البيئة ---
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google").lower()
@@ -25,7 +29,7 @@ LLM_MODEL = os.getenv("LLM_MODEL")
 if not LLM_API_KEY or not LLM_API_URL or not LLM_MODEL:
     log.warning("LLM environment variables (KEY, URL, MODEL) are not fully set. LLM parser will be disabled.")
 
-# --- ✅ (Point 3) UPDATED: موجه النظام الموحد (v2.5) ---
+# --- ✅ (Point 6) UPDATED: موجه النظام الموحد (v2.6) ---
 SYSTEM_PROMPT = """
 You are an expert financial analyst. Your task is to extract structured data from a forwarded trade signal.
 You must analyze the user's text and return ONLY a valid JSON object.
@@ -50,27 +54,28 @@ You must analyze the user's text and return ONLY a valid JSON object.
 8.  Market/Order: Default to "Futures" and "LIMIT".
 9.  **Arabic Logic:** "منطقة الدخول" or "دخول" = Entry. "وقف الخسارة" or "ايقاف خسارة" = Stop Loss.
 10. **Inference Logic:** If "side" is missing, try to infer it. If "ايقاف خسارة" (SL) is *below* "دخول" (Entry), it's a "LONG" trade. If SL is *above* Entry, it's a "SHORT" trade.
+11. **Contextual Awareness:** If Arabic numbers are followed by words like "دخول" or "وقف", interpret them accordingly even if the order differs.
 
 --- 
-(Examples from v2.4 are still valid and included here)
+(Examples from v2.5 are still valid and included here)
 ...
 ---
 
 The user's text will be provided next. Respond ONLY with the JSON object.
 """
 
-# --- ✅ (Point 1) Hard-coded Financial Validation ---
+# --- ✅ (Point 2) Enhanced Hard-coded Financial Validation ---
 def _financial_consistency_check(data: Dict[str, Any]) -> bool:
     """
-    يقوم بإجراء تحقق رقمي صارم بعد استلام الـ JSON.
-    هذا هو "جدار الحماية" الخاص بنا ضد هلوسات LLM.
+    يقوم بإجراء تحقق رقمي صارم بعد استلام الـ JSON. (v2.6)
+    يتحقق الآن من الأهداف المكررة/المتقاربة.
     """
     try:
         entry = float(data["entry"])
         sl = float(data["stop_loss"])
         side = data["side"].upper()
-        # تأكد من أن الأهداف موجودة وأنها قائمة
         targets_raw = data.get("targets")
+        
         if not targets_raw or not isinstance(targets_raw, list):
              log.warning("Post-validation failed: Targets are missing or not a list.")
              return False
@@ -78,7 +83,20 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
         targets = [float(t["price"]) for t in targets_raw]
         if not targets:
              log.warning("Post-validation failed: Targets list is empty.")
-             return False # يجب أن تحتوي على هدف واحد على الأقل
+             return False
+
+        # --- (Point 2) التحقق الجديد ---
+        if len(set(targets)) != len(targets):
+            log.warning("Post-validation failed: Duplicate targets found.")
+            return False
+        
+        # (اختياري) التحقق من تقارب الأهداف
+        if len(targets) > 1:
+            target_range = abs(targets[-1] - targets[0])
+            if target_range < (entry * 0.002): # (أقل من 0.2% من سعر الدخول)
+                log.warning("Post-validation failed: Targets are too close together (range < 0.2%).")
+                return False
+        # --- نهاية التحقق الجديد ---
 
         if side == "LONG":
             if sl >= entry:
@@ -98,7 +116,6 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
             log.warning(f"Post-validation failed: Invalid side '{side}'")
             return False
         
-        # إذا نجحت جميع الفحوصات
         return True
     except (ValueError, TypeError, KeyError) as e:
         log.warning(f"Post-validation failed due to data error: {e}. Data: {data}")
@@ -107,27 +124,12 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
 
 # --- المنطق الخاص بـ Google ---
 def _build_google_headers(api_key: str) -> Dict[str, str]:
-    return {
-        "Content-Type": "application/json",
-        "X-goog-api-key": api_key
-    }
+    return {"Content-Type": "application/json", "X-goog-api-key": api_key}
 
 def _build_google_payload(text: str) -> Dict[str, Any]:
     return {
-        "contents": [
-            {
-                "parts": [
-                    {"text": SYSTEM_PROMPT},
-                    {"text": "--- ACTUAL USER TEXT START ---"},
-                    {"text": text},
-                    {"text": "--- ACTUAL USER TEXT END ---"}
-                ]
-            }
-        ],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "temperature": 0.0 
-        }
+        "contents": [{"parts": [{"text": SYSTEM_PROMPT}, {"text": "--- ACTUAL USER TEXT START ---"}, {"text": text}, {"text": "--- ACTUAL USER TEXT END ---"}]}],
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.0}
     }
 
 def _extract_google_response(response_json: Dict[str, Any]) -> str:
@@ -137,21 +139,14 @@ def _extract_google_response(response_json: Dict[str, Any]) -> str:
         log.error(f"Failed to extract text from Google response structure: {e}. Response: {response_json}")
         raise ValueError("Invalid response structure from Google API.") from e
 
-
 # --- المنطق الخاص بـ OpenAI / OpenRouter ---
 def _build_openai_headers(api_key: str) -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
 def _build_openai_payload(text: str) -> Dict[str, Any]:
     return {
         "model": LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text}
-        ],
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": text}],
         "response_format": {"type": "json_object"}
     }
 
@@ -161,7 +156,6 @@ def _extract_openai_response(response_json: Dict[str, Any]) -> str:
     except (KeyError, IndexError, TypeError) as e:
         log.error(f"Failed to extract text from OpenAI response structure: {e}. Response: {response_json}")
         raise ValueError("Invalid response structure from OpenAI API.") from e
-
 
 # --- الدالة الرئيسية (الموزع) ---
 
@@ -175,7 +169,13 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
 
     headers: Dict[str, str]
     payload: Dict[str, Any]
-    log_meta = {"event": "LLM_REQUEST", "provider": LLM_PROVIDER, "model": LLM_MODEL}
+    # ✅ (Point 3) إعداد بيانات Telemetry الأولية
+    log_meta = {
+        "event": "llm_parse", 
+        "provider": LLM_PROVIDER, 
+        "model": LLM_MODEL,
+        "text_snippet": text[:80] # سجل مقتطف من النص
+    }
 
     try:
         if LLM_PROVIDER == "google":
@@ -196,6 +196,12 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
         async with httpx.AsyncClient() as client:
             response = await client.post(LLM_API_URL, headers=headers, json=payload, timeout=20.0)
             
+            # ✅ (Point 4) مراقبة زمن الاستجابة
+            latency_ms = response.elapsed.total_seconds() * 1000
+            log_meta["latency_ms"] = latency_ms
+            if latency_ms > 10000: # أكثر من 10 ثوانٍ
+                log.warning(f"LLM slow response: {latency_ms:.0f}ms", extra=log_meta)
+
             if response.status_code != 200:
                 log.error(f"LLM API ({LLM_PROVIDER}) request failed with status {response.status_code}: {response.text}")
                 return None
@@ -208,53 +214,65 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
                 content_str = _extract_openai_response(response_json)
             
             # --- ✅ (Point 4) مرشح Non-JSON ---
-            # ابحث عن أول '{' وآخر '}'
             json_match = re.search(r'\{.*\}', content_str, re.DOTALL)
             if not json_match:
                 log.warning(f"LLM did not return a valid JSON block. Response: {content_str[:200]}")
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "json_format"}))
                 return None
             content_str = json_match.group(0)
             # --- نهاية المرشح ---
             
             parsed_data = json.loads(content_str)
+
+            # --- ✅ (Point 1) تحليل JSON المزدوج ---
+            if isinstance(parsed_data, str) and parsed_data.strip().startswith('{'):
+                log.debug("Detected nested JSON string, reparsing...")
+                parsed_data = json.loads(parsed_data)
+            # --- نهاية تحليل JSON المزدوج ---
             
             # --- ✅ (Point 2) تصنيف الأخطاء ---
             if "error" in parsed_data:
                 reason = parsed_data.get("error", "Unknown LLM-side error")
                 error_type = "other"
-                if "Financial validation" in reason: error_type = "financial"
-                elif "Missing required" in reason: error_type = "missing_fields"
+                if "Financial validation" in reason: error_type = "financial_prompt"
+                elif "Missing required" in reason: error_type = "missing_fields_prompt"
                 
-                log.warning("LLMValidationFailure", extra={**log_meta, "error_type": error_type, "detail": reason})
+                log.warning(f"LLMValidationFailure: {reason}", extra={**log_meta, "error_type": error_type, "detail": reason})
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": error_type}))
                 return None
 
             required_keys = ["asset", "side", "entry", "stop_loss", "targets"]
             if not all(k in parsed_data for k in required_keys):
                 log.warning("LLMParseFailure: MissingKeys", extra={**log_meta, "missing_keys": [k for k in required_keys if k not in parsed_data]})
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "missing_keys_hard"}))
                 return None
             
-            # --- ✅ (Point 1) التحقق المالي الصارم ---
+            # --- ✅ (Point 2) التحقق المالي الصارم ---
             if not _financial_consistency_check(parsed_data):
-                log.warning("LLMParseFailure: FinancialConsistency", extra={**log_meta, "data": parsed_data, "error_type": "financial"})
-                return None # ارفض البيانات غير المنطقية
+                log.warning("LLMParseFailure: FinancialConsistency", extra={**log_meta, "data": parsed_data, "error_type": "financial_hard"})
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "financial_hard"}))
+                return None 
 
-            # --- ✅ (Point 5) سجل الميتاداتا للنجاح ---
-            log.info("LLMParseSuccess", extra={
+            # --- ✅ (Point 3) سجل الميتاداتا للنجاح ---
+            telemetry_log.info(json.dumps({
                 **log_meta,
+                "success": True,
                 "asset": parsed_data.get("asset"),
                 "side": parsed_data.get("side"),
                 "num_targets": len(parsed_data.get("targets", [])),
-                "token_count_estimate": len(content_str) # تقدير تقريبي
-            })
+            }))
             
             return parsed_data
 
     except httpx.RequestError as e:
         log.error(f"HTTP error while calling LLM API ({LLM_PROVIDER}): {e}")
+        telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "http_request"}))
         return None
     except (json.JSONDecodeError, KeyError, TypeError, IndexError, ValueError) as e:
         log.error(f"Failed to parse LLM JSON response ({LLM_PROVIDER}): {e}. Response snippet: {content_str[:200]}")
+        telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "json_decode"}))
         return None
     except Exception as e:
         log.error(f"Unexpected error in LLM parser ({LLM_PROVIDER}): {e}", exc_info=True)
+        telemetry_log.info(json.dumps({**log_meta, "success": False, "error_type": "unknown"}))
         return None
