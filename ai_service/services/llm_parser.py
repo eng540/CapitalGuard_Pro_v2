@@ -1,9 +1,10 @@
 # ai_service/services/llm_parser.py
 """
-(v4.1.1 - Refactored w/ Syntax Fix)
-✅ REFACTORED: يعتمد الآن بشكل كامل على `parsing_utils.py` (v1.1)
-الذي تم إصلاح الخطأ النحوي فيه.
-✅ يحتفظ بالمنطق الذكي (Prompt v2.9, Financial Check, Telemetry).
+(v3.0.0 - Advanced Percentage Prompting).
+✅ HOTFIX: (Based on test cases 7 & 8)
+✅ SYSTEM_PROMPT (v3.0) updated with new examples to handle:
+    - "(20 each)" (without % symbol)
+    - "النسبة 25 لكل هدف" (alternative Arabic phrasing)
 """
 
 import os
@@ -33,7 +34,7 @@ LLM_MODEL = os.getenv("LLM_MODEL")
 if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
     log.warning("LLM environment variables incomplete. LLM parsing may be skipped.")
 
-# --- ✅ UPDATED: موجه النظام الموحد (v2.9) ---
+# --- ✅ (Point 1) UPDATED: موجه النظام الموحد (v3.0) ---
 SYSTEM_PROMPT = os.getenv("LLM_SYSTEM_PROMPT") or """
 You are an expert financial analyst. Your task is to extract structured data from a forwarded trade signal.
 You must analyze the user's text and return ONLY a valid JSON object.
@@ -55,7 +56,7 @@ You must analyze the user's text and return ONLY a valid JSON object.
 5.  Targets: Find "Targets", "TPs", "الاهداف". Extract *all* numbers that follow. Ignore ranges. Ignore emojis (✅).
 6.  **Percentages (CRITICAL):**
     * If targets have individual percentages (e.g., "105k@10"), use them.
-    * **If a *global* percentage is mentioned (e.g., "(20% each)", "(20% per target)", "Close 30% each TP", "كل هدف 25%"), you *MUST* apply that percentage to *ALL* targets in the list.**
+    * **If a *global* percentage is mentioned (e.g., "(20% each)", "(20 each)", "Close 30% each TP", "كل هدف 25%", "النسبة 25 لكل هدف"), you *MUST* apply that percentage to *ALL* targets.**
     * If no percentages are found, default to 0.0 for all targets (the normalizer will handle the 100% rule).
 7.  Notes: Add any extra text (like "Lev - 5x" or "لللحماية") to the "notes" field.
 8.  Market/Order: Default to "Futures" and "LIMIT".
@@ -88,34 +89,58 @@ YOUR JSON RESPONSE:
   "notes": null
 }
 --- 
-### EXAMPLE 2 (English - Global Percentage) ---
+### EXAMPLE 2 (English - No % Symbol) ---
 USER TEXT:
-#SOL LONG
-Entry 172
-Targets 185 - 200 - 220 - 250
-SL 165
-(20% per target)
+Targets - 120 - 140 - 160 (20 each)
+Entry 100
+SL 95
+#XYZ LONG
 
 YOUR JSON RESPONSE:
 {
-  "asset": "SOLUSDT",
+  "asset": "XYZUSDT",
   "side": "LONG",
-  "entry": "172",
-  "stop_loss": "165",
+  "entry": "100",
+  "stop_loss": "95",
   "targets": [
-    {"price": "185", "close_percent": 20.0},
-    {"price": "200", "close_percent": 20.0},
-    {"price": "220", "close_percent": 20.0},
-    {"price": "250", "close_percent": 20.0}
+    {"price": "120", "close_percent": 20.0},
+    {"price": "140", "close_percent": 20.0},
+    {"price": "160", "close_percent": 20.0}
   ],
   "market": "Futures",
   "order_type": "LIMIT",
-  "notes": "(20% per target)"
+  "notes": "(20 each)"
+}
+---
+### EXAMPLE 3 (Arabic - Alt Phrasing) ---
+USER TEXT:
+الاهداف 2100 - 2300 - 2500
+النسبة 25 لكل هدف
+دخول 2000
+#ABC شراء
+وقف خسارة 1950
+
+YOUR JSON RESPONSE:
+{
+  "asset": "ABCUSDT",
+  "side": "LONG",
+  "entry": "2000",
+  "stop_loss": "1950",
+  "targets": [
+    {"price": "2100", "close_percent": 25.0},
+    {"price": "2300", "close_percent": 25.0},
+    {"price": "2500", "close_percent": 25.0}
+  ],
+  "market": "Futures",
+  "order_type": "LIMIT",
+  "notes": "النسبة 25 لكل هدف"
 }
 ---
 
 The user's text will be provided next. Respond ONLY with the JSON object.
 """
+
+# --- (باقي الملف v4.1.1 يبقى كما هو) ---
 
 # --- Financial consistency check ---
 def _financial_consistency_check(data: Dict[str, Any]) -> bool:
@@ -257,12 +282,10 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
                 return None
 
             # --- ✅ REFACTORED: Use unified normalizers ---
-            # 1. Normalize targets using original text for context (e.g., "20% each")
             parsed_targets_raw = parsed.get("targets")
             normalized_targets = normalize_targets(parsed_targets_raw, source_text=text)
-            parsed["targets"] = normalized_targets # (list of dicts with string prices)
+            parsed["targets"] = normalized_targets 
 
-            # 2. Normalize entry/sl (ensure they are valid Decimals, then convert to string)
             entry_val = parse_decimal_token(str(parsed["entry"]))
             sl_val = parse_decimal_token(str(parsed["stop_loss"]))
             if entry_val is None or sl_val is None:
@@ -273,7 +296,6 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
             parsed["stop_loss"] = str(sl_val)
             # --- End Refactor ---
 
-            # 3. Financial consistency check (uses the string-based dict)
             if not _financial_consistency_check(parsed):
                 log.warning("Financial consistency check failed.", extra=log_meta)
                 telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "financial_check"}))
