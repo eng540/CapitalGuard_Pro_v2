@@ -1,6 +1,8 @@
 # -src/capitalguard/domain/entities.py (v25.0 - FINAL & UNIFIED)
 """
 Defines the core business entities of the system. This is the heart of the domain layer.
+✅ THE FIX (R1-S1): Expanded UserTradeStatus to include WATCHLIST and PENDING_ACTIVATION
+       to support the new accounting logic (Trader-First) and channel auditing.
 """
 
 from dataclasses import dataclass, field
@@ -30,9 +32,14 @@ class ExitStrategy(Enum):
     MANUAL_CLOSE_ONLY = "MANUAL_CLOSE_ONLY"
 
 class UserTradeStatus(Enum):
-    """Defines the state of a user's personal trade record."""
-    OPEN = "OPEN"
-    CLOSED = "CLOSED"
+    """
+    Defines the state of a user's personal trade record.
+    ✅ R1-S1: Updated for new logic.
+    """
+    WATCHLIST = "WATCHLIST" # Forwarded/Tracked for channel auditing. Does NOT count towards user PnL.
+    PENDING_ACTIVATION = "PENDING_ACTIVATION" # User clicked "Activate", waiting for entry price hit. Does NOT count yet.
+    ACTIVATED = "ACTIVATED" # Trade is live. This IS the basis for all user PnL calculations.
+    CLOSED = "CLOSED" # Trade is closed.
 
 class UserType(Enum):
     """Defines the roles a user can have within the system."""
@@ -78,7 +85,8 @@ class Recommendation:
 
     def activate(self) -> None:
         """
-        Marks the recommendation as active. Enforces the business rule that only
+        Marks the recommendation as active.
+        Enforces the business rule that only
         PENDING recommendations can be activated.
         """
         if self.status == RecommendationStatus.PENDING:
@@ -88,7 +96,8 @@ class Recommendation:
 
     def close(self, exit_price: float) -> None:
         """
-        Closes the recommendation. This method is idempotent.
+        Closes the recommendation.
+        This method is idempotent.
         """
         if self.status == RecommendationStatus.CLOSED:
             return
@@ -110,7 +119,7 @@ class UserTrade:
     entry: Price
     stop_loss: Price
     targets: Targets
-    status: UserTradeStatus
+    status: UserTradeStatus # ✅ R1-S1: Uses the expanded Enum
     
     source_recommendation_id: Optional[int] = None
     close_price: Optional[float] = None
@@ -118,3 +127,8 @@ class UserTrade:
     
     created_at: datetime = field(default_factory=datetime.utcnow)
     closed_at: Optional[datetime] = None
+    
+    # ✅ R1-S1: Add new fields for auditing
+    original_published_at: Optional[datetime] = None
+    activated_at: Optional[datetime] = None
+    watched_channel_id: Optional[int] = None
