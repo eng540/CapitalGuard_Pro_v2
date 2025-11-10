@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select 
+from sqlalchemy.orm import selectinload  # ✅ الإصلاح الحاسم
 
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.uow import session_scope
