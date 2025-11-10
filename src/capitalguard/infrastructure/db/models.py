@@ -1,4 +1,8 @@
-# src/capitalguard/infrastructure/db/models.py (Updated for v3.0)
+# src/capitalguard/infrastructure/db/models.py (Updated for R1-S1)
+"""
+✅ THE FIX (R1-S1): Added WatchedChannel to the main export list.
+       Updated UserTradeStatus import to reflect new domain logic.
+"""
 
 from .models.base import Base
 from .models.auth import User, UserType
@@ -6,7 +10,7 @@ from .models.recommendation import (
     RecommendationStatusEnum,
     OrderTypeEnum,
     ExitStrategyEnum,
-    UserTradeStatus,
+    UserTradeStatus, # ✅ R1-S1: This Enum is now expanded
     AnalystProfile,
     Channel,
     Recommendation,
@@ -16,6 +20,8 @@ from .models.recommendation import (
     AnalystStats,
     PublishedMessage,
 )
+# ✅ R1-S1: Import the new model
+from .models.watched_channel import WatchedChannel
 
 # The old Role and UserRole are deprecated and no longer exported.
 __all__ = [
@@ -33,5 +39,6 @@ __all__ = [
     "RecommendationStatusEnum",
     "OrderTypeEnum",
     "ExitStrategyEnum",
-    "UserTradeStatus",
+    "UserTradeStatus", # ✅ R1-S1: Exporting the expanded Enum
+    "WatchedChannel", # ✅ R1-S1: Exporting the new model
 ]
