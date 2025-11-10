@@ -1,8 +1,8 @@
 # src/capitalguard/infrastructure/db/models.py (Updated for R1-S1)
 """
-✅ THE FIX (R1-S1 HOTFIX): Corrected import path.
-    - Changed import from 'UserTradeStatus' to 'UserTradeStatusEnum' to match
-      the updated recommendation.py model file, resolving the ImportError.
+✅ THE FIX (R1-S1 HOTFIX 3): Corrected import path.
+    - `models/__init__.py` now correctly exports `UserTradeStatusEnum`.
+    - This file now correctly imports and exports `UserTradeStatusEnum`.
 """
 
 from .models.base import Base
@@ -11,8 +11,8 @@ from .models.recommendation import (
     RecommendationStatusEnum,
     OrderTypeEnum,
     ExitStrategyEnum,
-    # ✅ R1-S1 HOTFIX: Import the correct Enum name
-    UserTradeStatus as UserTradeStatusEnum, 
+    # ✅ R1-S1 HOTFIX 3: Import the correct Enum name
+    UserTradeStatusEnum, 
     AnalystProfile,
     Channel,
     Recommendation,
@@ -42,7 +42,7 @@ __all__ = [
     "RecommendationStatusEnum",
     "OrderTypeEnum",
     "ExitStrategyEnum",
-    # ✅ R1-S1 HOTFIX: Export the correct Enum name
+    # ✅ R1-S1 HOTFIX 3: Export the correct Enum name
     "UserTradeStatusEnum", 
     "WatchedChannel", 
     "ParsingTemplate",
