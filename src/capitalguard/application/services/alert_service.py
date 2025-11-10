@@ -1,16 +1,14 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/alert_service.py ---
-# src/capitalguard/application/services/alert_service.py (v26.7 - R1-S1 Unified Lifecycle)
+# src/capitalguard/application/services/alert_service.py (v26.8 - R1-S1 Spam Fix)
 """
 AlertService - Orchestrates price updates, delegating complex exit strategy
 logic to the StrategyEngine, while handling core SL/TP/Entry triggers.
 
-✅ THE FIX (R1-S1): Unified Lifecycle Logic
-    - `_evaluate_core_triggers` now reads the `item_type` from the trigger data.
-    - If `item_type == 'recommendation'`, it applies the standard analyst lifecycle.
-    - If `item_type == 'user_trade'`, it applies the new trader lifecycle:
-        - Calls `process_user_trade_activation_event` on entry price hit.
-        - Calls `process_user_trade_invalidation_event` on SL hit before entry.
-        - Calls `process_user_trade_sl_hit_event` / `..._tp_hit_event` for active trades.
+✅ THE FIX (R1-S1 Hotfix 10 - Bug B Fix, Part 4):
+    - `_evaluate_core_triggers` for 'user_trade' now checks the
+      `trigger["processed_events"]` set before calling event handlers.
+    - This prevents `process_user_trade_tp_hit_event` (and others)
+      from being called repeatedly, fixing the notification spam bug.
 """
 
 import logging
@@ -24,8 +22,7 @@ from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
 from capitalguard.infrastructure.db.models import RecommendationStatusEnum
-# ✅ R1-S1: Import the new UserTradeStatus Enum
-from capitalguard.infrastructure.db.models import UserTradeStatusEnum
+from capitalguard.infrastructure.db.models import UserTradeStatus as UserTradeStatusEnum
 from capitalguard.application.strategy.engine import StrategyEngine, BaseAction, CloseAction, MoveSLAction
 
 if False:
@@ -86,7 +83,6 @@ class AlertService:
         log.info("Attempting to build in-memory trigger index (Unified)...")
         try:
             with session_scope() as session:
-                # ✅ R1-S1: This function now returns BOTH recs and user_trades
                 trigger_data_list = self.repo.list_all_active_triggers_data(session)
         except Exception:
             log.critical("CRITICAL: DB read failure during trigger index build.", exc_info=True)
@@ -94,16 +90,19 @@ class AlertService:
 
         new_triggers: Dict[str, List[Dict[str, Any]]] = {}
         active_rec_ids = set() # Only for strategy engine (Analyst Recs)
+        active_item_ids = set() # For state clearing
 
         for item in trigger_data_list:
             try:
                 asset = item.get("asset")
-                if not asset: continue
+                item_id = item.get("id")
+                if not asset or not item_id:
+                    continue
                 
-                # ✅ R1-S1: Strategy engine only applies to recommendations
+                active_item_ids.add(item_id)
+                
                 if item.get("item_type") == "recommendation":
-                    rec_id = item['id']
-                    active_rec_ids.add(rec_id)
+                    active_rec_ids.add(item_id)
                     self.strategy_engine.initialize_state_for_recommendation(item)
 
                 trigger_key = f"{asset.upper()}:{item.get('market', 'Futures')}"
@@ -115,9 +114,9 @@ class AlertService:
         async with self._triggers_lock:
             self.active_triggers = new_triggers
         
-        # Clear stale states only for recommendations
-        stale_ids = set(self.strategy_engine._state.keys()) - active_rec_ids
-        for rec_id in stale_ids:
+        # Clear stale states for *analyst* strategies
+        stale_rec_ids = set(self.strategy_engine._state.keys()) - active_rec_ids
+        for rec_id in stale_rec_ids:
             self.strategy_engine.clear_state(rec_id)
 
         log.info("✅ Trigger index rebuilt: %d items (Recs + UserTrades) across %d unique asset/market pairs.", len(trigger_data_list), len(new_triggers))
@@ -148,24 +147,20 @@ class AlertService:
                 for trigger in triggers_for_key:
                     # --- Evaluation Phase ---
                     
-                    # ✅ R1-S1: Strategy engine only runs for recommendations
                     strategy_actions = []
                     if trigger.get("item_type") == "recommendation":
                         strategy_actions = self.strategy_engine.evaluate(trigger, high_price, low_price)
                     
-                    # ✅ R1-S1: Core triggers now handles both types
                     core_actions = await self._evaluate_core_triggers(trigger, high_price, low_price)
                     
-                    # --- Execution Phase ---
-                    # Note: core_actions will be empty for UserTrades, as their logic
-                    # is handled *inside* _evaluate_core_triggers via await.
+                    # --- Execution Phase (Analyst Recommendations Only) ---
+                    # UserTrade actions are handled *inside* _evaluate_core_triggers
                     all_actions = strategy_actions + core_actions
-                    if not all_actions: continue
+                    if not all_actions:
+                        continue
                     
-                    # This block now only executes for Recommendations (as UserTrades return no actions)
                     close_action = next((a for a in all_actions if isinstance(a, CloseAction)), None)
                     if close_action:
-                        # This is a high-priority action that must complete
                         await self.trade_service.close_recommendation_async(
                             rec_id=close_action.rec_id, 
                             user_id=trigger['user_id'], # This is analyst telegram ID
@@ -173,11 +168,10 @@ class AlertService:
                             reason=close_action.reason
                         )
                         self.strategy_engine.clear_state(close_action.rec_id)
-                        continue # Move to next trigger, this one is closed
+                        continue 
 
                     for action in all_actions:
                         if isinstance(action, MoveSLAction):
-                            # This is also high-priority
                             await self.trade_service.update_sl_for_user_async(
                                 rec_id=action.rec_id, 
                                 user_id=trigger['user_id'], # Analyst telegram ID
@@ -218,7 +212,7 @@ class AlertService:
 
     async def _evaluate_core_triggers(self, trigger: Dict[str, Any], high_price: Decimal, low_price: Decimal) -> List[BaseAction]:
         """
-        ✅ R1-S1: Evaluates core triggers for BOTH item types.
+        Evaluates core triggers for BOTH item types.
         - Returns BaseActions for Recommendations.
         - Awaits TradeService methods directly for UserTrades.
         """
@@ -226,26 +220,29 @@ class AlertService:
         item_id = trigger["id"]
         status = trigger["status"]
         side = trigger["side"]
-        item_type = trigger.get("item_type", "recommendation") # Default to rec for safety
+        item_type = trigger.get("item_type", "recommendation")
+        processed_events = trigger.get("processed_events", set())
 
         try:
             # --- BRANCH 1: Analyst Recommendation Lifecycle ---
             if item_type == "recommendation":
                 if status == RecommendationStatusEnum.PENDING:
                     entry_price, sl_price = trigger["entry"], trigger["stop_loss"]
-                    if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
+                    if "INVALIDATED" not in processed_events and self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
                         await self.trade_service.process_invalidation_event(item_id)
-                    elif self._is_price_condition_met(side, low_price, high_price, entry_price, "ENTRY"):
+                    elif "ACTIVATED" not in processed_events and self._is_price_condition_met(side, low_price, high_price, entry_price, "ENTRY"):
                         await self.trade_service.process_activation_event(item_id)
 
                 elif status == RecommendationStatusEnum.ACTIVE:
                     sl_price = trigger["stop_loss"]
-                    if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
+                    if "SL_HIT" not in processed_events and "FINAL_CLOSE" not in processed_events and self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
                         actions.append(CloseAction(rec_id=item_id, price=sl_price, reason="SL_HIT"))
                         return actions # Stop further processing if SL hit
 
                     for i, target in enumerate(trigger["targets"], 1):
-                        if f"TP{i}_HIT" in trigger["processed_events"]: continue
+                        event_name = f"TP{i}_HIT"
+                        if event_name in processed_events:
+                            continue
                         target_price = Decimal(str(target['price']))
                         if self._is_price_condition_met(side, low_price, high_price, target_price, "TP"):
                             await self.trade_service.process_tp_hit_event(item_id, i, target_price)
@@ -256,33 +253,30 @@ class AlertService:
                 if status in (UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION):
                     entry_price, sl_price = trigger["entry"], trigger["stop_loss"]
                     
-                    # ✅ R1-S1: Check for original_published_at timestamp
-                    # We only process if the signal was published (no future signals)
                     published_at = trigger.get("original_published_at")
                     if published_at and datetime.now(timezone.utc) < published_at:
-                        return actions # Signal is from the future, ignore check
+                        return actions 
                     
-                    if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
-                        # SL hit before entry, invalidate it
+                    # ✅ R1-S1 HOTFIX 10: Check processed_events
+                    if "INVALIDATED" not in processed_events and self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
                         await self.trade_service.process_user_trade_invalidation_event(item_id, sl_price)
-                    elif self._is_price_condition_met(side, low_price, high_price, entry_price, "ENTRY"):
-                        # Entry hit, activate it
+                    elif "ACTIVATED" not in processed_events and self._is_price_condition_met(side, low_price, high_price, entry_price, "ENTRY"):
                         await self.trade_service.process_user_trade_activation_event(item_id)
                 
                 # State 2: Active trade, watching for SL/TP
                 elif status == UserTradeStatusEnum.ACTIVATED:
                     sl_price = trigger["stop_loss"]
-                    if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
-                        # SL hit, close the user's trade
+                    # ✅ R1-S1 HOTFIX 10: Check processed_events
+                    if "SL_HIT" not in processed_events and "FINAL_CLOSE" not in processed_events and self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
                         await self.trade_service.process_user_trade_sl_hit_event(item_id, sl_price)
                         return actions # Stop further processing
 
-                    # User trades (R1) don't support partial close, so we only care about TPs for notification
-                    # and auto-close on final TP.
                     for i, target in enumerate(trigger["targets"], 1):
-                        # We need a way to check if TP was already hit.
-                        # For now, AlertService state is reset on build, so this will re-fire.
-                        # This is acceptable for R1. R2 will need UserTradeEvents.
+                        # ✅ R1-S1 HOTFIX 10: Check processed_events
+                        event_name = f"TP{i}_HIT"
+                        if event_name in processed_events:
+                            continue
+                            
                         target_price = Decimal(str(target['price']))
                         if self._is_price_condition_met(side, low_price, high_price, target_price, "TP"):
                             await self.trade_service.process_user_trade_tp_hit_event(item_id, i, target_price)
