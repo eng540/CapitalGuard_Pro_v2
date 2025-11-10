@@ -1,10 +1,11 @@
-# --- src/capitalguard/infrastructure/db/repository.py --- V 2.5 (Indentation Hotfix)
+# --- src/capitalguard/infrastructure/db/repository.py --- V 2.6 (R1-S1 Audit Triggers)
 """
 Repository layer — provides clean data access abstractions.
-✅ Includes ParsingRepository.
-✅ Updated RecommendationRepository with Decimal handling and new methods.
-✅ HOTFIX: Added missing 'import sqlalchemy as sa' to fix NameError.
-✅ HOTFIX (v2.5): Corrected IndentationError in `find_or_create` user method.
+✅ THE FIX (R1-S1): Updated `list_all_active_triggers_data` to be a
+       unified trigger loader. It now fetches:
+       1. All active `Recommendation` objects (for analysts).
+       2. All `UserTrade` objects in 'WATCHLIST' or 'PENDING_ACTIVATION' states (for traders).
+       It adds an `item_type` key to each trigger for AlertService to differentiate.
 """
 
 import logging
@@ -12,8 +13,8 @@ from typing import List, Optional, Any, Dict
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session, joinedload, selectinload
-import sqlalchemy as sa # ✅ HOTFIX: Added missing import
-from sqlalchemy import and_ # Import 'and_' for combined filters
+import sqlalchemy as sa 
+from sqlalchemy import and_, or_ # ✅ R1-S1: Import 'or_'
 
 # Import domain entities and value objects
 from capitalguard.domain.entities import (
@@ -21,15 +22,18 @@ from capitalguard.domain.entities import (
     RecommendationStatus as RecommendationStatusEntity,
     OrderType as OrderTypeEntity,
     ExitStrategy as ExitStrategyEntity,
-    UserType as UserTypeEntity # Import UserType from domain
+    UserType as UserTypeEntity 
 )
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 
 # Import ORM models
 from .models import (
     User, Channel, Recommendation, RecommendationEvent,
-    PublishedMessage, UserTrade, UserTradeStatus, RecommendationStatusEnum,
-    # ✅ NEW: Import parsing models
+    PublishedMessage, UserTrade, 
+    RecommendationStatusEnum,
+    # ✅ R1-S1: Import new Enum and Model
+    UserTradeStatus as UserTradeStatusEnum,
+    WatchedChannel,
     ParsingTemplate, ParsingAttempt
 )
 
@@ -63,16 +67,13 @@ class UserRepository:
             if kwargs.get("username") and user.username != kwargs["username"]:
                 user.username = kwargs["username"]
                 updated = True
-            # Example: Ensure user_type is updated if provided (e.g., during registration)
             if 'user_type' in kwargs and user.user_type != kwargs['user_type']:
                  user.user_type = kwargs['user_type']
                  updated = True
-            # Activate user if specified (e.g., after admin grants access)
             if 'is_active' in kwargs and user.is_active != kwargs['is_active']:
                 user.is_active = kwargs['is_active']
                 updated = True
             
-            # ✅ INDENTATION FIX: This block must be inside the `if user:` block
             if updated:
                 self.session.flush() # Persist updates if any
             return user
@@ -95,7 +96,7 @@ class UserRepository:
 class ChannelRepository:
     """Repository for Channel entities."""
     def __init__(self, session: Session):
-        self.session = session
+         self.session = session
 
     def find_by_telegram_id_and_analyst(self, channel_id: int, analyst_id: int) -> Optional[Channel]:
         """Finds a channel by its Telegram ID and owner analyst's ID."""
@@ -130,7 +131,7 @@ class ChannelRepository:
         self.session.flush()
 
 # ==========================================================
-# PARSING REPOSITORY (✅ NEW)
+# PARSING REPOSITORY
 # ==========================================================
 class ParsingRepository:
     """Repository for ParsingTemplate and ParsingAttempt entities."""
@@ -166,12 +167,11 @@ class ParsingRepository:
         Orders by confidence score descending (best first).
         """
         query = self.session.query(ParsingTemplate).filter(
-            sa.or_( # ✅ HOTFIX: This line now works
+            sa.or_( 
                 ParsingTemplate.is_public == True,
                 ParsingTemplate.analyst_id == user_id
             )
         ).order_by(
-            # Prioritize higher confidence score, fallback to ID for deterministic order
             ParsingTemplate.confidence_score.desc().nullslast(),
             ParsingTemplate.id
         )
@@ -181,7 +181,6 @@ class ParsingRepository:
 
     def add_template(self, **kwargs) -> ParsingTemplate:
         """Adds a new parsing template, typically private initially."""
-        # Ensure is_public defaults to False if not provided
         kwargs.setdefault('is_public', False)
         template = ParsingTemplate(**kwargs)
         self.session.add(template)
@@ -203,12 +202,10 @@ class RecommendationRepository:
     def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
         """Safely convert any value to a Decimal, returning default on failure."""
         if isinstance(value, Decimal):
-             # Handle potential non-finite values from calculations
-            return value if value.is_finite() else default
+             return value if value.is_finite() else default
         if value is None:
             return default
         try:
-            # Convert string representations, including those from JSON
             d = Decimal(str(value))
             return d if d.is_finite() else default
         except (InvalidOperation, TypeError, ValueError):
@@ -221,16 +218,13 @@ class RecommendationRepository:
         if not row: return None
         try:
             targets_data = row.targets or []
-            # Ensure target prices are Decimals for the domain object
             formatted_targets = [
                 {"price": RecommendationRepository._to_decimal(t.get("price")),
-                 "close_percent": t.get("close_percent", 0.0)} # Keep as float for domain Target
+                 "close_percent": t.get("close_percent", 0.0)} 
                 for t in targets_data if t.get("price") is not None
             ]
             if not formatted_targets:
                  logger.warning(f"Recommendation {row.id} has no valid targets in JSON data: {row.targets}")
-                 # Decide if this should be an error or return None/empty Targets
-                 # For now, let Targets raise ValueError if list is empty after processing
 
             entity = RecommendationEntity(
                 id=row.id,
@@ -239,7 +233,6 @@ class RecommendationRepository:
                 side=Side(row.side),
                 entry=Price(RecommendationRepository._to_decimal(row.entry)),
                 stop_loss=Price(RecommendationRepository._to_decimal(row.stop_loss)),
-                # Targets expects list of dicts with Decimal prices
                 targets=Targets(formatted_targets),
                 order_type=OrderTypeEntity(row.order_type.value),
                 status=RecommendationStatusEntity(row.status.value),
@@ -255,7 +248,6 @@ class RecommendationRepository:
                 events=list(row.events or []), # Eager load events if configured
                 exit_strategy=ExitStrategyEntity(row.exit_strategy.value),
             )
-            # Add profit stop fields if they exist on the ORM model
             if hasattr(row, 'profit_stop_active'):
                  setattr(entity, 'profit_stop_active', row.profit_stop_active)
                  setattr(entity, 'profit_stop_mode', row.profit_stop_mode)
@@ -264,7 +256,6 @@ class RecommendationRepository:
 
             return entity
         except Exception as e:
-            # Log detailed error including row ID
             logger.error(f"Error translating ORM Recommendation ID {getattr(row, 'id', 'N/A')} to entity: {e}", exc_info=True)
             return None
 
@@ -272,7 +263,7 @@ class RecommendationRepository:
         """Gets a Recommendation ORM object by ID, loading analyst and events."""
         return session.query(Recommendation).options(
             joinedload(Recommendation.analyst),
-            selectinload(Recommendation.events) # Use selectinload for events (potentially many)
+            selectinload(Recommendation.events) 
         ).filter(Recommendation.id == rec_id).first()
 
     def get_for_update(self, session: Session, rec_id: int) -> Optional[Recommendation]:
@@ -280,12 +271,17 @@ class RecommendationRepository:
         return session.query(Recommendation).filter(Recommendation.id == rec_id).with_for_update().first()
 
     def list_all_active_triggers_data(self, session: Session) -> List[Dict[str, Any]]:
-        """Gets raw data (as dicts) for all PENDING/ACTIVE recommendations for the AlertService."""
-        active_recs = self.get_all_active_recs(session) # Fetch ORM objects
+        """
+        ✅ R1-S1: Gets raw data (as dicts) for ALL active triggers:
+        1. PENDING/ACTIVE Recommendations
+        2. WATCHLIST/PENDING_ACTIVATION UserTrades
+        """
         trigger_data = []
+        
+        # 1. Fetch Recommendations
+        active_recs = self.get_all_active_recs(session)
         for rec in active_recs:
             try:
-                # Convert necessary fields, ensuring Decimals for prices
                 entry_dec = self._to_decimal(rec.entry)
                 sl_dec = self._to_decimal(rec.stop_loss)
                 targets_list = [
@@ -294,7 +290,6 @@ class RecommendationRepository:
                      for t in (rec.targets or []) if t.get("price") is not None
                 ]
 
-                # Handle potential None analyst relationship
                 user_id_str = str(rec.analyst.telegram_user_id) if rec.analyst else None
                 if not user_id_str:
                     logger.warning(f"Skipping trigger for Rec ID {rec.id}: Analyst relationship not loaded or user missing.")
@@ -302,29 +297,79 @@ class RecommendationRepository:
 
                 data = {
                     "id": rec.id,
-                    "user_id": user_id_str, # Use Telegram ID for consistency if needed by AlertService logic
+                    "item_type": "recommendation", # ✅ R1-S1: Identify type
+                    "user_id": user_id_str, # This is the Analyst's Telegram ID
+                    "user_db_id": rec.analyst_id, # ✅ R1-S1: Add internal DB ID
                     "asset": rec.asset,
                     "side": rec.side,
                     "entry": entry_dec,
                     "stop_loss": sl_dec,
-                    "targets": targets_list, # Pass list of dicts with Decimals
+                    "targets": targets_list, 
                     "status": rec.status, # Pass the Enum member
                     "order_type": rec.order_type, # Pass the Enum member
                     "market": rec.market,
-                    "is_user_trade": False, # Explicitly mark as not a user trade
                     "processed_events": {e.event_type for e in rec.events},
                     
-                    # Add profit stop fields using getattr for safety
                     "profit_stop_mode": getattr(rec, 'profit_stop_mode', 'NONE'),
                     "profit_stop_price": self._to_decimal(getattr(rec, 'profit_stop_price', None)) if getattr(rec, 'profit_stop_price', None) is not None else None,
                     "profit_stop_trailing_value": self._to_decimal(getattr(rec, 'profit_stop_trailing_value', None)) if getattr(rec, 'profit_stop_trailing_value', None) is not None else None,
                     "profit_stop_active": getattr(rec, 'profit_stop_active', False),
+                    
+                    # ✅ R1-S1: Add audit fields (None for recs)
+                    "original_published_at": None, 
                 }
                 trigger_data.append(data)
             except Exception as e:
-                 logger.error(f"Failed to process trigger data for rec #{rec.id}: {e}", exc_info=True)
-        logger.debug(f"Generated {len(trigger_data)} trigger data items.")
+                logger.error(f"Failed to process trigger data for rec #{rec.id}: {e}", exc_info=True)
+
+        # 2. Fetch UserTrades
+        active_trades = self.get_all_active_user_trades(session)
+        for trade in active_trades:
+            try:
+                entry_dec = self._to_decimal(trade.entry)
+                sl_dec = self._to_decimal(trade.stop_loss)
+                targets_list = [
+                     {"price": self._to_decimal(t.get("price")),
+                      "close_percent": t.get("close_percent", 0.0)}
+                     for t in (trade.targets or []) if t.get("price") is not None
+                ]
+
+                user_id_str = str(trade.user.telegram_user_id) if trade.user else None
+                if not user_id_str:
+                    logger.warning(f"Skipping trigger for UserTrade ID {trade.id}: User relationship not loaded or user missing.")
+                    continue
+
+                data = {
+                    "id": trade.id,
+                    "item_type": "user_trade", # ✅ R1-S1: Identify type
+                    "user_id": user_id_str, # This is the Trader's Telegram ID
+                    "user_db_id": trade.user_id, # ✅ R1-S1: Add internal DB ID
+                    "asset": trade.asset,
+                    "side": trade.side,
+                    "entry": entry_dec,
+                    "stop_loss": sl_dec,
+                    "targets": targets_list, 
+                    "status": trade.status, # Pass the Enum member (WATCHLIST or PENDING_ACTIVATION)
+                    "order_type": OrderTypeEnum.LIMIT, # User trades are treated as limit/pending
+                    "market": "Futures", # TODO: User trades need a market field
+                    "processed_events": {}, # User trades don't have events... yet.
+                    
+                    # No profit stop logic for user trades yet
+                    "profit_stop_mode": "NONE",
+                    "profit_stop_price": None,
+                    "profit_stop_trailing_value": None,
+                    "profit_stop_active": False,
+                    
+                    # ✅ R1-S1: Add audit fields
+                    "original_published_at": trade.original_published_at,
+                }
+                trigger_data.append(data)
+            except Exception as e:
+                logger.error(f"Failed to process trigger data for user_trade #{trade.id}: {e}", exc_info=True)
+
+        logger.info(f"Generated {len(trigger_data)} total active triggers (Recs + UserTrades).")
         return trigger_data
+
 
     def get_published_messages(self, session: Session, rec_id: int) -> List[PublishedMessage]:
         """Gets all PublishedMessage ORM records for a recommendation."""
@@ -339,10 +384,17 @@ class RecommendationRepository:
         ).order_by(Recommendation.created_at.desc()).all()
 
     def get_open_trades_for_trader(self, session: Session, trader_user_id: int) -> List[UserTrade]:
-        """Gets all open UserTrade ORM objects for a trader."""
+        """
+        ✅ R1-S1: Gets all open UserTrade ORM objects for a trader.
+        Open now means: WATCHLIST, PENDING_ACTIVATION, or ACTIVATED.
+        """
         return session.query(UserTrade).filter(
             UserTrade.user_id == trader_user_id,
-            UserTrade.status == UserTradeStatus.OPEN,
+            UserTrade.status.in_([
+                UserTradeStatusEnum.WATCHLIST, 
+                UserTradeStatusEnum.PENDING_ACTIVATION,
+                UserTradeStatusEnum.ACTIVATED
+            ]),
         ).order_by(UserTrade.created_at.desc()).all()
 
     def get_user_trade_by_id(self, session: Session, trade_id: int) -> Optional[UserTrade]:
@@ -350,11 +402,18 @@ class RecommendationRepository:
         return session.query(UserTrade).filter(UserTrade.id == trade_id).first()
 
     def find_user_trade_by_source_id(self, session: Session, user_id: int, rec_id: int) -> Optional[UserTrade]:
-        """Finds an open UserTrade linked to a specific user and recommendation."""
+        """
+        ✅ R1-S1: Finds an open UserTrade linked to a specific user and recommendation.
+        Open now means: WATCHLIST, PENDING_ACTIVATION, or ACTIVATED.
+        """
         return session.query(UserTrade).filter(
             UserTrade.user_id == user_id,
             UserTrade.source_recommendation_id == rec_id,
-            UserTrade.status == UserTradeStatus.OPEN
+            UserTrade.status.in_([
+                UserTradeStatusEnum.WATCHLIST, 
+                UserTradeStatusEnum.PENDING_ACTIVATION,
+                UserTradeStatusEnum.ACTIVATED
+            ])
         ).first()
 
     def get_events_for_recommendation(self, session: Session, rec_id: int) -> List[RecommendationEvent]:
@@ -372,14 +431,29 @@ class RecommendationRepository:
             Recommendation.status.in_([RecommendationStatusEnum.PENDING, RecommendationStatusEnum.ACTIVE])
         ).all()
 
+    def get_all_active_user_trades(self, session: Session) -> List[UserTrade]:
+        """
+        ✅ R1-S1: Fetches all WATCHLIST or PENDING_ACTIVATION UserTrade ORM objects
+        with related user data eager-loaded.
+        """
+        return session.query(UserTrade).options(
+            joinedload(UserTrade.user) # Eager load user info
+        ).filter(
+            UserTrade.status.in_([
+                UserTradeStatusEnum.WATCHLIST, 
+                UserTradeStatusEnum.PENDING_ACTIVATION,
+                UserTradeStatusEnum.ACTIVATED # Also watch active trades for SL/TP
+            ])
+        ).all()
+
+
     def get_active_recs_for_asset_and_market(self, session: Session, asset: str, market: str) -> List[Recommendation]:
         """Fetches active recommendations for a specific asset and market."""
-        # Ensure asset is uppercase for consistent querying
         asset_upper = asset.strip().upper()
         return session.query(Recommendation).filter(
-            and_( # Use and_() for combining multiple conditions
+            and_( 
                 Recommendation.asset == asset_upper,
-                Recommendation.market == market, # Assuming market is stored consistently
+                Recommendation.market == market, 
                 Recommendation.status == RecommendationStatusEnum.ACTIVE
             )
         ).all()
