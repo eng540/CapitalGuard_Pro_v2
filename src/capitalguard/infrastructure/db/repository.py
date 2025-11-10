@@ -1,9 +1,11 @@
-# --- src/capitalguard/infrastructure/db/repository.py --- V 2.8 (R1-S1 Indentation Hotfix)
+# --- src/capitalguard/infrastructure/db/repository.py --- V 2.9 (R1-S1 NameError Hotfix)
 """
 Repository layer — provides clean data access abstractions.
-✅ THE FIX (R1-S1 HOTFIX 8): Corrected a critical IndentationError on line 68 ("updated = True").
-    This file also includes the previous fix for the ImportError (importing UserTradeStatusEnum).
-    This resolves the API startup crash loop.
+✅ THE FIX (R1-S1 HOTFIX 9): Corrected a critical NameError.
+    - Added 'OrderTypeEnum' to the import list from .models.
+    - This fixes the crash loop caused when 'list_all_active_triggers_data'
+      (called by AlertService) tried to reference OrderTypeEnum for UserTrades
+      without it being imported.
 """
 
 import logging
@@ -29,7 +31,9 @@ from .models import (
     User, Channel, Recommendation, RecommendationEvent,
     PublishedMessage, UserTrade, 
     RecommendationStatusEnum,
-    UserTradeStatusEnum, # Imports the correct Enum
+    UserTradeStatusEnum,
+    # ✅ R1-S1 HOTFIX 9: Import the missing Enum
+    OrderTypeEnum, 
     WatchedChannel,
     ParsingTemplate, ParsingAttempt
 )
@@ -63,7 +67,7 @@ class UserRepository:
                  updated = True
             if kwargs.get("username") and user.username != kwargs["username"]:
                 user.username = kwargs["username"]
-                updated = True # ✅ INDENTATION FIX: This line is now correctly indented
+                updated = True 
             if 'user_type' in kwargs and user.user_type != kwargs['user_type']:
                  user.user_type = kwargs['user_type']
                  updated = True
@@ -346,6 +350,7 @@ class RecommendationRepository:
                     "stop_loss": sl_dec,
                     "targets": targets_list, 
                     "status": trade.status, 
+                    # ✅ R1-S1 HOTFIX 9: This line caused the NameError. It is now fixed.
                     "order_type": OrderTypeEnum.LIMIT, 
                     "market": "Futures", 
                     "processed_events": {}, 
@@ -451,5 +456,4 @@ class RecommendationRepository:
                 Recommendation.status == RecommendationStatusEnum.ACTIVE
             )
         ).all()
-
 # --- END of repository update ---
