@@ -65,7 +65,7 @@ from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.domain.entities import RecommendationStatus, ExitStrategy
-from capitalguard.infrastructure.db.models import UserTradeStatus, UserType as UserTypeEntity
+from capitalguard.infrastructure.db.models import UserTradeStatusEnum, UserType as UserTypeEntity
 
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors")  # Specific logger for errors
