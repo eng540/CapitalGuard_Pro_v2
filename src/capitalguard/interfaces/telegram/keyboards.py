@@ -1,9 +1,10 @@
 # --- src/capitalguard/interfaces/telegram/keyboards.py ---
-# src/capitalguard/interfaces/telegram/keyboards.py (v21.18 - Final Debug & Logic Hotfix)
+# src/capitalguard/interfaces/telegram/keyboards.py (v21.19 - R1-S1 Activate Button)
 """
 Builds all Telegram keyboards for the bot.
-✅ THE FIX (R1-S1): Updated `build_editable_review_card` to support the new
-       Trader-First logic (Activate vs. Watch) and display the source channel name.
+✅ THE FIX (R1-S1): Updated `build_user_trade_control_keyboard` to read the
+       new `orm_status_value` attribute and display the "🚀 Activate Trade"
+       button for WATCHLIST or PENDING_ACTIVATION states.
 """
 
 import math
@@ -15,12 +16,11 @@ from enum import Enum
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-# Assuming domain entities are correctly imported for type hints if needed
-
 from capitalguard.domain.entities import Recommendation as RecommendationEntity, RecommendationStatus, ExitStrategy
+# ✅ R1-S1: Import the new Enum for status matching
+from capitalguard.domain.entities import UserTradeStatus
 
 from capitalguard.application.services.price_service import PriceService
-# Use internal helpers instead of importing from ui_texts directly if possible
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
 
 def _format_price(price: Any) -> str:
     price_dec = _to_decimal(price)
-    return "N/A" if not price_dec.is_finite() else f"{price_dec:g}" # Use 'g' for cleaner output
+    return "N/A" if not price_dec.is_finite() else f"{price_dec:g}" 
 
 def _pct(entry: Any, target_price: Any, side: str) -> float:
     try:
@@ -51,7 +51,7 @@ def _pct(entry: Any, target_price: Any, side: str) -> float:
         if side_upper == "LONG": pnl = ((target_dec / entry_dec) - 1) * 100
         elif side_upper == "SHORT": pnl = ((entry_dec / target_dec) - 1) * 100
         else: return 0.0
-        return float(pnl) # Return as float
+        return float(pnl) 
     except Exception: return 0.0
 
 def _truncate_text(text: str, max_length: int = MAX_BUTTON_TEXT_LENGTH) -> str:
@@ -62,7 +62,6 @@ def _truncate_text(text: str, max_length: int = MAX_BUTTON_TEXT_LENGTH) -> str:
 def _get_attr(obj: Any, attr: str, default: Any = None) -> Any:
     """Safely gets attribute, handles domain objects with .value."""
     val = getattr(obj, attr, default)
-    # Check if val itself has a 'value' attribute (like domain value objects)
     return getattr(val, 'value', val)
 
 
@@ -73,11 +72,9 @@ class CallbackNamespace(Enum):
     EXIT_STRATEGY = "exit"
     NAVIGATION = "nav"
     PUBLICATION = "pub"
-    FORWARD_PARSE = "fwd_parse" # Namespace for parsing review actions
-    FORWARD_CONFIRM = "fwd_confirm" # (Deprecated, use FORWARD_PARSE)
-    SAVE_TEMPLATE = "save_template" # Namespace for template saving confirmation
-    MGMT = "mgmt" # Generic management actions like cancel input/all
-    # Add other namespaces as needed...
+    FORWARD_PARSE = "fwd_parse" 
+    SAVE_TEMPLATE = "save_template" 
+    MGMT = "mgmt" 
 
 class CallbackAction(Enum):
     SHOW = "sh"
@@ -89,9 +86,10 @@ class CallbackAction(Enum):
     CONFIRM = "cf" # ✅ R1-S1: This now means "Activate Trade"
     WATCH_CHANNEL = "watch" # ✅ R1-S1: New action for watching only
     CANCEL = "cn"
-    EDIT_FIELD = "edit_field" # Action for editing a specific field (in parsing review)
-    TOGGLE = "toggle" # For channel picker
-    # Add other actions as needed...
+    EDIT_FIELD = "edit_field" 
+    TOGGLE = "toggle" 
+    # ✅ R1-S1: New action for activating a UserTrade from the panel
+    ACTIVATE_TRADE = "activate_trade"
 
 class CallbackBuilder:
     @staticmethod
@@ -103,10 +101,8 @@ class CallbackBuilder:
         base = f"{ns_val}:{act_val}"
         if param_str: base = f"{base}:{param_str}"
 
-        # Ensure length constraint
         if len(base.encode('utf-8')) > MAX_CALLBACK_DATA_LENGTH:
             logger.warning(f"Callback data longer than {MAX_CALLBACK_DATA_LENGTH} bytes, truncating: {base}")
-            # Simple truncation, might break parsing if params are crucial and long
             base = base[:MAX_CALLBACK_DATA_LENGTH]
         return base
 
@@ -140,7 +136,7 @@ class StatusIcons:
     PENDING = "⏳"; ACTIVE = "▶️"; PROFIT = "🟢"; LOSS = "🔴"; CLOSED = "🏁";
     ERROR = "⚠️"
     BREAK_EVEN = "🛡️"; SHADOW = "👻";
-    WATCHLIST = "👁️" # ✅ R1-S1: New Icon
+    WATCHLIST = "👁️" 
 
 class ButtonTexts:
     BACK_TO_LIST = "⬅️ Back to List"; BACK_TO_MAIN = "⬅️ Back to Panel";
@@ -153,16 +149,20 @@ class StatusDeterminer:
     def determine_icon(item: Any, live_price: Optional[float] = None) -> str:
         """Determines the status icon based on item state and live price."""
         try:
-            status = _get_attr(item, 'status')
-            status_value = status.value if hasattr(status, 'value') else str(status).upper()
+            # ✅ R1-S1: Use the new 'orm_status_value' for UserTrades
+            if getattr(item, 'is_user_trade', False):
+                status_value = _get_attr(item, 'orm_status_value')
+            else:
+                status = _get_attr(item, 'status')
+                status_value = status.value if hasattr(status, 'value') else str(status).upper()
             
-            # ✅ R1-S1: Handle new statuses
-            if status_value == 'WATCHLIST': return StatusIcons.WATCHLIST
-            if status_value == 'PENDING_ACTIVATION': return StatusIcons.PENDING
+            # ✅ R1-S1: Handle new statuses first
+            if status_value == UserTradeStatus.WATCHLIST.value: return StatusIcons.WATCHLIST
+            if status_value == UserTradeStatus.PENDING_ACTIVATION.value: return StatusIcons.PENDING
+            if status_value == RecommendationStatus.PENDING.value: return StatusIcons.PENDING
             
-            if status_value in [RecommendationStatus.PENDING.value, 'PENDING']: return StatusIcons.PENDING
-            if status_value in [RecommendationStatus.CLOSED.value, 'CLOSED']: return StatusIcons.CLOSED
-            if status_value in [RecommendationStatus.ACTIVE.value, 'ACTIVE', 'ACTIVATED', 'OPEN']: # Added 'ACTIVATED'
+            if status_value == RecommendationStatus.CLOSED.value: return StatusIcons.CLOSED
+            if status_value in [RecommendationStatus.ACTIVE.value, UserTradeStatus.ACTIVATED.value]:
                 entry_dec = _to_decimal(_get_attr(item, 'entry'))
                 sl_dec = _to_decimal(_get_attr(item, 'stop_loss'))
                 if entry_dec > 0 and sl_dec > 0 and abs(entry_dec - sl_dec) / entry_dec < Decimal('0.0005'): return StatusIcons.BREAK_EVEN
@@ -232,7 +232,6 @@ async def build_open_recs_keyboard(items: List[Any], current_page: int, price_se
         logger.error(f"Open recs keyboard build failed: {e}", exc_info=True)
         return InlineKeyboardMarkup([[InlineKeyboardButton("⚠️ Error Loading Data", callback_data="noop")],[InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, 1))]])
 
-# ✅ R1-S1: Updated Keyboard for Editable Review Card
 def build_editable_review_card(parsed_data: Dict[str, Any], channel_name: str = "Unknown") -> InlineKeyboardMarkup:
     """Builds the interactive review card with Activate/Watch buttons."""
     asset = parsed_data.get('asset', 'N/A')
@@ -254,33 +253,28 @@ def build_editable_review_card(parsed_data: Dict[str, Any], channel_name: str = 
     ns = CallbackNamespace.FORWARD_PARSE 
 
     keyboard = [
-        # Row 1: Asset & Side Edit
         [
             InlineKeyboardButton(f"📝 {_truncate_text('Asset: '+asset)}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "asset")),
             InlineKeyboardButton(f"📝 {_truncate_text('Side: '+side)}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "side")),
         ],
-        # Row 2: Entry & Stop Loss Edit
         [
             InlineKeyboardButton(f"📝 {_truncate_text('Entry: '+entry)}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "entry")),
             InlineKeyboardButton(f"📝 {_truncate_text('SL: '+stop_loss)}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "stop_loss")),
         ],
-        # Row 3: Targets Edit
         [
-            InlineKeyboardButton(f"📝 {_truncate_text('Targets: '+target_str, 50)}", # Allow more length for targets
+            InlineKeyboardButton(f"📝 {_truncate_text('Targets: '+target_str, 50)}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "targets"))
         ],
-        # ✅ R1-S1: Row 4: New Actions (Activate vs Watch)
         [
             InlineKeyboardButton("🚀 Activate Trade",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.CONFIRM, "activate")),
             InlineKeyboardButton("👁️ Watch Channel Only",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.WATCH_CHANNEL, "watch")),
         ],
-        # Row 5: Cancel
         [
             InlineKeyboardButton(ButtonTexts.CANCEL,
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.CANCEL, "discard")),
@@ -289,69 +283,51 @@ def build_editable_review_card(parsed_data: Dict[str, Any], channel_name: str = 
     return InlineKeyboardMarkup(keyboard)
 
 
-# --- Existing Keyboard Factories (Keep as they are, ensure they use CallbackBuilder) ---
+# --- Existing Keyboard Factories ---
 
 def analyst_control_panel_keyboard(rec: RecommendationEntity) -> InlineKeyboardMarkup:
     """Unified control panel for active recommendations."""
     rec_id = _get_attr(rec, 'id')
     status = _get_attr(rec, 'status')
     
-    logger.info(f"🔍 DEBUG - Raw status: {status}")
-    logger.info(f"🔍 DEBUG - Status type: {type(status)}")
-    
     is_active = False
     
     if hasattr(status, 'value'):
         status_value = status.value
-        logger.info(f"🔍 DEBUG - Status value: {status_value}")
         is_active = (status_value == RecommendationStatus.ACTIVE.value)
-        logger.info(f"🔍 DEBUG - Method 1 (Enum value): {is_active}")
-    
     elif isinstance(status, str):
         status_value = status.upper()
-        logger.info(f"🔍 DEBUG - Status string: {status_value}")
         is_active = (status_value == RecommendationStatus.ACTIVE.value.upper())
-        logger.info(f"🔍 DEBUG - Method 2 (String): {is_active}")
-    
     else:
         is_active = (status == RecommendationStatus.ACTIVE)
-        logger.info(f"🔍 DEBUG - Method 3 (Direct object): {is_active}")
-    
-    logger.info(f"🔍 DEBUG - Final is_active: {is_active}")
-    logger.info(f"🔍 DEBUG - ACTIVE.value: {RecommendationStatus.ACTIVE.value}")
     
     ns_rec = CallbackNamespace.RECOMMENDATION
     ns_pos = CallbackNamespace.POSITION
     ns_exit = CallbackNamespace.EXIT_STRATEGY
     ns_nav = CallbackNamespace.NAVIGATION
 
-    # ✅ R1-S1: This logic remains valid. PENDING/CLOSED recs get minimal keyboard.
     if not is_active:
-        logger.info(f"🔍 DEBUG - Showing simplified keyboard (not active)")
         return InlineKeyboardMarkup([[
             InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(ns_nav, CallbackAction.NAVIGATE, 1))
         ]])
 
-    logger.info(f"🔍 DEBUG - Showing full control panel (active)")
-    
-    # Full control panel for active recommendations
     keyboard = [
-        [ # Row 1: Core actions
+        [ 
             InlineKeyboardButton("🔄 Refresh Price", callback_data=CallbackBuilder.create(ns_pos, CallbackAction.SHOW, 'rec', rec_id)),
             InlineKeyboardButton("💰 Partial Close", callback_data=CallbackBuilder.create(ns_rec, "partial_close_menu", rec_id)),
             InlineKeyboardButton("❌ Full Close", callback_data=CallbackBuilder.create(ns_rec, "close_menu", rec_id)),
         ],
-        [ # Row 2: Management & Edits
+        [ 
             InlineKeyboardButton("📈 Manage Exit/Risk", callback_data=CallbackBuilder.create(ns_exit, "show_menu", rec_id)),
             InlineKeyboardButton("✏️ Edit Trade Data", callback_data=CallbackBuilder.create(ns_rec, "edit_menu", rec_id)),
         ],
-        [ # Row 3: Back navigation
+        [ 
             InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(ns_nav, CallbackAction.NAVIGATE, 1))
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def build_user_trade_control_keyboard(trade_id: int, status: str) -> InlineKeyboardMarkup:
+def build_user_trade_control_keyboard(trade_id: int, orm_status_value: str) -> InlineKeyboardMarkup:
     """
     Keyboard for managing a personal UserTrade.
     ✅ R1-S1: Updated to show "Activate" or "Close" based on status.
@@ -361,14 +337,13 @@ def build_user_trade_control_keyboard(trade_id: int, status: str) -> InlineKeybo
     
     action_buttons = []
     
-    if status == 'WATCHLIST' or status == 'PENDING_ACTIVATION':
-        # ✅ R1-S1: Add Activate button
+    # Check against the string values from the Enum
+    if orm_status_value in (UserTradeStatus.WATCHLIST.value, UserTradeStatus.PENDING_ACTIVATION.value):
         action_buttons.append(
             InlineKeyboardButton("🚀 Activate Trade", 
-                                 callback_data=CallbackBuilder.create(ns_pos, "activate_trade", "trade", trade_id))
+                                 callback_data=CallbackBuilder.create(ns_pos, CallbackAction.ACTIVATE_TRADE, "trade", trade_id))
         )
-    elif status == 'ACTIVATED':
-        # Standard refresh and close buttons
+    elif orm_status_value == UserTradeStatus.ACTIVATED.value:
         action_buttons.append(
             InlineKeyboardButton("🔄 Refresh Price", 
                                  callback_data=CallbackBuilder.create(ns_pos, CallbackAction.SHOW, "trade", trade_id))
@@ -376,6 +351,13 @@ def build_user_trade_control_keyboard(trade_id: int, status: str) -> InlineKeybo
         action_buttons.append(
             InlineKeyboardButton("❌ Close Trade", 
                                  callback_data=CallbackBuilder.create(ns_pos, CallbackAction.CLOSE, "trade", trade_id))
+        )
+
+    # Always add refresh if no other buttons are present (e.g., PENDING)
+    if not action_buttons and orm_status_value not in [UserTradeStatus.CLOSED.value]:
+         action_buttons.append(
+            InlineKeyboardButton("🔄 Refresh Status", 
+                                 callback_data=CallbackBuilder.create(ns_pos, CallbackAction.SHOW, "trade", trade_id))
         )
 
     return InlineKeyboardMarkup([
@@ -386,7 +368,7 @@ def build_user_trade_control_keyboard(trade_id: int, status: str) -> InlineKeybo
 
 def build_confirmation_keyboard(
     namespace: Union[CallbackNamespace, str],
-    item_id: Union[int, str], # Can be attempt_id or rec_id etc.
+    item_id: Union[int, str], 
     confirm_text: str = ButtonTexts.CONFIRM,
     cancel_text: str = ButtonTexts.CANCEL
 ) -> InlineKeyboardMarkup:
@@ -400,7 +382,7 @@ def build_confirmation_keyboard(
     return InlineKeyboardMarkup([[ InlineKeyboardButton(confirm_text, callback_data=confirm_cb), InlineKeyboardButton(cancel_text, callback_data=cancel_cb), ]])
 
 
-# --- Recommendation Creation Flow Keyboards (Ensure CallbackBuilder is used) ---
+# --- Recommendation Creation Flow Keyboards ---
 def main_creation_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([ [InlineKeyboardButton("💬 Interactive Builder", callback_data="method_interactive")], [InlineKeyboardButton("⚡️ Quick Command", callback_data="method_quick")], [InlineKeyboardButton("📋 Text Editor Paste", callback_data="method_editor")], ])
 
@@ -422,7 +404,7 @@ def order_type_keyboard() -> InlineKeyboardMarkup:
 
 def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
     """Final review keyboard using CallbackBuilder."""
-    short_token = review_token[:12] # Keep short token logic
+    short_token = review_token[:12] 
     ns = CallbackNamespace.RECOMMENDATION
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Publish Now", callback_data=CallbackBuilder.create(ns, "publish", short_token))],
@@ -433,7 +415,7 @@ def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("❌ Cancel Creation", callback_data=CallbackBuilder.create(ns, "cancel", short_token))],
     ])
 
-# Channel Picker (Ensure uses CallbackBuilder)
+# Channel Picker
 def build_channel_picker_keyboard(review_token: str, channels: Iterable[Any], selected_ids: Set[int], page: int = 1, per_page: int = 6) -> InlineKeyboardMarkup:
     """Builds the paginated channel selection keyboard using CallbackBuilder."""
     try:
@@ -474,7 +456,7 @@ def build_channel_picker_keyboard(review_token: str, channels: Iterable[Any], se
         logger.error(f"Error building channel picker: {e}", exc_info=True)
         return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Error - Back to Review", callback_data=CallbackBuilder.create(CallbackNamespace.PUBLICATION, CallbackAction.BACK, review_token[:12]))]])
 
-# --- Other keyboards (Subscription, Public Channel etc. - Keep as is, ensure CallbackBuilder if interactive) ---
+# --- Other keyboards ---
 def public_channel_keyboard(rec_id: int, bot_username: Optional[str]) -> Optional[InlineKeyboardMarkup]:
      buttons = []
      if bot_username:
@@ -488,13 +470,12 @@ def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineK
      return None
 
 
-# --- Ensure all other required keyboards exist and use CallbackBuilder ---
+# --- Management Sub-menu Keyboards ---
 def build_close_options_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     ns = CallbackNamespace.RECOMMENDATION
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📉 Close at Market", callback_data=CallbackBuilder.create(ns, "close_market", rec_id))],
         [InlineKeyboardButton("✍️ Close at Price", callback_data=CallbackBuilder.create(ns, "close_manual", rec_id))],
-        # Back to main position panel
         [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))],
     ])
 
@@ -522,7 +503,6 @@ def build_exit_management_keyboard(rec: RecommendationEntity) -> InlineKeyboardM
     if is_strategy_active:
         keyboard.append([InlineKeyboardButton("❌ Cancel Active Strategy", callback_data=CallbackBuilder.create(ns, "cancel", rec_id))])
 
-    # Back to main position panel
     keyboard.append([InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))])
     return InlineKeyboardMarkup(keyboard)
 
@@ -533,7 +513,6 @@ def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💰 Close 25%", callback_data=CallbackBuilder.create(ns, CallbackAction.PARTIAL, rec_id, "25"))],
         [InlineKeyboardButton("💰 Close 50%", callback_data=CallbackBuilder.create(ns, CallbackAction.PARTIAL, rec_id, "50"))],
         [InlineKeyboardButton("✍️ Custom %", callback_data=CallbackBuilder.create(ns, "partial_close_custom", rec_id))],
-        # Back to main position panel
         [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))],
     ])
 
