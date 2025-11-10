@@ -25,7 +25,7 @@ from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
 from capitalguard.infrastructure.db.models import RecommendationStatusEnum
 # ✅ R1-S1: Import the new UserTradeStatus Enum
-from capitalguard.infrastructure.db.models import UserTradeStatus as UserTradeStatusEnum
+from capitalguard.infrastructure.db.models import UserTradeStatusEnum
 from capitalguard.application.strategy.engine import StrategyEngine, BaseAction, CloseAction, MoveSLAction
 
 if False:
