@@ -1,12 +1,12 @@
 # src/capitalguard/interfaces/telegram/forward_parsing_handler.py
 """
 Handles the user flow for parsing a forwarded text message (v3.2.0 - Resiliency & State Hotfix).
-✅ HOTFIX (Point 1): Implemented `smart_safe_edit` to retry with parse_mode=None 
-if HTML entity parsing fails, preventing the "freeze" bug.
-✅ HOTFIX (Point 2): Added DB State Recovery. If context is lost, the handler
-attempts to reload the state from the `ParsingAttempt` record.
-✅ HOTFIX (Point 4): Implemented structured logging for validation errors
-to improve observability.
+✅ THE FIX (R1-S1): Major strategic update.
+    - Implements the "Trader-First" Golden Rule (Watchlist vs. Activated).
+    - `forwarded_message_handler` now captures `forward_date` and `forward_from_chat`.
+    - `build_editable_review_card` now shows "🚀 Activate Trade" and "👁️ Watch Channel" buttons.
+    - `review_callback_handler` now calls trade_service with the selected status (`PENDING_ACTIVATION` or `WATCHLIST`)
+      and passes the new audit data (original_published_at, channel_info).
 """
 
 import logging
@@ -35,12 +35,13 @@ from capitalguard.interfaces.telegram.auth import require_active_user, get_db_us
 from capitalguard.application.services.parsing_service import ParsingResult 
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.interfaces.telegram.keyboards import (
-    CallbackBuilder, CallbackNamespace, CallbackAction, build_confirmation_keyboard,
+    CallbackBuilder, CallbackNamespace, CallbackAction,
+    # ✅ R1-S1: Removed build_confirmation_keyboard, will use new one
     build_editable_review_card, ButtonTexts
 )
 from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets_list
 from capitalguard.interfaces.telegram.management_handlers import (
-     handle_management_timeout, update_management_activity, MANAGEMENT_TIMEOUT
+    handle_management_timeout, update_management_activity, MANAGEMENT_TIMEOUT
 )
 # ✅ (Point 2) Import DB model for state recovery
 from capitalguard.infrastructure.db.models import ParsingAttempt 
@@ -59,6 +60,10 @@ EDITING_FIELD_KEY = "editing_field_key"
 RAW_FORWARDED_TEXT_KEY = "raw_forwarded_text"
 ORIGINAL_MESSAGE_ID_KEY = "parsing_review_message_id"
 LAST_ACTIVITY_KEY = "last_activity_management"
+
+# ✅ R1-S1: New keys for auditing
+FORWARD_AUDIT_DATA_KEY = "forward_audit_data" 
+
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL")
 
 if not AI_SERVICE_URL:
@@ -70,6 +75,7 @@ def clean_parsing_conversation_state(context: ContextTypes.DEFAULT_TYPE):
         PARSING_ATTEMPT_ID_KEY, ORIGINAL_PARSED_DATA_KEY, CURRENT_EDIT_DATA_KEY,
         EDITING_FIELD_KEY, RAW_FORWARDED_TEXT_KEY, ORIGINAL_MESSAGE_ID_KEY,
         LAST_ACTIVITY_KEY, 'fwd_msg_text', 'pending_trade',
+        FORWARD_AUDIT_DATA_KEY, # ✅ R1-S1: Clean up new key
     ]
     for key in keys_to_pop:
         context.user_data.pop(key, None)
@@ -119,10 +125,10 @@ async def smart_safe_edit(
         
         # Other BadRequests
         loge.warning(f"Handled BadRequest in smart_safe_edit: {e}")
-        return False
+        return False # Indicate failure but don't crash
     except TelegramError as e:
         loge.error(f"TelegramError in smart_safe_edit {chat_id}:{message_id}: {e}")
-        return False
+        return False # Indicate failure
     except Exception as e_other:
         loge.exception(f"Unexpected error in smart_safe_edit {chat_id}:{message_id}: {e_other}")
         return False
@@ -148,7 +154,26 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         await message.reply_text("❌ Feature unavailable: The analysis service is not configured.")
         return ConversationHandler.END
 
+    # ✅ R1-S1: Capture audit data (Timestamp and Channel)
+    original_published_at = message.forward_date
+    channel_info = None
+    if message.forward_from_chat:
+        channel_info = {
+            "id": message.forward_from_chat.id,
+            "title": message.forward_from_chat.title or "Unknown Channel"
+        }
+    
+    if not original_published_at:
+        await message.reply_text("❌ **Error:** This message seems to be a copy-paste, not a forward.\nTo analyze, please **forward** the original message directly from the channel.")
+        clean_parsing_conversation_state(context)
+        return ConversationHandler.END
+
     context.user_data[RAW_FORWARDED_TEXT_KEY] = message.text
+    context.user_data[FORWARD_AUDIT_DATA_KEY] = {
+        "original_published_at": original_published_at.isoformat(),
+        "channel_info": channel_info
+    }
+    
     analyzing_message = await message.reply_text("⏳ Analyzing forwarded message...")
     context.user_data[ORIGINAL_MESSAGE_ID_KEY] = analyzing_message.message_id
     user_db_id = db_user.id
@@ -205,7 +230,7 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
                         hydrated_data = None
                 
                 else: 
-                     parsing_result = ParsingResult(
+                    parsing_result = ParsingResult(
                         success=False,
                         attempt_id=json_data.get("attempt_id"),
                         error_message=json_data.get("error", "Unknown analysis error.")
@@ -225,13 +250,16 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         context.user_data[ORIGINAL_PARSED_DATA_KEY] = hydrated_data
         context.user_data[CURRENT_EDIT_DATA_KEY] = hydrated_data.copy()
 
-        keyboard = build_editable_review_card(hydrated_data)
+        # ✅ R1-S1: Pass audit data (channel name) to the review card builder
+        channel_name = channel_info.get("title") if channel_info else "Unknown Channel"
+        keyboard = build_editable_review_card(hydrated_data, channel_name=channel_name)
+        
         # Use smart edit
         await smart_safe_edit(
             context.bot, analyzing_message.chat_id, analyzing_message.message_id,
-            text="📊 **Review Parsed Data**\nPlease verify the extracted information:",
+            text=f"📊 **Review Parsed Data**\n*Source:* `{channel_name}`\n\nPlease verify the data and choose an action:",
             reply_markup=keyboard,
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.MARKDOWN_V2 # Use Markdown for code block
         )
         return AWAIT_REVIEW
     else:
@@ -261,13 +289,16 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 
     current_data = context.user_data.get(CURRENT_EDIT_DATA_KEY)
     original_message_id = context.user_data.get(ORIGINAL_MESSAGE_ID_KEY)
+    
+    # ✅ R1-S1: Get audit data
+    audit_data = context.user_data.get(FORWARD_AUDIT_DATA_KEY)
 
     # ✅ --- (Point 2) State Recovery Logic ---
-    if not current_data or not original_message_id:
+    # (State recovery logic remains the same, but we add audit_data recovery)
+    if not current_data or not original_message_id or not audit_data:
         log.warning(f"State lost for user {update.effective_user.id}. Attempting DB recovery...")
         attempt_id = context.user_data.get(PARSING_ATTEMPT_ID_KEY)
         
-        # We also need the message ID, which might be the current one
         if not original_message_id and query.message:
              original_message_id = query.message.message_id
              context.user_data[ORIGINAL_MESSAGE_ID_KEY] = original_message_id
@@ -287,13 +318,23 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                     }
                     context.user_data[CURRENT_EDIT_DATA_KEY] = restored
                     context.user_data[ORIGINAL_PARSED_DATA_KEY] = restored
-                    current_data = restored # Set for use below
+                    current_data = restored
                     
-                    keyboard = build_editable_review_card(restored)
+                    # ✅ R1-S1: Attempt to recover audit data (Note: This is brittle)
+                    # We can't easily recover the *original* forward data if context is lost
+                    # We will assume the raw_content is what we need.
+                    if not audit_data and attempt.raw_content:
+                        context.user_data[RAW_FORWARDED_TEXT_KEY] = attempt.raw_content
+                        # We CANNOT recover original_published_at or channel_info this way
+                        # This highlights a limitation of context-only state.
+                        # For now, we'll proceed without audit data if lost.
+                        log.warning(f"Session recovered for {attempt_id}, but audit data (timestamp/channel) is lost.")
+                    
+                    channel_name = audit_data.get("channel_info", {}).get("title", "Unknown") if audit_data else "Unknown (Recovered)"
+                    keyboard = build_editable_review_card(restored, channel_name=channel_name)
                     await smart_safe_edit(context.bot, query.message.chat_id, original_message_id,
-                        text="🔄 Session recovered from database. Please review again:", reply_markup=keyboard)
+                        text=f"🔄 Session recovered. Please review again:\n*Source:* `{channel_name}`", reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
                     log.info(f"Successfully recovered session for user {update.effective_user.id} from attempt {attempt_id}")
-                    # Don't return yet, continue with the logic
                 else:
                     raise ValueError("Attempt not found or has no result data.")
             except Exception as e_recover:
@@ -308,12 +349,17 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             return ConversationHandler.END
     # --- End State Recovery ---
 
-    if action == CallbackAction.CONFIRM.value:
+    # ✅ R1-S1: Handle the new actions: ACTIVATE_TRADE and WATCH_CHANNEL
+    if action in (CallbackAction.CONFIRM.value, "WATCH_CHANNEL"): # CONFIRM is now ACTIVATE
         trade_service: TradeService = get_service(context, "trade_service", TradeService)
         attempt_id = context.user_data.get(PARSING_ATTEMPT_ID_KEY)
         original_data = context.user_data.get(ORIGINAL_PARSED_DATA_KEY)
         raw_text = context.user_data.get(RAW_FORWARDED_TEXT_KEY)
         was_corrected = (original_data != current_data)
+
+        # ✅ R1-S1: Determine status based on button pressed
+        status_to_set = "PENDING_ACTIVATION" if action == CallbackAction.CONFIRM.value else "WATCHLIST"
+        action_verb = "Activated" if status_to_set == "PENDING_ACTIVATION" else "Added to Watchlist"
 
         try:
             trade_service._validate_recommendation_data(
@@ -321,28 +367,34 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 current_data['stop_loss'], current_data['targets']
             )
         except ValueError as e:
-            # ✅ (Point 4) Structured Logging
+            # (Structured logging remains the same)
             log.warning("ValidationFailureOnConfirm", extra={
                 "user": db_user.telegram_user_id,
                 "attempt_id": attempt_id,
                 "error": str(e),
                 "context": "forward_parsing.review_callback_handler"
             })
-            # ✅ (Point 1) FREEZE FIX: Escape the error message
             error_text = f"❌ **Error saving trade:** {html.escape(str(e))}"
             await smart_safe_edit(context.bot, query.message.chat_id, original_message_id, text=error_text, reply_markup=None, parse_mode=ParseMode.HTML)
             clean_parsing_conversation_state(context)
             return ConversationHandler.END
 
+        # ✅ R1-S1: Call the (soon to be updated) trade_service method
+        # We pass all new audit data
         result = await trade_service.create_trade_from_forwarding_async(
             user_id=str(db_user.telegram_user_id),
             trade_data=current_data,
             original_text=raw_text,
-            db_session=db_session
+            db_session=db_session,
+            # --- New R1-S1 Data ---
+            status_to_set=status_to_set,
+            original_published_at=audit_data.get("original_published_at"),
+            channel_info=audit_data.get("channel_info")
         )
 
         correction_task = None
         if attempt_id and was_corrected:
+            # (Correction logic remains the same)
             log.debug(f"Recording correction for attempt {attempt_id} via AI Service...")
             
             def serialize_data(data):
@@ -378,19 +430,23 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             )
 
         if result.get('success'):
-            success_msg = f"✅ **Trade #{result['trade_id']}** for **{result['asset']}** tracked successfully!"
+            # ✅ R1-S1: Updated success message
+            success_msg = f"✅ **Trade #{result['trade_id']}** for **{result['asset']}** {action_verb} successfully!"
             await smart_safe_edit(context.bot, query.message.chat_id, original_message_id, text=success_msg, reply_markup=None)
 
             if correction_task: await correction_task
 
+            # (Template suggestion logic remains the same)
             template_used_initially = False
             if was_corrected and attempt_id:
                  try:
                       template_used_initially = context.user_data.get(ORIGINAL_PARSED_DATA_KEY, {}).get("template_id_used") is not None
                  except Exception as e:
-                      log.error(f"Error checking template usage for suggestion on attempt {attempt_id}: {e}")
+                     log.error(f"Error checking template usage for suggestion on attempt {attempt_id}: {e}")
 
             if was_corrected and not template_used_initially:
+                 # We need to re-import build_confirmation_keyboard
+                 from capitalguard.interfaces.telegram.keyboards import build_confirmation_keyboard
                  confirm_kb = build_confirmation_keyboard(
                       CallbackNamespace.SAVE_TEMPLATE, attempt_id,
                       confirm_text="💾 Yes, Save Format", cancel_text="🚫 No, Thanks"
@@ -398,7 +454,7 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                  reply_to_msg_id = update.effective_message.reply_to_message.message_id if update.effective_message and update.effective_message.reply_to_message else None
                  await context.bot.send_message(
                       chat_id=query.message.chat_id,
-                      text="You corrected the parsed data. Save this message format as a personal template to speed up future analysis?",
+                      text="You corrected the parsed data.\nSave this message format as a personal template to speed up future analysis?",
                       reply_markup=confirm_kb,
                       reply_to_message_id=reply_to_msg_id
                  )
@@ -435,6 +491,7 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             ButtonTexts.CANCEL + " Edit",
             callback_data=CallbackBuilder.create(CallbackNamespace.FORWARD_PARSE, CallbackAction.CANCEL, "edit")
         )
+        
         input_keyboard = InlineKeyboardMarkup([[cancel_edit_button]])
 
         await smart_safe_edit(
@@ -446,6 +503,7 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 
     elif action == CallbackAction.CANCEL.value:
         await smart_safe_edit(context.bot, query.message.chat_id, original_message_id, text="❌ Operation cancelled.", reply_markup=None)
+        
         clean_parsing_conversation_state(context)
         return ConversationHandler.END
 
@@ -462,12 +520,13 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
     field_to_edit = context.user_data.get(EDITING_FIELD_KEY)
     current_data = context.user_data.get(CURRENT_EDIT_DATA_KEY)
     original_message_id = context.user_data.get(ORIGINAL_MESSAGE_ID_KEY)
+    audit_data = context.user_data.get(FORWARD_AUDIT_DATA_KEY) # ✅ R1-S1
     user_input = update.message.text.strip() if update.message.text else ""
 
     try: await update.message.delete()
     except Exception: log.debug("Could not delete user correction message.")
 
-    if not field_to_edit or not current_data or not original_message_id:
+    if not field_to_edit or not current_data or not original_message_id or not audit_data: # ✅ R1-S1
         log.warning(f"Correction value handler called with invalid state for user {update.effective_user.id}.")
         await update.effective_chat.send_message("❌ Session error during correction. Please start over.")
         clean_parsing_conversation_state(context)
@@ -480,6 +539,7 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
         if field_to_edit == "asset":
             new_asset = user_input.upper()
             if not new_asset: raise ValueError("Asset symbol cannot be empty.")
+            
             temp_data['asset'] = new_asset
             validated = True
         elif field_to_edit == "side":
@@ -493,6 +553,7 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             validated = True
         elif field_to_edit == "targets":
             pattern = r'([\d.,KMB]+(?:@[\d.,]+%?)?)'
+            
             tokens = re.findall(pattern, user_input, re.IGNORECASE)
             
             if not tokens and "(25% each)" in user_input.lower():
@@ -526,19 +587,22 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             log.info(f"Field '{field_to_edit}' corrected successfully by user {update.effective_user.id}")
             context.user_data.pop(EDITING_FIELD_KEY, None)
 
-            keyboard = build_editable_review_card(current_data)
+            # ✅ R1-S1: Pass channel name to review card
+            channel_name = audit_data.get("channel_info", {}).get("title", "Unknown Channel")
+            keyboard = build_editable_review_card(current_data, channel_name=channel_name)
+            
             await smart_safe_edit(
                  context.bot, update.effective_chat.id, original_message_id,
-                 text="✅ Value updated. Please review again:",
+                 text=f"✅ Value updated. Please review again:\n*Source:* `{channel_name}`",
                  reply_markup=keyboard,
-                 parse_mode=ParseMode.HTML
+                 parse_mode=ParseMode.MARKDOWN_V2
             )
             return AWAIT_REVIEW
         else:
              raise ValueError(f"Internal validation failed for field '{field_to_edit}'.")
 
     except ValueError as e:
-        # ✅ (Point 4) Structured Logging
+        # (Structured logging remains the same)
         log.warning("ValidationFailureOnCorrection", extra={
             "user": db_user.telegram_user_id,
             "attempt_id": context.user_data.get(PARSING_ATTEMPT_ID_KEY),
@@ -597,6 +661,7 @@ async def save_template_confirm_handler(update: Update, context: ContextTypes.DE
                     json={"attempt_id": attempt_id, "user_id": db_user.id},
                     timeout=10.0
                 )
+                
                 response.raise_for_status()
                 
                 res_json = response.json()
@@ -650,7 +715,8 @@ def register_forward_parsing_handlers(app: Application):
         states={
             AWAIT_REVIEW: [CallbackQueryHandler(
                 review_callback_handler,
-                pattern=f"^{CallbackNamespace.FORWARD_PARSE.value}:(?:{CallbackAction.CONFIRM.value}|{CallbackAction.EDIT_FIELD.value}|{CallbackAction.CANCEL.value}):"
+                # ✅ R1-S1: Added WATCH_CHANNEL action
+                pattern=f"^{CallbackNamespace.FORWARD_PARSE.value}:(?:{CallbackAction.CONFIRM.value}|WATCH_CHANNEL|{CallbackAction.EDIT_FIELD.value}|{CallbackAction.CANCEL.value}):"
             )],
             AWAIT_CORRECTION_VALUE: [MessageHandler(
                 filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
