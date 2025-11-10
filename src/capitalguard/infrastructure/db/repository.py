@@ -1,4 +1,4 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/repository.py ---
+# --- src/capitalguard/infrastructure/db/repository.py --- V 2.8 (R1-S1 Indentation Hotfix)
 """
 Repository layer — provides clean data access abstractions.
 ✅ THE FIX (R1-S1 HOTFIX 8): Corrected a critical IndentationError on line 68 ("updated = True").
@@ -346,7 +346,7 @@ class RecommendationRepository:
                     "stop_loss": sl_dec,
                     "targets": targets_list, 
                     "status": trade.status, 
-                    "order_type": OrderTypeEntity.LIMIT, 
+                    "order_type": OrderTypeEnum.LIMIT, 
                     "market": "Futures", 
                     "processed_events": {}, 
                     
@@ -453,4 +453,3 @@ class RecommendationRepository:
         ).all()
 
 # --- END of repository update ---
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/repository.py ---
