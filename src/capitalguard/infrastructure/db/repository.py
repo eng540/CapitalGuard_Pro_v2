@@ -92,7 +92,7 @@ class UserRepository:
         return new_user
 
 # ==========================================================
-# CHANNEL REPOSITORY
+# (ChannelRepository & ParsingRepository remain unchanged)
 # ==========================================================
 class ChannelRepository:
     """Repository for Channel entities."""
@@ -131,42 +131,30 @@ class ChannelRepository:
         self.session.delete(channel)
         self.session.flush()
 
-# ==========================================================
-# PARSING REPOSITORY
-# ==========================================================
 class ParsingRepository:
     """Repository for ParsingTemplate and ParsingAttempt entities."""
-
     def __init__(self, session: Session):
         self.session = session
 
     def add_attempt(self, **kwargs) -> ParsingAttempt:
-        """Adds a new parsing attempt record and returns the instance."""
         attempt = ParsingAttempt(**kwargs)
         self.session.add(attempt)
-        self.session.flush() # Get ID immediately
+        self.session.flush() 
         logger.debug(f"ParsingAttempt record created with ID: {attempt.id}")
         return attempt
 
     def update_attempt(self, attempt_id: int, **kwargs):
-        """Updates an existing parsing attempt identified by its ID."""
         logger.debug(f"Updating ParsingAttempt ID: {attempt_id} with data: {kwargs}")
         attempt = self.session.query(ParsingAttempt).filter(ParsingAttempt.id == attempt_id).first()
         if attempt:
             for key, value in kwargs.items():
                 setattr(attempt, key, value)
-            self.session.flush() # Persist changes within the transaction
+            self.session.flush()
             logger.debug(f"ParsingAttempt ID: {attempt_id} updated successfully.")
         else:
             logger.warning(f"Attempted to update non-existent ParsingAttempt ID: {attempt_id}")
 
-
     def get_active_templates(self, user_id: Optional[int] = None) -> List[ParsingTemplate]:
-        """
-        Gets active public templates (is_public=True) and private templates
-        owned by the specified user (analyst_id=user_id).
-        Orders by confidence score descending (best first).
-        """
         query = self.session.query(ParsingTemplate).filter(
             sa.or_( 
                 ParsingTemplate.is_public == True,
@@ -181,7 +169,6 @@ class ParsingRepository:
         return templates
 
     def add_template(self, **kwargs) -> ParsingTemplate:
-        """Adds a new parsing template, typically private initially."""
         kwargs.setdefault('is_public', False)
         template = ParsingTemplate(**kwargs)
         self.session.add(template)
@@ -190,7 +177,6 @@ class ParsingRepository:
         return template
 
     def find_template_by_id(self, template_id: int) -> Optional[ParsingTemplate]:
-        """Finds a parsing template by its ID."""
         return self.session.query(ParsingTemplate).filter(ParsingTemplate.id == template_id).first()
 
 # ==========================================================
@@ -201,7 +187,6 @@ class RecommendationRepository:
 
     @staticmethod
     def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
-        """Safely convert any value to a Decimal, returning default on failure."""
         if isinstance(value, Decimal):
              return value if value.is_finite() else default
         if value is None:
@@ -215,7 +200,6 @@ class RecommendationRepository:
 
     @staticmethod
     def _to_entity(row: Recommendation) -> Optional[RecommendationEntity]:
-        """Converts a Recommendation ORM model to its domain entity representation."""
         if not row: return None
         try:
             targets_data = row.targets or []
@@ -226,7 +210,6 @@ class RecommendationRepository:
             ]
             if not formatted_targets:
                  logger.warning(f"Recommendation {row.id} has no valid targets in JSON data: {row.targets}")
-
             entity = RecommendationEntity(
                 id=row.id,
                 analyst_id=row.analyst_id,
@@ -246,7 +229,7 @@ class RecommendationRepository:
                 closed_at=row.closed_at,
                 open_size_percent=float(row.open_size_percent),
                 is_shadow=row.is_shadow,
-                events=list(row.events or []), # Eager load events if configured
+                events=list(row.events or []), 
                 exit_strategy=ExitStrategyEntity(row.exit_strategy.value),
             )
             if hasattr(row, 'profit_stop_active'):
@@ -254,21 +237,18 @@ class RecommendationRepository:
                  setattr(entity, 'profit_stop_mode', row.profit_stop_mode)
                  setattr(entity, 'profit_stop_price', RecommendationRepository._to_decimal(row.profit_stop_price) if row.profit_stop_price is not None else None)
                  setattr(entity, 'profit_stop_trailing_value', RecommendationRepository._to_decimal(row.profit_stop_trailing_value) if row.profit_stop_trailing_value is not None else None)
-
             return entity
         except Exception as e:
             logger.error(f"Error translating ORM Recommendation ID {getattr(row, 'id', 'N/A')} to entity: {e}", exc_info=True)
             return None
 
     def get(self, session: Session, rec_id: int) -> Optional[Recommendation]:
-        """Gets a Recommendation ORM object by ID, loading analyst and events."""
         return session.query(Recommendation).options(
             joinedload(Recommendation.analyst),
             selectinload(Recommendation.events) 
         ).filter(Recommendation.id == rec_id).first()
 
     def get_for_update(self, session: Session, rec_id: int) -> Optional[Recommendation]:
-        """Gets a Recommendation ORM object by ID with a lock for updating."""
         return session.query(Recommendation).filter(Recommendation.id == rec_id).with_for_update().first()
 
     def list_all_active_triggers_data(self, session: Session) -> List[Dict[str, Any]]:
@@ -353,7 +333,7 @@ class RecommendationRepository:
                     # ✅ R1-S1 HOTFIX 9: This line caused the NameError. It is now fixed.
                     "order_type": OrderTypeEnum.LIMIT, 
                     "market": "Futures", 
-                    "processed_events": {}, 
+                    "processed_events": {}, # This is the cause of Bug B (Spam)
                     
                     "profit_stop_mode": "NONE",
                     "profit_stop_price": None,
@@ -371,11 +351,9 @@ class RecommendationRepository:
 
 
     def get_published_messages(self, session: Session, rec_id: int) -> List[PublishedMessage]:
-        """Gets all PublishedMessage ORM records for a recommendation."""
         return session.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
 
     def get_open_recs_for_analyst(self, session: Session, analyst_user_id: int) -> List[Recommendation]:
-        """Gets all open (PENDING/ACTIVE) Recommendation ORM objects for an analyst."""
         return session.query(Recommendation).filter(
             Recommendation.analyst_id == analyst_user_id,
             Recommendation.is_shadow.is_(False),
@@ -383,10 +361,6 @@ class RecommendationRepository:
         ).order_by(Recommendation.created_at.desc()).all()
 
     def get_open_trades_for_trader(self, session: Session, trader_user_id: int) -> List[UserTrade]:
-        """
-        Gets all open UserTrade ORM objects for a trader.
-        Open now means: WATCHLIST, PENDING_ACTIVATION, or ACTIVATED.
-        """
         return session.query(UserTrade).filter(
             UserTrade.user_id == trader_user_id,
             UserTrade.status.in_([
@@ -397,14 +371,9 @@ class RecommendationRepository:
         ).order_by(UserTrade.created_at.desc()).all()
 
     def get_user_trade_by_id(self, session: Session, trade_id: int) -> Optional[UserTrade]:
-        """Gets a specific UserTrade ORM object by its ID."""
         return session.query(UserTrade).filter(UserTrade.id == trade_id).first()
 
     def find_user_trade_by_source_id(self, session: Session, user_id: int, rec_id: int) -> Optional[UserTrade]:
-        """
-        Finds an open UserTrade linked to a specific user and recommendation.
-        Open now means: WATCHLIST, PENDING_ACTIVATION, or ACTIVATED.
-        """
         return session.query(UserTrade).filter(
             UserTrade.user_id == user_id,
             UserTrade.source_recommendation_id == rec_id,
@@ -416,13 +385,11 @@ class RecommendationRepository:
         ).first()
 
     def get_events_for_recommendation(self, session: Session, rec_id: int) -> List[RecommendationEvent]:
-        """Gets all RecommendationEvent ORM objects for a recommendation, ordered by time."""
         return session.query(RecommendationEvent).filter(
             RecommendationEvent.recommendation_id == rec_id
         ).order_by(RecommendationEvent.event_timestamp.asc()).all()
 
     def get_all_active_recs(self, session: Session) -> List[Recommendation]:
-        """Fetches all PENDING or ACTIVE Recommendation ORM objects with related data eager-loaded."""
         return session.query(Recommendation).options(
             selectinload(Recommendation.events), 
             joinedload(Recommendation.analyst) 
@@ -431,10 +398,6 @@ class RecommendationRepository:
         ).all()
 
     def get_all_active_user_trades(self, session: Session) -> List[UserTrade]:
-        """
-        Fetches all WATCHLIST, PENDING_ACTIVATION, or ACTIVATED UserTrade ORM objects
-        with related user data eager-loaded.
-        """
         return session.query(UserTrade).options(
             joinedload(UserTrade.user) 
         ).filter(
@@ -447,7 +410,6 @@ class RecommendationRepository:
 
 
     def get_active_recs_for_asset_and_market(self, session: Session, asset: str, market: str) -> List[Recommendation]:
-        """Fetches active recommendations for a specific asset and market."""
         asset_upper = asset.strip().upper()
         return session.query(Recommendation).filter(
             and_( 
