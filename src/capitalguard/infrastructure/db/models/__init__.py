@@ -2,9 +2,10 @@
 """
 This file makes the 'models' directory a package and ensures all SQLAlchemy ORM
 models are discoverable by Alembic and the application.
-✅ THE FIX (R1-S1 HOTFIX 2): Corrected the import name.
-    - We are now importing 'UserTradeStatusEnum' as defined in 'recommendation.py'
-      (which itself imports from domain.entities). This resolves the ImportError.
+✅ THE FIX (R1-S1 HOTFIX 3): Corrected the import name.
+    - The file `recommendation.py` now imports `UserTradeStatus as UserTradeStatusEnum`.
+    - We must therefore import `UserTradeStatusEnum` from it, NOT `UserTradeStatus`.
+    - This finally resolves the ImportError that was crashing Alembic.
 """
 
 from .base import Base 
@@ -13,8 +14,8 @@ from .recommendation import (
     RecommendationStatusEnum,
     OrderTypeEnum,
     ExitStrategyEnum,
-    # ✅ R1-S1 HOTFIX 2: Import the correct Enum name 'UserTradeStatusEnum'
-    UserTradeStatus as UserTradeStatusEnum,
+    # ✅ R1-S1 HOTFIX 3: Import the *correct* name that recommendation.py now holds
+    UserTradeStatusEnum,
     AnalystProfile,
     Channel,
     Recommendation,
@@ -44,7 +45,7 @@ __all__ = [
     "RecommendationStatusEnum",
     "OrderTypeEnum",
     "ExitStrategyEnum",
-    # ✅ R1-S1 HOTFIX 2: Export the correct Enum name
+    # ✅ R1-S1 HOTFIX 3: Export the correct Enum name
     "UserTradeStatusEnum", 
     # ✅ NEW: Export parsing models
     "ParsingTemplate", 
