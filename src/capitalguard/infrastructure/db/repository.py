@@ -1,11 +1,10 @@
-# --- src/capitalguard/infrastructure/db/repository.py --- V 2.6 (R1-S1 Audit Triggers)
+# --- src/capitalguard/infrastructure/db/repository.py --- V 2.7 (R1-S1 Import Hotfix)
 """
 Repository layer — provides clean data access abstractions.
-✅ THE FIX (R1-S1): Updated `list_all_active_triggers_data` to be a
-       unified trigger loader. It now fetches:
-       1. All active `Recommendation` objects (for analysts).
-       2. All `UserTrade` objects in 'WATCHLIST' or 'PENDING_ACTIVATION' states (for traders).
-       It adds an `item_type` key to each trigger for AlertService to differentiate.
+✅ THE FIX (R1-S1 HOTFIX 5): Corrected the final ImportError.
+    - This file was importing 'UserTradeStatus as UserTradeStatusEnum' from .models.
+    - .models (via __init__.py) now correctly exports 'UserTradeStatusEnum'.
+    - This file now imports 'UserTradeStatusEnum' directly, resolving the crash loop.
 """
 
 import logging
@@ -14,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session, joinedload, selectinload
 import sqlalchemy as sa 
-from sqlalchemy import and_, or_ # ✅ R1-S1: Import 'or_'
+from sqlalchemy import and_, or_ 
 
 # Import domain entities and value objects
 from capitalguard.domain.entities import (
@@ -31,8 +30,8 @@ from .models import (
     User, Channel, Recommendation, RecommendationEvent,
     PublishedMessage, UserTrade, 
     RecommendationStatusEnum,
-    # ✅ R1-S1: Import new Enum and Model
-    UserTradeStatus as UserTradeStatusEnum,
+    # ✅ R1-S1 HOTFIX 5: Import the correct name 'UserTradeStatusEnum'
+    UserTradeStatusEnum,
     WatchedChannel,
     ParsingTemplate, ParsingAttempt
 )
@@ -66,7 +65,7 @@ class UserRepository:
                  updated = True
             if kwargs.get("username") and user.username != kwargs["username"]:
                 user.username = kwargs["username"]
-                updated = True
+                 updated = True
             if 'user_type' in kwargs and user.user_type != kwargs['user_type']:
                  user.user_type = kwargs['user_type']
                  updated = True
@@ -272,9 +271,9 @@ class RecommendationRepository:
 
     def list_all_active_triggers_data(self, session: Session) -> List[Dict[str, Any]]:
         """
-        ✅ R1-S1: Gets raw data (as dicts) for ALL active triggers:
+        Gets raw data (as dicts) for ALL active triggers:
         1. PENDING/ACTIVE Recommendations
-        2. WATCHLIST/PENDING_ACTIVATION UserTrades
+        2. WATCHLIST/PENDING_ACTIVATION/ACTIVATED UserTrades
         """
         trigger_data = []
         
@@ -297,16 +296,16 @@ class RecommendationRepository:
 
                 data = {
                     "id": rec.id,
-                    "item_type": "recommendation", # ✅ R1-S1: Identify type
-                    "user_id": user_id_str, # This is the Analyst's Telegram ID
-                    "user_db_id": rec.analyst_id, # ✅ R1-S1: Add internal DB ID
+                    "item_type": "recommendation", 
+                    "user_id": user_id_str, 
+                    "user_db_id": rec.analyst_id, 
                     "asset": rec.asset,
                     "side": rec.side,
                     "entry": entry_dec,
                     "stop_loss": sl_dec,
                     "targets": targets_list, 
-                    "status": rec.status, # Pass the Enum member
-                    "order_type": rec.order_type, # Pass the Enum member
+                    "status": rec.status, 
+                    "order_type": rec.order_type, 
                     "market": rec.market,
                     "processed_events": {e.event_type for e in rec.events},
                     
@@ -315,7 +314,6 @@ class RecommendationRepository:
                     "profit_stop_trailing_value": self._to_decimal(getattr(rec, 'profit_stop_trailing_value', None)) if getattr(rec, 'profit_stop_trailing_value', None) is not None else None,
                     "profit_stop_active": getattr(rec, 'profit_stop_active', False),
                     
-                    # ✅ R1-S1: Add audit fields (None for recs)
                     "original_published_at": None, 
                 }
                 trigger_data.append(data)
@@ -341,26 +339,24 @@ class RecommendationRepository:
 
                 data = {
                     "id": trade.id,
-                    "item_type": "user_trade", # ✅ R1-S1: Identify type
-                    "user_id": user_id_str, # This is the Trader's Telegram ID
-                    "user_db_id": trade.user_id, # ✅ R1-S1: Add internal DB ID
+                    "item_type": "user_trade", 
+                    "user_id": user_id_str, 
+                    "user_db_id": trade.user_id, 
                     "asset": trade.asset,
                     "side": trade.side,
                     "entry": entry_dec,
                     "stop_loss": sl_dec,
                     "targets": targets_list, 
-                    "status": trade.status, # Pass the Enum member (WATCHLIST or PENDING_ACTIVATION)
-                    "order_type": OrderTypeEnum.LIMIT, # User trades are treated as limit/pending
-                    "market": "Futures", # TODO: User trades need a market field
-                    "processed_events": {}, # User trades don't have events... yet.
+                    "status": trade.status, 
+                    "order_type": OrderTypeEnum.LIMIT, 
+                    "market": "Futures", 
+                    "processed_events": {}, 
                     
-                    # No profit stop logic for user trades yet
                     "profit_stop_mode": "NONE",
                     "profit_stop_price": None,
                     "profit_stop_trailing_value": None,
                     "profit_stop_active": False,
                     
-                    # ✅ R1-S1: Add audit fields
                     "original_published_at": trade.original_published_at,
                 }
                 trigger_data.append(data)
@@ -385,7 +381,7 @@ class RecommendationRepository:
 
     def get_open_trades_for_trader(self, session: Session, trader_user_id: int) -> List[UserTrade]:
         """
-        ✅ R1-S1: Gets all open UserTrade ORM objects for a trader.
+        Gets all open UserTrade ORM objects for a trader.
         Open now means: WATCHLIST, PENDING_ACTIVATION, or ACTIVATED.
         """
         return session.query(UserTrade).filter(
@@ -403,7 +399,7 @@ class RecommendationRepository:
 
     def find_user_trade_by_source_id(self, session: Session, user_id: int, rec_id: int) -> Optional[UserTrade]:
         """
-        ✅ R1-S1: Finds an open UserTrade linked to a specific user and recommendation.
+        Finds an open UserTrade linked to a specific user and recommendation.
         Open now means: WATCHLIST, PENDING_ACTIVATION, or ACTIVATED.
         """
         return session.query(UserTrade).filter(
@@ -425,24 +421,24 @@ class RecommendationRepository:
     def get_all_active_recs(self, session: Session) -> List[Recommendation]:
         """Fetches all PENDING or ACTIVE Recommendation ORM objects with related data eager-loaded."""
         return session.query(Recommendation).options(
-            selectinload(Recommendation.events), # Eager load events
-            joinedload(Recommendation.analyst) # Eager load analyst info
+            selectinload(Recommendation.events), 
+            joinedload(Recommendation.analyst) 
         ).filter(
             Recommendation.status.in_([RecommendationStatusEnum.PENDING, RecommendationStatusEnum.ACTIVE])
         ).all()
 
     def get_all_active_user_trades(self, session: Session) -> List[UserTrade]:
         """
-        ✅ R1-S1: Fetches all WATCHLIST or PENDING_ACTIVATION UserTrade ORM objects
+        Fetches all WATCHLIST, PENDING_ACTIVATION, or ACTIVATED UserTrade ORM objects
         with related user data eager-loaded.
         """
         return session.query(UserTrade).options(
-            joinedload(UserTrade.user) # Eager load user info
+            joinedload(UserTrade.user) 
         ).filter(
             UserTrade.status.in_([
                 UserTradeStatusEnum.WATCHLIST, 
                 UserTradeStatusEnum.PENDING_ACTIVATION,
-                UserTradeStatusEnum.ACTIVATED # Also watch active trades for SL/TP
+                UserTradeStatusEnum.ACTIVATED
             ])
         ).all()
 
