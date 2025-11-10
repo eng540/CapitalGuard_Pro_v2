@@ -1,9 +1,8 @@
-# src/capitalguard/infrastructure/db/models/recommendation.py (v25.3 - Profit Stop Fields)
+# src/capitalguard/infrastructure/db/models/recommendation.py (v25.4 - R1-S1 Event Link)
 """
 SQLAlchemy ORM models.
-✅ THE FIX (R1-S1): Updated UserTrade model to support new auditing and layer logic.
-       - Added original_published_at, activated_at, watched_channel_id.
-       - Updated UserTradeStatus Enum to match domain (WATCHLIST, PENDING_ACTIVATION, etc.).
+✅ THE FIX (R1-S1 Hotfix 10): Linked UserTrade model to the new UserTradeEvent
+       model via the 'events' relationship to solve notification spam (Bug B).
 """
 import sqlalchemy as sa
 from sqlalchemy import (
@@ -17,7 +16,6 @@ from capitalguard.domain.entities import (
     RecommendationStatus as RecommendationStatusEnum,
     OrderType as OrderTypeEnum,
     ExitStrategy as ExitStrategyEnum,
-    # ✅ R1-S1: Import the UPDATED Enum from the domain
     UserTradeStatus as UserTradeStatusEnum
 )
 
@@ -63,7 +61,6 @@ class Recommendation(Base):
     exit_price = Column(Numeric(20, 8), nullable=True)
     is_shadow = Column(Boolean, default=False, server_default='false', nullable=False, index=True)
     
-    # ===== Profit stop persistent fields =====
     profit_stop_mode = Column(String(32), nullable=False, server_default='NONE')
     profit_stop_price = Column(Numeric(20, 8), nullable=True)
     profit_stop_trailing_value = Column(Numeric(20, 8), nullable=True)
@@ -80,14 +77,12 @@ class Recommendation(Base):
     user_trades = relationship("UserTrade", back_populates="source_recommendation")
     published_messages = relationship("PublishedMessage", back_populates="recommendation", cascade="all, delete-orphan")
 
-# ... (UserTrade, RecommendationEvent, and other models remain unchanged)
 class UserTrade(Base):
     __tablename__ = 'user_trades'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     source_recommendation_id = Column(Integer, ForeignKey('recommendations.id', ondelete="SET NULL"), nullable=True, index=True)
     
-    # ✅ R1-S1: Link to the channel this was forwarded from
     watched_channel_id = Column(Integer, ForeignKey('watched_channels.id', ondelete="SET NULL"), nullable=True, index=True)
     
     asset = Column(String, nullable=False, index=True)
@@ -96,7 +91,6 @@ class UserTrade(Base):
     stop_loss = Column(Numeric(20, 8), nullable=False)
     targets = Column(JSONB, nullable=False)
     
-    # ✅ R1-S1: Use the new expanded Enum
     status = Column(Enum(UserTradeStatusEnum, name="usertradestatus"), nullable=False, default=UserTradeStatusEnum.WATCHLIST, index=True)
     
     close_price = Column(Numeric(20, 8), nullable=True)
@@ -105,17 +99,16 @@ class UserTrade(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     
-    # ✅ R1-S1: Add new auditing timestamp fields
-    original_published_at = Column(DateTime(timezone=True), nullable=True) # Time the signal was originally posted
-    activated_at = Column(DateTime(timezone=True), nullable=True) # Time user clicked "Activate" OR it hit entry price
-    
+    original_published_at = Column(DateTime(timezone=True), nullable=True) 
+    activated_at = Column(DateTime(timezone=True), nullable=True) 
     closed_at = Column(DateTime(timezone=True), nullable=True)
     
     user = relationship("User", back_populates="user_trades")
     source_recommendation = relationship("Recommendation", back_populates="user_trades")
-    
-    # ✅ R1-S1: Add relationship to the WatchedChannel
     watched_channel = relationship("WatchedChannel", back_populates="user_trades")
+    
+    # ✅ R1-S1 HOTFIX 10: Add relationship to the new event table
+    events = relationship("UserTradeEvent", back_populates="user_trade", cascade="all, delete-orphan", lazy="selectin")
 
 
 class RecommendationEvent(Base):
