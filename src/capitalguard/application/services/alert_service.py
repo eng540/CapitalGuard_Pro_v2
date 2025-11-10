@@ -22,6 +22,7 @@ from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
 from capitalguard.infrastructure.db.models import RecommendationStatusEnum
+# ✅ R1-S1: Import the new UserTradeStatus Enum
 from capitalguard.infrastructure.db.models import UserTradeStatus as UserTradeStatusEnum
 from capitalguard.application.strategy.engine import StrategyEngine, BaseAction, CloseAction, MoveSLAction
 
@@ -83,6 +84,7 @@ class AlertService:
         log.info("Attempting to build in-memory trigger index (Unified)...")
         try:
             with session_scope() as session:
+                # This function now returns BOTH recs and user_trades (with events)
                 trigger_data_list = self.repo.list_all_active_triggers_data(session)
         except Exception:
             log.critical("CRITICAL: DB read failure during trigger index build.", exc_info=True)
