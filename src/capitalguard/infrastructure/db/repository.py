@@ -333,7 +333,8 @@ class RecommendationRepository:
                     # ✅ R1-S1 HOTFIX 9: This line caused the NameError. It is now fixed.
                     "order_type": OrderTypeEnum.LIMIT, 
                     "market": "Futures", 
-                    "processed_events": {}, # This is the cause of Bug B (Spam)
+                    # ✅ R1-S1 HOTFIX 10 (Bug B): Load processed events for UserTrades
+                    "processed_events": {e.event_type for e in trade.events}, 
                     
                     "profit_stop_mode": "NONE",
                     "profit_stop_price": None,
@@ -371,7 +372,10 @@ class RecommendationRepository:
         ).order_by(UserTrade.created_at.desc()).all()
 
     def get_user_trade_by_id(self, session: Session, trade_id: int) -> Optional[UserTrade]:
-        return session.query(UserTrade).filter(UserTrade.id == trade_id).first()
+        # ✅ R1-S1 HOTFIX 10: Eager load events
+        return session.query(UserTrade).options(
+            selectinload(UserTrade.events)
+        ).filter(UserTrade.id == trade_id).first()
 
     def find_user_trade_by_source_id(self, session: Session, user_id: int, rec_id: int) -> Optional[UserTrade]:
         return session.query(UserTrade).filter(
@@ -398,8 +402,12 @@ class RecommendationRepository:
         ).all()
 
     def get_all_active_user_trades(self, session: Session) -> List[UserTrade]:
+        """
+        ✅ R1-S1 HOTFIX 10: Eager load 'events' relationship for UserTrades
+        """
         return session.query(UserTrade).options(
-            joinedload(UserTrade.user) 
+            joinedload(UserTrade.user),
+            selectinload(UserTrade.events) # Eager load events
         ).filter(
             UserTrade.status.in_([
                 UserTradeStatusEnum.WATCHLIST, 
