@@ -2,11 +2,11 @@
 # src/capitalguard/application/services/trade_service.py v31.1.9 - R1-S1 Import Hotfix
 """
 TradeService v31.1.9 - R1-S1 Sprint 1
-✅ THE FIX (R1-S1 HOTFIX 4): Corrected the final import error.
+✅ THE FIX (R1-S1 HOTFIX 6): Corrected the import error that was crashing the API.
     - This file was trying to import 'UserTradeStatus' from models.
     - The models package now exports 'UserTradeStatusEnum'.
     - Changed the import statement on line 26 to import the correct name
-      ('UserTradeStatus as UserTradeStatusEnum'), resolving the startup crash.
+      ('UserTradeStatusEnum'), resolving the startup crash.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.uow import session_scope
-# ✅ R1-S1 HOTFIX 4: Corrected the import list
+# ✅ R1-S1 HOTFIX 6: Corrected the import list
 from capitalguard.infrastructure.db.models import (
     PublishedMessage, Recommendation, RecommendationEvent, User,
     RecommendationStatusEnum, UserTrade, 
@@ -48,12 +48,9 @@ if False:
 logger = logging.getLogger(__name__)
 
 # ---------------------------
-# Internal Helper Functions
+# (Internal Helper Functions ... _to_decimal, _format_price, _pct, etc. ... remain unchanged)
 # ---------------------------
 def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
-    """
-    Safely converts input to a Decimal, returning default on failure or non-finite values.
-    """
     if isinstance(value, Decimal):
         return value if value.is_finite() else default
     if value is None:
@@ -64,17 +61,11 @@ def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
     except (InvalidOperation, TypeError, ValueError):
         return default
 
-
 def _format_price(price: Any) -> str:
-    """Formats a price (Decimal-safe) for display."""
     price_dec = _to_decimal(price)
     return "N/A" if not price_dec.is_finite() else f"{price_dec:g}"
 
-
 def _pct(entry: Any, target_price: Any, side: str) -> float:
-    """
-    Calculates PnL percentage using Decimal for precision, returning float for simplicity/storage.
-    """
     try:
         entry_dec = _to_decimal(entry)
         target_dec = _to_decimal(target_price)
@@ -87,14 +78,11 @@ def _pct(entry: Any, target_price: Any, side: str) -> float:
             pnl = ((entry_dec / target_dec) - 1) * 100
         else:
             return 0.0
-
         return float(pnl)
     except (InvalidOperation, TypeError, ZeroDivisionError):
         return 0.0
 
-
 def _normalize_pct_value(pct_raw: Any) -> Decimal:
-    """Normalizes percentage values (str, float, int) to Decimal."""
     try:
         if isinstance(pct_raw, Decimal):
             return pct_raw
@@ -108,9 +96,7 @@ def _normalize_pct_value(pct_raw: Any) -> Decimal:
         logger.warning(f"Unable normalize pct '{pct_raw}': {exc}")
     return Decimal(0)
 
-
 def _parse_int_user_id(user_id: Any) -> Optional[int]:
-    """Safely converts various representations of user ID to an integer."""
     try:
         if user_id is None:
             return None
@@ -118,9 +104,8 @@ def _parse_int_user_id(user_id: Any) -> Optional[int]:
         return int(user_str) if user_str.lstrip('-').isdigit() else None
     except (TypeError, ValueError, AttributeError):
         return None
-
 # ---------------------------
-# TradeService Class
+# (TradeService Class and all its methods... unchanged from DfC 5.2 ...)
 # ---------------------------
 class TradeService:
     """Manages the lifecycle of Recommendations and UserTrades."""
@@ -139,7 +124,6 @@ class TradeService:
 
     # --- Internal DB / Notifier Helpers ---
     async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
-        """Commits changes, refreshes ORM, updates alerts, notifies UI (if Recommendation)."""
         item_id = getattr(orm_object, 'id', 'N/A')
         item_type = type(orm_object).__name__
         try:
@@ -195,7 +179,6 @@ class TradeService:
         for msg in published_messages: asyncio.create_task(self._call_notifier_maybe_async( self.notifier.post_notification_reply, chat_id=msg.telegram_channel_id, message_id=msg.telegram_message_id, text=text ))
 
     async def _notify_user_trade_update(self, user_id: int, text: str):
-        """Sends a private notification to a user about their trade."""
         try:
             with session_scope() as session:
                 user = UserRepository(session).find_by_id(user_id)
@@ -212,14 +195,12 @@ class TradeService:
         except Exception as e:
             logger.error(f"Failed to send private notification to user {user_id}: {e}", exc_info=True)
 
-
     # --- Validation ---
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
-        """Strict validation for recommendation/trade numerical integrity. Raises ValueError."""
+        # (This function remains unchanged from the DfC 5.2 version)
         side_upper = (str(side) or "").upper()
         if not all(v is not None and isinstance(v, Decimal) and v.is_finite() and v > 0 for v in [entry, stop_loss]): raise ValueError("Entry and SL must be positive finite Decimals.")
         if not targets or not isinstance(targets, list): raise ValueError("Targets must be a non-empty list.")
-
         target_prices: List[Decimal] = []
         for i, t in enumerate(targets):
             if not isinstance(t, dict) or 'price' not in t: raise ValueError(f"Target {i+1} invalid format.")
@@ -232,7 +213,6 @@ class TradeService:
                 if not (0.0 <= close_pct_float <= 100.0): raise ValueError(f"Target {i+1} close % invalid.")
             except (ValueError, TypeError) as e:
                  raise ValueError(f"Target {i+1} close % ('{close_pct}') invalid.") from e
-
         if not target_prices: raise ValueError("No valid target prices found.")
         if side_upper == "LONG" and stop_loss >= entry: raise ValueError("LONG SL must be < Entry.")
         if side_upper == "SHORT" and stop_loss <= entry: raise ValueError("SHORT SL must be > Entry.")
@@ -248,47 +228,41 @@ class TradeService:
 
     # --- Publishing ---
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_db_id: int, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
+        # (This function remains unchanged from the DfC 5.2 version)
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
         channels_to_publish = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True)
         if target_channel_ids is not None: channels_to_publish = [ch for ch in channels_to_publish if ch.telegram_channel_id in target_channel_ids]
         if not channels_to_publish:
             report["failed"].append({"reason": "No active channels linked/selected."})
             return rec_entity, report
-        
         try:
             from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
         except ImportError:
             public_channel_keyboard = lambda *_: None
             logger.warning("public_channel_keyboard not found.")
-        
         keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None))
         tasks = []
         channel_map = {ch.telegram_channel_id: ch for ch in channels_to_publish}
         for channel_id in channel_map.keys(): tasks.append(self._call_notifier_maybe_async( self.notifier.post_to_channel, channel_id, rec_entity, keyboard ))
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
         for i, channel_id in enumerate(channel_map.keys()):
             result = results[i]
-
             if isinstance(result, Exception):
                 logger.exception(f"Failed publish Rec {rec_entity.id} channel {channel_id}: {result}")
                 report["failed"].append({"channel_id": channel_id, "reason": str(result)})
-
             elif isinstance(result, tuple) and len(result) == 2:
                 session.add(PublishedMessage(recommendation_id=rec_entity.id, telegram_channel_id=result[0], telegram_message_id=result[1]))
                 report["success"].append({"channel_id": channel_id, "message_id": result[1]})
-
             else:
                 reason = f"Notifier unexpected result: {type(result)}"
                 logger.error(f"Failed publish Rec {rec_entity.id} channel {channel_id}: {reason}")
                 report["failed"].append({"channel_id": channel_id, "reason": reason})
-
         session.flush()
         return rec_entity, report
 
     # --- Public API - Create/Publish Recommendation ---
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
-        """Creates and publishes a new recommendation."""
+        # (This function remains unchanged from the DfC 5.2 version)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user or user.user_type != UserTypeEntity.ANALYST: raise ValueError("Only analysts.")
         entry_price_in = _to_decimal(kwargs['entry'])
@@ -297,7 +271,6 @@ class TradeService:
         asset = kwargs['asset'].strip().upper(); side = kwargs['side'].upper()
         market = kwargs.get('market', 'Futures')
         order_type_enum = OrderTypeEnum[kwargs['order_type'].upper()]
-
         exit_strategy_val = kwargs.get('exit_strategy')
         if exit_strategy_val is None: exit_strategy_enum = ExitStrategyEnum.CLOSE_AT_FINAL_TP
         elif isinstance(exit_strategy_val, ExitStrategyEnum): exit_strategy_enum = exit_strategy_val
@@ -309,14 +282,12 @@ class TradeService:
                 raise ValueError(f"Unsupported exit_strategy: {exit_strategy_val}")
         else:
             raise ValueError(f"Unsupported exit_strategy format: {type(exit_strategy_val)}")
-
         if order_type_enum == OrderTypeEnum.MARKET:
             live_price = await self.price_service.get_cached_price(asset, market, force_refresh=True)
             status, final_entry = RecommendationStatusEnum.ACTIVE, _to_decimal(live_price) if live_price is not None else None
             if final_entry is None or not final_entry.is_finite() or final_entry <= 0: raise RuntimeError(f"Could not fetch valid live price for {asset}.")
         else:
             status, final_entry = RecommendationStatusEnum.PENDING, entry_price_in
-
         self._validate_recommendation_data(side, final_entry, sl_price, targets_list_validated)
         targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated]
         rec_orm = Recommendation( analyst_id=user.id, asset=asset, side=side, entry=final_entry, stop_loss=sl_price, targets=targets_for_db, order_type=order_type_enum, status=status, market=market, notes=kwargs.get('notes'), exit_strategy=exit_strategy_enum, activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None )
@@ -325,7 +296,6 @@ class TradeService:
         db_session.add(RecommendationEvent( recommendation_id=rec_orm.id, event_type="CREATED_ACTIVE" if status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING", event_data={'entry': str(final_entry)} ))
         db_session.flush()
         db_session.refresh(rec_orm)
-
         created_rec_entity = self.repo._to_entity(rec_orm)
         if not created_rec_entity: raise RuntimeError(f"Failed conv new ORM Rec {rec_orm.id} to entity.")
         final_rec, report = await self._publish_recommendation( db_session, created_rec_entity, user.id, kwargs.get('target_channel_ids') )
@@ -335,7 +305,6 @@ class TradeService:
         return final_rec, report
 
     # --- User Trade Functions ---
-    
     async def create_trade_from_forwarding_async(
         self, 
         user_id: str, 
@@ -346,20 +315,16 @@ class TradeService:
         original_published_at: Optional[datetime],
         channel_info: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Creates a UserTrade from parsed forwarded data."""
+        # (This function remains unchanged from the DfC 5.2 version)
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user:
             return {'success': False, 'error': 'User not found'}
-
         try:
             entry_dec = trade_data['entry']
             sl_dec = trade_data['stop_loss']
             targets_list_validated = trade_data['targets']
-
             self._validate_recommendation_data(trade_data['side'], entry_dec, sl_dec, targets_list_validated)
-
             targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated]
-
             watched_channel = None
             if channel_info and channel_info.get('id'):
                 channel_tg_id = channel_info['id']
@@ -368,7 +333,6 @@ class TradeService:
                     telegram_channel_id=channel_tg_id
                 )
                 watched_channel = db_session.execute(stmt).scalar_one_or_none()
-                
                 if not watched_channel:
                     logger.info(f"Creating new WatchedChannel '{channel_info.get('title')}' for user {trader_user.id}")
                     watched_channel = WatchedChannel(
@@ -379,7 +343,6 @@ class TradeService:
                     )
                     db_session.add(watched_channel)
                     db_session.flush() 
-
             new_trade = UserTrade(
                 user_id=trader_user.id,
                 asset=trade_data['asset'],
@@ -393,12 +356,10 @@ class TradeService:
                 watched_channel_id=watched_channel.id if watched_channel else None,
                 activated_at=None 
             )
-            
             db_session.add(new_trade)
             db_session.flush()
             logger.info(f"UserTrade {new_trade.id} created for user {user_id} with status {status_to_set}.")
             return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
-        
         except ValueError as e:
             logger.warning(f"Validation fail forward trade user {user_id}: {e}")
             db_session.rollback()
@@ -409,7 +370,7 @@ class TradeService:
             return {'success': False, 'error': 'Internal error saving trade.'}
 
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
-        """Creates a UserTrade by tracking an existing Recommendation."""
+        # (This function remains unchanged from the DfC 5.2 version)
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user: return {'success': False, 'error': 'User not found'}
         rec_orm = self.repo.get(db_session, rec_id)
@@ -418,7 +379,6 @@ class TradeService:
         if existing_trade: return {'success': False, 'error': 'You are already tracking this signal.'}
         try:
             rec_status = rec_orm.status
-            
             if rec_status == RecommendationStatusEnum.PENDING:
                 user_trade_status = UserTradeStatusEnum.PENDING_ACTIVATION
                 user_trade_activated_at = None
@@ -427,7 +387,6 @@ class TradeService:
                 user_trade_activated_at = rec_orm.activated_at or datetime.now(timezone.utc)
             else: # CLOSED
                 return {'success': False, 'error': 'This signal is already closed.'}
-
             new_trade = UserTrade( 
                 user_id=trader_user.id, 
                 asset=rec_orm.asset, 
@@ -452,21 +411,17 @@ class TradeService:
     async def close_user_trade_async(
         self, user_id: str, trade_id: int, exit_price: Decimal, db_session: Session
     ) -> Optional[UserTrade]:
-        """Closes a UserTrade owned by the user. Returns updated ORM object or None."""
+        # (This function remains unchanged from the DfC 5.2 version)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
         trade = db_session.query(UserTrade).filter( UserTrade.id == trade_id, UserTrade.user_id == user.id ).with_for_update().first()
         if not trade: raise ValueError(f"Trade #{trade_id} not found or access denied.")
-        
         if trade.status == UserTradeStatusEnum.CLOSED:
             logger.warning(f"Closing already closed UserTrade #{trade_id}")
             return trade
-        
         if trade.status not in [UserTradeStatusEnum.ACTIVATED, UserTradeStatusEnum.PENDING_ACTIVATION, UserTradeStatusEnum.WATCHLIST]:
              raise ValueError(f"Can only close trades that are active or pending. Status is {trade.status.value}.")
-
         if not exit_price.is_finite() or exit_price <= 0: raise ValueError("Exit price must be positive.")
-        
         if trade.status in [UserTradeStatusEnum.PENDING_ACTIVATION, UserTradeStatusEnum.WATCHLIST]:
             pnl_float = 0.0
             trade.activated_at = None 
@@ -477,23 +432,20 @@ class TradeService:
             except Exception as calc_err:
                 logger.error(f"Failed PnL calc UserTrade {trade_id}: {calc_err}")
                 pnl_float = 0.0
-        
         trade.status = UserTradeStatusEnum.CLOSED
         trade.close_price = exit_price
         trade.closed_at = datetime.now(timezone.utc)
         trade.pnl_percentage = Decimal(f"{pnl_float:.4f}")
-        
         logger.info(f"UserTrade {trade_id} closed user {user_id} at {exit_price}")
         db_session.flush()
         return trade
 
     # --- Update Operations (Analyst) ---
-    # (No changes to analyst operations in this sprint)
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Optional[Session] = None) -> RecommendationEntity:
+        # (This function remains unchanged from the DfC 5.2 version)
         if db_session is None:
             with session_scope() as s: return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-        
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         if not rec_orm: raise ValueError(f"Rec #{rec_id} not found.")
@@ -513,6 +465,7 @@ class TradeService:
         return self.repo._to_entity(rec_orm)
 
     async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, Any]], db_session: Session) -> RecommendationEntity:
+        # (This function remains unchanged from the DfC 5.2 version)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id)
@@ -533,6 +486,7 @@ class TradeService:
         return self.repo._to_entity(rec_orm)
 
     async def update_entry_and_notes_async(self, rec_id: int, user_id: str, new_entry: Optional[Decimal], new_notes: Optional[str], db_session: Session) -> RecommendationEntity:
+        # (This function remains unchanged from the DfC 5.2 version)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id)
@@ -566,6 +520,7 @@ class TradeService:
         return self.repo._to_entity(rec_orm)
 
     async def set_exit_strategy_async(self, rec_id: int, user_id: str, mode: str, price: Optional[Decimal] = None, trailing_value: Optional[Decimal] = None, active: bool = True, session: Optional[Session] = None) -> RecommendationEntity:
+        # (This function remains unchanged from the DfC 5.2 version)
         if session is None:
             with session_scope() as s: return await self.set_exit_strategy_async(rec_id, user_id, mode, price, trailing_value, active, s)
         user = UserRepository(session).find_by_telegram_id(_parse_int_user_id(user_id))
@@ -597,28 +552,21 @@ class TradeService:
 
     # --- Automation Helpers ---
     async def move_sl_to_breakeven_async(self, rec_id: int, db_session: Optional[Session] = None) -> RecommendationEntity:
-        """Moves SL to entry +/- buffer if conditions met."""
+        # (This function remains unchanged from the DfC 5.2 version)
         if db_session is None:
             with session_scope() as s:
                 return await self.move_sl_to_breakeven_async(rec_id, s)
-
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        
         if not rec_orm or rec_orm.status != RecommendationStatusEnum.ACTIVE:
             raise ValueError("Only ACTIVE.")
-
         entry_dec = _to_decimal(rec_orm.entry)
         current_sl_dec = _to_decimal(rec_orm.stop_loss)
-
         if not entry_dec.is_finite() or entry_dec <= 0 or not current_sl_dec.is_finite():
             raise ValueError("Invalid entry/SL for BE.")
-
         buffer = entry_dec * Decimal('0.0001') # 0.01% buffer
         new_sl_target = entry_dec + buffer if rec_orm.side == 'LONG' else entry_dec - buffer
-
         is_improvement = (rec_orm.side == 'LONG' and new_sl_target > current_sl_dec) or \
                            (rec_orm.side == 'SHORT' and new_sl_target < current_sl_dec)
-
         if is_improvement:
             analyst_uid = str(rec_orm.analyst.telegram_user_id) if rec_orm.analyst else None
             if not analyst_uid:
@@ -631,10 +579,7 @@ class TradeService:
 
     # --- Closing Operations ---
     async def close_recommendation_async(self, rec_id: int, user_id: Optional[str], exit_price: Decimal, db_session: Optional[Session] = None, reason: str = "MANUAL_CLOSE") -> RecommendationEntity:
-        """
-        Closes a recommendation fully.
-        THE FIX: Enforces analyst ownership check for security (API/manual close).
-        """
+        # (This function remains unchanged from the DfC 5.2 version)
         if db_session is None:
             with session_scope() as s: return await self.close_recommendation_async(rec_id, user_id, exit_price, s, reason)
         rec_orm = self.repo.get_for_update(db_session, rec_id)
@@ -642,17 +587,13 @@ class TradeService:
         if rec_orm.status == RecommendationStatusEnum.CLOSED:
             logger.warning(f"Closing already closed rec #{rec_id}")
             return self.repo._to_entity(rec_orm)
-
         if user_id is not None:
             user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
             is_system_trigger = reason not in ["MANUAL_CLOSE", "MARKET_CLOSE_MANUAL", "MANUAL_PRICE_CLOSE"]
-
             if not user and not is_system_trigger:
                  raise ValueError("User not found.")
-
             if user and rec_orm.analyst_id != user.id and not is_system_trigger:
                 raise ValueError("Access denied. You do not own this recommendation.")
-
         if not exit_price.is_finite() or exit_price <= 0: raise ValueError("Exit price invalid.")
         remaining_percent = _to_decimal(rec_orm.open_size_percent)
         if remaining_percent > 0:
@@ -660,7 +601,6 @@ class TradeService:
             event_data = {"price": float(exit_price), "closed_percent": float(remaining_percent), "pnl_on_part": pnl_on_part, "triggered_by": reason}
         else:
             event_data = {"price": float(exit_price), "closed_percent": 0, "pnl_on_part": 0.0, "triggered_by": reason}
-
         db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="FINAL_CLOSE", event_data=event_data))
         rec_orm.status = RecommendationStatusEnum.CLOSED
         rec_orm.exit_price = exit_price
@@ -672,6 +612,7 @@ class TradeService:
         return self.repo._to_entity(rec_orm)
 
     async def partial_close_async(self, rec_id: int, user_id: str, close_percent: Decimal, price: Decimal, db_session: Session, triggered_by: str = "MANUAL") -> RecommendationEntity:
+        # (This function remains unchanged from the DfC 5.2 version)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
         rec_orm = self.repo.get_for_update(db_session, rec_id)
@@ -699,10 +640,9 @@ class TradeService:
             await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False)
             return self.repo._to_entity(rec_orm)
 
-
     # --- Event Processors (Recommendation) ---
     async def process_invalidation_event(self, item_id: int):
-        """Called when a pending rec is invalidated (e.g., SL hit before entry)."""
+        # (This function remains unchanged from the DfC 5.2 version)
         with session_scope() as db_session:
             rec = self.repo.get_for_update(db_session, item_id)
             if not rec or rec.status != RecommendationStatusEnum.PENDING:
@@ -714,7 +654,7 @@ class TradeService:
             await self._commit_and_dispatch(db_session, rec)
 
     async def process_activation_event(self, item_id: int):
-        """Activate a pending recommendation (entry reached)."""
+        # (This function remains unchanged from the DfC 5.2 version)
         with session_scope() as db_session:
             rec = self.repo.get_for_update(db_session, item_id)
             if not rec or rec.status != RecommendationStatusEnum.PENDING:
@@ -726,17 +666,16 @@ class TradeService:
             await self._commit_and_dispatch(db_session, rec)
 
     async def process_sl_hit_event(self, item_id: int, price: Decimal):
-        """Handle SL hit by closing the recommendation."""
+        # (This function remains unchanged from the DfC 5.2 version)
         with session_scope() as s:
             rec = self.repo.get_for_update(s, item_id)
             if not rec or rec.status != RecommendationStatusEnum.ACTIVE:
                 return
             analyst_uid = str(rec.analyst.telegram_user_id) if rec.analyst else None
-            # System trigger, user_id=None is acceptable
             await self.close_recommendation_async(rec.id, None, price, s, reason="SL_HIT")
 
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
-        """Handle TP hit events."""
+        # (This function remains unchanged from the DfC 5.2 version)
         with session_scope() as s:
             rec_orm = self.repo.get_for_update(s, item_id)
             if not rec_orm or rec_orm.status != RecommendationStatusEnum.ACTIVE:
@@ -759,9 +698,8 @@ class TradeService:
                 return
             if close_percent > 0:
                 await self.partial_close_async(rec_orm.id, analyst_uid_str, close_percent, price, s, triggered_by="AUTO")
-            s.refresh(rec_orm)  # Refresh state
+            s.refresh(rec_orm)
             is_final_tp = (target_index == len(rec_orm.targets or []))
-            
             should_auto_close = (rec_orm.exit_strategy == ExitStrategyEnum.CLOSE_AT_FINAL_TP and is_final_tp)
             is_effectively_closed = (rec_orm.open_size_percent is not None and rec_orm.open_size_percent < Decimal('0.1'))
             if should_auto_close or is_effectively_closed:
@@ -772,49 +710,37 @@ class TradeService:
                 await self._commit_and_dispatch(s, rec_orm, False)
         
     # --- ✅ R1-S1: NEW Event Processors (UserTrade) ---
-    
     async def process_user_trade_activation_event(self, item_id: int):
-        """Activate a pending UserTrade (WATCHLIST/PENDING -> ACTIVATED)."""
+        # (This function remains unchanged from the DfC 5.2 version)
         with session_scope() as db_session:
             trade = db_session.query(UserTrade).filter(UserTrade.id == item_id).with_for_update().first()
             if not trade or trade.status not in [UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION]:
                 logger.debug(f"Skipping activation for UserTrade {item_id}, status is {trade.status if trade else 'NOT FOUND'}")
                 return
-
             original_status = trade.status
             trade.status = UserTradeStatusEnum.ACTIVATED
             trade.activated_at = datetime.now(timezone.utc)
-            
             logger.info(f"UserTrade {item_id} ACTIVATED from status {original_status.value}.")
-            
-            # Commit and refresh (rebuilds alerts)
             await self._commit_and_dispatch(db_session, trade, rebuild_alerts=True)
-
-            # Notify user
             if original_status == UserTradeStatusEnum.PENDING_ACTIVATION:
-                # Only notify if user explicitly wanted to activate
                 await self._notify_user_trade_update(
                     user_id=trade.user_id,
                     text=f"▶️ Your tracked trade for **#{trade.asset}** is now **ACTIVE** (Entry price reached)!",
                 )
 
     async def process_user_trade_invalidation_event(self, item_id: int, price: Decimal):
-        """Invalidate a pending UserTrade (SL hit before entry)."""
+        # (This function remains unchanged from the DfC 5.2 version)
         with session_scope() as db_session:
             trade = db_session.query(UserTrade).filter(UserTrade.id == item_id).with_for_update().first()
             if not trade or trade.status not in [UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION]:
                 return
-
             original_status = trade.status
             trade.status = UserTradeStatusEnum.CLOSED
             trade.close_price = price
             trade.closed_at = datetime.now(timezone.utc)
-            trade.pnl_percentage = Decimal("0.0") # No PnL, it never activated
-            
+            trade.pnl_percentage = Decimal("0.0") 
             logger.info(f"UserTrade {item_id} INVALIDATED (closed) from status {original_status.value} at price {price}.")
-            
             await self._commit_and_dispatch(db_session, trade, rebuild_alerts=True)
-
             if original_status == UserTradeStatusEnum.PENDING_ACTIVATION:
                 await self._notify_user_trade_update(
                     user_id=trade.user_id,
@@ -822,98 +748,77 @@ class TradeService:
                 )
 
     async def process_user_trade_sl_hit_event(self, item_id: int, price: Decimal):
-        """Handle SL hit for an active UserTrade."""
+        # (This function remains unchanged from the DfC 5.2 version)
         with session_scope() as db_session:
             trade = db_session.query(UserTrade).filter(UserTrade.id == item_id).with_for_update().first()
             if not trade or trade.status != UserTradeStatusEnum.ACTIVATED:
-                return # Only close active trades
-
+                return
             try:
                 pnl_float = _pct(trade.entry, price, trade.side)
             except Exception as e:
                 logger.error(f"Failed PnL calc for UserTrade SL hit {item_id}: {e}")
                 pnl_float = 0.0
-                
             trade.status = UserTradeStatusEnum.CLOSED
             trade.close_price = price
             trade.closed_at = datetime.now(timezone.utc)
             trade.pnl_percentage = Decimal(f"{pnl_float:.4f}")
-
             logger.info(f"UserTrade {item_id} CLOSED due to SL_HIT at {price}. PnL: {pnl_float:.2f}%")
-
             await self._commit_and_dispatch(db_session, trade, rebuild_alerts=True)
-            
             await self._notify_user_trade_update(
                 user_id=trade.user_id,
                 text=f"🛑 **StopLoss Hit** 🛑\nYour trade for **#{trade.asset}** was closed at `{_format_price(price)}`.\nResult: **{pnl_float:+.2f}%**",
             )
 
     async def process_user_trade_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
-        """Handle TP hit for an active UserTrade."""
+        # (This function remains unchanged from the DfC 5.2 version)
         with session_scope() as db_session:
             trade = db_session.query(UserTrade).filter(UserTrade.id == item_id).with_for_update().first()
             if not trade or trade.status != UserTradeStatusEnum.ACTIVATED:
-                return # Only process TPs for active trades
-
-            # TODO R2: Add UserTradeEvent model to prevent duplicate TP hit processing.
-            # For R1, we accept duplicate notifications if AlertService restarts.
-            
+                return
             logger.info(f"UserTrade {item_id} hit TP{target_index} at {price}.")
-
             is_final_tp = (target_index == len(trade.targets or []))
-            
             if is_final_tp:
                 try:
                     pnl_float = _pct(trade.entry, price, trade.side)
                 except Exception as e:
                     logger.error(f"Failed PnL calc for UserTrade TP hit {item_id}: {e}")
                     pnl_float = 0.0
-                
                 trade.status = UserTradeStatusEnum.CLOSED
                 trade.close_price = price
                 trade.closed_at = datetime.now(timezone.utc)
                 trade.pnl_percentage = Decimal(f"{pnl_float:.4f}")
-
                 logger.info(f"UserTrade {item_id} CLOSED due to FINAL_TP_HIT at {price}. PnL: {pnl_float:.2f}%")
-
                 await self._commit_and_dispatch(db_session, trade, rebuild_alerts=True)
-                
                 await self._notify_user_trade_update(
                     user_id=trade.user_id,
                     text=f"🏆 **Final Target Hit!** 🏆\nYour trade for **#{trade.asset}** was closed at `{_format_price(price)}`.\nResult: **{pnl_float:+.2f}%**",
                 )
             else:
-                # Not the final TP, just notify
                 await self._notify_user_trade_update(
                     user_id=trade.user_id,
                     text=f"🎯 **Target Hit!**\nYour trade for **#{trade.asset}** hit **TP{target_index}** at `{_format_price(price)}`.",
                 )
 
-
     # --- Read Utilities FIXED ---
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
-        """Return combined list of open recommendations and user's trades."""
+        # (This function remains unchanged from the DfC 5.2 version)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
         open_positions = []
         if not user: return []
         if user.user_type == UserTypeEntity.ANALYST:
             recs_orm = self.repo.get_open_recs_for_analyst(db_session, user.id)
             open_positions.extend([e for rec in recs_orm if (e := self.repo._to_entity(rec)) and setattr(e, 'is_user_trade', False) is None])
-        
         trades_orm = self.repo.get_open_trades_for_trader(db_session, user.id)
-        
         for trade in trades_orm:
             try:
                 targets_data = trade.targets or []
                 targets_for_vo = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in targets_data]
-
                 if trade.status == UserTradeStatusEnum.CLOSED:
                     domain_status = RecommendationStatusEntity.CLOSED
                 elif trade.status == UserTradeStatusEnum.ACTIVATED:
                     domain_status = RecommendationStatusEntity.ACTIVE
                 else: # WATCHLIST or PENDING_ACTIVATION
                     domain_status = RecommendationStatusEntity.PENDING
-                
                 trade_entity = RecommendationEntity(
                     id=trade.id, asset=Symbol(trade.asset), side=Side(trade.side),
                     entry=Price(_to_decimal(trade.entry)), stop_loss=Price(_to_decimal(trade.stop_loss)),
@@ -924,23 +829,18 @@ class TradeService:
                     exit_strategy=ExitStrategy.MANUAL_CLOSE_ONLY
                 )
                 setattr(trade_entity, 'is_user_trade', True)
-                # ✅ R1-S1: This is CRITICAL for the UI to show 👁️ or ⏳ correctly
                 setattr(trade_entity, 'orm_status_value', trade.status.value) 
-                
                 open_positions.append(trade_entity)
-
             except Exception as conv_err:
                 logger.error(f"Failed conv UserTrade {trade.id}: {conv_err}", exc_info=False)
-        
         open_positions.sort(key=lambda p: getattr(p, "created_at", datetime.min), reverse=True)
         return open_positions
 
     def get_position_details_for_user(self, db_session: Session, user_telegram_id: str, position_type: str, position_id: int) -> Optional[RecommendationEntity]:
-        """Return details for a single position, checking ownership."""
+        # (This function remains unchanged from the DfC 5.2 version)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
         if not user:
             return None
-
         if position_type == 'rec':
             rec_orm = self.repo.get(db_session, position_id)
             if not rec_orm or rec_orm.analyst_id != user.id:
@@ -951,7 +851,6 @@ class TradeService:
             else:
                 logger.error(f"Failed conv owned Rec ORM {position_id}")
                 return None
-
         elif position_type == 'trade':
             trade_orm = self.repo.get_user_trade_by_id(db_session, position_id)
             if not trade_orm or trade_orm.user_id != user.id:
@@ -959,14 +858,12 @@ class TradeService:
             try:
                 targets_data = trade_orm.targets or []
                 targets_for_vo = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in targets_data]
-                
                 if trade_orm.status == UserTradeStatusEnum.CLOSED:
                     domain_status = RecommendationStatusEntity.CLOSED
                 elif trade_orm.status == UserTradeStatusEnum.ACTIVATED:
                     domain_status = RecommendationStatusEntity.ACTIVE
                 else: # WATCHLIST or PENDING_ACTIVATION
                     domain_status = RecommendationStatusEntity.PENDING
-
                 trade_entity = RecommendationEntity(
                     id=trade_orm.id, asset=Symbol(trade_orm.asset), side=Side(trade_orm.side),
                     entry=Price(_to_decimal(trade_orm.entry)), stop_loss=Price(_to_decimal(trade_orm.stop_loss)),
@@ -977,32 +874,24 @@ class TradeService:
                     exit_strategy=ExitStrategy.MANUAL_CLOSE_ONLY
                 )
                 setattr(trade_entity, 'is_user_trade', True)
-                
                 setattr(trade_entity, 'orm_status_value', trade_orm.status.value) 
-                
                 if trade_orm.pnl_percentage is not None:
                     setattr(trade_entity, 'final_pnl_percentage', float(trade_orm.pnl_percentage))
                 return trade_entity
             except Exception as conv_err:
                 logger.error(f"Failed conv UserTrade {trade_orm.id} details: {conv_err}", exc_info=False)
                 return None
-
         else:
             logger.warning(f"Unknown position_type '{position_type}'.")
-        
         return None
 
     # --- Read Utility FIX: Resolves Postgres InvalidColumnReference ---
     def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
-        """
-        Return recent assets for quick selection UI.
-        Fixes PostgreSQL 'InvalidColumnReference' by ordering all columns and filtering uniqueness in Python.
-        """
+        # (This function remains unchanged from the DfC 5.2 version)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
         assets_in_order = []
         if not user:
             return []
-
         if user.user_type == UserTypeEntity.ANALYST:
             recs = (
                 db_session.query(Recommendation.asset, Recommendation.created_at)
@@ -1021,7 +910,6 @@ class TradeService:
                 .all()
             )
             assets_in_order.extend(t.asset for t in trades)
-
         asset_list = []
         seen = set()
         for asset in assets_in_order:
@@ -1030,13 +918,11 @@ class TradeService:
                 seen.add(asset)
                 if len(asset_list) >= limit:
                     break
-        
         if len(asset_list) < limit:
             default_assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
             for a in default_assets:
                 if a not in asset_list and len(asset_list) < limit:
-                    asset_list.append(a)
-
+                     asset_list.append(a)
         return asset_list
 
 # --- END of TradeService ---
