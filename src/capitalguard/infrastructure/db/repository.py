@@ -1,7 +1,7 @@
 # --- src/capitalguard/infrastructure/db/repository.py --- V 2.7 (R1-S1 Import Hotfix)
 """
 Repository layer — provides clean data access abstractions.
-✅ THE FIX (R1-S1 HOTFIX 6): Corrected the final ImportError.
+✅ THE FIX (R1-S1 HOTFIX 7): Corrected the final ImportError.
     - This file was importing 'UserTradeStatus' from .models.
     - .models (via __init__.py) now correctly exports 'UserTradeStatusEnum'.
     - This file now imports 'UserTradeStatusEnum' directly, resolving the crash loop.
@@ -30,7 +30,7 @@ from .models import (
     User, Channel, Recommendation, RecommendationEvent,
     PublishedMessage, UserTrade, 
     RecommendationStatusEnum,
-    # ✅ R1-S1 HOTFIX 6: Import the correct name 'UserTradeStatusEnum'
+    # ✅ R1-S1 HOTFIX 7: Import the correct name 'UserTradeStatusEnum'
     UserTradeStatusEnum,
     WatchedChannel,
     ParsingTemplate, ParsingAttempt
@@ -329,6 +329,7 @@ class RecommendationRepository:
         logger.info(f"Generated {len(trigger_data)} total active triggers (Recs + UserTrades).")
         return trigger_data
 
+
     def get_published_messages(self, session: Session, rec_id: int) -> List[PublishedMessage]:
         return session.query(PublishedMessage).filter(PublishedMessage.recommendation_id == rec_id).all()
 
@@ -386,6 +387,7 @@ class RecommendationRepository:
                 UserTradeStatusEnum.ACTIVATED
             ])
         ).all()
+
 
     def get_active_recs_for_asset_and_market(self, session: Session, asset: str, market: str) -> List[Recommendation]:
         asset_upper = asset.strip().upper()
