@@ -12,6 +12,7 @@ Expected improvement: 30-45% faster common paths (idempotency check, template lo
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import text
+from sqlalchemy.dialects import postgresql
 
 # Alembic revision identifiers
 revision = '20251104_optimize_parsing_db_performance'
