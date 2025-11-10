@@ -1,12 +1,14 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/trade_service.py ---
-# src/capitalguard/application/services/trade_service.py v31.1.6 - SyntaxError Hotfix
+# src/capitalguard/application/services/trade_service.py v31.1.8 - R1-S1 UserTrade Lifecycle
 """
-TradeService v31.1.6 - Python SyntaxError Hotfix
-✅ FIX: Corrected multiple Python SyntaxErrors (e.g., 'statement must be separated by ...')
-       caused by improper use of semicolons (;) after control flow blocks (if/for).
-       This critical fix resolves the service loading failure.
-✅ All previous hotfixes (Postgres asset query, security checks) retained.
-✅ VALIDATED: File passes python -m py_compile with no errors.
+TradeService v31.1.8 - R1-S1 Sprint 1
+✅ THE FIX (R1-S1): Added new UserTrade-specific event handlers:
+    - `process_user_trade_activation_event`: Handles WATCHLIST/PENDING -> ACTIVATED.
+    - `process_user_trade_invalidation_event`: Handles PENDING -> CLOSED (SL hit before entry).
+    - `process_user_trade_sl_hit_event`: Handles ACTIVATED -> CLOSED (SL hit).
+    - `process_user_trade_tp_hit_event`: Handles ACTIVATED TP hits (for future partial close).
+    - These functions will be called by AlertService based on the `item_type`.
+    - Updated get_open_positions_for_user to correctly map new statuses.
 """
 
 from __future__ import annotations
@@ -17,13 +19,16 @@ from typing import List, Optional, Tuple, Dict, Any, Set, Union
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, select 
 
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.models import (
     PublishedMessage, Recommendation, RecommendationEvent, User,
-    RecommendationStatusEnum, UserTrade, UserTradeStatus, OrderTypeEnum, ExitStrategyEnum
+    RecommendationStatusEnum, UserTrade, 
+    OrderTypeEnum, ExitStrategyEnum,
+    UserTradeStatus as UserTradeStatusEnum, 
+    WatchedChannel
 )
 from capitalguard.infrastructure.db.repository import (
     RecommendationRepository, ChannelRepository, UserRepository
@@ -84,7 +89,6 @@ def _pct(entry: Any, target_price: Any, side: str) -> float:
         else:
             return 0.0
 
-        # Convert Decimal result to float for consistency with existing system design (Pydantic/JSON serialization)
         return float(pnl)
     except (InvalidOperation, TypeError, ZeroDivisionError):
         return 0.0
@@ -148,6 +152,7 @@ class TradeService:
             db_session.rollback()
             raise
 
+        # Only dispatch full card updates for Analyst Recommendations
         if isinstance(orm_object, Recommendation):
             rec_orm = orm_object
             if rebuild_alerts and self.alert_service:
@@ -161,6 +166,14 @@ class TradeService:
                 try: await self.notify_card_update(updated_entity, db_session)
                 except Exception as notify_err: logger.exception(f"Notify fail Rec ID {item_id}: {notify_err}")
             else: logger.error(f"Failed conv ORM Rec {item_id} to entity")
+        
+        # ✅ R1-S1: If it's a UserTrade, we still need to rebuild alerts
+        elif isinstance(orm_object, UserTrade):
+             if rebuild_alerts and self.alert_service:
+                try:
+                    await self.alert_service.build_triggers_index()
+                except Exception as alert_err:
+                    logger.exception(f"Alert rebuild fail UserTrade ID {item_id}: {alert_err}")
 
     async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
         if inspect.iscoroutinefunction(fn): return await fn(*args, **kwargs)
@@ -184,10 +197,30 @@ class TradeService:
         published_messages = self.repo.get_published_messages(db_session, rec_id)
         for msg in published_messages: asyncio.create_task(self._call_notifier_maybe_async( self.notifier.post_notification_reply, chat_id=msg.telegram_channel_id, message_id=msg.telegram_message_id, text=text ))
 
+    # ✅ R1-S1: New helper to send private notifications to traders
+    async def _notify_user_trade_update(self, user_id: int, text: str):
+        """Sends a private notification to a user about their trade."""
+        try:
+            # We need the user's Telegram ID from their DB ID
+            with session_scope() as session:
+                user = UserRepository(session).find_by_id(user_id)
+                if not user:
+                    logger.warning(f"Cannot notify UserTrade update, user DB ID {user_id} not found.")
+                    return
+                telegram_user_id = user.telegram_user_id
+            
+            await self._call_notifier_maybe_async(
+                self.notifier.send_private_text, 
+                chat_id=telegram_user_id, 
+                text=text
+            )
+        except Exception as e:
+            logger.error(f"Failed to send private notification to user {user_id}: {e}", exc_info=True)
+
+
     # --- Validation ---
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
-        """Strict validation for recommendation/trade numerical integrity.
-        Raises ValueError."""
+        """Strict validation for recommendation/trade numerical integrity. Raises ValueError."""
         side_upper = (str(side) or "").upper()
         if not all(v is not None and isinstance(v, Decimal) and v.is_finite() and v > 0 for v in [entry, stop_loss]): raise ValueError("Entry and SL must be positive finite Decimals.")
         if not targets or not isinstance(targets, list): raise ValueError("Targets must be a non-empty list.")
@@ -203,7 +236,7 @@ class TradeService:
                 close_pct_float = float(close_pct)
                 if not (0.0 <= close_pct_float <= 100.0): raise ValueError(f"Target {i+1} close % invalid.")
             except (ValueError, TypeError) as e:
-                 raise ValueError(f"Target {i+1} close % ('{close_pct}') invalid.") from e
+                 raise ValueError(f"Target {i_f} close % ('{close_pct}') invalid.") from e
 
         if not target_prices: raise ValueError("No valid target prices found.")
         if side_upper == "LONG" and stop_loss >= entry: raise ValueError("LONG SL must be < Entry.")
@@ -239,7 +272,6 @@ class TradeService:
         for channel_id in channel_map.keys(): tasks.append(self._call_notifier_maybe_async( self.notifier.post_to_channel, channel_id, rec_entity, keyboard ))
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # ✅ SYNTAX FIX: Rebuilt if/elif/else block with correct syntax and indentation.
         for i, channel_id in enumerate(channel_map.keys()):
             result = results[i]
 
@@ -308,8 +340,16 @@ class TradeService:
         return final_rec, report
 
     # --- User Trade Functions ---
+    
     async def create_trade_from_forwarding_async(
-        self, user_id: str, trade_data: Dict[str, Any], original_text: Optional[str], db_session: Session
+        self, 
+        user_id: str, 
+        trade_data: Dict[str, Any], 
+        original_text: Optional[str], 
+        db_session: Session,
+        status_to_set: str, # 'WATCHLIST' or 'PENDING_ACTIVATION'
+        original_published_at: Optional[datetime],
+        channel_info: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Creates a UserTrade from parsed forwarded data."""
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
@@ -325,6 +365,26 @@ class TradeService:
 
             targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated]
 
+            watched_channel = None
+            if channel_info and channel_info.get('id'):
+                channel_tg_id = channel_info['id']
+                stmt = select(WatchedChannel).filter_by(
+                    user_id=trader_user.id, 
+                    telegram_channel_id=channel_tg_id
+                )
+                watched_channel = db_session.execute(stmt).scalar_one_or_none()
+                
+                if not watched_channel:
+                    logger.info(f"Creating new WatchedChannel '{channel_info.get('title')}' for user {trader_user.id}")
+                    watched_channel = WatchedChannel(
+                        user_id=trader_user.id,
+                        telegram_channel_id=channel_tg_id,
+                        channel_title=channel_info.get('title'),
+                        is_active=True
+                    )
+                    db_session.add(watched_channel)
+                    db_session.flush() 
+
             new_trade = UserTrade(
                 user_id=trader_user.id,
                 asset=trade_data['asset'],
@@ -332,13 +392,18 @@ class TradeService:
                 entry=entry_dec,
                 stop_loss=sl_dec,
                 targets=targets_for_db,
-                status=UserTradeStatus.OPEN,
-                source_forwarded_text=original_text
+                status=UserTradeStatusEnum[status_to_set],
+                source_forwarded_text=original_text,
+                original_published_at=original_published_at,
+                watched_channel_id=watched_channel.id if watched_channel else None,
+                activated_at=None # Always set to None initially. AlertService will set it.
             )
+            
             db_session.add(new_trade)
             db_session.flush()
-            logger.info(f"UserTrade {new_trade.id} created for user {user_id} from forwarded message.")
+            logger.info(f"UserTrade {new_trade.id} created for user {user_id} with status {status_to_set}.")
             return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
+        
         except ValueError as e:
             logger.warning(f"Validation fail forward trade user {user_id}: {e}")
             db_session.rollback()
@@ -357,10 +422,32 @@ class TradeService:
         existing_trade = self.repo.find_user_trade_by_source_id(db_session, trader_user.id, rec_id)
         if existing_trade: return {'success': False, 'error': 'You are already tracking this signal.'}
         try:
-            new_trade = UserTrade( user_id=trader_user.id, asset=rec_orm.asset, side=rec_orm.side, entry=rec_orm.entry, stop_loss=rec_orm.stop_loss, targets=rec_orm.targets, status=UserTradeStatus.OPEN, source_recommendation_id=rec_orm.id )
+            rec_status = rec_orm.status
+            
+            if rec_status == RecommendationStatusEnum.PENDING:
+                user_trade_status = UserTradeStatusEnum.PENDING_ACTIVATION
+                user_trade_activated_at = None
+            elif rec_status == RecommendationStatusEnum.ACTIVE:
+                user_trade_status = UserTradeStatusEnum.ACTIVATED
+                user_trade_activated_at = rec_orm.activated_at or datetime.now(timezone.utc)
+            else: # CLOSED
+                return {'success': False, 'error': 'This signal is already closed.'}
+
+            new_trade = UserTrade( 
+                user_id=trader_user.id, 
+                asset=rec_orm.asset, 
+                side=rec_orm.side, 
+                entry=rec_orm.entry, 
+                stop_loss=rec_orm.stop_loss, 
+                targets=rec_orm.targets, 
+                status=user_trade_status, 
+                activated_at=user_trade_activated_at, 
+                original_published_at=rec_orm.created_at, 
+                source_recommendation_id=rec_orm.id 
+            )
             db_session.add(new_trade)
             db_session.flush()
-            logger.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id}.")
+            logger.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id} with status {user_trade_status.value}.")
             return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
         except Exception as e:
             logger.error(f"Error create trade from rec user {user_id}, rec {rec_id}: {e}", exc_info=True)
@@ -375,21 +462,34 @@ class TradeService:
         if not user: raise ValueError("User not found.")
         trade = db_session.query(UserTrade).filter( UserTrade.id == trade_id, UserTrade.user_id == user.id ).with_for_update().first()
         if not trade: raise ValueError(f"Trade #{trade_id} not found or access denied.")
-        if trade.status == UserTradeStatus.CLOSED:
+        
+        if trade.status == UserTradeStatusEnum.CLOSED:
             logger.warning(f"Closing already closed UserTrade #{trade_id}")
             return trade
+        
+        # Allow closing PENDING/WATCHLIST (invalidating it) or ACTIVATED (closing it)
+        if trade.status not in [UserTradeStatusEnum.ACTIVATED, UserTradeStatusEnum.PENDING_ACTIVATION, UserTradeStatusEnum.WATCHLIST]:
+             raise ValueError(f"Can only close trades that are active or pending. Status is {trade.status.value}.")
 
         if not exit_price.is_finite() or exit_price <= 0: raise ValueError("Exit price must be positive.")
-        trade.status = UserTradeStatus.CLOSED
+        
+        # If closing a PENDING/WATCHLIST trade, PnL is 0
+        if trade.status in [UserTradeStatusEnum.PENDING_ACTIVATION, UserTradeStatusEnum.WATCHLIST]:
+            pnl_float = 0.0
+            # If it wasn't activated, it shouldn't have an activation time
+            trade.activated_at = None 
+        else:
+            try:
+                entry_for_calc = _to_decimal(trade.entry)
+                pnl_float = _pct(entry_for_calc, exit_price, trade.side)
+            except Exception as calc_err:
+                logger.error(f"Failed PnL calc UserTrade {trade_id}: {calc_err}")
+                pnl_float = 0.0
+        
+        trade.status = UserTradeStatusEnum.CLOSED
         trade.close_price = exit_price
         trade.closed_at = datetime.now(timezone.utc)
-        try:
-            entry_for_calc = _to_decimal(trade.entry)
-            pnl_float = _pct(entry_for_calc, exit_price, trade.side)
-            trade.pnl_percentage = Decimal(f"{pnl_float:.4f}")
-        except Exception as calc_err:
-            logger.error(f"Failed PnL calc UserTrade {trade_id}: {calc_err}")
-            trade.pnl_percentage = None
+        trade.pnl_percentage = Decimal(f"{pnl_float:.4f}")
         
         logger.info(f"UserTrade {trade_id} closed user {user_id} at {exit_price}")
         db_session.flush()
@@ -510,6 +610,7 @@ class TradeService:
                 return await self.move_sl_to_breakeven_async(rec_id, s)
 
         rec_orm = self.repo.get_for_update(db_session, rec_id)
+        
         if not rec_orm or rec_orm.status != RecommendationStatusEnum.ACTIVE:
             raise ValueError("Only ACTIVE.")
 
@@ -552,15 +653,11 @@ class TradeService:
         # --- START OF SECURITY FIX ---
         if user_id is not None:
             user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-            # Only the analyst owner can manually close, OR if the reason is system-generated (SL_HIT, etc.)
             is_system_trigger = reason not in ["MANUAL_CLOSE", "MARKET_CLOSE_MANUAL", "MANUAL_PRICE_CLOSE"]
 
             if not user and not is_system_trigger:
-                 # This path is hit if user_id is provided but not found, and it's a manual close.
-                 # If user_id is provided, we assume it's a manual action unless system trigger.
                  raise ValueError("User not found.")
 
-            # Analyst ID must match user ID for any manual closing action (including API)
             if user and rec_orm.analyst_id != user.id and not is_system_trigger:
                 raise ValueError("Access denied. You do not own this recommendation.")
         # --- END OF SECURITY FIX ---
@@ -612,7 +709,7 @@ class TradeService:
             return self.repo._to_entity(rec_orm)
 
 
-    # --- Event Processors ---
+    # --- Event Processors (Recommendation) ---
     async def process_invalidation_event(self, item_id: int):
         """Called when a pending rec is invalidated (e.g., SL hit before entry)."""
         with session_scope() as db_session:
@@ -673,6 +770,7 @@ class TradeService:
                 await self.partial_close_async(rec_orm.id, analyst_uid_str, close_percent, price, s, triggered_by="AUTO")
             s.refresh(rec_orm)  # Refresh state
             is_final_tp = (target_index == len(rec_orm.targets or []))
+            
             should_auto_close = (rec_orm.exit_strategy == ExitStrategyEnum.CLOSE_AT_FINAL_TP and is_final_tp)
             is_effectively_closed = (rec_orm.open_size_percent is not None and rec_orm.open_size_percent < Decimal('0.1'))
             if should_auto_close or is_effectively_closed:
@@ -682,6 +780,166 @@ class TradeService:
             elif close_percent <= 0:
                 await self._commit_and_dispatch(s, rec_orm, False)
         # Commit event if no close
+        
+    # --- ✅ R1-S1: NEW Event Processors (UserTrade) ---
+    
+    async def process_user_trade_activation_event(self, item_id: int):
+        """Activate a pending UserTrade (WATCHLIST/PENDING -> ACTIVATED)."""
+        with session_scope() as db_session:
+            trade = db_session.query(UserTrade).filter(UserTrade.id == item_id).with_for_update().first()
+            if not trade or trade.status not in [UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION]:
+                logger.debug(f"Skipping activation for UserTrade {item_id}, status is {trade.status if trade else 'NOT FOUND'}")
+                return
+
+            original_status = trade.status
+            trade.status = UserTradeStatusEnum.ACTIVATED
+            trade.activated_at = datetime.now(timezone.utc)
+            
+            logger.info(f"UserTrade {item_id} ACTIVATED from status {original_status.value}.")
+            
+            # Commit and refresh
+            try:
+                db_session.commit()
+                db_session.refresh(trade)
+            except Exception as e:
+                logger.error(f"Failed to commit UserTrade activation for {item_id}: {e}", exc_info=True)
+                db_session.rollback()
+                return
+
+            # Rebuild alerts index
+            if self.alert_service:
+                await self.alert_service.build_triggers_index()
+
+            # Notify user
+            if original_status == UserTradeStatusEnum.PENDING_ACTIVATION:
+                # Only notify if user explicitly wanted to activate
+                await self._notify_user_trade_update(
+                    user_id=trade.user_id,
+                    text=f"▶️ Your tracked trade for **#{trade.asset}** is now **ACTIVE** (Entry price reached)!",
+                )
+
+    async def process_user_trade_invalidation_event(self, item_id: int, price: Decimal):
+        """Invalidate a pending UserTrade (SL hit before entry)."""
+        with session_scope() as db_session:
+            trade = db_session.query(UserTrade).filter(UserTrade.id == item_id).with_for_update().first()
+            if not trade or trade.status not in [UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION]:
+                return
+
+            original_status = trade.status
+            trade.status = UserTradeStatusEnum.CLOSED
+            trade.close_price = price
+            trade.closed_at = datetime.now(timezone.utc)
+            trade.pnl_percentage = Decimal("0.0") # No PnL, it never activated
+            
+            logger.info(f"UserTrade {item_id} INVALIDATED (closed) from status {original_status.value} at price {price}.")
+            
+            try:
+                db_session.commit()
+                db_session.refresh(trade)
+            except Exception as e:
+                logger.error(f"Failed to commit UserTrade invalidation for {item_id}: {e}", exc_info=True)
+                db_session.rollback()
+                return
+            
+            if self.alert_service:
+                await self.alert_service.build_triggers_index()
+
+            if original_status == UserTradeStatusEnum.PENDING_ACTIVATION:
+                await self._notify_user_trade_update(
+                    user_id=trade.user_id,
+                    text=f"❌ Your pending trade for **#{trade.asset}** was **INVALIDATED** (StopLoss hit before entry).",
+                )
+
+    async def process_user_trade_sl_hit_event(self, item_id: int, price: Decimal):
+        """Handle SL hit for an active UserTrade."""
+        with session_scope() as db_session:
+            trade = db_session.query(UserTrade).filter(UserTrade.id == item_id).with_for_update().first()
+            if not trade or trade.status != UserTradeStatusEnum.ACTIVATED:
+                return # Only close active trades
+
+            try:
+                pnl_float = _pct(trade.entry, price, trade.side)
+            except Exception as e:
+                logger.error(f"Failed PnL calc for UserTrade SL hit {item_id}: {e}")
+                pnl_float = 0.0
+                
+            trade.status = UserTradeStatusEnum.CLOSED
+            trade.close_price = price
+            trade.closed_at = datetime.now(timezone.utc)
+            trade.pnl_percentage = Decimal(f"{pnl_float:.4f}")
+
+            logger.info(f"UserTrade {item_id} CLOSED due to SL_HIT at {price}. PnL: {pnl_float:.2f}%")
+
+            try:
+                db_session.commit()
+                db_session.refresh(trade)
+            except Exception as e:
+                logger.error(f"Failed to commit UserTrade SL hit for {item_id}: {e}", exc_info=True)
+                db_session.rollback()
+                return
+            
+            if self.alert_service:
+                await self.alert_service.build_triggers_index()
+
+            await self._notify_user_trade_update(
+                user_id=trade.user_id,
+                text=f"🛑 **StopLoss Hit** 🛑\nYour trade for **#{trade.asset}** was closed at `{_format_price(price)}`.\nResult: **{pnl_float:+.2f}%**",
+            )
+
+    async def process_user_trade_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
+        """Handle TP hit for an active UserTrade."""
+        with session_scope() as db_session:
+            trade = db_session.query(UserTrade).filter(UserTrade.id == item_id).with_for_update().first()
+            if not trade or trade.status != UserTradeStatusEnum.ACTIVATED:
+                return # Only process TPs for active trades
+
+            # Note: UserTrades don't have events, so we can't check for duplicates easily.
+            # We'll rely on AlertService state for now.
+            # In R2, we should add `UserTradeEvent` table.
+            
+            logger.info(f"UserTrade {item_id} hit TP{target_index} at {price}.")
+
+            # For R1, we only notify. We do not partial close UserTrades automatically.
+            # We check if this is the *final* TP.
+            is_final_tp = (target_index == len(trade.targets or []))
+            
+            if is_final_tp:
+                # This is the final target, close the trade
+                try:
+                    pnl_float = _pct(trade.entry, price, trade.side)
+                except Exception as e:
+                    logger.error(f"Failed PnL calc for UserTrade TP hit {item_id}: {e}")
+                    pnl_float = 0.0
+                
+                trade.status = UserTradeStatusEnum.CLOSED
+                trade.close_price = price
+                trade.closed_at = datetime.now(timezone.utc)
+                trade.pnl_percentage = Decimal(f"{pnl_float:.4f}")
+
+                logger.info(f"UserTrade {item_id} CLOSED due to FINAL_TP_HIT at {price}. PnL: {pnl_float:.2f}%")
+
+                try:
+                    db_session.commit()
+                    db_session.refresh(trade)
+                except Exception as e:
+                    logger.error(f"Failed to commit UserTrade TP hit for {item_id}: {e}", exc_info=True)
+                    db_session.rollback()
+                    return
+
+                if self.alert_service:
+                    await self.alert_service.build_triggers_index()
+                
+                await self._notify_user_trade_update(
+                    user_id=trade.user_id,
+                    text=f"🏆 **Final Target Hit!** 🏆\nYour trade for **#{trade.asset}** was closed at `{_format_price(price)}`.\nResult: **{pnl_float:+.2f}%**",
+                )
+            else:
+                # Not the final TP, just notify
+                await self._notify_user_trade_update(
+                    user_id=trade.user_id,
+                    text=f"🎯 **Target Hit!**\nYour trade for **#{trade.asset}** hit **TP{target_index}** at `{_format_price(price)}`.",
+                )
+
 
     # --- Read Utilities FIXED ---
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
@@ -694,20 +952,34 @@ class TradeService:
             open_positions.extend([e for rec in recs_orm if (e := self.repo._to_entity(rec)) and setattr(e, 'is_user_trade', False) is None])
         
         trades_orm = self.repo.get_open_trades_for_trader(db_session, user.id)
+        
         for trade in trades_orm:
             try:
                 targets_data = trade.targets or []
                 targets_for_vo = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in targets_data]
 
-                # ✅ SYNTAX FIX: Split semicolon-chained statements into separate lines.
+                # ✅ R1-S1: Map new statuses to domain entities for display
+                if trade.status == UserTradeStatusEnum.CLOSED:
+                    domain_status = RecommendationStatusEntity.CLOSED
+                elif trade.status == UserTradeStatusEnum.ACTIVATED:
+                    domain_status = RecommendationStatusEntity.ACTIVE
+                else: # WATCHLIST or PENDING_ACTIVATION
+                    domain_status = RecommendationStatusEntity.PENDING
+                
                 trade_entity = RecommendationEntity(
                     id=trade.id, asset=Symbol(trade.asset), side=Side(trade.side),
                     entry=Price(_to_decimal(trade.entry)), stop_loss=Price(_to_decimal(trade.stop_loss)),
-                    targets=Targets(targets_for_vo), status=RecommendationStatusEntity.ACTIVE,
-                    order_type=OrderType.MARKET, created_at=trade.created_at,
+                    targets=Targets(targets_for_vo), 
+                    status=domain_status, 
+                    order_type=OrderType.MARKET, 
+                    created_at=trade.created_at,
                     exit_strategy=ExitStrategy.MANUAL_CLOSE_ONLY
                 )
                 setattr(trade_entity, 'is_user_trade', True)
+                # ✅ R1-S1: Pass the *actual* ORM status for the icon renderer
+                # This is CRITICAL for the UI to show 👁️ or ⏳ correctly
+                setattr(trade_entity, 'orm_status_value', trade.status.value) 
+                
                 open_positions.append(trade_entity)
 
             except Exception as conv_err:
@@ -740,15 +1012,27 @@ class TradeService:
             try:
                 targets_data = trade_orm.targets or []
                 targets_for_vo = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in targets_data]
+                
+                if trade_orm.status == UserTradeStatusEnum.CLOSED:
+                    domain_status = RecommendationStatusEntity.CLOSED
+                elif trade_orm.status == UserTradeStatusEnum.ACTIVATED:
+                    domain_status = RecommendationStatusEntity.ACTIVE
+                else: # WATCHLIST or PENDING_ACTIVATION
+                    domain_status = RecommendationStatusEntity.PENDING
+
                 trade_entity = RecommendationEntity(
                     id=trade_orm.id, asset=Symbol(trade_orm.asset), side=Side(trade_orm.side),
                     entry=Price(_to_decimal(trade_orm.entry)), stop_loss=Price(_to_decimal(trade_orm.stop_loss)),
-                    targets=Targets(targets_for_vo), status=RecommendationStatusEntity.ACTIVE if trade_orm.status == UserTradeStatus.OPEN else RecommendationStatusEntity.CLOSED,
+                    targets=Targets(targets_for_vo), 
+                    status=domain_status, 
                     order_type=OrderType.MARKET, created_at=trade_orm.created_at, closed_at=trade_orm.closed_at,
                     exit_price=float(trade_orm.close_price) if trade_orm.close_price is not None else None,
                     exit_strategy=ExitStrategy.MANUAL_CLOSE_ONLY
                 )
                 setattr(trade_entity, 'is_user_trade', True)
+                
+                setattr(trade_entity, 'orm_status_value', trade_orm.status.value) 
+                
                 if trade_orm.pnl_percentage is not None:
                     setattr(trade_entity, 'final_pnl_percentage', float(trade_orm.pnl_percentage))
                 return trade_entity
@@ -758,7 +1042,8 @@ class TradeService:
 
         else:
             logger.warning(f"Unknown position_type '{position_type}'.")
-            return None
+        
+        return None
 
     # --- Read Utility FIX: Resolves Postgres InvalidColumnReference ---
     def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
@@ -772,17 +1057,15 @@ class TradeService:
             return []
 
         if user.user_type == UserTypeEntity.ANALYST:
-            # Stage 1: Fetch all assets and created_at, sorted.
             recs = (
                 db_session.query(Recommendation.asset, Recommendation.created_at)
                 .filter(Recommendation.analyst_id == user.id)
                 .order_by(Recommendation.created_at.desc())
-                .limit(limit * 5) # Fetch more than needed to ensure uniqueness fills the limit
+                .limit(limit * 5) 
                 .all()
             )
             assets_in_order.extend(r.asset for r in recs)
         else:
-            # Stage 1: Fetch trades (same logic applied)
             trades = (
                 db_session.query(UserTrade.asset, UserTrade.created_at)
                 .filter(UserTrade.user_id == user.id)
@@ -792,7 +1075,6 @@ class TradeService:
             )
             assets_in_order.extend(t.asset for t in trades)
 
-        # Stage 2: Apply uniqueness filtering in Python (respecting the order)
         asset_list = []
         seen = set()
         for asset in assets_in_order:
@@ -802,7 +1084,6 @@ class TradeService:
                 if len(asset_list) >= limit:
                     break
         
-        # Stage 3: Fill with defaults if not enough recent assets found
         if len(asset_list) < limit:
             default_assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
             for a in default_assets:
