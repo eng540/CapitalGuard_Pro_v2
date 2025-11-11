@@ -1,23 +1,22 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
-# src/capitalguard/interfaces/telegram/management_handlers.py (v31.1 - R1 Task 6 AttributeError Hotfix)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v31.2 - R1 Task 6 Indentation Hotfix)
 """
 Handles all post-creation management of recommendations AND UserTrades.
 CHANGELOG:
-- v31.1 (Current):
-    - ✅ THE FIX: Fixed `AttributeError: 'str' object has no attribute 'value'`.
-- This occurred because `_get_attr(item, 'status')` *already* returns the
-      string value (e.g., "ACTIVE"), and the code was incorrectly calling
-      `.value` on this string.
-- Removed the redundant `.value` call in both `management_entry_point_handler`
-      and `Maps_open_positions_handler`.
+- v31.2 (Current):
+    - ✅ THE FIX: Fixed `IndentationError: unindent does not match` at line 104
+      by correctly indenting the `context.user_data.pop` call inside the
+      `init_management_session` function.
+- v31.1:
+- Fixed `AttributeError: 'str' object has no attribute 'value'`
+      by removing the redundant `.value` call in portfolio handlers.
 - v31.0 (R1 Task 6):
 - Updated `management_entry_point_handler` (/myportfolio) to
       filter positions into `activated_items` and `watchlist_items`.
-- It now passes these two distinct lists to `build_open_recs_keyboard`.
-- Verified `build_user_trade_control_keyboard` logic.
 - v30.16 (Cumulative):
 - Fixed `TypeError` in `_send_or_edit_position_panel`.
-    - Restored submenus and conversations.
+- Restored submenus and conversations.
+- Added `per_message=False` to ConversationHandler registrations.
 """
 
 import logging
@@ -100,8 +99,8 @@ def init_management_session(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("partial_close_rec_id", None)
     context.user_data.pop("partial_close_percent", None)
     context.user_data.pop("user_trade_close_id", None)
-   
- context.user_data.pop("user_trade_close_msg_id", None)
+    # ✅ THE FIX: Corrected indentation for the lines below
+    context.user_data.pop("user_trade_close_msg_id", None)
     context.user_data.pop("user_trade_close_chat_id", None)
     log.debug(f"Management session initialized/reset for user {getattr(context, '_user_id', '<unknown>')}.")
 
@@ -1675,5 +1674,6 @@ warning
     )
     app.add_handler(user_trade_close_conv, group=0)  # Needs priority
 
-# --- END of management handlers ---
+# --- 
+END of management handlers ---
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
