@@ -1,7 +1,7 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/trade_service.py ---
-# src/capitalguard/application/services/trade_service.py v32.0.0 - ADR-001 Async Publishing
+# src/capitalguard/application/services/trade_service.py (v32.1.0 - NameError Hotfix)
 """
-TradeService v32.0.0 - ADR-001 Smart Indexing & Async Publishing
+TradeService v32.1.0 - ADR-001 Smart Indexing & Async Publishing
 ✅ THE FIX (ADR-001): Decoupled publishing and indexing from the UI response.
     - `create_and_publish_recommendation_async` now only saves the rec with
       `is_shadow=True` and returns instantly.
@@ -13,6 +13,9 @@ TradeService v32.0.0 - ADR-001 Smart Indexing & Async Publishing
       `process_sl_hit_event`, `close_user_trade_async`) now call
       `alert_service.remove_single_trigger` instead of triggering a full rebuild,
       making closing operations instantaneous.
+✅ HOTFIX (v32.1.0): Fixed `NameError: name 'log' is not defined` inside the
+    new `background_publish_and_index` function by correcting all
+    calls from `log.*` to `logger.*`.
 """
 
 from __future__ import annotations
@@ -150,7 +153,7 @@ class TradeService:
             # ✅ MODIFIED (ADR-001): Only rebuild if explicitly asked
             if rebuild_alerts and self.alert_service:
                 try:
-                    log.info(f"Rebuilding full alert index on request for Rec ID {item_id}...")
+                    logger.info(f"Rebuilding full alert index on request for Rec ID {item_id}...")
                     await self.alert_service.build_triggers_index()
                 except Exception as alert_err:
                     logger.exception(f"Alert rebuild fail Rec ID {item_id}: {alert_err}")
@@ -165,7 +168,7 @@ class TradeService:
              # ✅ MODIFIED (ADR-001): Only rebuild if explicitly asked
              if rebuild_alerts and self.alert_service:
                 try:
-                    log.info(f"Rebuilding full alert index on request for UserTrade ID {item_id}...")
+                    logger.info(f"Rebuilding full alert index on request for UserTrade ID {item_id}...")
                     await self.alert_service.build_triggers_index()
                 except Exception as alert_err:
                     logger.exception(f"Alert rebuild fail UserTrade ID {item_id}: {alert_err}")
@@ -355,19 +358,20 @@ class TradeService:
         Background task to handle slow publishing and smart indexing.
         This is designed to be called with `asyncio.create_task`.
         """
-        log.info(f"[BG Task Rec {rec_id}]: Starting background publish and index...")
+        # ✅ HOTFIX (v32.1.0): Changed 'log' to 'logger'
+        logger.info(f"[BG Task Rec {rec_id}]: Starting background publish and index...")
         try:
             with session_scope() as session:
                 # 1. Fetch the ORM object (eager load analyst/events)
                 rec_orm = self.repo.get(session, rec_id)
                 if not rec_orm:
-                    log.error(f"[BG Task Rec {rec_id}]: ORM object not found in DB.")
+                    logger.error(f"[BG Task Rec {rec_id}]: ORM object not found in DB.")
                     return
 
                 # 2. Publish to Telegram channels
                 rec_entity = self.repo._to_entity(rec_orm)
                 if not rec_entity:
-                     log.error(f"[BG Task Rec {rec_id}]: Failed to convert ORM to entity.")
+                     logger.error(f"[BG Task Rec {rec_id}]: Failed to convert ORM to entity.")
                      return
                 
                 _, report = await self._publish_recommendation(
@@ -376,11 +380,11 @@ class TradeService:
                 
                 success_count = len(report.get("success", []))
                 if success_count == 0:
-                    log.warning(f"[BG Task Rec {rec_id}]: Failed to publish to any channel. Report: {report.get('failed')}")
+                    logger.warning(f"[BG Task Rec {rec_id}]: Failed to publish to any channel. Report: {report.get('failed')}")
                     # We might still want to index it, or delete it
                     # For now, we'll index it.
                 else:
-                    log.info(f"[BG Task Rec {rec_id}]: Published to {success_count} channels.")
+                    logger.info(f"[BG Task Rec {rec_id}]: Published to {success_count} channels.")
 
                 # 3. Build the trigger data
                 # We need to re-fetch ORM object with all relations for the builder
@@ -391,12 +395,12 @@ class TradeService:
                 if trigger_data:
                     await self.alert_service.add_trigger_data(trigger_data)
                 else:
-                    log.error(f"[BG Task Rec {rec_id}]: Failed to build trigger data. AlertService will not track this trade!")
+                    logger.error(f"[BG Task Rec {rec_id}]: Failed to build trigger data. AlertService will not track this trade!")
 
                 # 5. Un-hide the recommendation
                 rec_orm.is_shadow = False
                 session.commit()
-                log.info(f"[BG Task Rec {rec_id}]: Task complete. Recommendation is now live and indexed.")
+                logger.info(f"[BG Task Rec {rec_id}]: Task complete. Recommendation is now live and indexed.")
                 
                 # 6. (Optional) Notify user of success
                 await self._notify_user_trade_update(
@@ -405,7 +409,7 @@ class TradeService:
                 )
 
         except Exception as e:
-            log.error(f"[BG Task Rec {rec_id}]: CRITICAL FAILURE in background task: {e}", exc_info=True)
+            logger.error(f"[BG Task Rec {rec_id}]: CRITICAL FAILURE in background task: {e}", exc_info=True)
             # We might need to add retry logic here or alert an admin
             try:
                  await self._notify_user_trade_update(
