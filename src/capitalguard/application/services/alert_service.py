@@ -1,29 +1,30 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/alert_service.py ---
-# src/capitalguard/application/services/alert_service.py (v26.9 - R1-S1 Stable Release)
+# src/capitalguard/application/services/alert_service.py (v27.1 - ADR-001 Efficiency Hotfix)
 """
-AlertService - Orchestrates price updates, delegating complex exit strategy
-logic to the StrategyEngine, while handling core SL/TP/Entry triggers.
-
-✅ FIX SUMMARY:
-    - Added missing datetime import for time comparison.
-    - Corrected logger reference to `log`.
-    - Verified stability for R1-S1 Hotfix 10.
+AlertService - Orchestrates price updates and manages the in-memory trigger index.
+✅ THE FIX (ADR-001): Implemented "Smart Indexing" (Append-Only Logic).
+    - Added `add_trigger_data` and `remove_single_trigger` to allow TradeService
+      to update the in-memory index instantly without a full database rebuild.
+    - Added `build_trigger_data_from_orm` helper to build the required
+      dictionary structure, ensuring consistency with the main `build_triggers_index`.
+✅ HOTFIX (v27.1): Modified `_process_queue` to pass `rebuild_alerts=False`
+    during automated closures (SL/TP hits), preventing redundant full-index rebuilds.
 """
 
 import logging
 import asyncio
 import threading
-from typing import List, Dict, Any, Optional
-from decimal import Decimal
+from typing import List, Dict, Any, Optional, Union
+from decimal import Decimal, InvalidOperation
 import time
-from datetime import datetime, timezone  # ✅ Added missing import
+from datetime import datetime, timezone
 
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
-from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
-from capitalguard.infrastructure.db.models import RecommendationStatusEnum
-# ✅ R1-S1: Import the new UserTradeStatus Enum
-from capitalguard.infrastructure.db.models import UserTradeStatusEnum
+from capitalguard.infrastructure.db.models import (
+    Recommendation, UserTrade,
+    RecommendationStatusEnum, UserTradeStatusEnum, OrderTypeEnum
+)
 from capitalguard.application.strategy.engine import StrategyEngine, BaseAction, CloseAction, MoveSLAction
 
 if False:
@@ -31,6 +32,20 @@ if False:
     from .price_service import PriceService
 
 log = logging.getLogger(__name__)
+
+# --- Helper Function (copied from trade_service) ---
+def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
+    """Safely converts input to a Decimal."""
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else default
+    if value is None:
+        return default
+    try:
+        d = Decimal(str(value))
+        return d if d.is_finite() else default
+    except (InvalidOperation, TypeError, ValueError):
+        log.debug(f"AlertService: Could not convert '{value}' to Decimal.")
+        return default
 
 class AlertService:
     def __init__(
@@ -82,6 +97,162 @@ class AlertService:
         self._bg_thread.start()
         log.info("AlertService started in background thread.")
 
+    # --- ✅ NEW (ADR-001): Helper to build trigger dict from ORM ---
+    def build_trigger_data_from_orm(self, item_orm: Union[Recommendation, UserTrade]) -> Optional[Dict[str, Any]]:
+        """
+        Builds the standard trigger dictionary from a *single* ORM object.
+        This logic is mirrored from RecommendationRepository.list_all_active_triggers_data.
+        """
+        try:
+            if isinstance(item_orm, Recommendation):
+                rec = item_orm
+                entry_dec = _to_decimal(rec.entry)
+                sl_dec = _to_decimal(rec.stop_loss)
+                targets_list = [
+                    {"price": _to_decimal(t.get("price")), "close_percent": t.get("close_percent", 0.0)}
+                    for t in (rec.targets or []) if t.get("price") is not None
+                ]
+                user = getattr(rec, 'analyst', None)
+                if not user:
+                    log.warning(f"Skipping trigger build for Rec ID {rec.id}: Analyst relationship not loaded.")
+                    return None
+                
+                return {
+                    "id": rec.id,
+                    "item_type": "recommendation",
+                    "user_id": str(user.telegram_user_id),
+                    "user_db_id": rec.analyst_id,
+                    "asset": rec.asset,
+                    "side": rec.side,
+                    "entry": entry_dec,
+                    "stop_loss": sl_dec,
+                    "targets": targets_list,
+                    "status": rec.status,
+                    "order_type": rec.order_type,
+                    "market": rec.market,
+                    "processed_events": {e.event_type for e in (getattr(rec, 'events', []) or [])},
+                    "profit_stop_mode": getattr(rec, 'profit_stop_mode', 'NONE'),
+                    "profit_stop_price": _to_decimal(getattr(rec, 'profit_stop_price', None)) if getattr(rec, 'profit_stop_price', None) is not None else None,
+                    "profit_stop_trailing_value": _to_decimal(getattr(rec, 'profit_stop_trailing_value', None)) if getattr(rec, 'profit_stop_trailing_value', None) is not None else None,
+                    "profit_stop_active": getattr(rec, 'profit_stop_active', False),
+                    "original_published_at": None,
+                }
+            
+            elif isinstance(item_orm, UserTrade):
+                trade = item_orm
+                entry_dec = _to_decimal(trade.entry)
+                sl_dec = _to_decimal(trade.stop_loss)
+                targets_list = [
+                    {"price": _to_decimal(t.get("price")), "close_percent": t.get("close_percent", 0.0)}
+                    for t in (trade.targets or []) if t.get("price") is not None
+                ]
+                user = getattr(trade, 'user', None)
+                if not user:
+                    log.warning(f"Skipping trigger build for UserTrade ID {trade.id}: User relationship not loaded.")
+                    return None
+
+                return {
+                    "id": trade.id,
+                    "item_type": "user_trade",
+                    "user_id": str(user.telegram_user_id),
+                    "user_db_id": trade.user_id,
+                    "asset": trade.asset,
+                    "side": trade.side,
+                    "entry": entry_dec,
+                    "stop_loss": sl_dec,
+                    "targets": targets_list,
+                    "status": trade.status,
+                    "order_type": OrderTypeEnum.LIMIT, # User trades default to LIMIT logic
+                    "market": "Futures", # User trades default to Futures
+                    "processed_events": {e.event_type for e in (getattr(trade, 'events', []) or [])},
+                    "profit_stop_mode": "NONE",
+                    "profit_stop_price": None,
+                    "profit_stop_trailing_value": None,
+                    "profit_stop_active": False,
+                    "original_published_at": trade.original_published_at,
+                }
+        except Exception as e:
+            log.error(f"Failed to build trigger data for item: {e}", exc_info=True)
+            return None
+        return None
+
+    # --- ✅ NEW (ADR-001): Smart Indexing Methods ---
+
+    async def add_trigger_data(self, item_data: Dict[str, Any]):
+        """
+        Instantly adds a single pre-built trigger dictionary to the in-memory index.
+        This is called by TradeService *after* a new trade is created.
+        """
+        if not item_data:
+            log.warning("add_trigger_data received empty item_data.")
+            return
+
+        item_id = item_data.get("id")
+        item_type = item_data.get("item_type")
+        log.info(f"Smart Indexing: Adding {item_type} #{item_id} to in-memory triggers.")
+
+        try:
+            asset = item_data.get("asset")
+            if not asset:
+                log.error(f"Cannot add trigger {item_id}: Missing asset.")
+                return
+            
+            trigger_key = f"{asset.upper()}:{item_data.get('market', 'Futures')}"
+            
+            async with self._triggers_lock:
+                if trigger_key not in self.active_triggers:
+                    self.active_triggers[trigger_key] = []
+                
+                # Avoid duplicates if full sync ran
+                if not any(t['id'] == item_id and t['item_type'] == item_type for t in self.active_triggers[trigger_key]):
+                    self.active_triggers[trigger_key].append(item_data)
+                    
+                    if item_type == "recommendation":
+                        self.strategy_engine.initialize_state_for_recommendation(item_data)
+                    
+                    log.debug(f"Successfully added trigger {item_type} #{item_id} to key {trigger_key}.")
+                else:
+                    log.debug(f"Trigger {item_type} #{item_id} already in index, skipping add.")
+                    
+        except Exception as e:
+            log.error(f"Failed to add trigger {item_type} #{item_id} to index: {e}", exc_info=True)
+
+    async def remove_single_trigger(self, item_type: str, item_id: int):
+        """
+        Instantly removes a single trigger from the in-memory index by its ID and type.
+        This is called by TradeService *after* a trade is closed.
+        """
+        log.info(f"Smart Indexing: Removing {item_type} #{item_id} from in-memory triggers.")
+        found_and_removed = False
+        try:
+            async with self._triggers_lock:
+                keys_to_check = list(self.active_triggers.keys())
+                for key in keys_to_check:
+                    triggers_list = self.active_triggers[key]
+                    
+                    # Find the item to remove
+                    item_to_remove = next((t for t in triggers_list if t['id'] == item_id and t['item_type'] == item_type), None)
+                    
+                    if item_to_remove:
+                        triggers_list.remove(item_to_remove)
+                        found_and_removed = True
+                        if not triggers_list:
+                            # Clean up empty asset keys
+                            del self.active_triggers[key]
+                        break # Found it, no need to search other keys
+            
+            if found_and_removed:
+                if item_type == "recommendation":
+                    self.strategy_engine.clear_state(item_id)
+                log.debug(f"Successfully removed {item_type} #{item_id} from index.")
+            else:
+                log.warning(f"Could not find {item_type} #{item_id} in index to remove (might be harmless if full sync ran).")
+                
+        except Exception as e:
+            log.error(f"Failed to remove trigger {item_type} #{item_id}: {e}", exc_info=True)
+
+
+    # --- Original Indexing & Processing (Unchanged) ---
     async def build_triggers_index(self):
         """Builds the in-memory index of all active triggers from the database."""
         log.info("Attempting to build in-memory trigger index (Unified)...")
@@ -160,17 +331,23 @@ class AlertService:
 
                     close_action = next((a for a in all_actions if isinstance(a, CloseAction)), None)
                     if close_action:
+                        # ✅ MODIFIED (ADR-001 Efficiency Hotfix):
+                        # Pass rebuild_alerts=False. TradeService will handle the
+                        # smart removal from the index.
                         await self.trade_service.close_recommendation_async(
                             rec_id=close_action.rec_id,
                             user_id=trigger['user_id'],
                             exit_price=close_action.price,
-                            reason=close_action.reason
+                            reason=close_action.reason,
+                            rebuild_alerts=False # ✅ This is the fix
                         )
+                        # We still clear the strategy engine state here
                         self.strategy_engine.clear_state(close_action.rec_id)
                         continue
 
                     for action in all_actions:
                         if isinstance(action, MoveSLAction):
+                            # This service call doesn't trigger a rebuild, so it's fine
                             await self.trade_service.update_sl_for_user_async(
                                 rec_id=action.rec_id,
                                 user_id=trigger['user_id'],
@@ -234,7 +411,7 @@ class AlertService:
                     sl_price = trigger["stop_loss"]
                     if "SL_HIT" not in processed_events and "FINAL_CLOSE" not in processed_events and self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
                         actions.append(CloseAction(rec_id=item_id, price=sl_price, reason="SL_HIT"))
-                        return actions
+                        return actions # Stop further processing if SL hit
 
                     for i, target in enumerate(trigger["targets"], 1):
                         event_name = f"TP{i}_HIT"
@@ -248,6 +425,7 @@ class AlertService:
                 if status in (UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION):
                     entry_price, sl_price = trigger["entry"], trigger["stop_loss"]
                     published_at = trigger.get("original_published_at")
+                    
                     if published_at and datetime.now(timezone.utc) < published_at:
                         return actions
 
@@ -260,7 +438,7 @@ class AlertService:
                     sl_price = trigger["stop_loss"]
                     if "SL_HIT" not in processed_events and "FINAL_CLOSE" not in processed_events and self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
                         await self.trade_service.process_user_trade_sl_hit_event(item_id, sl_price)
-                        return actions
+                        return actions # Stop further processing if SL hit
 
                     for i, target in enumerate(trigger["targets"], 1):
                         event_name = f"TP{i}_HIT"
