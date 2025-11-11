@@ -1,6 +1,6 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
 """
-Handles the user flow for parsing a forwarded text message (v3.2.3 - Emoji Syntax Hotfix).
+Handles the user flow for parsing a forwarded text message (v3.2.4 - Callback Hotfix).
 THE FIX (R1-S1): Major strategic update.
     - Implements the "Trader-First" Golden Rule (Watchlist vs. Activated).
     - `forwarded_message_handler` now captures origin date and chat info using modern PTB v21+ API.
@@ -9,6 +9,9 @@ THE FIX (R1-S1): Major strategic update.
       and passes the new audit data (original_published_at, channel_info).
 HOTFIX v3.2.2: Fixed SyntaxError: unterminated string literal.
 HOTFIX v3.2.3: Removed invalid character from comment to fix SyntaxError (U+2705).
+✅ HOTFIX v3.2.4 (This file): Corrected the `pattern` in ConversationHandler
+    to use `CallbackAction.WATCH_CHANNEL.value` instead of the literal string "WATCH_CHANNEL",
+    fixing the bug where the button fell through to the 'cancel' fallback.
 """
 
 import logging
@@ -391,7 +394,7 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             return ConversationHandler.END
 
     # Handle actions: ACTIVATE_TRADE (CONFIRM) and WATCH_CHANNEL
-    if action in (CallbackAction.CONFIRM.value, "WATCH_CHANNEL"):
+    if action in (CallbackAction.CONFIRM.value, CallbackAction.WATCH_CHANNEL.value):
         trade_service: TradeService = get_service(context, "trade_service", TradeService)
         attempt_id = context.user_data.get(PARSING_ATTEMPT_ID_KEY)
         original_data = context.user_data.get(ORIGINAL_PARSED_DATA_KEY)
@@ -787,9 +790,8 @@ def register_forward_parsing_handlers(app: Application):
         states={
             AWAIT_REVIEW: [CallbackQueryHandler(
                 review_callback_handler,
-                # FIX: Use the enum .value for WATCH_CHANNEL
+                # ✅ THE FIX: Changed literal "WATCH_CHANNEL" to the enum value
                 pattern=f"^{CallbackNamespace.FORWARD_PARSE.value}:(?:{CallbackAction.CONFIRM.value}|{CallbackAction.WATCH_CHANNEL.value}|{CallbackAction.EDIT_FIELD.value}|{CallbackAction.CANCEL.value}):"
-            )],
             )],
             AWAIT_CORRECTION_VALUE: [MessageHandler(
                 filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
