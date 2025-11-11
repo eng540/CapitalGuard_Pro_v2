@@ -1,15 +1,14 @@
 # src/capitalguard/interfaces/telegram/forward_parsing_handler.py
 """
-Handles the user flow for parsing a forwarded text message (v3.2.1 - PTB API Hotfix).
+Handles the user flow for parsing a forwarded text message (v3.2.2 - Syntax Hotfix).
 ✅ THE FIX (R1-S1): Major strategic update.
     - Implements the "Trader-First" Golden Rule (Watchlist vs. Activated).
-- `forwarded_message_handler` now captures origin date and chat info using modern PTB v21+ API.
-- `build_editable_review_card` now shows "🚀 Activate Trade" and "👁️ Watch Channel" buttons.
-    - `review_callback_handler` now calls trade_service with the selected status (`PENDING_ACTIVATION` or `WATCHLIST`)
+- `forwarded_message_handler` now captures `forward_date` and `forward_from_chat`.
+    - `build_editable_review_card` now shows "🚀 Activate Trade" and "👁️ Watch Channel" buttons.
+- `review_callback_handler` now calls trade_service with the selected status (`PENDING_ACTIVATION` or `WATCHLIST`)
       and passes the new audit data (original_published_at, channel_info).
-✅ HOTFIX v3.2.1: Replaced `message.forward_date` and `message.forward_from_chat`
-      with `message.forward_origin.date` and `message.forward_origin.chat`
-      to resolve `AttributeError` with PTB v21+.
+✅ HOTFIX v3.2.2: Fixed SyntaxError: unterminated string literal
+      by correctly enclosing the multi-line log.critical message in triple quotes.
 """
 
 import logging
@@ -71,8 +70,9 @@ FORWARD_AUDIT_DATA_KEY = "forward_audit_data"
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL")
 
 if not AI_SERVICE_URL:
-    log.critical("AI_SERVICE_URL environment variable is not set!
-Forward parsing will fail.")
+    # ✅ HOTFIX v3.2.2: Use triple quotes for multi-line string
+    log.critical("""AI_SERVICE_URL environment variable is not set!
+Forward parsing will fail.""")
 
 def clean_parsing_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     """Cleans up all keys related to the parsing conversation."""
