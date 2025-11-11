@@ -1,6 +1,6 @@
 # src/capitalguard/interfaces/telegram/forward_parsing_handler.py
 """
-Handles the user flow for parsing a forwarded text message (v3.2.3 - Emoji Syntax Hotfix).
+Handles the user flow for parsing a forwarded text message (v3.2.4 - Indentation Hotfix).
 ✅ THE FIX (R1-S1): Major strategic update.
     - Implements the "Trader-First" Golden Rule (Watchlist vs. Activated).
 - `forwarded_message_handler` now captures origin date and chat info using modern PTB v21+ API.
@@ -8,7 +8,8 @@ Handles the user flow for parsing a forwarded text message (v3.2.3 - Emoji Synta
     - `review_callback_handler` now calls trade_service with the selected status (`PENDING_ACTIVATION` or `WATCHLIST`)
       and passes the new audit data (original_published_at, channel_info).
 ✅ HOTFIX v3.2.2: Fixed SyntaxError: unterminated string literal.
-✅ HOTFIX v3.2.3: Removed invalid character '✅' from comment to fix SyntaxError (U+2705).
+✅ HOTFIX v3.2.3: Removed invalid character '✅' from comment.
+✅ HOTFIX v3.2.4: Fixed IndentationError: unindent does not match any outer indentation level.
 """
 
 import logging
@@ -113,8 +114,8 @@ This prevents the "unsupported start tag" freeze.
             return True
         # Check for the specific entity parsing error
         if "can't parse entities" in str(e) or "unsupported start tag" in str(e):
-           
- log.warning(f"HTML parse failed for msg {chat_id}:{message_id}. Retrying with parse_mode=None. Error: {e}")
+            # ✅ HOTFIX v3.2.4: Corrected indentation for this entire block
+            log.warning(f"HTML parse failed for msg {chat_id}:{message_id}. Retrying with parse_mode=None. Error: {e}")
             try:
                 # Fallback: Strip tags and send as plain text
                 clean_text = re.sub(r'<[^>]+>', '', text) # Basic tag stripping
