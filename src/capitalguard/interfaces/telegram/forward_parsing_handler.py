@@ -787,8 +787,9 @@ def register_forward_parsing_handlers(app: Application):
         states={
             AWAIT_REVIEW: [CallbackQueryHandler(
                 review_callback_handler,
-                # Added WATCH_CHANNEL action
-                pattern=f"^{CallbackNamespace.FORWARD_PARSE.value}:(?:{CallbackAction.CONFIRM.value}|WATCH_CHANNEL|{CallbackAction.EDIT_FIELD.value}|{CallbackAction.CANCEL.value}):"
+                # FIX: Use the enum .value for WATCH_CHANNEL
+                pattern=f"^{CallbackNamespace.FORWARD_PARSE.value}:(?:{CallbackAction.CONFIRM.value}|{CallbackAction.WATCH_CHANNEL.value}|{CallbackAction.EDIT_FIELD.value}|{CallbackAction.CANCEL.value}):"
+            )],
             )],
             AWAIT_CORRECTION_VALUE: [MessageHandler(
                 filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
