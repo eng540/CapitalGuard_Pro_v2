@@ -274,50 +274,22 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
 @uow_transaction
 @require_active_user
 async def management_entry_point_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """Handles /myportfolio, separating trades into Active and Watchlist tiers."""
+    """Handles /myportfolio and /open commands to show the list."""
     init_management_session(context)
     try:
         trade_service = get_service(context, "trade_service", TradeService)
         price_service = get_service(context, "price_service", PriceService)
-        user_id = str(update.effective_user.id)
-
-        all_items = trade_service.get_open_positions_for_user(db_session, user_id)
-
-        active_trades = []
-        watchlist_trades = []
-
-        for item in all_items:
-            if not getattr(item, 'is_user_trade', False):
-                active_trades.append(item)
-                continue
-
-            orm_status = _get_attr(item, 'orm_status_value', None)
-            if orm_status == UserTradeStatusEnum.ACTIVATED.value:
-                active_trades.append(item)
-            elif orm_status in [UserTradeStatusEnum.WATCHLIST.value, UserTradeStatusEnum.PENDING_ACTIVATION.value]:
-                watchlist_trades.append(item)
-
-        if not active_trades and not watchlist_trades:
-            await update.message.reply_text("✅ Your portfolio is empty. No active or tracked trades found.")
+        user_id = str(update.effective_user.id) if update.effective_user else None
+        items = trade_service.get_open_positions_for_user(db_session, user_id)
+        if not items:
+            await update.message.reply_text("✅ No open positions found.")
             return
 
-        # Send Active Trades section
-        if active_trades:
-            keyboard = await build_open_recs_keyboard(active_trades, current_page=1, price_service=price_service)
-            await update.message.reply_html("<b>📊 صفقاتي المفعّلة</b>\nSelect a trade to manage:", reply_markup=keyboard)
-        else:
-            await update.message.reply_html("<b>📊 صفقاتي المفعّلة</b>\nNo active trades found.")
-
-        # Send Watchlist Trades section
-        if watchlist_trades:
-            keyboard = await build_open_recs_keyboard(watchlist_trades, current_page=1, price_service=price_service)
-            await update.message.reply_html("<b>👁️ صفقات المتابعة</b>\nSelect a trade to manage or activate:", reply_markup=keyboard)
-        else:
-            await update.message.reply_html("<b>👁️ صفقات المتابعة</b>\nNo trades on your watchlist.")
-
+        keyboard = await build_open_recs_keyboard(items, current_page=1, price_service=price_service)
+        await update.message.reply_html("<b>📊 Open Positions</b>\nSelect a position to manage:", reply_markup=keyboard)
     except Exception as e:
         loge.error(f"Error in management entry point: {e}", exc_info=True)
-        await update.message.reply_text("❌ An error occurred while loading your portfolio.")
+        await update.message.reply_text("❌ Error loading open positions.")
 
 
 @uow_transaction
@@ -1315,51 +1287,6 @@ async def cancel_user_trade_close(update: Update, context: ContextTypes.DEFAULT_
     return ConversationHandler.END
 
 
-# --- R2-T6: Handler for Manual Activation ---
-@uow_transaction
-@require_active_user
-async def activate_user_trade_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """Handles the manual activation of a UserTrade from WATCHLIST."""
-    query = update.callback_query
-    await query.answer("Activating trade...")
-
-    parsed_data = CallbackBuilder.parse(query.data)
-    params = parsed_data.get("params", [])
-
-    try:
-        if len(params) >= 2 and params[0] == "trade":
-            trade_id = int(params[1])
-        else:
-            raise ValueError("Invalid callback data for trade activation")
-
-        trade_service = get_service(context, "trade_service", TradeService)
-
-        # We need to find the trade to ensure it belongs to the user and is in the correct state
-        user_id = str(update.effective_user.id)
-        position = trade_service.get_position_details_for_user(db_session, user_id, "trade", trade_id)
-
-        if not position:
-            raise ValueError("Trade not found or you do not have permission to activate it.")
-
-        orm_status = _get_attr(position, 'orm_status_value', None)
-        if orm_status != UserTradeStatusEnum.WATCHLIST.value:
-            raise ValueError(f"Trade is not on the watchlist. Current status: {orm_status}")
-
-        # Process the activation
-        await trade_service.process_user_trade_activation_event(trade_id)
-
-        await query.answer("✅ Trade activated successfully!")
-
-        # Refresh the panel to show the new state and buttons
-        await _send_or_edit_position_panel(update, context, db_session, "trade", trade_id)
-
-    except (ValueError, Exception) as e:
-        log.error(f"Error activating user trade: {e}", exc_info=True)
-        try:
-            await query.answer(f"❌ Activation Failed: {str(e)}", show_alert=True)
-        except Exception:
-            pass
-
 # --- Handler Registration ---
 def register_management_handlers(app: Application):
     """Registers all management handlers including conversations."""
@@ -1367,9 +1294,6 @@ def register_management_handlers(app: Application):
 
     app.add_handler(CallbackQueryHandler(navigate_open_positions_handler, pattern=rf"^{CallbackNamespace.NAVIGATION.value}:{CallbackAction.NAVIGATE.value}:"), group=1)
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.SHOW.value}:"), group=1)
-
-    # R2-T6: Add handler for the new "Activate Trade" button
-    app.add_handler(CallbackQueryHandler(activate_user_trade_handler, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.CONFIRM.value}:trade:"), group=1)
 
     app.add_handler(
         CallbackQueryHandler(

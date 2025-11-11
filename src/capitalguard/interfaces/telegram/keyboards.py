@@ -338,10 +338,10 @@ def build_user_trade_control_keyboard(trade_id: int, orm_status_value: str) -> I
     action_buttons = []
     
     # Check against the string values from the Enum
-    if orm_status_value == UserTradeStatus.WATCHLIST.value:
+    if orm_status_value in (UserTradeStatus.WATCHLIST.value, UserTradeStatus.PENDING_ACTIVATION.value):
         action_buttons.append(
-            InlineKeyboardButton("🚀 تفعيل الصفقة",
-                                 callback_data=CallbackBuilder.create(ns_pos, CallbackAction.CONFIRM, "trade", trade_id))
+            InlineKeyboardButton("🚀 Activate Trade", 
+                                 callback_data=CallbackBuilder.create(ns_pos, CallbackAction.ACTIVATE_TRADE, "trade", trade_id))
         )
     elif orm_status_value == UserTradeStatus.ACTIVATED.value:
         action_buttons.append(
