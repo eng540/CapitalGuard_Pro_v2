@@ -1,5 +1,5 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/alert_service.py ---
-# src/capitalguard/application/services/alert_service.py (v27.1 - ADR-001 Efficiency Hotfix)
+# src/capitalguard/application/services/alert_service.py (v27.2 - NameError Hotfix)
 """
 AlertService - Orchestrates price updates and manages the in-memory trigger index.
 ✅ THE FIX (ADR-001): Implemented "Smart Indexing" (Append-Only Logic).
@@ -9,6 +9,8 @@ AlertService - Orchestrates price updates and manages the in-memory trigger inde
       dictionary structure, ensuring consistency with the main `build_triggers_index`.
 ✅ HOTFIX (v27.1): Modified `_process_queue` to pass `rebuild_alerts=False`
     during automated closures (SL/TP hits), preventing redundant full-index rebuilds.
+✅ HOTFIX (v27.2): Added missing import for `PriceStreamer` to resolve
+    the `NameError: name 'PriceStreamer' is not defined` crash loop.
 """
 
 import logging
@@ -26,6 +28,9 @@ from capitalguard.infrastructure.db.models import (
     RecommendationStatusEnum, UserTradeStatusEnum, OrderTypeEnum
 )
 from capitalguard.application.strategy.engine import StrategyEngine, BaseAction, CloseAction, MoveSLAction
+# ✅ HOTFIX (v27.2): Added the missing import for PriceStreamer
+from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
+
 
 if False:
     from .trade_service import TradeService
