@@ -1,3 +1,4 @@
+--- START OF FILE: tests/test_domain.py ---
 import pytest
 from datetime import datetime
 from capitalguard.domain.entities import Recommendation
@@ -35,3 +36,4 @@ def test_closing_an_already_closed_recommendation_does_nothing(sample_recommenda
     sample_recommendation.close(62000.0)
     assert sample_recommendation.exit_price == 61000.0
     assert sample_recommendation.closed_at == first_closed_time
+--- END OF FILE ---

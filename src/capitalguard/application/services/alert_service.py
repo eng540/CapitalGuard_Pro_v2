@@ -82,15 +82,7 @@ class AlertService:
         self._bg_thread.start()
         log.info("AlertService started in background thread.")
 
-    def schedule_rebuild_index(self):
-        """Thread-safe method to schedule a rebuild of the trigger index."""
-        if self._bg_loop and self._bg_loop.is_running():
-            log.info("Scheduling trigger index rebuild from external thread.")
-            asyncio.run_coroutine_threadsafe(self._build_triggers_index(), self._bg_loop)
-        else:
-            log.error("Cannot schedule rebuild: AlertService background loop is not running.")
-
-    async def _build_triggers_index(self):
+    async def build_triggers_index(self):
         """Builds the in-memory index of all active triggers from the database."""
         log.info("Attempting to build in-memory trigger index (Unified)...")
         try:
@@ -138,7 +130,7 @@ class AlertService:
         log.info("Index sync task started (interval=%ss).", interval_seconds)
         while True:
             await asyncio.sleep(interval_seconds)
-            await self._build_triggers_index()
+            await self.build_triggers_index()
 
     async def _process_queue(self):
         """Main processing loop that consumes price updates from the queue."""
