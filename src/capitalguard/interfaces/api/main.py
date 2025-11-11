@@ -170,7 +170,7 @@ async def on_startup():
 
     alert_service: AlertService = app.state.services.get("alert_service")
     if alert_service:
-        await alert_service.build_triggers_index()
+        alert_service.schedule_rebuild_index()
         alert_service.start()
         log.info("AlertService background tasks started.")
 

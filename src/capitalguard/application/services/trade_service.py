@@ -141,7 +141,7 @@ class TradeService:
             rec_orm = orm_object
             if rebuild_alerts and self.alert_service:
                 try:
-                    await self.alert_service.build_triggers_index()
+                    self.alert_service.schedule_rebuild_index()
                 except Exception as alert_err:
                     logger.exception(f"Alert rebuild fail Rec ID {item_id}: {alert_err}")
 
@@ -154,7 +154,7 @@ class TradeService:
         elif isinstance(orm_object, UserTrade):
              if rebuild_alerts and self.alert_service:
                 try:
-                    await self.alert_service.build_triggers_index()
+                    self.alert_service.schedule_rebuild_index()
                 except Exception as alert_err:
                     logger.exception(f"Alert rebuild fail UserTrade ID {item_id}: {alert_err}")
 
@@ -304,7 +304,7 @@ class TradeService:
         if not created_rec_entity: raise RuntimeError(f"Failed conv new ORM Rec {rec_orm.id} to entity.")
         final_rec, report = await self._publish_recommendation( db_session, created_rec_entity, user.id, kwargs.get('target_channel_ids') )
         if self.alert_service:
-            try: await self.alert_service.build_triggers_index()
+            try: self.alert_service.schedule_rebuild_index()
             except Exception: logger.exception("alert rebuild failed after create")
         return final_rec, report
 
