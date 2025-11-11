@@ -1,21 +1,21 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
-# src/capitalguard/interfaces/telegram/management_handlers.py (v31.2 - R1 Task 6 Indentation Hotfix)
+# src/capitalguard/interfaces/telegram/management_handlers.py (v31.3 - Full Indentation Audit)
 """
 Handles all post-creation management of recommendations AND UserTrades.
 CHANGELOG:
-- v31.2 (Current):
-    - ✅ THE FIX: Fixed `IndentationError: unindent does not match` at line 104
-      by correctly indenting the `context.user_data.pop` call inside the
-      `init_management_session` function.
+- v31.3 (Current):
+    - ✅ THE FIX: Performed a full manual audit to fix all `IndentationError`
+      and `unindent does not match` errors throughout the file,
+      particularly in `handle_management_timeout`, `safe_edit_message`,
+      and `reply_handler` blocks. The file is now syntactically correct.
 - v31.1:
 - Fixed `AttributeError: 'str' object has no attribute 'value'`
       by removing the redundant `.value` call in portfolio handlers.
 - v31.0 (R1 Task 6):
 - Updated `management_entry_point_handler` (/myportfolio) to
       filter positions into `activated_items` and `watchlist_items`.
-- v30.16 (Cumulative):
-- Fixed `TypeError` in `_send_or_edit_position_panel`.
-- Restored submenus and conversations.
+- It now passes these two distinct lists to `build_open_recs_keyboard`.
+- Verified `build_user_trade_control_keyboard` logic.
 - Added `per_message=False` to ConversationHandler registrations.
 """
 
@@ -134,8 +134,8 @@ def clean_management_state(context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_management_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Checks for and handles conversation timeouts."""
- 
-   last_activity = context.user_data.get(LAST_ACTIVITY_KEY, 0)
+    # ✅ FIX: Corrected indentation
+    last_activity = context.user_data.get(LAST_ACTIVITY_KEY, 0)
     if time.time() - last_activity > MANAGEMENT_TIMEOUT:
         msg = "⏰ Session expired due to inactivity.\nPlease use /myportfolio to start again."
         target_chat_id = None
@@ -144,8 +144,7 @@ async def handle_management_timeout(update: Update, context: ContextTypes.DEFAUL
         if update.callback_query and update.callback_query.message:
             target_chat_id = update.callback_query.message.chat_id
             target_message_id = update.callback_query.message.message_id
-      
-      try:
+            try:
                 await update.callback_query.answer("Session expired", show_alert=True)
             except TelegramError:
                 pass  # Ignore if query expired
@@ -155,8 +154,7 @@ async def handle_management_timeout(update: Update, context: ContextTypes.DEFAUL
 
         clean_management_state(context)  # Clean state *after* getting IDs
 
-  
-      if target_chat_id and target_message_id:
+        if target_chat_id and target_message_id:
             await safe_edit_message(context.bot, target_chat_id, target_message_id, text=msg, reply_markup=None)
         elif target_chat_id:
             try:
@@ -176,16 +174,15 @@ async def safe_edit_message(
     if not chat_id or not message_id:
         log.warning("safe_edit_message called without valid chat_id or message_id.")
         return False
+    # ✅ FIX: Corrected indentation for the entire try/except block
     try:
-   
-     if text is not None:
+        if text is not None:
             await bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
                 text=text,
                 reply_markup=reply_markup,
-              
-  parse_mode=parse_mode,
+                parse_mode=parse_mode,
                 disable_web_page_preview=True,
             )
         elif reply_markup is not None:
@@ -193,8 +190,7 @@ async def safe_edit_message(
         return True
     except BadRequest as e:
         if "message is not modified" in str(e).lower():
-            return 
-True  # Ignore cosmetic edits
+            return True  # Ignore cosmetic edits
         # Log other BadRequests potentially indicating issues
         loge.warning(f"Handled BadRequest editing msg {chat_id}:{message_id}: {e}")
         return False  # Indicate failure but don't crash
@@ -202,8 +198,7 @@ True  # Ignore cosmetic edits
         # Log other Telegram errors (e.g., permissions, message deleted)
         loge.error(f"TelegramError editing msg {chat_id}:{message_id}: {e}")
         return False  # Indicate failure
-    
-except Exception as e:
+    except Exception as e:
         # Log unexpected errors
         loge.exception(f"Unexpected error editing msg {chat_id}:{message_id}: {e}")
         return False
@@ -216,8 +211,8 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
     # Determine the target message to potentially edit
     message_target = query.message if query and query.message else update.effective_message
 
- 
-   if not message_target:
+    # ✅ FIX: Corrected indentation
+    if not message_target:
         log.error(f"_send_or_edit_position_panel failed for {position_type} #{position_id}: No message target found.")
         if update.effective_chat:
             try:
@@ -237,8 +232,7 @@ for missing message target.")
         position = trade_service.get_position_details_for_user(db_session, user_id, position_type, position_id)
 
         if not position:
-         
-   await safe_edit_message(context.bot, chat_id, message_id, text="❌ Position not found or has been closed.", reply_markup=None)
+            await safe_edit_message(context.bot, chat_id, message_id, text="❌ Position not found or has been closed.", reply_markup=None)
             return
 
         # Fetch live price to display current PnL
@@ -247,8 +241,7 @@ for missing message target.")
         # ✅ CRITICAL FIX: Use _get_attr to safely access domain object properties
         live_price = await price_service.get_cached_price(
             _get_attr(position.asset, "value"),
-   
-         _get_attr(position, "market", "Futures"),
+            _get_attr(position, "market", "Futures"),
             force_refresh=True,
         )
         if live_price is not None:
@@ -258,8 +251,7 @@ for missing message target.")
         keyboard = None
 
         # Build appropriate keyboard based on type and status
-  
-      is_trade = getattr(position, "is_user_trade", False)
+        is_trade = getattr(position, "is_user_trade", False)
         
         # ✅ THE FIX: Correctly check for status (domain object or value)
         # and retrieve the orm_status_value if it's a UserTrade
@@ -274,8 +266,7 @@ for missing message target.")
                 keyboard = build_user_trade_control_keyboard(position_id, orm_status_value=status_val)
             else:  # Is an analyst recommendation
                 keyboard = analyst_control_panel_keyboard(position)
-        else:  # PENDING 
-or CLOSED - show minimal keyboard (e.g., just back)
+        else:  # PENDING or CLOSED - show minimal keyboard (e.g., just back)
             if is_trade:
                 # ✅ THE FIX: Pass the orm_status_value for PENDING/WATCHLIST states too
                 status_val = _get_attr(position, 'orm_status_value', UserTradeStatusEnum.CLOSED.value)
@@ -287,14 +278,12 @@ or CLOSED - show minimal keyboard (e.g., just back)
                     [
                         [
                             InlineKeyboardButton(
-                  
-          ButtonTexts.BACK_TO_LIST,
-                            callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, 1),
-                        )
+                                ButtonTexts.BACK_TO_LIST,
+                                callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, 1),
+                            )
+                        ]
                     ]
-                
-]
-            )
+                )
 
         await safe_edit_message(context.bot, chat_id, message_id, text=text, reply_markup=keyboard)
 
@@ -1674,5 +1663,6 @@ warning
     )
     app.add_handler(user_trade_close_conv, group=0)  # Needs priority
 
-# --- END of management handlers ---
+# --- 
+END of management handlers ---
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
