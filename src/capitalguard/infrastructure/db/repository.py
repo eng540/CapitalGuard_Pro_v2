@@ -1,11 +1,14 @@
-# --- src/capitalguard/infrastructure/db/repository.py --- V 2.9 (R1-S1 NameError Hotfix)
+# --- src/capitalguard/infrastructure/db/repository.py --- V 2.10 (ADR-001 Race Condition Hotfix)
 """
 Repository layer — provides clean data access abstractions.
-✅ THE FIX (R1-S1 HOTFIX 9): Corrected a critical NameError.
-    - Added 'OrderTypeEnum' to the import list from .models.
-    - This fixes the crash loop caused when 'list_all_active_triggers_data'
-      (called by AlertService) tried to reference OrderTypeEnum for UserTrades
-      without it being imported.
+✅ THE FIX (ADR-001 Hotfix): Corrected a critical race condition.
+    - Modified `get_all_active_recs` to explicitly filter out
+      `Recommendation.is_shadow.is_(False)`.
+    - This prevents the full-sync (`build_triggers_index`) from
+      re-adding a trigger that a background task is still processing
+      (e.g., a 'shadow' rec being published), or re-adding a trigger
+      that was just closed by `remove_single_trigger` but hasn't
+      been committed to the DB yet.
 """
 
 import logging
@@ -206,7 +209,7 @@ class RecommendationRepository:
             formatted_targets = [
                 {"price": RecommendationRepository._to_decimal(t.get("price")),
                  "close_percent": t.get("close_percent", 0.0)} 
-                for t in targets_data if t.get("price") is not None
+                 for t in targets_data if t.get("price") is not None
             ]
             if not formatted_targets:
                  logger.warning(f"Recommendation {row.id} has no valid targets in JSON data: {row.targets}")
@@ -254,7 +257,7 @@ class RecommendationRepository:
     def list_all_active_triggers_data(self, session: Session) -> List[Dict[str, Any]]:
         """
         Gets raw data (as dicts) for ALL active triggers:
-        1. PENDING/ACTIVE Recommendations
+        1. PENDING/ACTIVE Recommendations (and NOT shadow)
         2. WATCHLIST/PENDING_ACTIVATION/ACTIVATED UserTrades
         """
         trigger_data = []
@@ -293,7 +296,7 @@ class RecommendationRepository:
                     
                     "profit_stop_mode": getattr(rec, 'profit_stop_mode', 'NONE'),
                     "profit_stop_price": self._to_decimal(getattr(rec, 'profit_stop_price', None)) if getattr(rec, 'profit_stop_price', None) is not None else None,
-                    "profit_stop_trailing_value": self._to_decimal(getattr(rec, 'profit_stop_trailing_value', None)) if getattr(rec, 'profit_stop_trailing_value', None) is not None else None,
+                    "profit_stop_trailing_value": _to_decimal(getattr(rec, 'profit_stop_trailing_value', None)) if getattr(rec, 'profit_stop_trailing_value', None) is not None else None,
                     "profit_stop_active": getattr(rec, 'profit_stop_active', False),
                     
                     "original_published_at": None, 
@@ -394,11 +397,13 @@ class RecommendationRepository:
         ).order_by(RecommendationEvent.event_timestamp.asc()).all()
 
     def get_all_active_recs(self, session: Session) -> List[Recommendation]:
+        # ✅ MODIFIED (ADR-001 Race Condition Hotfix): Added `is_shadow.is_(False)`
         return session.query(Recommendation).options(
             selectinload(Recommendation.events), 
             joinedload(Recommendation.analyst) 
         ).filter(
-            Recommendation.status.in_([RecommendationStatusEnum.PENDING, RecommendationStatusEnum.ACTIVE])
+            Recommendation.status.in_([RecommendationStatusEnum.PENDING, RecommendationStatusEnum.ACTIVE]),
+            Recommendation.is_shadow.is_(False) # Ignore "publishing" items
         ).all()
 
     def get_all_active_user_trades(self, session: Session) -> List[UserTrade]:
@@ -419,11 +424,13 @@ class RecommendationRepository:
 
     def get_active_recs_for_asset_and_market(self, session: Session, asset: str, market: str) -> List[Recommendation]:
         asset_upper = asset.strip().upper()
+        # ✅ MODIFIED (ADR-001 Race Condition Hotfix): Added `is_shadow.is_(False)`
         return session.query(Recommendation).filter(
             and_( 
                 Recommendation.asset == asset_upper,
                 Recommendation.market == market, 
-                Recommendation.status == RecommendationStatusEnum.ACTIVE
+                Recommendation.status == RecommendationStatusEnum.ACTIVE,
+                Recommendation.is_shadow.is_(False) # Ignore "publishing" items
             )
         ).all()
 # --- END of repository update ---

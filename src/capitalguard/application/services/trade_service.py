@@ -1,12 +1,18 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/trade_service.py ---
-# src/capitalguard/application/services/trade_service.py v31.1.10 - R1-S1 Event Logging
+# src/capitalguard/application/services/trade_service.py v32.0.0 - ADR-001 Async Publishing
 """
-TradeService v31.1.10 - R1-S1 Sprint 1
-✅ THE FIX (R1-S1 Hotfix 10 - Bug B Fix, Part 3):
-    - Imported the new `UserTradeEvent` model.
-    - All `process_user_trade_*` event handlers now CREATE an event
-      record in the `user_trade_events` table (e.g., 'ACTIVATED', 'SL_HIT').
-    - This creates the audit trail that AlertService will use to prevent spam.
+TradeService v32.0.0 - ADR-001 Smart Indexing & Async Publishing
+✅ THE FIX (ADR-001): Decoupled publishing and indexing from the UI response.
+    - `create_and_publish_recommendation_async` now only saves the rec with
+      `is_shadow=True` and returns instantly.
+    - Added `background_publish_and_index` task to handle the slow
+      publishing and indexing operations in the background.
+    - `_commit_and_dispatch` now accepts `rebuild_alerts: bool` to prevent
+      unnecessary full-index rebuilds.
+    - All `close` and event processing functions (e.g., `close_recommendation_async`,
+      `process_sl_hit_event`, `close_user_trade_async`) now call
+      `alert_service.remove_single_trigger` instead of triggering a full rebuild,
+      making closing operations instantaneous.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select 
-from sqlalchemy.orm import selectinload  # ✅ الإصلاح الحاسم
+from sqlalchemy.orm import selectinload
 
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.uow import session_scope
@@ -125,6 +131,8 @@ class TradeService:
         self.alert_service: Optional["AlertService"] = None # Injected later
 
     # --- Internal DB / Notifier Helpers ---
+    
+    # ✅ MODIFIED (ADR-001): Added 'rebuild_alerts' flag
     async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
         item_id = getattr(orm_object, 'id', 'N/A')
         item_type = type(orm_object).__name__
@@ -139,8 +147,10 @@ class TradeService:
 
         if isinstance(orm_object, Recommendation):
             rec_orm = orm_object
+            # ✅ MODIFIED (ADR-001): Only rebuild if explicitly asked
             if rebuild_alerts and self.alert_service:
                 try:
+                    log.info(f"Rebuilding full alert index on request for Rec ID {item_id}...")
                     await self.alert_service.build_triggers_index()
                 except Exception as alert_err:
                     logger.exception(f"Alert rebuild fail Rec ID {item_id}: {alert_err}")
@@ -152,8 +162,10 @@ class TradeService:
             else: logger.error(f"Failed conv ORM Rec {item_id} to entity")
         
         elif isinstance(orm_object, UserTrade):
+             # ✅ MODIFIED (ADR-001): Only rebuild if explicitly asked
              if rebuild_alerts and self.alert_service:
                 try:
+                    log.info(f"Rebuilding full alert index on request for UserTrade ID {item_id}...")
                     await self.alert_service.build_triggers_index()
                 except Exception as alert_err:
                     logger.exception(f"Alert rebuild fail UserTrade ID {item_id}: {alert_err}")
@@ -216,7 +228,7 @@ class TradeService:
                 close_pct_float = float(close_pct)
                 if not (0.0 <= close_pct_float <= 100.0): raise ValueError(f"Target {i+1} close % invalid.")
             except (ValueError, TypeError) as e:
-                 raise ValueError(f"Target {i+1} close % ('{close_pct}') invalid.") from e
+                raise ValueError(f"Target {i+1} close % ('{close_pct}') invalid.") from e
         if not target_prices: raise ValueError("No valid target prices found.")
         if side_upper == "LONG" and stop_loss >= entry: raise ValueError("LONG SL must be < Entry.")
         if side_upper == "SHORT" and stop_loss <= entry: raise ValueError("SHORT SL must be > Entry.")
@@ -265,8 +277,14 @@ class TradeService:
         return rec_entity, report
 
     # --- Public API - Create/Publish Recommendation ---
+    
+    # ✅ MODIFIED (ADR-001): This function is now "lightweight".
+    # It only saves to the DB and returns. It no longer publishes or rebuilds the index.
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
-        # (This function remains unchanged)
+        """
+        Lightweight creator: Validates, saves the recommendation as 'shadow', and returns.
+        The actual publishing and indexing is handled by `background_publish_and_index`.
+        """
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user or user.user_type != UserTypeEntity.ANALYST: raise ValueError("Only analysts.")
         entry_price_in = _to_decimal(kwargs['entry'])
@@ -294,19 +312,109 @@ class TradeService:
             status, final_entry = RecommendationStatusEnum.PENDING, entry_price_in
         self._validate_recommendation_data(side, final_entry, sl_price, targets_list_validated)
         targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated]
-        rec_orm = Recommendation( analyst_id=user.id, asset=asset, side=side, entry=final_entry, stop_loss=sl_price, targets=targets_for_db, order_type=order_type_enum, status=status, market=market, notes=kwargs.get('notes'), exit_strategy=exit_strategy_enum, activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None )
+        
+        # ✅ MODIFIED (ADR-001): Save as 'is_shadow=True'
+        rec_orm = Recommendation(
+            analyst_id=user.id, asset=asset, side=side, entry=final_entry, 
+            stop_loss=sl_price, targets=targets_for_db, order_type=order_type_enum, 
+            status=status, market=market, notes=kwargs.get('notes'), 
+            exit_strategy=exit_strategy_enum, 
+            activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None,
+            is_shadow=True # Save as shadow, will be unpublished
+        )
+        
         db_session.add(rec_orm)
         db_session.flush()
         db_session.add(RecommendationEvent( recommendation_id=rec_orm.id, event_type="CREATED_ACTIVE" if status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING", event_data={'entry': str(final_entry)} ))
+        
+        # ✅ MODIFIED (ADR-001): Commit the shadow record immediately.
+        # We don't call _commit_and_dispatch here because we are returning the entity
+        # to the handler which *must* be synchronous. The @uow_transaction
+        # decorator on the handler will handle this commit.
         db_session.flush()
         db_session.refresh(rec_orm)
+        
         created_rec_entity = self.repo._to_entity(rec_orm)
         if not created_rec_entity: raise RuntimeError(f"Failed conv new ORM Rec {rec_orm.id} to entity.")
-        final_rec, report = await self._publish_recommendation( db_session, created_rec_entity, user.id, kwargs.get('target_channel_ids') )
-        if self.alert_service:
-            try: await self.alert_service.build_triggers_index()
-            except Exception: logger.exception("alert rebuild failed after create")
-        return final_rec, report
+
+        # ✅ REMOVED (ADR-001): Publishing and Indexing moved to background task.
+        # await self._publish_recommendation(...)
+        # await self.alert_service.build_triggers_index()
+        
+        # Return the entity and an empty report (report is generated in background)
+        return created_rec_entity, {}
+
+    # --- ✅ NEW (ADR-001): Background Publishing Task ---
+    async def background_publish_and_index(
+        self, 
+        rec_id: int, 
+        user_db_id: int, 
+        target_channel_ids: Optional[Set[int]] = None
+    ):
+        """
+        Background task to handle slow publishing and smart indexing.
+        This is designed to be called with `asyncio.create_task`.
+        """
+        log.info(f"[BG Task Rec {rec_id}]: Starting background publish and index...")
+        try:
+            with session_scope() as session:
+                # 1. Fetch the ORM object (eager load analyst/events)
+                rec_orm = self.repo.get(session, rec_id)
+                if not rec_orm:
+                    log.error(f"[BG Task Rec {rec_id}]: ORM object not found in DB.")
+                    return
+
+                # 2. Publish to Telegram channels
+                rec_entity = self.repo._to_entity(rec_orm)
+                if not rec_entity:
+                     log.error(f"[BG Task Rec {rec_id}]: Failed to convert ORM to entity.")
+                     return
+                
+                _, report = await self._publish_recommendation(
+                    session, rec_entity, user_db_id, target_channel_ids
+                )
+                
+                success_count = len(report.get("success", []))
+                if success_count == 0:
+                    log.warning(f"[BG Task Rec {rec_id}]: Failed to publish to any channel. Report: {report.get('failed')}")
+                    # We might still want to index it, or delete it
+                    # For now, we'll index it.
+                else:
+                    log.info(f"[BG Task Rec {rec_id}]: Published to {success_count} channels.")
+
+                # 3. Build the trigger data
+                # We need to re-fetch ORM object with all relations for the builder
+                rec_orm_for_trigger = self.repo.get(session, rec_id) # get() eager loads relations
+                trigger_data = self.alert_service.build_trigger_data_from_orm(rec_orm_for_trigger)
+
+                # 4. Smart-add to AlertService index
+                if trigger_data:
+                    await self.alert_service.add_trigger_data(trigger_data)
+                else:
+                    log.error(f"[BG Task Rec {rec_id}]: Failed to build trigger data. AlertService will not track this trade!")
+
+                # 5. Un-hide the recommendation
+                rec_orm.is_shadow = False
+                session.commit()
+                log.info(f"[BG Task Rec {rec_id}]: Task complete. Recommendation is now live and indexed.")
+                
+                # 6. (Optional) Notify user of success
+                await self._notify_user_trade_update(
+                    user_id=user_db_id,
+                    text=f"✅ **Published!**\nSignal #{rec_orm.asset} is now live in {success_count} channel(s)."
+                )
+
+        except Exception as e:
+            log.error(f"[BG Task Rec {rec_id}]: CRITICAL FAILURE in background task: {e}", exc_info=True)
+            # We might need to add retry logic here or alert an admin
+            try:
+                 await self._notify_user_trade_update(
+                    user_id=user_db_id,
+                    text=f"❌ **Publishing Failed!**\nSignal #{rec_id} failed during background processing. Please check admin logs."
+                )
+            except Exception:
+                pass
+
 
     # --- User Trade Functions ---
     async def create_trade_from_forwarding_async(
@@ -362,6 +470,17 @@ class TradeService:
             )
             db_session.add(new_trade)
             db_session.flush()
+            
+            # ✅ ADDED (ADR-001): Smart-index the new UserTrade
+            if self.alert_service:
+                # Eager load the required 'user' relationship for the builder
+                db_session.refresh(new_trade, attribute_names=['user'])
+                trigger_data = self.alert_service.build_trigger_data_from_orm(new_trade)
+                if trigger_data:
+                    await self.alert_service.add_trigger_data(trigger_data)
+                else:
+                    logger.error(f"Failed to build trigger data for new UserTrade {new_trade.id}")
+            
             logger.info(f"UserTrade {new_trade.id} created for user {user_id} with status {status_to_set}.")
             return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
         except ValueError as e:
@@ -374,7 +493,7 @@ class TradeService:
             return {'success': False, 'error': 'Internal error saving trade.'}
 
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
-        # (This function remains unchanged from DfC 5.1)
+        # (This function remains unchanged from DfC 5.1, but needs ADR-001 indexing)
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user: return {'success': False, 'error': 'User not found'}
         rec_orm = self.repo.get(db_session, rec_id)
@@ -405,6 +524,17 @@ class TradeService:
             )
             db_session.add(new_trade)
             db_session.flush()
+            
+            # ✅ ADDED (ADR-001): Smart-index the new UserTrade
+            if self.alert_service:
+                # Eager load the required 'user' relationship for the builder
+                db_session.refresh(new_trade, attribute_names=['user'])
+                trigger_data = self.alert_service.build_trigger_data_from_orm(new_trade)
+                if trigger_data:
+                    await self.alert_service.add_trigger_data(trigger_data)
+                else:
+                    logger.error(f"Failed to build trigger data for new UserTrade {new_trade.id} from Rec")
+
             logger.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id} with status {user_trade_status.value}.")
             return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
         except Exception as e:
@@ -415,7 +545,7 @@ class TradeService:
     async def close_user_trade_async(
         self, user_id: str, trade_id: int, exit_price: Decimal, db_session: Session
     ) -> Optional[UserTrade]:
-        # (This function remains unchanged from DfC 5.1)
+        # (This function remains unchanged from DfC 5.1, but needs ADR-001 indexing)
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not user: raise ValueError("User not found.")
         trade = db_session.query(UserTrade).filter( UserTrade.id == trade_id, UserTrade.user_id == user.id ).with_for_update().first()
@@ -441,11 +571,16 @@ class TradeService:
         trade.closed_at = datetime.now(timezone.utc)
         trade.pnl_percentage = Decimal(f"{pnl_float:.4f}")
         logger.info(f"UserTrade {trade_id} closed user {user_id} at {exit_price}")
+        
+        # ✅ ADDED (ADR-001): Smart-remove from AlertService index
+        if self.alert_service:
+            await self.alert_service.remove_single_trigger(item_type="user_trade", item_id=trade_id)
+            
         db_session.flush()
         return trade
 
     # --- Update Operations (Analyst) ---
-    # (These functions remain unchanged)
+    # (These functions remain unchanged, but will use the modified _commit_and_dispatch)
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Optional[Session] = None) -> RecommendationEntity:
         if db_session is None:
             with session_scope() as s: return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
@@ -465,7 +600,7 @@ class TradeService:
         rec_orm.stop_loss = new_sl
         db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="SL_UPDATED", event_data={"old": str(old_sl), "new": str(new_sl)}))
         self.notify_reply(rec_id, f"⚠️ SL for #{rec_orm.asset} updated to {_format_price(new_sl)}.", db_session)
-        await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True)
+        await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True) # Rebuild is OK here, it's a manual edit
         return self.repo._to_entity(rec_orm)
 
     async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, Any]], db_session: Session) -> RecommendationEntity:
@@ -485,7 +620,7 @@ class TradeService:
         rec_orm.targets = [{'price': str(t['price']), 'close_percent': t['close_percent']} for t in targets_validated]
         db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="TP_UPDATED", event_data={"old": old_targets_json, "new": rec_orm.targets}))
         self.notify_reply(rec_id, f"🎯 Targets for #{rec_orm.asset} updated.", db_session)
-        await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True)
+        await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True) # Rebuild is OK
         return self.repo._to_entity(rec_orm)
 
     async def update_entry_and_notes_async(self, rec_id: int, user_id: str, new_entry: Optional[Decimal], new_notes: Optional[str], db_session: Session) -> RecommendationEntity:
@@ -516,7 +651,7 @@ class TradeService:
         if updated:
             db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="DATA_UPDATED", event_data=event_data))
             self.notify_reply(rec_id, f"✏️ Data #{rec_orm.asset} updated.", db_session)
-            await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=(new_entry is not None))
+            await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=(new_entry is not None)) # Rebuild if entry changed
         else:
             logger.debug(f"No changes update_entry_notes Rec {rec_id}.")
         return self.repo._to_entity(rec_orm)
@@ -548,7 +683,7 @@ class TradeService:
         else:
             msg = f"❌ Exit strategy #{rec.asset} cancelled."
         self.notify_reply(rec_id, msg, session)
-        await self._commit_and_dispatch(session, rec, rebuild_alerts=True)
+        await self._commit_and_dispatch(session, rec, rebuild_alerts=True) # Rebuild is OK
         return self.repo._to_entity(rec)
 
     # --- Automation Helpers ---
@@ -578,10 +713,11 @@ class TradeService:
             return self.repo._to_entity(rec_orm)
 
     # --- Closing Operations ---
-    async def close_recommendation_async(self, rec_id: int, user_id: Optional[str], exit_price: Decimal, db_session: Optional[Session] = None, reason: str = "MANUAL_CLOSE") -> RecommendationEntity:
-        # (This function remains unchanged)
+    
+    # ✅ MODIFIED (ADR-001): Added 'rebuild_alerts' flag and 'remove_single_trigger' call
+    async def close_recommendation_async(self, rec_id: int, user_id: Optional[str], exit_price: Decimal, db_session: Optional[Session] = None, reason: str = "MANUAL_CLOSE", rebuild_alerts: bool = True) -> RecommendationEntity:
         if db_session is None:
-            with session_scope() as s: return await self.close_recommendation_async(rec_id, user_id, exit_price, s, reason)
+            with session_scope() as s: return await self.close_recommendation_async(rec_id, user_id, exit_price, s, reason, rebuild_alerts)
         rec_orm = self.repo.get_for_update(db_session, rec_id)
         if not rec_orm: raise ValueError(f"Rec #{rec_id} not found.")
         if rec_orm.status == RecommendationStatusEnum.CLOSED:
@@ -607,8 +743,15 @@ class TradeService:
         rec_orm.closed_at = datetime.now(timezone.utc)
         rec_orm.open_size_percent = Decimal(0)
         rec_orm.profit_stop_active = False
+        
+        # ✅ MODIFIED (ADR-001): Smart-remove from AlertService index *before* commit
+        if self.alert_service:
+            await self.alert_service.remove_single_trigger(item_type="recommendation", item_id=rec_id)
+            
         self.notify_reply(rec_id, f"✅ Signal #{rec_orm.asset} closed at {_format_price(exit_price)}. Reason: {reason}", db_session)
-        await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True)
+        
+        # ✅ MODIFIED (ADR-001): Pass the flag
+        await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=rebuild_alerts)
         return self.repo._to_entity(rec_orm)
 
     async def partial_close_async(self, rec_id: int, user_id: str, close_percent: Decimal, price: Decimal, db_session: Session, triggered_by: str = "MANUAL") -> RecommendationEntity:
@@ -635,14 +778,17 @@ class TradeService:
         self.notify_reply(rec_id, notif_text, db_session)
         if rec_orm.open_size_percent < Decimal('0.1'):
             logger.info(f"Rec #{rec_id} fully closed via partial.")
-            return await self.close_recommendation_async(rec_id, user_id, price_dec, db_session, reason="PARTIAL_CLOSE_FINAL")
+            # ✅ MODIFIED (ADR-001): Pass rebuild_alerts=False
+            return await self.close_recommendation_async(rec_id, user_id, price_dec, db_session, reason="PARTIAL_CLOSE_FINAL", rebuild_alerts=False)
         else:
-            await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False)
-            return self.repo._to_entity(rec_orm)
+            await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False) # No rebuild on partial
+        return self.repo._to_entity(rec_orm)
 
 
     # --- Event Processors (Recommendation) ---
-    # (These functions remain unchanged)
+    
+    # ✅ MODIFIED (ADR-001): All event processors now use smart indexing
+    
     async def process_invalidation_event(self, item_id: int):
         with session_scope() as db_session:
             rec = self.repo.get_for_update(db_session, item_id)
@@ -651,8 +797,13 @@ class TradeService:
             rec.status = RecommendationStatusEnum.CLOSED
             rec.closed_at = datetime.now(timezone.utc)
             db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="INVALIDATED", event_data={"reason": "SL hit before entry"}))
+            
+            # ✅ MODIFIED (ADR-001): Smart-remove from AlertService index
+            if self.alert_service:
+                await self.alert_service.remove_single_trigger(item_type="recommendation", item_id=item_id)
+                
             self.notify_reply(rec.id, f"❌ Signal #{rec.asset} invalidated.", db_session=db_session)
-            await self._commit_and_dispatch(db_session, rec)
+            await self._commit_and_dispatch(db_session, rec, rebuild_alerts=False)
 
     async def process_activation_event(self, item_id: int):
         with session_scope() as db_session:
@@ -663,7 +814,24 @@ class TradeService:
             rec.activated_at = datetime.now(timezone.utc)
             db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="ACTIVATED"))
             self.notify_reply(rec.id, f"▶️ Signal #{rec.asset} ACTIVE!", db_session=db_session)
-            await self._commit_and_dispatch(db_session, rec)
+            
+            # ✅ MODIFIED (ADR-001): Re-index this single item
+            # We must commit first to save the new status, then build data and add
+            db_session.commit()
+            db_session.refresh(rec, attribute_names=['events', 'analyst'])
+            
+            if self.alert_service:
+                # We remove the old PENDING one and add the new ACTIVE one
+                # Note: This is simpler than an 'update'
+                await self.alert_service.remove_single_trigger(item_type="recommendation", item_id=item_id)
+                trigger_data = self.alert_service.build_trigger_data_from_orm(rec)
+                if trigger_data:
+                    await self.alert_service.add_trigger_data(trigger_data)
+                
+            # No _commit_and_dispatch needed as we just committed
+            # We still need to update the card, so we call notify
+            await self.notify_card_update(self.repo._to_entity(rec), db_session)
+
 
     async def process_sl_hit_event(self, item_id: int, price: Decimal):
         with session_scope() as s:
@@ -671,7 +839,8 @@ class TradeService:
             if not rec or rec.status != RecommendationStatusEnum.ACTIVE:
                 return
             analyst_uid = str(rec.analyst.telegram_user_id) if rec.analyst else None
-            await self.close_recommendation_async(rec.id, None, price, s, reason="SL_HIT")
+            # ✅ MODIFIED (ADR-001): Pass rebuild_alerts=False
+            await self.close_recommendation_async(rec.id, None, price, s, reason="SL_HIT", rebuild_alerts=False)
 
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
         with session_scope() as s:
@@ -696,18 +865,21 @@ class TradeService:
                 return
             if close_percent > 0:
                 await self.partial_close_async(rec_orm.id, analyst_uid_str, close_percent, price, s, triggered_by="AUTO")
-            s.refresh(rec_orm)
+            
+            s.refresh(rec_orm) # Refresh after partial_close
             is_final_tp = (target_index == len(rec_orm.targets or []))
             should_auto_close = (rec_orm.exit_strategy == ExitStrategyEnum.CLOSE_AT_FINAL_TP and is_final_tp)
             is_effectively_closed = (rec_orm.open_size_percent is not None and rec_orm.open_size_percent < Decimal('0.1'))
-            if should_auto_close or is_effectively_closed:
-                if rec_orm.status == RecommendationStatusEnum.ACTIVE:
-                    reason = "AUTO_CLOSE_FINAL_TP" if should_auto_close else "CLOSED_VIA_PARTIAL"
-                    await self.close_recommendation_async(rec_orm.id, analyst_uid_str, price, s, reason=reason)
+            
+            if (should_auto_close or is_effectively_closed) and rec_orm.status == RecommendationStatusEnum.ACTIVE:
+                reason = "AUTO_CLOSE_FINAL_TP" if should_auto_close else "CLOSED_VIA_PARTIAL"
+                # ✅ MODIFIED (ADR-001): Pass rebuild_alerts=False
+                await self.close_recommendation_async(rec_orm.id, analyst_uid_str, price, s, reason=reason, rebuild_alerts=False)
             elif close_percent <= 0:
                 await self._commit_and_dispatch(s, rec_orm, False)
         
     # --- ✅ R1-S1: UPDATED Event Processors (UserTrade) ---
+    # ✅ MODIFIED (ADR-001): All event processors now use smart indexing
     
     async def process_user_trade_activation_event(self, item_id: int):
         """Activate a pending UserTrade (WATCHLIST/PENDING -> ACTIVATED)."""
@@ -729,7 +901,16 @@ class TradeService:
             ))
             
             logger.info(f"UserTrade {item_id} ACTIVATED from status {original_status.value}.")
-            await self._commit_and_dispatch(db_session, trade, rebuild_alerts=True)
+            
+            # ✅ MODIFIED (ADR-001): Re-index this single item
+            db_session.commit()
+            db_session.refresh(trade, attribute_names=['events', 'user'])
+
+            if self.alert_service:
+                await self.alert_service.remove_single_trigger(item_type="user_trade", item_id=item_id)
+                trigger_data = self.alert_service.build_trigger_data_from_orm(trade)
+                if trigger_data:
+                    await self.alert_service.add_trigger_data(trigger_data)
 
             if original_status == UserTradeStatusEnum.PENDING_ACTIVATION:
                 await self._notify_user_trade_update(
@@ -757,8 +938,12 @@ class TradeService:
                 event_data={"reason": "SL hit before entry", "price": str(price)}
             ))
             
+            # ✅ MODIFIED (ADR-001): Smart-remove from AlertService index
+            if self.alert_service:
+                await self.alert_service.remove_single_trigger(item_type="user_trade", item_id=item_id)
+                
             logger.info(f"UserTrade {item_id} INVALIDATED (closed) from status {original_status.value} at price {price}.")
-            await self._commit_and_dispatch(db_session, trade, rebuild_alerts=True)
+            await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
 
             if original_status == UserTradeStatusEnum.PENDING_ACTIVATION:
                 await self._notify_user_trade_update(
@@ -791,8 +976,12 @@ class TradeService:
                 event_data={"price": str(price), "pnl_percent": pnl_float}
             ))
 
+            # ✅ MODIFIED (ADR-001): Smart-remove from AlertService index
+            if self.alert_service:
+                await self.alert_service.remove_single_trigger(item_type="user_trade", item_id=item_id)
+
             logger.info(f"UserTrade {item_id} CLOSED due to SL_HIT at {price}. PnL: {pnl_float:.2f}%")
-            await self._commit_and_dispatch(db_session, trade, rebuild_alerts=True)
+            await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
             
             await self._notify_user_trade_update(
                 user_id=trade.user_id,
@@ -839,9 +1028,12 @@ class TradeService:
                 trade.closed_at = datetime.now(timezone.utc)
                 trade.pnl_percentage = Decimal(f"{pnl_float:.4f}")
 
+                # ✅ MODIFIED (ADR-001): Smart-remove from AlertService index
+                if self.alert_service:
+                    await self.alert_service.remove_single_trigger(item_type="user_trade", item_id=item_id)
+                    
                 logger.info(f"UserTrade {item_id} CLOSED due to FINAL_TP_HIT at {price}. PnL: {pnl_float:.2f}%")
-
-                await self._commit_and_dispatch(db_session, trade, rebuild_alerts=True)
+                await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
                 
                 await self._notify_user_trade_update(
                     user_id=trade.user_id,
@@ -938,7 +1130,7 @@ class TradeService:
                 return trade_entity
             except Exception as conv_err:
                 logger.error(f"Failed conv UserTrade {trade_orm.id} details: {conv_err}", exc_info=False)
-                return None
+            return None
         else:
             logger.warning(f"Unknown position_type '{position_type}'.")
         return None
@@ -980,7 +1172,7 @@ class TradeService:
             default_assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
             for a in default_assets:
                 if a not in asset_list and len(asset_list) < limit:
-                     asset_list.append(a)
+                    asset_list.append(a)
         return asset_list
 
 # --- END of TradeService ---

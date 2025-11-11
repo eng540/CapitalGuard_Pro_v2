@@ -1,14 +1,22 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v35.10 - Warning Suppress)
+# src/capitalguard/interfaces/telegram/conversation_handlers.py (v36.0 - ADR-001 & ADR-002)
 """
 معالجات المحادثات النهائية والمستقرة لبيئة الإنتاج.
-✅ FIX: Added `per_message=False` to ConversationHandler registration to suppress PTBUserWarning noise in logs.
+✅ THE FIX (ADR-001): تم تعديل `review_handler` لفصل النشر عن الاستجابة.
+    - يقوم الآن بالحفظ الفوري (`is_shadow=True`) ويرسل رداً فورياً للمستخدم.
+    - يقوم بإطلاق `asyncio.create_task` لتشغيل `trade_service.background_publish_and_index`
+      في الخلفية، مما يلغي وقت الانتظار الطويل.
+✅ THE FIX (ADR-002): تم تعديل `newrec_entrypoint` لتطبيق الجلب المسبق للكاش.
+    - يقوم بإطلاق مهمة `_preload_asset_prices` في الخلفية لجلب أسعار الأصول
+      المتوقعة مسبقاً، مما يجعل المعالج التفاعلي فوري الاستجابة.
 """
 
 import logging
 import uuid
 import time
+import asyncio # ✅ ADDED (ADR-001 / ADR-002)
 from decimal import Decimal, InvalidOperation
+from typing import List, Optional # ✅ ADDED (ADR-002)
 
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import (
@@ -92,15 +100,51 @@ async def handle_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return True
     return False
 
+# --- ✅ NEW (ADR-002): Price Pre-fetcher ---
+async def _preload_asset_prices(price_service: PriceService, assets: List[str]):
+    """
+    Background task to warm up the price cache for recent assets.
+    """
+    log.debug(f"[Pre-fetch]: Warming cache for {len(assets)} assets...")
+    try:
+        tasks = [
+            price_service.get_cached_price(asset, "Futures", force_refresh=False) 
+            for asset in assets
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        log.debug("[Pre-fetch]: Cache warming complete.")
+    except Exception as e:
+        log.warning(f"[Pre-fetch]: Price pre-fetch task failed: {e}", exc_info=False)
+
 # --- Entry Points ---
 
 @uow_transaction
 @require_active_user
 @require_analyst_user
-async def newrec_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
+async def newrec_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
     """نقطة بدء إنشاء توصية جديدة."""
     clean_creation_state(context)
     update_activity(context)
+    
+    # ✅ ADDED (ADR-002): Launch background price pre-fetch task
+    try:
+        trade_service = get_service(context, "trade_service", TradeService)
+        price_service = get_service(context, "price_service", PriceService)
+        
+        # Get recent assets for this user
+        recent_assets = trade_service.get_recent_assets_for_user(
+            db_session, 
+            str(db_user.telegram_user_id)
+        )
+        
+        # Launch the pre-fetch task without waiting for it
+        if recent_assets:
+            asyncio.create_task(_preload_asset_prices(price_service, recent_assets))
+            
+    except Exception as e:
+        log.warning(f"Failed to launch price pre-fetch task: {e}", exc_info=False)
+    # --- End of ADR-002 addition ---
+
     await update.message.reply_html("🚀 <b>منشئ التوصيات</b>\n\nاختر طريقة الإدخال:", reply_markup=main_creation_keyboard())
     return SELECT_METHOD
 
@@ -134,6 +178,7 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
     choice = query.data.split('_')[1]
     if choice == "interactive":
         trade_service = get_service(context, "trade_service", TradeService)
+        # ✅ NOTE (ADR-002): This list is now (likely) pre-fetched
         recent_assets = trade_service.get_recent_assets_for_user(db_session, str(query.from_user.id))
         context.user_data[DRAFT_KEY] = {}
         await safe_edit_message(query, text="<b>الخطوة 1/4: الأصل</b>\nاختر أو اكتب رمز الأصل (e.g., BTCUSDT).", reply_markup=asset_choice_keyboard(recent_assets))
@@ -248,18 +293,14 @@ async def type_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if asset:
         try:
             price_service = get_service(context, "price_service", PriceService)
-            # Use force_refresh=False to prefer cache; caller can force refresh elsewhere
+            # ✅ NOTE (ADR-002): This call is now (likely) instantaneous from cache
             live_price = await price_service.get_cached_price(asset, market)
             if live_price is not None:
-                # Format with up to 8 significant digits but trim trailing zeros
                 try:
-                    # live_price may be float; format safely
                     lp_dec = Decimal(str(live_price))
-                    # Choose number of decimal places based on magnitude
                     if lp_dec >= 1000:
                         live_price_str = f"— السعر الحالي: {lp_dec.normalize():f}"
                     else:
-                        # show up to 4 decimal places for small prices, or no decimals for integers
                         live_price_str = f"— السعر الحالي: {lp_dec:.4f}".rstrip('0').rstrip('.')
                 except Exception:
                     live_price_str = f"— السعر الحالي: {live_price}"
@@ -319,6 +360,7 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         draft["token"] = str(uuid.uuid4())
 
     price_service = get_service(context, "price_service", PriceService)
+    # ✅ NOTE (ADR-002): This call is also (likely) instantaneous from cache
     preview_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"))
     review_text = build_review_text_with_price(draft, preview_price)
 
@@ -328,7 +370,7 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @uow_transaction
 @require_active_user
 @require_analyst_user
-async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     """معالجة مراجعة التوصية."""
     query = update.callback_query
     await query.answer()
@@ -352,19 +394,41 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
             clean_creation_state(context)
             return ConversationHandler.END
 
+        # ✅ MODIFIED (ADR-001): This is the core logic change
         if action == "publish":
-            selected_ids = context.user_data.get(CHANNEL_PICKER_KEY, {ch.telegram_channel_id for ch in ChannelRepository(db_session).list_by_analyst(UserRepository(db_session).find_by_telegram_id(query.from_user.id).id, only_active=True)})
-            draft['target_channel_ids'] = selected_ids
             trade_service = get_service(context, "trade_service", TradeService)
-            rec, report = await trade_service.create_and_publish_recommendation_async(str(query.from_user.id), db_session, **draft)
-            msg = f"✅ تم النشر في {len(report.get('success', []))} قناة." if report.get("success") else "⚠️ تم الحفظ ولكن فشل النشر."
+            
+            # 1. Get selected channels (or default to all active)
+            all_channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=True)
+            selected_ids = context.user_data.get(CHANNEL_PICKER_KEY, {ch.telegram_channel_id for ch in all_channels})
+            draft['target_channel_ids'] = selected_ids
+            
+            # 2. Call the *lightweight* save function
+            # This only validates and saves to DB (with is_shadow=True)
+            created_rec_entity, _ = await trade_service.create_and_publish_recommendation_async(
+                str(query.from_user.id), db_session, **draft
+            )
+            
+            # 3. Send IMMEDIATE "Optimistic" response to user
+            msg = f"✅ تم الحفظ! (ID: #{created_rec_entity.id})\n\nجاري النشر الآن في {len(selected_ids)} قناة..."
             await safe_edit_message(query, text=msg)
+
+            # 4. Launch the *heavy* background task (DO NOT AWAIT)
+            asyncio.create_task(
+                trade_service.background_publish_and_index(
+                    rec_id=created_rec_entity.id,
+                    user_db_id=db_user.id,
+                    target_channel_ids=selected_ids
+                )
+            )
+            
+            # 5. End conversation instantly
             clean_creation_state(context)
             return ConversationHandler.END
+        # --- End of ADR-001 modification ---
 
         elif action == "choose_channels":
-            user = UserRepository(db_session).find_by_telegram_id(query.from_user.id)
-            all_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False)
+            all_channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=False)
             selected_ids = context.user_data.setdefault(CHANNEL_PICKER_KEY, {ch.telegram_channel_id for ch in all_channels if ch.is_active})
             keyboard = build_channel_picker_keyboard(draft['token'], all_channels, selected_ids)
             await safe_edit_message(query, text="📢 **اختر القنوات للنشر**", reply_markup=keyboard)
@@ -398,7 +462,7 @@ async def notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 @uow_transaction
 @require_active_user
 @require_analyst_user
-async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     """معالجة اختيار القنوات - الإصدار النهائي المصحح."""
     query = update.callback_query
     await query.answer()
@@ -422,14 +486,14 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
             clean_creation_state(context)
             return ConversationHandler.END
 
-        user = UserRepository(db_session).find_by_telegram_id(query.from_user.id)
-        all_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=False)
+        all_channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=False)
         selected_ids = context.user_data.get(CHANNEL_PICKER_KEY, set())
 
         if action == CallbackAction.BACK.value:
             await show_review_card(update, context)
             return AWAITING_REVIEW
 
+        # ✅ MODIFIED (ADR-001): This action ("CONFIRM") is now the *primary* publish entry point
         elif action == CallbackAction.CONFIRM.value:
             if not selected_ids:
                 await query.answer("❌ لم يتم اختيار أي قنوات", show_alert=True)
@@ -437,15 +501,31 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
 
             draft['target_channel_ids'] = selected_ids
             trade_service = get_service(context, "trade_service", TradeService)
-            rec, report = await trade_service.create_and_publish_recommendation_async(str(query.from_user.id), db_session, **draft)
-            msg = f"✅ تم النشر في {len(report.get('success', []))} قناة." if report.get("success") else "❌ فشل النشر."
+            
+            # 1. Call lightweight save function
+            created_rec_entity, _ = await trade_service.create_and_publish_recommendation_async(
+                str(query.from_user.id), db_session, **draft
+            )
+            
+            # 2. Send IMMEDIATE "Optimistic" response
+            msg = f"✅ تم الحفظ! (ID: #{created_rec_entity.id})\n\nجاري النشر الآن في {len(selected_ids)} قناة..."
             await safe_edit_message(query, text=msg)
+
+            # 3. Launch background task (DO NOT AWAIT)
+            asyncio.create_task(
+                trade_service.background_publish_and_index(
+                    rec_id=created_rec_entity.id,
+                    user_db_id=db_user.id,
+                    target_channel_ids=selected_ids
+                )
+            )
+            
+            # 4. End conversation instantly
             clean_creation_state(context)
             return ConversationHandler.END
 
         else: # Handles TOGGLE and NAV
             page = 1
-            # ✅ FIX: Compare action to the string 'toggle' not the Enum
             if action == "toggle":
                 channel_id_to_toggle = int(params[1])
                 if channel_id_to_toggle in selected_ids: selected_ids.remove(channel_id_to_toggle)
@@ -503,4 +583,4 @@ def register_conversation_handlers(app: Application):
         per_message=False # ✅ FIX: Suppress warning
     )
     app.add_handler(conv_handler)
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
