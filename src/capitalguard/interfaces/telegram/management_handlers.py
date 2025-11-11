@@ -1674,6 +1674,5 @@ warning
     )
     app.add_handler(user_trade_close_conv, group=0)  # Needs priority
 
-# --- 
-END of management handlers ---
+# --- END of management handlers ---
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
