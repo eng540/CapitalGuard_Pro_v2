@@ -1,14 +1,14 @@
 # src/capitalguard/interfaces/telegram/forward_parsing_handler.py
 """
-Handles the user flow for parsing a forwarded text message (v3.2.2 - Syntax Hotfix).
+Handles the user flow for parsing a forwarded text message (v3.2.3 - Emoji Syntax Hotfix).
 ✅ THE FIX (R1-S1): Major strategic update.
     - Implements the "Trader-First" Golden Rule (Watchlist vs. Activated).
-- `forwarded_message_handler` now captures `forward_date` and `forward_from_chat`.
-    - `build_editable_review_card` now shows "🚀 Activate Trade" and "👁️ Watch Channel" buttons.
-- `review_callback_handler` now calls trade_service with the selected status (`PENDING_ACTIVATION` or `WATCHLIST`)
+- `forwarded_message_handler` now captures origin date and chat info using modern PTB v21+ API.
+- `build_editable_review_card` now shows "🚀 Activate Trade" and "👁️ Watch Channel" buttons.
+    - `review_callback_handler` now calls trade_service with the selected status (`PENDING_ACTIVATION` or `WATCHLIST`)
       and passes the new audit data (original_published_at, channel_info).
-✅ HOTFIX v3.2.2: Fixed SyntaxError: unterminated string literal
-      by correctly enclosing the multi-line log.critical message in triple quotes.
+✅ HOTFIX v3.2.2: Fixed SyntaxError: unterminated string literal.
+✅ HOTFIX v3.2.3: Removed invalid character '✅' from comment to fix SyntaxError (U+2705).
 """
 
 import logging
@@ -86,7 +86,8 @@ def clean_parsing_conversation_state(context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(key, None)
     log.debug(f"Parsing conversation state cleared for user {context._user_id}.")
 
-# --- ✅ (Point 1) Resilient Edit Function ---
+# --- 
+# (Point 1) Resilient Edit Function ---
 async def smart_safe_edit(
     bot: Bot, chat_id: int, message_id: int, 
     text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML
