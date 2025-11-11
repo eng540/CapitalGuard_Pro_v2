@@ -86,8 +86,7 @@ def clean_parsing_conversation_state(context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(key, None)
     log.debug(f"Parsing conversation state cleared for user {context._user_id}.")
 
-# --- 
-✅ (Point 1) Resilient Edit Function ---
+# --- ✅ (Point 1) Resilient Edit Function ---
 async def smart_safe_edit(
     bot: Bot, chat_id: int, message_id: int, 
     text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML
