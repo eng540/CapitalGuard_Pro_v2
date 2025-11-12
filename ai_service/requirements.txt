@@ -1,4 +1,4 @@
---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/requirements.txt ---
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/requirements.txt ---
 # File: ai_service/requirements.txt
 # Version: 2.0.0 (Decoupled)
 # ✅ THE FIX: (Protocol 1) إزالة حزم قاعدة البيانات (SQLAlchemy, psycopg)
@@ -13,4 +13,4 @@ httpx==0.27.2
 
 # مكتبة الذكاء الاصطناعي (مثال باستخدام OpenAI، يمكن تبديلها)
 openai==1.35.13
---- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/requirements.txt ---
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/requirements.txt ---
