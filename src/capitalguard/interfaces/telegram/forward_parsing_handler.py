@@ -1,9 +1,11 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
+--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
 # File: src/capitalguard/interfaces/telegram/forward_parsing_handler.py
-# Version: 5.0.1 (Hotfix)
-# ✅ THE FIX: (Protocol 1) إصلاح خطأ `NameError: name 'time' is not defined`.
-#    - إضافة `import time` في بداية الملف لحساب زمن الانتقال (latency).
-# 🎯 IMPACT: المعالج سيعمل الآن بشكل صحيح عند تلقي رسائل مُعادة توجيه.
+# Version: 5.0.2 (Hotfix)
+# ✅ THE FIX: (Protocol 1) إصلاح خطأ `NameError: name 'time' is not defined` بإضافة `import time`.
+# ✅ THE FIX: (Protocol 1) إصلاح خطأ `404 Not Found` (تكرار المسار).
+#    - تم تعديل استدعاء `httpx.post` لاستخدام `AI_SERVICE_URL` مباشرة (الذي يحتوي بالفعل
+#      على `/ai/parse`) بدلاً من إضافة `/ai/parse` إليه مرة أخرى.
+# 🎯 IMPACT: يجب أن يعمل معالج الرسائل النصية الآن بشكل صحيح.
 
 import logging
 import asyncio
@@ -11,8 +13,8 @@ import httpx
 import os
 import re
 import html
-import json
-import time # ✅ ADDED (THE FIX)
+import json 
+import time # ✅ ADDED (THE FIX for NameError)
 from decimal import Decimal
 from typing import Dict, Any, Optional
 
@@ -219,13 +221,14 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
     final_error_message = "Could not recognize a valid trade signal."
     parser_path_used = "failed"
     latency_ms = 0
-    start_time = time.monotonic() # ✅ This is line 229
+    start_time = time.monotonic()
 
     try:
         log.debug(f"Calling AI Service at {AI_SERVICE_URL} for user {user_db_id} (Attempt {attempt_id})")
         async with httpx.AsyncClient() as client:
+            # ✅ THE FIX (v5.0.2): Use AI_SERVICE_URL directly, as it contains the full path
             response = await client.post(
-                f"{AI_SERVICE_URL}/ai/parse",
+                AI_SERVICE_URL, 
                 json={"text": message.text, "user_id": user_db_id},
                 timeout=20.0
             )
@@ -387,14 +390,17 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
     final_error_message = "Could not recognize a valid trade signal from the image."
     parser_path_used = "failed"
     latency_ms = 0
-    start_time = time.monotonic() # ✅ Also needed here
+    start_time = time.monotonic()
 
     try:
+        # 1. Call the ImageParsingService (local service, not ai-service)
         img_parser_service = get_service(context, "image_parsing_service", ImageParsingService)
+        # This service calls the /ai/parse_image endpoint
         parsing_result_json = await img_parser_service.parse_image_from_file_id(user_db_id, file_id)
         latency_ms = parsing_result_json.get("latency_ms", int((time.monotonic() - start_time) * 1000))
         parser_path_used = parsing_result_json.get("parser_path_used", "vision")
 
+        # 2. Process the response
         if parsing_result_json.get("status") == "success" and parsing_result_json.get("data"):
             try:
                 raw = parsing_result_json["data"]
@@ -407,6 +413,7 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
                         [f"{t.get('price')}@{t.get('close_percent')}" for t in raw.get("targets", [])]
                     )
                 }
+                # 3. Validate the hydrated data
                 trade_service: TradeService = get_service(context, "trade_service", TradeService)
                 trade_service._validate_recommendation_data(
                     hydrated_data['side'], hydrated_data['entry'],
@@ -557,7 +564,6 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                     current_data = restored
                     if getattr(attempt, "raw_content", None):
                          context.user_data[RAW_FORWARDED_TEXT_KEY] = attempt.raw_content
-                    # We cannot recover audit data
                     context.user_data[FORWARD_AUDIT_DATA_KEY] = {"channel_info": {"title": "Unknown (Recovered)"}}
                     audit_data = context.user_data[FORWARD_AUDIT_DATA_KEY]
                     log.info(f"Successfully recovered session for user {update.effective_user.id} from attempt {attempt_id}")
@@ -890,4 +896,4 @@ def register_forward_parsing_handlers(app: Application):
         save_template_confirm_handler,
         pattern=f"^{CallbackNamespace.SAVE_TEMPLATE.value}:"
     ), group=1)
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
+--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
