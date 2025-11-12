@@ -1,6 +1,8 @@
-# src/capitalguard/application/services/__init__.py (Updated)
+# src/capitalguard/application/services/__init__.py (Updated for ADR-003)
 """
 تصدير جميع خدمات التطبيق
+✅ THE FIX (ADR-003): Added ImageParsingService to the exports list
+to make it discoverable by the application bootstrapper.
 """
 
 from .trade_service import TradeService
