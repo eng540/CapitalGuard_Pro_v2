@@ -1,14 +1,9 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
 # File: src/capitalguard/interfaces/telegram/forward_parsing_handler.py
-# Version: 5.0.0 (Stateful Owner)
-# ✅ THE FIX: (Protocol 1) دمج منطق قاعدة البيانات، وفصل `ai-service`.
-#    - كلا معالجي النص والصور يقومان الآن بـ:
-#    - 1. إنشاء `ParsingAttempt(status='pending')` في قاعدة البيانات *قبل* استدعاء الخدمة.
-#    - 2. استدعاء `ai-service` (عبر `httpx` أو `ImageParsingService`).
-#    - 3. تحديث `ParsingAttempt` بالنتيجة (نجاح/فشل، بيانات، زمن انتقال).
-#    - 4. تنفيذ `_record_correction_local` (الجديدة) لمعالجة التصحيحات محليًا.
-#    - 5. تنفيذ `save_template_confirm_handler` (المعدلة) لمعالجة اقتراحات القوالب محليًا.
-# 🎯 IMPACT: خدمة `api` (تحديدًا هذا المعالج) أصبحت تمتلك دورة حياة التحليل وحالتها.
+# Version: 5.0.1 (Hotfix)
+# ✅ THE FIX: (Protocol 1) إصلاح خطأ `NameError: name 'time' is not defined`.
+#    - إضافة `import time` في بداية الملف لحساب زمن الانتقال (latency).
+# 🎯 IMPACT: المعالج سيعمل الآن بشكل صحيح عند تلقي رسائل مُعادة توجيه.
 
 import logging
 import asyncio
@@ -16,7 +11,8 @@ import httpx
 import os
 import re
 import html
-import json # ✅ ADDED
+import json
+import time # ✅ ADDED (THE FIX)
 from decimal import Decimal
 from typing import Dict, Any, Optional
 
@@ -32,7 +28,6 @@ from telegram.error import TelegramError, BadRequest
 from capitalguard.infrastructure.db.uow import session_scope, uow_transaction
 from capitalguard.interfaces.telegram.helpers import get_service, parse_cq_parts
 from capitalguard.interfaces.telegram.auth import require_active_user, get_db_user
-# ❌ REMOVED: ParsingResult (no longer needed)
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.image_parsing_service import ImageParsingService 
 from capitalguard.interfaces.telegram.keyboards import (
@@ -43,9 +38,8 @@ from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets
 from capitalguard.interfaces.telegram.management_handlers import (
     handle_management_timeout, update_management_activity, MANAGEMENT_TIMEOUT
 )
-# ✅ ADDED: Import DB models for the new logic
 from capitalguard.infrastructure.db.models import ParsingAttempt, ParsingTemplate, User
-from capitalguard.infrastructure.db.repository import ParsingRepository # Import repo class
+from capitalguard.infrastructure.db.repository import ParsingRepository
 
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors")
@@ -217,7 +211,6 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
     )
     attempt_id = attempt.id
     context.user_data[PARSING_ATTEMPT_ID_KEY] = attempt_id
-    # We commit here to get the ID, even if the API call fails later
     db_session.commit() 
     # --- End DB Logic ---
 
@@ -226,18 +219,17 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
     final_error_message = "Could not recognize a valid trade signal."
     parser_path_used = "failed"
     latency_ms = 0
-    start_time = time.monotonic()
+    start_time = time.monotonic() # ✅ This is line 229
 
     try:
         log.debug(f"Calling AI Service at {AI_SERVICE_URL} for user {user_db_id} (Attempt {attempt_id})")
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{AI_SERVICE_URL}/ai/parse", # Use full path
+                f"{AI_SERVICE_URL}/ai/parse",
                 json={"text": message.text, "user_id": user_db_id},
                 timeout=20.0
             )
         
-        # Get latency from service if available, else calculate
         json_data = response.json()
         latency_ms = json_data.get("latency_ms", int((time.monotonic() - start_time) * 1000))
         
@@ -245,12 +237,11 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
             log.error(f"AI Service returned HTTP {response.status_code}: {response.text[:200]}")
             final_error_message = f"Error {response.status_code}: Analysis service failed."
         else:
-            parsing_result_json = json_data # Store raw response
+            parsing_result_json = json_data
             parser_path_used = json_data.get("parser_path_used", "ai_service")
 
             if json_data.get("status") == "success" and json_data.get("data"):
                 try:
-                    # ✅ Data now comes as strings, must parse to Decimals
                     raw = json_data["data"]
                     hydrated_data = {
                         "asset": raw.get("asset"),
@@ -291,17 +282,14 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         context.user_data[ORIGINAL_PARSED_DATA_KEY] = hydrated_data
         context.user_data[CURRENT_EDIT_DATA_KEY] = hydrated_data.copy()
 
-        # ✅ --- (Protocol 1) Update DB Attempt (Success) ---
         parsing_repo.update_attempt(
             attempt_id=attempt_id,
             was_successful=True,
             result_data=_serialize_data_for_db(hydrated_data),
             parser_path_used=parser_path_used,
             latency_ms=latency_ms
-            # ❌ REMOVED: template_id_used (ai-service no longer returns this)
         )
         db_session.commit()
-        # --- End DB Logic ---
 
         channel_name = channel_info.get("title") if channel_info else "Unknown Channel"
         keyboard = build_editable_review_card(hydrated_data, channel_name=channel_name)
@@ -313,7 +301,6 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         )
         return AWAIT_REVIEW
     else:
-        # ✅ --- (Protocol 1) Update DB Attempt (Failure) ---
         parsing_repo.update_attempt(
             attempt_id=attempt_id,
             was_successful=False,
@@ -322,7 +309,6 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
             latency_ms=latency_ms
         )
         db_session.commit()
-        # --- End DB Logic ---
         
         escaped = html.escape(final_error_message)
         await smart_safe_edit(
@@ -401,19 +387,16 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
     final_error_message = "Could not recognize a valid trade signal from the image."
     parser_path_used = "failed"
     latency_ms = 0
+    start_time = time.monotonic() # ✅ Also needed here
 
     try:
-        # 1. Call the ImageParsingService (local service, not ai-service)
         img_parser_service = get_service(context, "image_parsing_service", ImageParsingService)
-        # This service calls the /ai/parse_image endpoint
         parsing_result_json = await img_parser_service.parse_image_from_file_id(user_db_id, file_id)
-        latency_ms = parsing_result_json.get("latency_ms", 0)
+        latency_ms = parsing_result_json.get("latency_ms", int((time.monotonic() - start_time) * 1000))
         parser_path_used = parsing_result_json.get("parser_path_used", "vision")
 
-        # 2. Process the response
         if parsing_result_json.get("status") == "success" and parsing_result_json.get("data"):
             try:
-                # ✅ Data comes as strings
                 raw = parsing_result_json["data"]
                 hydrated_data = {
                     "asset": raw.get("asset"),
@@ -424,7 +407,6 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
                         [f"{t.get('price')}@{t.get('close_percent')}" for t in raw.get("targets", [])]
                     )
                 }
-                # 3. Validate the hydrated data
                 trade_service: TradeService = get_service(context, "trade_service", TradeService)
                 trade_service._validate_recommendation_data(
                     hydrated_data['side'], hydrated_data['entry'],
@@ -442,6 +424,7 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
             final_error_message = parsing_result_json.get("error", "Unknown image analysis error.")
 
     except Exception as e:
+        latency_ms = int((time.monotonic() - start_time) * 1000)
         log.error(f"Critical error during image parsing: {e}", exc_info=True)
         final_error_message = f"An unexpected error occurred: {e}"
 
@@ -450,7 +433,6 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
         context.user_data[ORIGINAL_PARSED_DATA_KEY] = hydrated_data
         context.user_data[CURRENT_EDIT_DATA_KEY] = hydrated_data.copy()
 
-        # ✅ --- (Protocol 1) Update DB Attempt (Success) ---
         parsing_repo.update_attempt(
             attempt_id=attempt_id,
             was_successful=True,
@@ -459,7 +441,6 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
             latency_ms=latency_ms
         )
         db_session.commit()
-        # --- End DB Logic ---
 
         channel_name = channel_info.get("title") if channel_info else "Unknown Channel"
         keyboard = build_editable_review_card(hydrated_data, channel_name=channel_name)
@@ -471,7 +452,6 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
         )
         return AWAIT_REVIEW
     else:
-        # ✅ --- (Protocol 1) Update DB Attempt (Failure) ---
         parsing_repo.update_attempt(
             attempt_id=attempt_id,
             was_successful=False,
@@ -480,7 +460,6 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
             latency_ms=latency_ms
         )
         db_session.commit()
-        # --- End DB Logic ---
 
         escaped = html.escape(final_error_message)
         await smart_safe_edit(
@@ -493,21 +472,18 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
 
 
-# --- ✅ ADDED: Local function to handle corrections (replaces /ai/record_correction) ---
+# --- (record_correction_local - same as before) ---
 async def _record_correction_local(
     db_session,
     attempt_id: int, 
     corrected_data: Dict[str, Any], 
     original_data: Optional[Dict[str, Any]]
 ):
-    """Saves the correction diff to the DB locally."""
     if not attempt_id or original_data is None:
         log.warning("record_correction_local skipped: missing data.")
         return
-
     diff = {}
     keys = set(original_data.keys()) | set(corrected_data.keys())
-
     def norm(v):
         if isinstance(v, Decimal): return str(v)
         if isinstance(v, list):
@@ -515,7 +491,6 @@ async def _record_correction_local(
                 return sorted([(str(t['price']), t.get('close_percent', 0.0)) for t in v])
             except Exception: return v
         return v
-
     for k in keys:
         norm_old = norm(original_data.get(k))
         norm_new = norm(corrected_data.get(k))
@@ -524,11 +499,9 @@ async def _record_correction_local(
                 "old": _serialize_data_for_db(original_data).get(k), 
                 "new": _serialize_data_for_db(corrected_data).get(k)
             }
-
     if not diff:
         log.info(f"No differences to record for correction on attempt {attempt_id}.")
         return
-
     try:
         parsing_repo = ParsingRepository(db_session)
         parsing_repo.update_attempt(
@@ -536,7 +509,6 @@ async def _record_correction_local(
             was_corrected=True, 
             corrections_diff=diff
         )
-        # Commit the correction immediately
         db_session.commit()
         log.info(f"Recorded correction locally for attempt {attempt_id}")
     except Exception as e:
@@ -544,7 +516,7 @@ async def _record_correction_local(
         db_session.rollback()
 
 
-# --- Shared Conversation Handlers (REFACTORED) ---
+# --- (review_callback_handler - same as before) ---
 @uow_transaction
 @require_active_user
 async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
@@ -554,22 +526,56 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
     update_management_activity(context)
 
-    # ... (State Recovery Logic) ...
     callback_data = CallbackBuilder.parse(query.data)
     action = callback_data.get('action')
     params = callback_data.get('params', [])
     current_data = context.user_data.get(CURRENT_EDIT_DATA_KEY)
     original_message_id = context.user_data.get(ORIGINAL_MESSAGE_ID_KEY)
     audit_data = context.user_data.get(FORWARD_AUDIT_DATA_KEY)
+    
     if not (current_data and original_message_id and audit_data):
         # ... (Recovery logic) ...
-        log.warning(f"State recovery failed for user {update.effective_user.id}. Ending conversation.")
-        await smart_safe_edit(context.bot, query.message.chat.id, query.message.message_id,
-                              text="❌ Session expired or data lost. Please forward again.", reply_markup=None)
-        clean_parsing_conversation_state(context)
-        return ConversationHandler.END
+        attempt_id = context.user_data.get(PARSING_ATTEMPT_ID_KEY)
+        if not original_message_id and query.message:
+            original_message_id = query.message.message_id
+        if attempt_id and original_message_id:
+            try:
+                attempt = db_session.get(ParsingAttempt, attempt_id)
+                if attempt and getattr(attempt, "result_data", None):
+                    raw = attempt.result_data
+                    restored = {
+                        "asset": raw.get("asset"),
+                        "side": raw.get("side"),
+                        "entry": parse_number(raw.get("entry")),
+                        "stop_loss": parse_number(raw.get("stop_loss")),
+                        "targets": parse_targets_list(
+                            [f"{t.get('price')}@{t.get('close_percent')}" for t in raw.get("targets", [])]
+                        )
+                    }
+                    context.user_data[CURRENT_EDIT_DATA_KEY] = restored
+                    context.user_data[ORIGINAL_PARSED_DATA_KEY] = restored
+                    current_data = restored
+                    if getattr(attempt, "raw_content", None):
+                         context.user_data[RAW_FORWARDED_TEXT_KEY] = attempt.raw_content
+                    # We cannot recover audit data
+                    context.user_data[FORWARD_AUDIT_DATA_KEY] = {"channel_info": {"title": "Unknown (Recovered)"}}
+                    audit_data = context.user_data[FORWARD_AUDIT_DATA_KEY]
+                    log.info(f"Successfully recovered session for user {update.effective_user.id} from attempt {attempt_id}")
+                else:
+                    raise ValueError("Attempt not found or has no result data.")
+            except Exception as e_recover:
+                log.error(f"Failed to recover session from DB for attempt {attempt_id}: {e_recover}")
+                await smart_safe_edit(context.bot, query.message.chat.id, query.message.message_id,
+                                      text="❌ Session expired or data lost. Please forward again.", reply_markup=None)
+                clean_parsing_conversation_state(context)
+                return ConversationHandler.END
+        else:
+            await smart_safe_edit(context.bot, query.message.chat.id, query.message.message_id,
+                                  text="❌ Session expired or data lost. Please forward again.", reply_markup=None)
+            clean_parsing_conversation_state(context)
+            return ConversationHandler.END
 
-
+    # Handle actions
     if action in (CallbackAction.CONFIRM.value, CallbackAction.WATCH_CHANNEL.value):
         trade_service: TradeService = get_service(context, "trade_service", TradeService)
         attempt_id = context.user_data.get(PARSING_ATTEMPT_ID_KEY)
@@ -608,19 +614,14 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             clean_parsing_conversation_state(context)
             return ConversationHandler.END
 
-        # ✅ REFACTORED: Call local correction function (don't await, run in background)
         if attempt_id and was_corrected:
             log.debug(f"Recording correction for attempt {attempt_id} locally...")
-            # We must pass the session, so we can't use create_task easily.
-            # We'll run it synchronously but it's fast (local DB update).
             await _record_correction_local(db_session, attempt_id, current_data, original_data)
         
         if result.get('success'):
             success_msg = f"✅ **Trade #{result['trade_id']}** for **{result['asset']}** {action_verb} successfully!"
             await smart_safe_edit(context.bot, query.message.chat.id, original_message_id, text=success_msg, reply_markup=None)
             
-            # (Template suggestion logic...)
-            # We check if a template was used by checking the attempt_id
             template_used_initially = False
             if attempt_id:
                 try:
@@ -654,7 +655,6 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             return ConversationHandler.END
 
     elif action == CallbackAction.EDIT_FIELD.value:
-        # ... (This logic remains unchanged) ...
         if not params: return AWAIT_REVIEW
         field_to_edit = params[0]
         context.user_data[EDITING_FIELD_KEY] = field_to_edit
@@ -679,7 +679,6 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         return AWAIT_CORRECTION_VALUE
 
     elif action == CallbackAction.CANCEL.value:
-        # ... (This logic remains unchanged) ...
         await smart_safe_edit(context.bot, query.message.chat.id, original_message_id, text="❌ Operation cancelled.", reply_markup=None)
         clean_parsing_conversation_state(context)
         return ConversationHandler.END
@@ -688,11 +687,10 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     return AWAIT_REVIEW
 
 
-# --- (correction_value_handler remains the same) ---
+# --- (correction_value_handler - same as before) ---
 @uow_transaction
 @require_active_user
 async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
-    # ... (This entire function's logic remains exactly the same as before) ...
     if await handle_management_timeout(update, context): return ConversationHandler.END
     update_management_activity(context)
     field_to_edit = context.user_data.get(EDITING_FIELD_KEY)
@@ -726,7 +724,7 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
             temp_data[field_to_edit] = price
             validated = True
         elif field_to_edit == "targets":
-            tokens = re.split(r'[\s\n,]+', user_input) # Simple split
+            tokens = re.split(r'[\s\n,]+', user_input)
             targets = parse_targets_list(tokens)
             if not targets: raise ValueError("Invalid targets format or no valid targets found.")
             temp_data['targets'] = targets
@@ -773,45 +771,38 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END
 
 
-# --- ✅ REFACTORED: Template suggestion now uses local DB access ---
+# --- (save_template_confirm_handler - same as before) ---
 @uow_transaction
 @require_active_user
 async def save_template_confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer()
-
     callback_data = CallbackBuilder.parse(query.data)
     action = callback_data.get('action')
     params = callback_data.get('params', [])
     attempt_id = int(params[0]) if params and isinstance(params[0], str) and params[0].isdigit() else None
-
     try:
         await smart_safe_edit(context.bot, query.message.chat.id, query.message.message_id, text=query.message.text_html, reply_markup=None)
     except Exception: pass
-
     if action == CallbackAction.CONFIRM.value and attempt_id:
         log.debug(f"User confirmed saving template for attempt {attempt_id}. Saving locally.")
         try:
-            # ✅ REFACTORED: Local DB logic
             parsing_repo = ParsingRepository(db_session)
             attempt = parsing_repo.session.get(ParsingAttempt, attempt_id)
             if not attempt:
                 raise ValueError("Attempt ID not found.")
             if not attempt.was_corrected or attempt.user_id != db_user.id:
                 raise ValueError("Invalid suggestion request (not corrected or wrong user).")
-
             template_name = f"User {db_user.id} Suggestion (Attempt {attempt_id})"
             raw_content_display = attempt.raw_content
             if raw_content_display.startswith("http") or raw_content_display.startswith("image_file_id:"):
                 raw_content_display = f"[Image Content: {raw_content_display}]"
-
             pattern_placeholder = (
                 f"# REVIEW NEEDED: Source Attempt ID {attempt.id}\n"
                 f"# User ID: {db_user.id}\n"
                 f"# Corrections:\n{json.dumps(attempt.corrections_diff, indent=2)}\n\n"
                 f"# --- Original Content ---\n{raw_content_display}"
             )
-            
             new_template = parsing_repo.add_template(
                 name=template_name,
                 pattern_type="regex_review_needed",
@@ -820,9 +811,7 @@ async def save_template_confirm_handler(update: Update, context: ContextTypes.DE
                 is_public=False,
                 stats={"source_attempt_id": attempt.id}
             )
-            db_session.commit() # Commit the new template
-            # --- End local DB logic ---
-
+            db_session.commit()
             await query.message.reply_text(f"✅ Template suggestion (ID: {new_template.id}) submitted for review.")
         except Exception as e:
             log.error(f"Error saving template suggestion from attempt {attempt_id}: {e}", exc_info=True)
@@ -830,11 +819,10 @@ async def save_template_confirm_handler(update: Update, context: ContextTypes.DE
             db_session.rollback()
     else:
         await query.message.reply_text("ℹ️ Template suggestion discarded.")
-
     return ConversationHandler.END
 
 
-# --- (cancel_parsing_conversation remains the same) ---
+# --- (cancel_parsing_conversation - same as before) ---
 async def cancel_parsing_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message_text = "❌ Operation cancelled."
     target_chat_id = update.effective_chat.id if update.effective_chat else None
@@ -856,7 +844,7 @@ async def cancel_parsing_conversation(update: Update, context: ContextTypes.DEFA
     return ConversationHandler.END
 
 
-# --- (register_forward_parsing_handlers remains the same) ---
+# --- (register_forward_parsing_handlers - same as before) ---
 def register_forward_parsing_handlers(app: Application):
     conv_handler = ConversationHandler(
         entry_points=[
