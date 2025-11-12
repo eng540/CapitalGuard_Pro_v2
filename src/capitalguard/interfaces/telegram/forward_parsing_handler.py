@@ -1,4 +1,4 @@
---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
 # File: src/capitalguard/interfaces/telegram/forward_parsing_handler.py
 # Version: 5.0.2 (Hotfix)
 # ✅ THE FIX: (Protocol 1) إصلاح خطأ `NameError: name 'time' is not defined` بإضافة `import time`.
@@ -896,4 +896,4 @@ def register_forward_parsing_handlers(app: Application):
         save_template_confirm_handler,
         pattern=f"^{CallbackNamespace.SAVE_TEMPLATE.value}:"
     ), group=1)
---- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
