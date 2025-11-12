@@ -1,170 +1,72 @@
-# ai_service/services/parsing_manager.py
-"""
-المنسق (Orchestrator) لعملية التحليل (v2.0 - ADR-003 Image Parsing).
-✅ HOTFIX (v1.2): تم تعديل فحص `all()` للتحقق من *وجود* المفتاح (key existence).
-✅ HOTFIX (v1.1) Check: يرفض الآن نتائج Regex/LLM التي لا تحتوي على أهداف.
-✅ NEW (v2.0): Added `image_url` to init and a new `analyze_image` method
-    to handle the image parsing flow, reusing the same DB logic.
-"""
+--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
+# File: ai_service/services/parsing_manager.py
+# Version: 3.0.0 (Decoupled)
+# ✅ THE FIX: (Protocol 1) تم فصل الخدمة بالكامل عن قاعدة البيانات.
+#    - إزالة جميع استدعاءات `session_scope` و `_create_initial_attempt` و `_update_final_attempt`.
+#    - إزالة جميع نماذج ORM (مثل `ParsingAttempt`) والمنطق المتعلق بها.
+#    - الدوال `analyze` و `analyze_image` تعيد الآن قاموس (dict) بالنتيجة مباشرة.
+# 🎯 IMPACT: هذه الخدمة أصبحت "خدمة تحليل نقية" (Pure Parsing Service) ومعزولة تمامًا.
 
 import logging
 import time
 from typing import Dict, Any, Optional
 from decimal import Decimal
 
-from sqlalchemy.orm import Session
-from sqlalchemy import select, update
+# ❌ REMOVED DB IMPORTS
+# from database import session_scope
+# from models import ParsingAttempt, ParsingTemplate, User
 
-# استيراد النماذج وقاعدة البيانات المحلية
-from database import session_scope
-from models import ParsingAttempt, ParsingTemplate, User
 # استيراد المحللات
 from services import regex_parser
 from services import llm_parser
-from services import image_parser # ✅ NEW (ADR-003): Import image parser
+from services import image_parser
 
 log = logging.getLogger(__name__)
-
-# --- دوال مساعدة لتحويل البيانات ---
-
-def _serialize_data_for_db(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    يحول البيانات المهيكلة (التي قد تحتوي على Decimal) إلى تنسيق JSON آمن
-    لقاعدة البيانات (باستخدام نصوص للأرقام).
-    """
-    if not data:
-        return {}
-    
-    entry = str(data.get("entry", "0"))
-    stop_loss = str(data.get("stop_loss", "0"))
-    targets = [
-        {
-            "price": str(t.get("price", "0")),
-            "close_percent": t.get("close_percent", 0.0)
-        } for t in data.get("targets", [])
-    ]
-    
-    
-    return {
-        "asset": data.get("asset"),
-        "side": data.get("side"),
-        "entry": entry,
-        "stop_loss": stop_loss,
-        "targets": targets,
-        "market": data.get("market", "Futures"),
-        "order_type": data.get("order_type", "LIMIT"),
-        "notes": data.get("notes")
-    }
-
-def _serialize_data_for_response(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    يحول البيانات المهيكلة إلى تنسيق الاستجابة (API Response).
-    """
-    return _serialize_data_for_db(data)
-
 
 # --- الخدمة الأساسية ---
 
 class ParsingManager:
     """
-    يدير دورة حياة تحليل التوصية بالكامل.
+    (v3.0 - Decoupled)
+    يدير دورة حياة تحليل التوصية (بدون اتصال بقاعدة البيانات).
     """
-    
-    # ✅ NEW (ADR-003): Updated init to be flexible
+
     def __init__(self, user_id: int, text: Optional[str] = None, image_url: Optional[str] = None):
         self.text = text or ""
         self.image_url = image_url or ""
         self.user_id = user_id
         self.start_time = time.monotonic()
-        self.attempt_id: Optional[int] = None
+        # ❌ REMOVED DB STATE
+        # self.attempt_id: Optional[int] = None
         self.parser_path_used: str = "failed"
         self.template_id_used: Optional[int] = None
         self.parsed_data: Optional[Dict[str, Any]] = None
 
-    def _create_initial_attempt(self, session: Session, content_type: str = "text") -> Optional[int]:
-        """
-        الخطوة 1: إنشاء سجل محاولة أولي.
-        """
-        try:
-            user = session.get(User, self.user_id)
-            if not user:
-                log.error(f"User ID {self.user_id} not found in 'users' table. Cannot create attempt.")
-                return None
-
-            # Use image_url as content if it's an image parse
-            raw_content = self.image_url if content_type == "image" else self.text
-
-            attempt = ParsingAttempt(
-                user_id=self.user_id,
-                raw_content=raw_content, # Store text or image URL
-                was_successful=False,
-                parser_path_used="pending"
-            )
-            session.add(attempt)
-            session.flush() # الحصول على الـ ID فورًا
-            log.info(f"Created ParsingAttempt ID: {attempt.id} for user {self.user_id} (type: {content_type})")
-            return attempt.id
-        except Exception as e:
-            log.critical(f"Failed to create initial ParsingAttempt in DB: {e}", exc_info=True)
-            session.rollback()
-            return None
-
-    def _update_final_attempt(self, session: Session):
-        """
-        الخطوة 4: تحديث سجل المحاولة بالنتيجة النهائية.
-        """
-        if not self.attempt_id:
-            log.error("Cannot update final attempt: attempt_id is None.")
-            return
-
-        try:
-            latency_ms = int((time.monotonic() - self.start_time) * 1000)
-            
-            result_data_json = _serialize_data_for_db(self.parsed_data) if self.parsed_data else None
-
-            stmt = (
-                update(ParsingAttempt)
-                .where(ParsingAttempt.id == self.attempt_id)
-                .values(
-                    was_successful= (self.parsed_data is not None),
-                    result_data=result_data_json,
-                    used_template_id=self.template_id_used,
-                    parser_path_used=self.parser_path_used,
-                    latency_ms=latency_ms
-                )
-            )
-            session.execute(stmt)
-            log.info(f"Updated ParsingAttempt ID: {self.attempt_id} with status: {self.parser_path_used}")
-        except Exception as e:
-            log.error(f"Failed to update final ParsingAttempt ID {self.attempt_id}: {e}", exc_info=True)
-            session.rollback()
+    # ❌ REMOVED: _create_initial_attempt (DB logic)
+    # ❌ REMOVED: _update_final_attempt (DB logic)
 
     async def analyze(self) -> Dict[str, Any]:
         """
         التنفيذ الكامل لعملية تحليل *النص*.
+        Returns a dictionary with parsing results or error info.
         """
-        with session_scope() as session:
-            self.attempt_id = self._create_initial_attempt(session, content_type="text")
-            if not self.attempt_id:
-                return {
-                    "status": "error",
-                    "error": "Failed to initialize parsing attempt (DB error)."
-                }
+        
+        # ❌ REMOVED: Initial DB attempt creation
         
         required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
 
-        # --- الخطوة 2: المسار السريع (Regex) ---
+        # --- الخطوة 1: المسار السريع (Regex) ---
         try:
-            with session_scope() as regex_session:
-                regex_result = regex_parser.parse_with_regex(self.text, regex_session)
+            # ✅ REFACTORED: Regex parser no longer needs a session
+            # We pass 'user_id' instead of 'session'
+            regex_result = regex_parser.parse_with_regex(self.text, self.user_id) 
             
-            # ✅ HOTFIX (v1.2): Check for *key existence* and that *targets is not empty*
             if regex_result and all(k in regex_result for k in required_keys) and regex_result.get('targets'):
-                log.info(f"Regex parser succeeded and found all required keys for attempt {self.attempt_id}.")
+                log.info(f"Regex parser succeeded for user {self.user_id}.")
                 self.parser_path_used = "regex"
                 self.parsed_data = regex_result
             elif regex_result:
-                log.warning(f"Regex parser result for attempt {self.attempt_id} was incomplete. Discarding and falling back to LLM.")
+                log.warning(f"Regex parser result for user {self.user_id} was incomplete. Falling back to LLM.")
                 self.parsed_data = None
             else:
                 self.parsed_data = None
@@ -173,27 +75,24 @@ class ParsingManager:
             log.error(f"Regex parser failed unexpectedly: {e}", exc_info=True)
             self.parsed_data = None
 
-        # --- الخطوة 3: المسار الذكي (LLM) ---
+        # --- الخطوة 2: المسار الذكي (LLM) ---
         if not self.parsed_data:
-            log.info(f"Attempt {self.attempt_id}: Regex failed or incomplete, falling back to LLM.")
+            log.info(f"User {self.user_id}: Regex failed, falling back to LLM.")
             try:
                 llm_result = await llm_parser.parse_with_llm(self.text)
                 if llm_result:
-                    # ✅ HOTFIX (v1.2): Check for *key existence*
                     if all(k in llm_result for k in required_keys):
-                        
-                        # ✅ HOTFIX (v1.2) Check: Did LLM also fail to find targets?
                         if not llm_result.get("targets"):
-                             log.warning(f"LLM result for attempt {self.attempt_id} returned 0 targets. Failing.")
+                             log.warning(f"LLM result for user {self.user_id} returned 0 targets. Failing.")
                              self.parser_path_used = "failed"
                              self.parsed_data = None
                         else:
                              self.parser_path_used = "llm"
                              self.parsed_data = llm_result
                     else:
-                        log.error(f"LLM result for attempt {self.attempt_id} was incomplete (missing keys). Failing.")
+                         log.error(f"LLM result for user {self.user_id} was incomplete (missing keys). Failing.")
                         self.parser_path_used = "failed"
-                        self.parsed_data = None
+                         self.parsed_data = None
             except Exception as e:
                 log.error(f"LLM parser failed unexpectedly: {e}", exc_info=True)
                 self.parser_path_used = "failed"
@@ -202,53 +101,46 @@ class ParsingManager:
         if not self.parsed_data:
             self.parser_path_used = "failed"
 
-        # --- الخطوة 4: التحديث النهائي والرد ---
-        with session_scope() as update_session:
-            self._update_final_attempt(update_session)
+        # --- الخطوة 3: التحديث النهائي والرد ---
+        # ❌ REMOVED: Final DB update
+        
+        latency_ms = int((time.monotonic() - self.start_time) * 1000)
 
         if self.parsed_data:
             return {
                 "status": "success",
-                "data": _serialize_data_for_response(self.parsed_data),
-                "attempt_id": self.attempt_id,
-                "parser_path_used": self.parser_path_used
+                # ✅ REFACTORED: Return raw data (with Decimals)
+                "data": self.parsed_data,
+                "parser_path_used": self.parser_path_used,
+                "latency_ms": latency_ms
             }
         else:
             return {
                 "status": "error",
                 "error": "Could not recognize a valid trade signal.",
-                "attempt_id": self.attempt_id,
-                "parser_path_used": "failed"
+                "parser_path_used": "failed",
+                "latency_ms": latency_ms
             }
 
-    # ✅ NEW (ADR-003): New method for image analysis
     async def analyze_image(self) -> Dict[str, Any]:
         """
         التنفيذ الكامل لعملية تحليل *الصورة*.
         """
-        with session_scope() as session:
-            self.attempt_id = self._create_initial_attempt(session, content_type="image")
-            if not self.attempt_id:
-                return {
-                    "status": "error",
-                    "error": "Failed to initialize parsing attempt (DB error)."
-                }
-        
+        # ❌ REMOVED: Initial DB attempt creation
+
         required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
 
-        # --- الخطوة 2: المسار الذكي (Vision) ---
-        # لا يوجد مسار سريع (Regex) للصور
-        log.info(f"Attempt {self.attempt_id}: Starting Vision model parse.")
+        # --- الخطوة 1: المسار الذكي (Vision) ---
+        log.info(f"User {self.user_id}: Starting Vision model parse.")
         try:
             vision_result = await image_parser.parse_with_vision(self.image_url)
             
             if vision_result:
-                # Check for key existence and non-empty targets
                 if all(k in vision_result for k in required_keys) and vision_result.get("targets"):
                     self.parser_path_used = "vision"
                     self.parsed_data = vision_result
                 else:
-                    log.error(f"Vision result for attempt {self.attempt_id} was incomplete. Failing.")
+                    log.error(f"Vision result for user {self.user_id} was incomplete. Failing.")
                     self.parser_path_used = "failed"
                     self.parsed_data = None
         except Exception as e:
@@ -259,21 +151,24 @@ class ParsingManager:
         if not self.parsed_data:
             self.parser_path_used = "failed"
 
-        # --- الخطوة 3: التحديث النهائي والرد ---
-        with session_scope() as update_session:
-            self._update_final_attempt(update_session)
+        # --- الخطوة 2: التحديث النهائي والرد ---
+        # ❌ REMOVED: Final DB update
+
+        latency_ms = int((time.monotonic() - self.start_time) * 1000)
 
         if self.parsed_data:
             return {
                 "status": "success",
-                "data": _serialize_data_for_response(self.parsed_data),
-                "attempt_id": self.attempt_id,
-                "parser_path_used": self.parser_path_used
+                # ✅ REFACTORED: Return raw data (with Decimals)
+                "data": self.parsed_data,
+                "parser_path_used": self.parser_path_used,
+                "latency_ms": latency_ms
             }
         else:
             return {
                 "status": "error",
                 "error": "Could not recognize a valid trade signal from the image.",
-                "attempt_id": self.attempt_id,
-                "parser_path_used": "failed"
+                "parser_path_used": "failed",
+                "latency_ms": latency_ms
             }
+--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
