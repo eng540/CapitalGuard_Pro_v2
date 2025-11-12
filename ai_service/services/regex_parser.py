@@ -1,9 +1,11 @@
-# ai_service/services/regex_parser.py
-"""
-محلل Regex (المسار السريع). (v1.4 - Target Delimiter Hotfix).
-✅ HOTFIX: تم تحديث Regex الخاص بـ 'targets' في `_parse_simple_key_value`
-ليشمل الفواصل الشائعة مثل '/' و '-' و '→'.
-"""
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/regex_parser.py ---
+# File: ai_service/services/regex_parser.py
+# Version: 1.5.0 (Decoupled)
+# ✅ THE FIX: (Protocol 1) تم فصل الخدمة عن قاعدة البيانات.
+#    - `parse_with_regex` لم تعد تتلقى `session`. بدلاً من ذلك، تتلقى `user_id` (اختياري).
+#    - تمت إزالة منطق جلب القوالب من قاعدة البيانات (DB templates).
+#    - تعتمد الخدمة الآن *فقط* على محلل Key-Value البسيط كـ "مسار سريع".
+# 🎯 IMPACT: هذا الملف لم يعد يتصل بقاعدة البيانات. (لتحسين هذا، يجب نقل منطق قوالب DB إلى `api`).
 
 import re
 import unicodedata
@@ -11,12 +13,11 @@ import logging
 from typing import Dict, Any, Optional, List
 from decimal import Decimal
 
-from sqlalchemy.orm import Session
-from sqlalchemy import select
-
-# استيراد النماذج وقاعدة البيانات المحلية
-from models import ParsingTemplate
-from database import session_scope
+# ❌ REMOVED DB IMPORTS
+# from sqlalchemy.orm import Session
+# from sqlalchemy import select
+# from models import ParsingTemplate
+# from database import session_scope
 
 # --- ✅ استيراد مصدر الحقيقة الوحيد ---
 from services.parsing_utils import (
@@ -35,7 +36,6 @@ def _normalize_text(text: str) -> str:
     s = unicodedata.normalize("NFKC", text)
     s = s.translate(_AR_TO_EN_DIGITS)
     s = s.replace("،", ",")
-    # ✅ HOTFIX: أضفنا '→' إلى الأحرف المسموح بها
     s = re.sub(r'[^\w\s\u0600-\u06FF@:.,\d\-+%$#/|→]', ' ', s, flags=re.UNICODE)
     s = re.sub(r'(\r\n|\r|\n){2,}', '\n', s)
     s = re.sub(r'\s{2,}', ' ', s)
@@ -80,7 +80,6 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
         asset_match = re.search(keys['asset'], normalized_upper)
         if asset_match:
             asset_str = asset_match.group(1)
-            # استنتاج USDT إذا كان الأصل هو رمز شائع
             if asset_str in ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOT", "LINK", "MATIC", "AVAX", "TURTLE"]:
                 parsed['asset'] = f"{asset_str}USDT"
             else:
@@ -99,7 +98,6 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
         targets_match = re.search(keys['targets'], normalized_upper, re.DOTALL)
         if targets_match:
             target_tokens_str = targets_match.group(2)
-            # تمرير النص الأصلي الكامل لاكتشاف النسب المئوية العامة
             parsed['targets'] = normalize_targets(target_tokens_str, source_text=text)
         
         required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
@@ -110,8 +108,13 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
         log.info(f"Simple KV parser successfully extracted data (Asset: {parsed['asset']})")
         parsed.setdefault("market", "Futures")
         parsed.setdefault("order_type", "LIMIT")
-        # استخراج الملاحظات (أي نص متبقي) - تحسين مستقبلي
         parsed.setdefault("notes", None) 
+        
+        # ✅ REFACTORED: إرجاع البيانات مع Decimals
+        # تحويل النصوص مرة أخرى إلى Decimal لتتسق مع مخرجات llm_parser
+        parsed['entry'] = parse_decimal_token(parsed['entry'])
+        parsed['stop_loss'] = parse_decimal_token(parsed['stop_loss'])
+        # targets is already list[dict] with Decimals from normalize_targets
         
         return parsed
 
@@ -121,70 +124,25 @@ def _parse_simple_key_value(text: str) -> Optional[Dict[str, Any]]:
 
 
 # --- الوظيفة الرئيسية للمحلل ---
-
-def parse_with_regex(text: str, session: Session) -> Optional[Dict[str, Any]]:
+# ✅ REFACTORED: (Protocol 1)
+def parse_with_regex(text: str, user_id: Optional[int]) -> Optional[Dict[str, Any]]:
     """
     يحاول تحليل النص باستخدام قوالب Regex، ثم Key-Value البسيط.
+    (تمت إزالة منطق قوالب DB - يعتمد الآن فقط على Simple KV)
     """
-    try:
-        stmt = select(ParsingTemplate).where(ParsingTemplate.is_public == True)
-        templates = session.execute(stmt).scalars().all()
-    except Exception as e:
-        log.error(f"RegexParser: Failed to query templates from DB: {e}")
-        templates = []
-
-    normalized_upper = _normalize_for_key(text)
+    
+    # ❌ REMOVED: Database query for templates
     
     # --- 1. المسار السريع (قوالب DB) ---
-    if templates:
-        for template in templates:
-            try:
-                pattern = template.pattern_value
-                if not pattern: continue
-                
-                match = re.search(pattern, normalized_upper, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-                if not match: continue
+    # (تمت إزالة هذا القسم. لإعادة تفعيله، يجب نقل هذا المنطق إلى `api`
+    # وتمرير القوالب الخاصة بالمستخدم إلى `ai-service`)
 
-                data = match.groupdict()
-                parsed = {}
-                parsed['asset'] = (data.get('asset') or '').strip().upper()
-                side_cand = (data.get('side') or '').strip().upper()
-                parsed['side'] = _find_side(normalized_upper)
-                if not parsed['side'] and side_cand:
-                     parsed['side'] = 'LONG' if 'LONG' in side_cand else ('SHORT' if 'SHORT' in side_cand else None)
-
-                if not parsed['asset'] or not parsed['side']:
-                    continue
-
-                entry_val = parse_decimal_token(data.get('entry',''))
-                sl_val = parse_decimal_token(data.get('sl', data.get('stop_loss','')))
-                parsed['entry'] = str(entry_val) if entry_val is not None else None
-                parsed['stop_loss'] = str(sl_val) if sl_val is not None else None
-                
-                target_str = (data.get('targets') or data.get('targets_str') or '').strip()
-                parsed['targets'] = normalize_targets(target_str, source_text=text)
-
-                required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
-                if not all(parsed.get(k) for k in required_keys):
-                    continue
-
-                log.info(f"RegexParser: Matched DB template ID {template.id} for text snippet: {text[:50]}...")
-                
-                parsed.setdefault("market", "Futures")
-                parsed.setdefault("order_type", "LIMIT")
-                parsed.setdefault("notes", data.get('notes'))
-
-                return parsed
-
-            except Exception as e:
-                log.warning(f"RegexParser: Error applying template ID {template.id}: {e}")
-                continue 
-    
     # --- 2. المسار الاحتياطي (محلل Key-Value البسيط) ---
-    log.debug("No DB template matched. Trying simple Key-Value parser...")
+    log.debug(f"User {user_id}: Trying simple Key-Value parser...")
     simple_result = _parse_simple_key_value(text)
     if simple_result:
         return simple_result
 
     log.debug("RegexParser: All regex paths failed.")
     return None
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/regex_parser.py ---
