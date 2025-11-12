@@ -1,11 +1,16 @@
-# ai_service/requirements.txt
+--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/requirements.txt ---
+# File: ai_service/requirements.txt
+# Version: 2.0.0 (Decoupled)
+# ✅ THE FIX: (Protocol 1) إزالة حزم قاعدة البيانات (SQLAlchemy, psycopg)
+# 🎯 IMPACT: هذه الخدمة لم تعد تحتوي على أي برامج تشغيل لقاعدة البيانات.
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.8.2
-SQLAlchemy==2.0.32
-psycopg[binary]==3.2.1
+# ❌ REMOVED: SQLAlchemy==2.0.32
+# ❌ REMOVED: psycopg[binary]==3.2.1
 python-dotenv==1.0.1
 httpx==0.27.2
 
 # مكتبة الذكاء الاصطناعي (مثال باستخدام OpenAI، يمكن تبديلها)
 openai==1.35.13
+--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/requirements.txt ---
