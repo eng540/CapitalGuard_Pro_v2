@@ -1,11 +1,10 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
 # File: ai_service/services/parsing_manager.py
-# Version: 3.0.0 (Decoupled)
-# ✅ THE FIX: (Protocol 1) تم فصل الخدمة بالكامل عن قاعدة البيانات.
-#    - إزالة جميع استدعاءات `session_scope` و `_create_initial_attempt` و `_update_final_attempt`.
-#    - إزالة جميع نماذج ORM (مثل `ParsingAttempt`) والمنطق المتعلق بها.
-#    - الدوال `analyze` و `analyze_image` تعيد الآن قاموس (dict) بالنتيجة مباشرة.
-# 🎯 IMPACT: هذه الخدمة أصبحت "خدمة تحليل نقية" (Pure Parsing Service) ومعزولة تمامًا.
+# Version: 3.0.1 (Hotfix)
+# ✅ THE FIX: (Protocol 1) إصلاح خطأ `IndentationError` في السطر 94.
+#    - تمت إعادة المسافة البادئة للسطر `self.parser_path_used = "failed"` ليكون
+#      ضمن كتلة `if not self.parsed_data:` بشكل صحيح.
+# 🎯 IMPACT: ستعمل الخدمة الآن بنجاح بعد فصل قاعدة البيانات.
 
 import logging
 import time
@@ -27,7 +26,7 @@ log = logging.getLogger(__name__)
 
 class ParsingManager:
     """
-    (v3.0 - Decoupled)
+    (v3.0.1 - Decoupled)
     يدير دورة حياة تحليل التوصية (بدون اتصال بقاعدة البيانات).
     """
 
@@ -36,8 +35,6 @@ class ParsingManager:
         self.image_url = image_url or ""
         self.user_id = user_id
         self.start_time = time.monotonic()
-        # ❌ REMOVED DB STATE
-        # self.attempt_id: Optional[int] = None
         self.parser_path_used: str = "failed"
         self.template_id_used: Optional[int] = None
         self.parsed_data: Optional[Dict[str, Any]] = None
@@ -50,8 +47,6 @@ class ParsingManager:
         التنفيذ الكامل لعملية تحليل *النص*.
         Returns a dictionary with parsing results or error info.
         """
-        
-        # ❌ REMOVED: Initial DB attempt creation
         
         required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
 
@@ -98,18 +93,16 @@ class ParsingManager:
                 self.parser_path_used = "failed"
                 self.parsed_data = None
 
+        # ✅ THE FIX: السطر التالي (94) يجب أن يكون بمسافة بادئة صحيحة
         if not self.parsed_data:
-            self.parser_path_used = "failed"
+            self.parser_path_used = "failed" # <--- هذا هو السطر 94 (تم تصحيح المسافة البادئة)
 
         # --- الخطوة 3: التحديث النهائي والرد ---
-        # ❌ REMOVED: Final DB update
-        
         latency_ms = int((time.monotonic() - self.start_time) * 1000)
 
         if self.parsed_data:
             return {
                 "status": "success",
-                # ✅ REFACTORED: Return raw data (with Decimals)
                 "data": self.parsed_data,
                 "parser_path_used": self.parser_path_used,
                 "latency_ms": latency_ms
@@ -126,8 +119,6 @@ class ParsingManager:
         """
         التنفيذ الكامل لعملية تحليل *الصورة*.
         """
-        # ❌ REMOVED: Initial DB attempt creation
-
         required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
 
         # --- الخطوة 1: المسار الذكي (Vision) ---
@@ -152,14 +143,11 @@ class ParsingManager:
             self.parser_path_used = "failed"
 
         # --- الخطوة 2: التحديث النهائي والرد ---
-        # ❌ REMOVED: Final DB update
-
         latency_ms = int((time.monotonic() - self.start_time) * 1000)
 
         if self.parsed_data:
             return {
                 "status": "success",
-                # ✅ REFACTORED: Return raw data (with Decimals)
                 "data": self.parsed_data,
                 "parser_path_used": self.parser_path_used,
                 "latency_ms": latency_ms
