@@ -1,9 +1,10 @@
 # ai_service/services/parsing_manager.py
 """
-المنسق (Orchestrator) لعملية التحليل (v1.2 - Validation Hotfix).
-✅ HOTFIX: تم تعديل فحص `all()` للتحقق من *وجود* المفتاح
-(key existence) بدلاً من قيمة الحقيقة (truthiness).
+المنسق (Orchestrator) لعملية التحليل (v2.0 - ADR-003 Image Parsing).
+✅ HOTFIX (v1.2): تم تعديل فحص `all()` للتحقق من *وجود* المفتاح (key existence).
 ✅ HOTFIX (v1.1) Check: يرفض الآن نتائج Regex/LLM التي لا تحتوي على أهداف.
+✅ NEW (v2.0): Added `image_url` to init and a new `analyze_image` method
+    to handle the image parsing flow, reusing the same DB logic.
 """
 
 import logging
@@ -20,6 +21,7 @@ from models import ParsingAttempt, ParsingTemplate, User
 # استيراد المحللات
 from services import regex_parser
 from services import llm_parser
+from services import image_parser # ✅ NEW (ADR-003): Import image parser
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +43,7 @@ def _serialize_data_for_db(data: Dict[str, Any]) -> Dict[str, Any]:
             "close_percent": t.get("close_percent", 0.0)
         } for t in data.get("targets", [])
     ]
+    
     
     return {
         "asset": data.get("asset"),
@@ -67,8 +70,10 @@ class ParsingManager:
     يدير دورة حياة تحليل التوصية بالكامل.
     """
     
-    def __init__(self, text: str, user_id: int):
-        self.text = text
+    # ✅ NEW (ADR-003): Updated init to be flexible
+    def __init__(self, user_id: int, text: Optional[str] = None, image_url: Optional[str] = None):
+        self.text = text or ""
+        self.image_url = image_url or ""
         self.user_id = user_id
         self.start_time = time.monotonic()
         self.attempt_id: Optional[int] = None
@@ -76,7 +81,7 @@ class ParsingManager:
         self.template_id_used: Optional[int] = None
         self.parsed_data: Optional[Dict[str, Any]] = None
 
-    def _create_initial_attempt(self, session: Session) -> Optional[int]:
+    def _create_initial_attempt(self, session: Session, content_type: str = "text") -> Optional[int]:
         """
         الخطوة 1: إنشاء سجل محاولة أولي.
         """
@@ -86,15 +91,18 @@ class ParsingManager:
                 log.error(f"User ID {self.user_id} not found in 'users' table. Cannot create attempt.")
                 return None
 
+            # Use image_url as content if it's an image parse
+            raw_content = self.image_url if content_type == "image" else self.text
+
             attempt = ParsingAttempt(
                 user_id=self.user_id,
-                raw_content=self.text,
+                raw_content=raw_content, # Store text or image URL
                 was_successful=False,
                 parser_path_used="pending"
             )
             session.add(attempt)
             session.flush() # الحصول على الـ ID فورًا
-            log.info(f"Created ParsingAttempt ID: {attempt.id} for user {self.user_id}")
+            log.info(f"Created ParsingAttempt ID: {attempt.id} for user {self.user_id} (type: {content_type})")
             return attempt.id
         except Exception as e:
             log.critical(f"Failed to create initial ParsingAttempt in DB: {e}", exc_info=True)
@@ -133,10 +141,10 @@ class ParsingManager:
 
     async def analyze(self) -> Dict[str, Any]:
         """
-        التنفيذ الكامل لعملية التحليل.
+        التنفيذ الكامل لعملية تحليل *النص*.
         """
         with session_scope() as session:
-            self.attempt_id = self._create_initial_attempt(session)
+            self.attempt_id = self._create_initial_attempt(session, content_type="text")
             if not self.attempt_id:
                 return {
                     "status": "error",
@@ -180,8 +188,8 @@ class ParsingManager:
                              self.parser_path_used = "failed"
                              self.parsed_data = None
                         else:
-                            self.parser_path_used = "llm"
-                            self.parsed_data = llm_result
+                             self.parser_path_used = "llm"
+                             self.parsed_data = llm_result
                     else:
                         log.error(f"LLM result for attempt {self.attempt_id} was incomplete (missing keys). Failing.")
                         self.parser_path_used = "failed"
@@ -209,6 +217,63 @@ class ParsingManager:
             return {
                 "status": "error",
                 "error": "Could not recognize a valid trade signal.",
+                "attempt_id": self.attempt_id,
+                "parser_path_used": "failed"
+            }
+
+    # ✅ NEW (ADR-003): New method for image analysis
+    async def analyze_image(self) -> Dict[str, Any]:
+        """
+        التنفيذ الكامل لعملية تحليل *الصورة*.
+        """
+        with session_scope() as session:
+            self.attempt_id = self._create_initial_attempt(session, content_type="image")
+            if not self.attempt_id:
+                return {
+                    "status": "error",
+                    "error": "Failed to initialize parsing attempt (DB error)."
+                }
+        
+        required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
+
+        # --- الخطوة 2: المسار الذكي (Vision) ---
+        # لا يوجد مسار سريع (Regex) للصور
+        log.info(f"Attempt {self.attempt_id}: Starting Vision model parse.")
+        try:
+            vision_result = await image_parser.parse_with_vision(self.image_url)
+            
+            if vision_result:
+                # Check for key existence and non-empty targets
+                if all(k in vision_result for k in required_keys) and vision_result.get("targets"):
+                    self.parser_path_used = "vision"
+                    self.parsed_data = vision_result
+                else:
+                    log.error(f"Vision result for attempt {self.attempt_id} was incomplete. Failing.")
+                    self.parser_path_used = "failed"
+                    self.parsed_data = None
+        except Exception as e:
+            log.error(f"Vision parser failed unexpectedly: {e}", exc_info=True)
+            self.parser_path_used = "failed"
+            self.parsed_data = None
+
+        if not self.parsed_data:
+            self.parser_path_used = "failed"
+
+        # --- الخطوة 3: التحديث النهائي والرد ---
+        with session_scope() as update_session:
+            self._update_final_attempt(update_session)
+
+        if self.parsed_data:
+            return {
+                "status": "success",
+                "data": _serialize_data_for_response(self.parsed_data),
+                "attempt_id": self.attempt_id,
+                "parser_path_used": self.parser_path_used
+            }
+        else:
+            return {
+                "status": "error",
+                "error": "Could not recognize a valid trade signal from the image.",
                 "attempt_id": self.attempt_id,
                 "parser_path_used": "failed"
             }
