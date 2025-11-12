@@ -1,17 +1,17 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
 """
-Handles the user flow for parsing a forwarded text message (v3.2.4 - Callback Hotfix).
-THE FIX (R1-S1): Major strategic update.
-    - Implements the "Trader-First" Golden Rule (Watchlist vs. Activated).
-    - `forwarded_message_handler` now captures origin date and chat info using modern PTB v21+ API.
-    - `build_editable_review_card` now shows "Activate Trade" and "Watch Channel" buttons.
-    - `review_callback_handler` now calls trade_service with the selected status (`PENDING_ACTIVATION` or `WATCHLIST`)
-      and passes the new audit data (original_published_at, channel_info).
-HOTFIX v3.2.2: Fixed SyntaxError: unterminated string literal.
-HOTFIX v3.2.3: Removed invalid character from comment to fix SyntaxError (U+2705).
-✅ HOTFIX v3.2.4 (This file): Corrected the `pattern` in ConversationHandler
-    to use `CallbackAction.WATCH_CHANNEL.value` instead of the literal string "WATCH_CHANNEL",
-    fixing the bug where the button fell through to the 'cancel' fallback.
+Handles the user flow for parsing a forwarded text OR image message (v4.0.0 - Unified Handler).
+
+✅ THE FIX (ADR-003 / NameError fix):
+    - Merged the logic from the (now deleted) `image_parsing_handler.py`
+      into this file.
+    - Created a new entry point `forwarded_photo_handler` that captures
+      `filters.PHOTO` but uses the *exact same* conversation states
+      (AWAIT_REVIEW, AWAIT_CORRECTION_VALUE) as the text handler.
+    - This fixes the `NameError: name 'AWAIT_CORRECTION_VALUE' is not defined`
+      by ensuring all handlers for this conversation exist in the same file
+      and share the same state definitions.
+    - This is a superior architectural pattern that reduces code duplication.
 """
 
 import logging
@@ -34,9 +34,11 @@ from telegram.error import TelegramError, BadRequest
 # Infrastructure & Application specific imports
 from capitalguard.infrastructure.db.uow import session_scope, uow_transaction
 from capitalguard.interfaces.telegram.helpers import get_service, parse_cq_parts
-from capitalguard.interfaces.telegram.auth import require_active_user, get_db_user
+from capitalguard.interfaces.telegram.auth import require_active_user, get_db_user # ✅ Added get_db_user
 from capitalguard.application.services.parsing_service import ParsingResult
 from capitalguard.application.services.trade_service import TradeService
+# ✅ NEW: Import ImageParsingService here
+from capitalguard.application.services.image_parsing_service import ImageParsingService 
 from capitalguard.interfaces.telegram.keyboards import (
     CallbackBuilder, CallbackNamespace, CallbackAction,
     build_editable_review_card, ButtonTexts
@@ -50,7 +52,7 @@ from capitalguard.infrastructure.db.models import ParsingAttempt
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors")
 
-# --- Conversation States ---
+# --- Conversation States (Now shared by both text and image) ---
 (AWAIT_REVIEW, AWAIT_CORRECTION_VALUE, AWAIT_SAVE_TEMPLATE_CONFIRM) = range(3)
 
 # --- State Keys ---
@@ -149,7 +151,7 @@ async def smart_safe_edit(
         loge.exception(f"Unexpected error in smart_safe_edit {chat_id}:{message_id}: {e_other}")
         return False
 
-
+# --- Entry Point 1: Text Forward ---
 @uow_transaction
 @require_active_user
 async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
@@ -306,6 +308,146 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         clean_parsing_conversation_state(context)
         return ConversationHandler.END
 
+# --- ✅ Entry Point 2: Image Forward (ADR-003) ---
+@uow_transaction
+@require_active_user
+async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """
+    Entry point for the image parsing conversation.
+    Triggered when a user forwards a photo to the bot in a private chat.
+    """
+    message = update.message
+    if not message or not message.photo:
+        return ConversationHandler.END
+
+    # Ignore if another conversation is active
+    if context.user_data.get(EDITING_FIELD_KEY) \
+       or context.user_data.get('rec_creation_draft') \
+       or context.user_data.get('awaiting_management_input'):
+        log.debug("Forwarded photo ignored because another conversation is active.")
+        return ConversationHandler.END
+
+    clean_parsing_conversation_state(context)
+    update_management_activity(context)
+
+    # --- Capture Audit Data (Timestamp and Channel) ---
+    original_published_at = None
+    channel_info = None
+
+    if getattr(message, "forward_origin", None):
+        forward_origin = message.forward_origin
+        original_published_at = getattr(forward_origin, "date", None)
+        origin_chat = getattr(forward_origin, "chat", None)
+        if origin_chat:
+            channel_info = {
+                "id": getattr(origin_chat, "id", None),
+                "title": getattr(origin_chat, "title", "Unknown Channel")
+            }
+    
+    if not original_published_at:
+        await message.reply_html(
+            "❌ **Error:** This message seems to be a copy-paste, not a forward.\n"
+            "To analyze, please **forward** the original message directly from the channel."
+        )
+        clean_parsing_conversation_state(context)
+        return ConversationHandler.END
+        
+    # Get the highest resolution photo
+    photo = message.photo[-1]
+    file_id = photo.file_id
+    user_db_id = db_user.id
+    
+    # Store raw data for potential correction/template saving
+    context.user_data[RAW_FORWARDED_TEXT_KEY] = f"image_file_id:{file_id}"
+    context.user_data[FORWARD_AUDIT_DATA_KEY] = {
+        "original_published_at": original_published_at.isoformat() if original_published_at else None,
+        "channel_info": channel_info
+    }
+
+    analyzing_message = await message.reply_text("⏳ Analyzing forwarded image (this may take a moment)...")
+    context.user_data[ORIGINAL_MESSAGE_ID_KEY] = analyzing_message.message_id
+    
+    hydrated_data = None
+    parsing_result_json = None
+
+    try:
+        # 1. Call the ImageParsingService
+        img_parser_service = get_service(context, "image_parsing_service", ImageParsingService)
+        parsing_result_json = await img_parser_service.parse_image_from_file_id(user_db_id, file_id)
+
+        # 2. Process the response (identical flow to text parser)
+        if parsing_result_json.get("status") == "success" and parsing_result_json.get("data"):
+            try:
+                raw = parsing_result_json["data"]
+                hydrated_data = {
+                    "asset": raw.get("asset"),
+                    "side": raw.get("side"),
+                    "entry": parse_number(raw.get("entry")),
+                    "stop_loss": parse_number(raw.get("stop_loss")),
+                    "targets": parse_targets_list(
+                        [f"{t.get('price')}@{t.get('close_percent')}" for t in raw.get("targets", [])]
+                    )
+                }
+
+                # 3. Validate the hydrated data
+                trade_service: TradeService = get_service(context, "trade_service", TradeService)
+                trade_service._validate_recommendation_data(
+                    hydrated_data['side'], hydrated_data['entry'],
+                    hydrated_data['stop_loss'], hydrated_data['targets']
+                )
+
+                # 4. Store state for the review conversation
+                context.user_data[PARSING_ATTEMPT_ID_KEY] = parsing_result_json.get("attempt_id")
+                context.user_data[ORIGINAL_PARSED_DATA_KEY] = hydrated_data
+                context.user_data[CURRENT_EDIT_DATA_KEY] = hydrated_data.copy()
+
+                channel_name = channel_info.get("title") if channel_info else "Unknown Channel"
+                keyboard = build_editable_review_card(hydrated_data, channel_name=channel_name)
+
+                await smart_safe_edit(
+                    context.bot, analyzing_message.chat.id, analyzing_message.message_id,
+                    text=f"📊 **Review Parsed Image Data**\n*Source:* `{channel_name}`\n\nPlease verify the data and choose an action:",
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+                # ✅ CRITICAL: Return the *shared* state
+                return AWAIT_REVIEW
+
+            except (ValueError, TypeError) as e:
+                log.warning(
+                    f"AI Service (Image) returned invalid data for attempt {parsing_result_json.get('attempt_id')}: {e}"
+                )
+                parsing_result_json["error"] = f"Analysis Failed: {e}"
+                hydrated_data = None
+            except Exception as e:
+                log.error(f"Failed to re-hydrate JSON from AI service (Image): {e}")
+                parsing_result_json["error"] = "Failed to process valid response from AI."
+                hydrated_data = None
+        
+        # 5. Handle failure
+        error_msg = parsing_result_json.get("error", "Could not recognize a valid trade signal.")
+        escaped = html.escape(error_msg)
+        await smart_safe_edit(
+            context.bot, analyzing_message.chat.id, analyzing_message.message_id,
+            text=f"❌ **Image Analysis Failed**\n{escaped}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=None
+        )
+        clean_parsing_conversation_state(context)
+        return ConversationHandler.END
+
+    except Exception as e:
+        log.error(f"Critical error during image parsing: {e}", exc_info=True)
+        await smart_safe_edit(
+            context.bot, analyzing_message.chat.id, analyzing_message.message_id,
+            text=f"❌ An unexpected error occurred: {str(e)}",
+            reply_markup=None
+        )
+        clean_parsing_conversation_state(context)
+        return ConversationHandler.END
+
+
+# --- Shared Conversation Handlers ---
 
 @uow_transaction
 @require_active_user
@@ -782,15 +924,26 @@ async def cancel_parsing_conversation(update: Update, context: ContextTypes.DEFA
 
 
 def register_forward_parsing_handlers(app: Application):
+    """
+    Registers the conversation handler for forwarded text AND photos.
+    """
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(
-            filters.FORWARDED & filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
-            forwarded_message_handler
-        )],
+        entry_points=[
+            # Entry Point 1: Forwarded Text
+            MessageHandler(
+                filters.FORWARDED & filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+                forwarded_message_handler
+            ),
+            # ✅ NEW (ADR-003): Entry Point 2: Forwarded Photo
+            MessageHandler(
+                filters.FORWARDED & filters.PHOTO & ~filters.COMMAND & filters.ChatType.PRIVATE,
+                forwarded_photo_handler
+            )
+        ],
         states={
+            # Both entry points lead to these shared states
             AWAIT_REVIEW: [CallbackQueryHandler(
                 review_callback_handler,
-                # ✅ THE FIX: Changed literal "WATCH_CHANNEL" to the enum value
                 pattern=f"^{CallbackNamespace.FORWARD_PARSE.value}:(?:{CallbackAction.CONFIRM.value}|{CallbackAction.WATCH_CHANNEL.value}|{CallbackAction.EDIT_FIELD.value}|{CallbackAction.CANCEL.value}):"
             )],
             AWAIT_CORRECTION_VALUE: [MessageHandler(
@@ -804,7 +957,7 @@ def register_forward_parsing_handlers(app: Application):
             CallbackQueryHandler(cancel_parsing_conversation, pattern="^.*"),
             MessageHandler(filters.ALL & filters.ChatType.PRIVATE, cancel_parsing_conversation)
         ],
-        name="forward_parsing_conversation",
+        name="unified_parsing_conversation", # Renamed
         per_user=True, per_chat=True,
         persistent=False,
         conversation_timeout=MANAGEMENT_TIMEOUT,
