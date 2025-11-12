@@ -1,11 +1,10 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
 # File: src/capitalguard/interfaces/telegram/forward_parsing_handler.py
-# Version: 5.0.2 (Hotfix)
-# ✅ THE FIX: (Protocol 1) إصلاح خطأ `NameError: name 'time' is not defined` بإضافة `import time`.
-# ✅ THE FIX: (Protocol 1) إصلاح خطأ `404 Not Found` (تكرار المسار).
-#    - تم تعديل استدعاء `httpx.post` لاستخدام `AI_SERVICE_URL` مباشرة (الذي يحتوي بالفعل
-#      على `/ai/parse`) بدلاً من إضافة `/ai/parse` إليه مرة أخرى.
-# 🎯 IMPACT: يجب أن يعمل معالج الرسائل النصية الآن بشكل صحيح.
+# Version: 5.0.3 (Hotfix)
+# ✅ THE FIX: (Protocol 1) إصلاح خطأ `TypeError: '<' not supported between datetime and str`.
+#    - تمت إزالة `.isoformat()` عند حفظ `original_published_at` في `FORWARD_AUDIT_DATA_KEY`.
+#    - يتم الآن تمرير كائن `datetime` الخام مباشرة إلى `create_trade_from_forwarding_async`.
+# 🎯 IMPACT: سيتم تخزين أوقات النشر كـ `datetime` في قاعدة البيانات، مما يحل خطأ المقارنة في `alert_service`.
 
 import logging
 import asyncio
@@ -14,7 +13,7 @@ import os
 import re
 import html
 import json 
-import time # ✅ ADDED (THE FIX for NameError)
+import time
 from decimal import Decimal
 from typing import Dict, Any, Optional
 
@@ -66,42 +65,33 @@ if not AI_SERVICE_URL:
         "AI_SERVICE_URL environment variable is not set! Forward parsing will fail."
     )
 
-# --- ✅ ADDED: Local data conversion helpers ---
+# --- (Helpers: _serialize_data_for_db, clean_parsing_conversation_state, smart_safe_edit) ---
+# (These helpers remain unchanged from v5.0.2)
 def _serialize_data_for_db(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Converts Decimals to strings for JSONB storage."""
-    if not data:
-        return {}
-    
+    if not data: return {}
     entry = data.get("entry")
     stop_loss = data.get("stop_loss")
     targets = data.get("targets", [])
-
     return {
-        "asset": data.get("asset"),
-        "side": data.get("side"),
+        "asset": data.get("asset"), "side": data.get("side"),
         "entry": str(entry) if entry is not None else None,
         "stop_loss": str(stop_loss) if stop_loss is not None else None,
         "targets": [
-            {
-                "price": str(t.get("price")) if t.get("price") is not None else "0",
-                "close_percent": t.get("close_percent", 0.0)
-            } for t in targets
+            {"price": str(t.get("price")) if t.get("price") is not None else "0", "close_percent": t.get("close_percent", 0.0)}
+            for t in targets
         ],
         "market": data.get("market", "Futures"),
         "order_type": data.get("order_type", "LIMIT"),
         "notes": data.get("notes")
     }
 
-# --- (clean_parsing_conversation_state, smart_safe_edit remain the same) ---
 def clean_parsing_conversation_state(context: ContextTypes.DEFAULT_TYPE):
     keys_to_pop = [
         PARSING_ATTEMPT_ID_KEY, ORIGINAL_PARSED_DATA_KEY, CURRENT_EDIT_DATA_KEY,
         EDITING_FIELD_KEY, RAW_FORWARDED_TEXT_KEY, ORIGINAL_MESSAGE_ID_KEY,
-        LAST_ACTIVITY_KEY, 'fwd_msg_text', 'pending_trade',
-        FORWARD_AUDIT_DATA_KEY,
+        LAST_ACTIVITY_KEY, 'fwd_msg_text', 'pending_trade', FORWARD_AUDIT_DATA_KEY,
     ]
-    for key in keys_to_pop:
-        context.user_data.pop(key, None)
+    for key in keys_to_pop: context.user_data.pop(key, None)
     user_id = getattr(context, "_user_id", None)
     log.debug(f"Parsing conversation state cleared for user {user_id}.")
 
@@ -111,37 +101,23 @@ async def smart_safe_edit(
 ) -> bool:
     try:
         await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode,
-            disable_web_page_preview=True,
+            chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup,
+            parse_mode=parse_mode, disable_web_page_preview=True,
         )
         return True
     except BadRequest as e:
-        if "message is not modified" in str(e).lower():
-            return True
+        if "message is not modified" in str(e).lower(): return True
         if "can't parse entities" in str(e).lower() or "unsupported start tag" in str(e).lower():
-            log.warning(
-                f"HTML/Markdown parse failed for msg {chat_id}:{message_id}. Retrying with parse_mode=None. Error: {e}"
-            )
+            log.warning(f"HTML/Markdown parse failed for msg {chat_id}:{message_id}. Retrying with parse_mode=None. Error: {e}")
             try:
                 clean_text = re.sub(r'<[^>]+>', '', text or "")
                 await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=clean_text,
-                    reply_markup=reply_markup,
-                    parse_mode=None,
-                    disable_web_page_preview=True,
+                    chat_id=chat_id, message_id=message_id, text=clean_text, reply_markup=reply_markup,
+                    parse_mode=None, disable_web_page_preview=True,
                 )
                 return True
             except Exception as e_retry:
-                loge.error(
-                    f"Failed to edit message {chat_id}:{message_id} even after retry: {e_retry}",
-                    exc_info=True
-                )
+                loge.error(f"Failed to edit message {chat_id}:{message_id} even after retry: {e_retry}", exc_info=True)
                 return False
         loge.warning(f"Handled BadRequest in smart_safe_edit: {e}")
         return False
@@ -175,7 +151,6 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         await message.reply_text("❌ Feature unavailable: The analysis service is not configured.")
         return ConversationHandler.END
 
-    # --- (Audit data capture remains the same) ---
     original_published_at = None
     channel_info = None
     if getattr(message, "forward_origin", None):
@@ -183,10 +158,7 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         original_published_at = getattr(forward_origin, "date", None)
         origin_chat = getattr(forward_origin, "chat", None)
         if origin_chat:
-            channel_info = {
-                "id": getattr(origin_chat, "id", None),
-                "title": getattr(origin_chat, "title", "Unknown Channel")
-            }
+            channel_info = {"id": getattr(origin_chat, "id", None), "title": getattr(origin_chat, "title", "Unknown Channel")}
     if not original_published_at:
         await message.reply_text("❌ **Error:** Please **forward** the original message, not a copy-paste.")
         clean_parsing_conversation_state(context)
@@ -194,27 +166,23 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
 
     context.user_data[RAW_FORWARDED_TEXT_KEY] = message.text
     context.user_data[FORWARD_AUDIT_DATA_KEY] = {
-        "original_published_at": original_published_at.isoformat() if original_published_at else None,
+        # ✅ THE FIX (v5.0.3): Store the raw datetime object, NOT .isoformat()
+        "original_published_at": original_published_at,
         "channel_info": channel_info
     }
-    # --- End Audit ---
 
     analyzing_message = await message.reply_text("⏳ Analyzing forwarded message...")
     context.user_data[ORIGINAL_MESSAGE_ID_KEY] = analyzing_message.message_id
     user_db_id = db_user.id
     
-    # ✅ --- (Protocol 1) NEW DB LOGIC ---
     parsing_repo = ParsingRepository(db_session)
     attempt = parsing_repo.add_attempt(
-        user_id=user_db_id,
-        raw_content=message.text,
-        was_successful=False,
-        parser_path_used="pending"
+        user_id=user_db_id, raw_content=message.text,
+        was_successful=False, parser_path_used="pending"
     )
     attempt_id = attempt.id
     context.user_data[PARSING_ATTEMPT_ID_KEY] = attempt_id
     db_session.commit() 
-    # --- End DB Logic ---
 
     hydrated_data = None
     parsing_result_json = None
@@ -226,9 +194,8 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
     try:
         log.debug(f"Calling AI Service at {AI_SERVICE_URL} for user {user_db_id} (Attempt {attempt_id})")
         async with httpx.AsyncClient() as client:
-            # ✅ THE FIX (v5.0.2): Use AI_SERVICE_URL directly, as it contains the full path
             response = await client.post(
-                AI_SERVICE_URL, 
+                AI_SERVICE_URL, # Use full path
                 json={"text": message.text, "user_id": user_db_id},
                 timeout=20.0
             )
@@ -341,7 +308,6 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
     clean_parsing_conversation_state(context)
     update_management_activity(context)
 
-    # --- (Audit data capture remains the same) ---
     original_published_at = None
     channel_info = None
     if getattr(message, "forward_origin", None):
@@ -349,10 +315,7 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
         original_published_at = getattr(forward_origin, "date", None)
         origin_chat = getattr(forward_origin, "chat", None)
         if origin_chat:
-            channel_info = {
-                "id": getattr(origin_chat, "id", None),
-                "title": getattr(origin_chat, "title", "Unknown Channel")
-            }
+            channel_info = {"id": getattr(origin_chat, "id", None), "title": getattr(origin_chat, "title", "Unknown Channel")}
     if not original_published_at:
         await message.reply_html("❌ **Error:** Please **forward** the original message, not a copy-paste.")
         clean_parsing_conversation_state(context)
@@ -364,15 +327,14 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
     
     context.user_data[RAW_FORWARDED_TEXT_KEY] = f"image_file_id:{file_id}"
     context.user_data[FORWARD_AUDIT_DATA_KEY] = {
-        "original_published_at": original_published_at.isoformat() if original_published_at else None,
+        # ✅ THE FIX (v5.0.3): Store the raw datetime object, NOT .isoformat()
+        "original_published_at": original_published_at,
         "channel_info": channel_info
     }
-    # --- End Audit ---
 
     analyzing_message = await message.reply_text("⏳ Analyzing forwarded image (this may take a moment)...")
     context.user_data[ORIGINAL_MESSAGE_ID_KEY] = analyzing_message.message_id
     
-    # ✅ --- (Protocol 1) NEW DB LOGIC ---
     parsing_repo = ParsingRepository(db_session)
     attempt = parsing_repo.add_attempt(
         user_id=user_db_id,
@@ -383,7 +345,6 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
     attempt_id = attempt.id
     context.user_data[PARSING_ATTEMPT_ID_KEY] = attempt_id
     db_session.commit()
-    # --- End DB Logic ---
 
     hydrated_data = None
     parsing_result_json = None
@@ -393,14 +354,11 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
     start_time = time.monotonic()
 
     try:
-        # 1. Call the ImageParsingService (local service, not ai-service)
         img_parser_service = get_service(context, "image_parsing_service", ImageParsingService)
-        # This service calls the /ai/parse_image endpoint
         parsing_result_json = await img_parser_service.parse_image_from_file_id(user_db_id, file_id)
         latency_ms = parsing_result_json.get("latency_ms", int((time.monotonic() - start_time) * 1000))
         parser_path_used = parsing_result_json.get("parser_path_used", "vision")
 
-        # 2. Process the response
         if parsing_result_json.get("status") == "success" and parsing_result_json.get("data"):
             try:
                 raw = parsing_result_json["data"]
@@ -413,7 +371,6 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
                         [f"{t.get('price')}@{t.get('close_percent')}" for t in raw.get("targets", [])]
                     )
                 }
-                # 3. Validate the hydrated data
                 trade_service: TradeService = get_service(context, "trade_service", TradeService)
                 trade_service._validate_recommendation_data(
                     hydrated_data['side'], hydrated_data['entry'],
@@ -564,6 +521,7 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                     current_data = restored
                     if getattr(attempt, "raw_content", None):
                          context.user_data[RAW_FORWARDED_TEXT_KEY] = attempt.raw_content
+                    # We cannot recover audit data (timestamp), but can recover channel info if stored
                     context.user_data[FORWARD_AUDIT_DATA_KEY] = {"channel_info": {"title": "Unknown (Recovered)"}}
                     audit_data = context.user_data[FORWARD_AUDIT_DATA_KEY]
                     log.info(f"Successfully recovered session for user {update.effective_user.id} from attempt {attempt_id}")
@@ -605,16 +563,20 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             return ConversationHandler.END
 
         try:
+            # ✅ THE FIX (v5.0.3): Pass the raw datetime object
+            original_published_at_dt = audit_data.get("original_published_at")
+            
             result = await trade_service.create_trade_from_forwarding_async(
                 user_id=str(db_user.telegram_user_id),
                 trade_data=current_data,
                 original_text=raw_text,
                 db_session=db_session,
                 status_to_set=status_to_set,
-                original_published_at=audit_data.get("original_published_at") if audit_data else None,
+                original_published_at=original_published_at_dt, # Pass datetime object
                 channel_info=audit_data.get("channel_info") if audit_data else None
             )
         except Exception as e:
+            log.error(f"Error calling create_trade_from_forwarding_async: {e}", exc_info=True)
             await smart_safe_edit(context.bot, query.message.chat.id, original_message_id,
                                   text="❌ Error saving trade. Please try again later.", reply_markup=None)
             clean_parsing_conversation_state(context)
