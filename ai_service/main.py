@@ -1,4 +1,4 @@
---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
 # File: ai_service/main.py
 # Version: 3.0.1 (Hotfix)
 # ✅ THE FIX: (Protocol 1) إضافة الاستيرادات المفقودة `Dict` و `Any` من `typing`.
@@ -151,4 +151,4 @@ def _serialize_data_for_response(data: Dict[str, Any]) -> Dict[str, Any]:
 
 # ❌ REMOVED: /ai/record_correction endpoint
 # ❌ REMOVED: /ai/suggest_template endpoint
---- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
