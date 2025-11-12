@@ -1,5 +1,11 @@
-# --- START OF FINAL, COMPLETE, AND SECURE FILE (Version 13.5.0) ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE (Version 14.0.0 - ADR-003) ---
 # src/capitalguard/config.py
+"""
+✅ THE FIX (ADR-003): Added `AI_SERVICE_URL` to the Settings model.
+    - This fixes the `AttributeError: 'Settings' object has no attribute 'AI_SERVICE_URL'`
+      that was causing a crash loop when the new `ImageParsingService`
+      was initialized by `boot.py`.
+"""
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,6 +42,10 @@ class Settings(BaseSettings):
     # External Webhooks
     TV_WEBHOOK_SECRET: str | None = None
 
+    # ✅ NEW (ADR-003): URL for the AI microservice
+    # This setting is now loaded from the .env file
+    AI_SERVICE_URL: str | None = None
+
     # Observability
     SENTRY_DSN: str | None = None
     METRICS_ENABLED: bool = True
@@ -43,4 +53,4 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# --- END OF FINAL, COMPLETE, AND SECURE FILE ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
