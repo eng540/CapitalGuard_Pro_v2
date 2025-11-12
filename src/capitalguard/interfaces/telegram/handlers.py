@@ -1,14 +1,10 @@
-# src/capitalguard/interfaces/telegram/handlers.py (v26.2 - COMPLETE, FINAL & ARCHITECTURALLY-CORRECT)
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/handlers.py ---
+# src/capitalguard/interfaces/telegram/handlers.py (v27.0 - Image Parsing)
 """
 The central function that collects and registers all bot handlers.
-
-This file acts as an aggregator. Its sole responsibility is to import the
-registration functions from the various feature-specific handler modules
-and call them in the correct order of priority. This design ensures that
-the main application entry point remains clean and that features are modular
-and easy to enable or disable.
-
-This is a complete, final, and production-ready file.
+✅ THE FIX (ADR-003): Imported and registered the new `image_parsing_handler`.
+    - This handler runs in group 1, alongside the text forward handler,
+      to catch forwarded photos and initiate the parsing flow.
 """
 
 from telegram.ext import Application
@@ -21,10 +17,15 @@ from .forward_parsing_handler import register_forward_parsing_handlers
 from .management_handlers import register_management_handlers
 from .commands import register_commands
 
+# ✅ ADDED (ADR-003): Import the new image handler registration function
+from .image_parsing_handler import register_image_parsing_handler
+
+
 def register_all_handlers(application: Application):
     """
     Registers all handlers for the Telegram bot in a specific, logical order
-    to ensure correct priority and execution flow. The order is crucial for
+    to ensure correct priority and execution flow.
+    The order is crucial for
     the proper functioning of conversations and priority handling.
     """
     
@@ -47,11 +48,19 @@ def register_all_handlers(application: Application):
 
     # --- PRIORITY GROUP 1: SPECIALIZED MESSAGE HANDLERS ---
     # This group is for handlers that should only run if no conversation
-    # is currently active. The `group=1` in the handler's registration
+    # is currently active.
+    # The `group=1` in the handler's registration
     # ensures it runs after all default group 0 handlers have been checked.
     register_forward_parsing_handlers(application)
+    
+    # ✅ ADDED (ADR-003): Register the new image handler in the same group
+    register_image_parsing_handler(application)
+
 
     # --- PRIORITY GROUP 1 (or default): GENERAL CALLBACK HANDLERS ---
     # These handle button presses from non-conversational messages, like
-    # the management panels for open positions. They can run after commands.
+    # the management panels for open positions.
+    # They can run after commands.
     register_management_handlers(application)
+
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/handlers.py ---

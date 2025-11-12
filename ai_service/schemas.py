@@ -2,19 +2,30 @@
 """
 نماذج Pydantic (Schemas) للتحقق من صحة مدخلات ومخرجات واجهة برمجة التطبيقات (API)
 لخدمة ai_service.
+
+✅ v1.1.0 (ADR-003): Added ImageParseRequest model.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 from typing import List, Optional, Dict, Any, Union
 
 # --- نماذج الإدخال (Request Bodies) ---
 
 class ParseRequest(BaseModel):
     """
-    النموذج المتوقع للطلب القادم إلى /ai/parse
+    النموذج المتوقع للطلب القادم إلى /ai/parse (تحليل نصي)
     """
     text: str = Field(..., min_length=10, description="النص الخام للتوصية المعاد توجيهها")
     user_id: int = Field(..., description="المعرف الداخلي (DB ID) للمستخدم الذي قام بإعادة التوجيه")
+
+# ✅ NEW (ADR-003): النموذج المتوقع للطلب القادم إلى /ai/parse_image
+class ImageParseRequest(BaseModel):
+    """
+    النموذج المتوقع للطلب القادم إلى /ai/parse_image (تحليل صور)
+    """
+    user_id: int = Field(..., description="المعرف الداخلي (DB ID) للمستخدم الذي قام بالرفع")
+    image_url: HttpUrl = Field(..., description="رابط URL العام والمؤقت لصورة التوصية")
+
 
 class CorrectionRequest(BaseModel):
     """
@@ -57,12 +68,12 @@ class ParsedDataResponse(BaseModel):
 
 class ParseResponse(BaseModel):
     """
-    الرد القياسي لنقطة النهاية /ai/parse
+    الرد القياسي لنقطة النهاية /ai/parse أو /ai/parse_image
     """
     status: str # "success" or "error"
     data: Optional[ParsedDataResponse] = None
     attempt_id: Optional[int] = None
-    parser_path_used: Optional[str] = None # 'regex', 'llm', 'failed'
+    parser_path_used: Optional[str] = None # 'regex', 'llm', 'vision', 'failed'
     error: Optional[str] = None
 
 class CorrectionResponse(BaseModel):

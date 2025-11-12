@@ -1,12 +1,9 @@
-# src/capitalguard/boot.py (v26.5 - DI Hotfix)
-
+# src/capitalguard/boot.py (v27.0 - ADR-003 Image Service)
 """
 Bootstrap and dependency injection setup for the application.
-✅ FIX: Corrected DI wiring for AnalyticsService and AuditService.
-
-- AnalyticsService now receives an instance of RecommendationRepository.
-- AuditService now receives an instance of RecommendationRepository and the UserRepository class.
-- This resolves the DI Mismatch errors identified during startup analysis.
+✅ THE FIX (ADR-003): Imported and instantiated the new `ImageParsingService`
+    within `build_services`, making it available to the rest of the application
+    (specifically for the new `image_parsing_handler`).
 """
 
 import logging
@@ -21,6 +18,7 @@ from capitalguard.application.services import (
     AlertService,
     MarketDataService,
     AuditService,
+    ImageParsingService, # ✅ NEW (ADR-003): Import the new service
 )
 from capitalguard.application.services.parsing_service import ParsingService
 from capitalguard.application.strategy.engine import StrategyEngine
@@ -63,6 +61,9 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
             user_repo_class=UserRepository,
         )
         services["parsing_service"] = ParsingService(parsing_repo_class=ParsingRepository)
+        
+        # ✅ NEW (ADR-003): Instantiate and register the ImageParsingService
+        services["image_parsing_service"] = ImageParsingService()
 
         trade_service = TradeService(
             repo=recommendation_repo_instance,
