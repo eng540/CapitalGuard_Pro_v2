@@ -1,4 +1,4 @@
---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
 # File: ai_service/services/parsing_manager.py
 # Version: 3.0.0 (Decoupled)
 # ✅ THE FIX: (Protocol 1) تم فصل الخدمة بالكامل عن قاعدة البيانات.
@@ -171,4 +171,4 @@ class ParsingManager:
                 "parser_path_used": "failed",
                 "latency_ms": latency_ms
             }
---- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
