@@ -1,10 +1,12 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/handlers.py ---
-# src/capitalguard/interfaces/telegram/handlers.py (v27.0 - Image Parsing)
+# src/capitalguard/interfaces/telegram/handlers.py (v28.0 - Unified Parsing)
 """
 The central function that collects and registers all bot handlers.
-✅ THE FIX (ADR-003): Imported and registered the new `image_parsing_handler`.
-    - This handler runs in group 1, alongside the text forward handler,
-      to catch forwarded photos and initiate the parsing flow.
+✅ THE FIX (ADR-003 / NameError fix):
+    - Removed the import and registration call for the deleted
+      `register_image_parsing_handler`.
+    - The `register_forward_parsing_handlers` now correctly handles
+      both text and image entry points for the unified parsing conversation.
 """
 
 from telegram.ext import Application
@@ -17,8 +19,8 @@ from .forward_parsing_handler import register_forward_parsing_handlers
 from .management_handlers import register_management_handlers
 from .commands import register_commands
 
-# ✅ ADDED (ADR-003): Import the new image handler registration function
-from .image_parsing_handler import register_image_parsing_handler
+# ❌ REMOVED (ADR-003): No longer need a separate image handler
+# from .image_parsing_handler import register_image_parsing_handler
 
 
 def register_all_handlers(application: Application):
@@ -51,10 +53,12 @@ def register_all_handlers(application: Application):
     # is currently active.
     # The `group=1` in the handler's registration
     # ensures it runs after all default group 0 handlers have been checked.
+    
+    # ✅ (ADR-003): This function now registers handlers for BOTH text and photos.
     register_forward_parsing_handlers(application)
     
-    # ✅ ADDED (ADR-003): Register the new image handler in the same group
-    register_image_parsing_handler(application)
+    # ❌ REMOVED (ADR-003): This is now merged into the function above.
+    # register_image_parsing_handler(application)
 
 
     # --- PRIORITY GROUP 1 (or default): GENERAL CALLBACK HANDLERS ---
