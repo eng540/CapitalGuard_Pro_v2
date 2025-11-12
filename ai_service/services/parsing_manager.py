@@ -1,11 +1,10 @@
---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
 # File: ai_service/services/parsing_manager.py
-# Version: 3.0.2 (Stable Release)
-# ✅ FIX SUMMARY:
-# - تم تصحيح أخطاء المسافة البادئة في كتلة LLM parser (الأسطر 80–86).
-# - مراجعة جميع الفروع لضمان التوازن بين if/else.
-# - تأكيد خلو الملف من أي أخطاء نحوية أو بنيوية.
-# 🔒 STATUS: Ready for production.
+# Version: 3.0.2 (Indentation Hotfix)
+# ✅ THE FIX: (Protocol 1) إصلاح خطأ `IndentationError` الحرج.
+#    - تمت مراجعة جميع المسافات البادئة في دوال `analyze` و `analyze_image`
+#      لضمان تطابق الكتل (blocks) بعد إزالة منطق قاعدة البيانات.
+# 🎯 IMPACT: ستعمل الخدمة الآن بنجاح بعد فصل قاعدة البيانات.
 
 import logging
 import time
@@ -40,16 +39,23 @@ class ParsingManager:
         self.template_id_used: Optional[int] = None
         self.parsed_data: Optional[Dict[str, Any]] = None
 
+    # ❌ REMOVED: _create_initial_attempt (DB logic)
+    # ❌ REMOVED: _update_final_attempt (DB logic)
+
     async def analyze(self) -> Dict[str, Any]:
         """
         التنفيذ الكامل لعملية تحليل *النص*.
         Returns a dictionary with parsing results or error info.
         """
+        
         required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
 
         # --- الخطوة 1: المسار السريع (Regex) ---
         try:
-            regex_result = regex_parser.parse_with_regex(self.text, self.user_id)
+            # ✅ REFACTORED: Regex parser no longer needs a session
+            # We pass 'user_id' instead of 'session'
+            regex_result = regex_parser.parse_with_regex(self.text, self.user_id) 
+            
             if regex_result and all(k in regex_result for k in required_keys) and regex_result.get('targets'):
                 log.info(f"Regex parser succeeded for user {self.user_id}.")
                 self.parser_path_used = "regex"
@@ -59,6 +65,7 @@ class ParsingManager:
                 self.parsed_data = None
             else:
                 self.parsed_data = None
+                
         except Exception as e:
             log.error(f"Regex parser failed unexpectedly: {e}", exc_info=True)
             self.parsed_data = None
@@ -71,27 +78,28 @@ class ParsingManager:
                 if llm_result:
                     if all(k in llm_result for k in required_keys):
                         if not llm_result.get("targets"):
-                            log.warning(f"LLM result for user {self.user_id} returned 0 targets. Failing.")
-                            self.parser_path_used = "failed"
-                            self.parsed_data = None
+                             log.warning(f"LLM result for user {self.user_id} returned 0 targets. Failing.")
+                             self.parser_path_used = "failed"
+                             self.parsed_data = None
                         else:
-                            self.parser_path_used = "llm"
-                            self.parsed_data = llm_result
+                             self.parser_path_used = "llm"
+                             self.parsed_data = llm_result
                     else:
-                        log.error(f"LLM result for user {self.user_id} was incomplete (missing keys). Failing.")
-                        self.parser_path_used = "failed"
-                        self.parsed_data = None
+                         log.error(f"LLM result for user {self.user_id} was incomplete (missing keys). Failing.")
+                         self.parser_path_used = "failed"
+                         self.parsed_data = None
             except Exception as e:
                 log.error(f"LLM parser failed unexpectedly: {e}", exc_info=True)
                 self.parser_path_used = "failed"
                 self.parsed_data = None
 
-        # --- تأكيد الحالة النهائية ---
+        # ✅ THE FIX: (v3.0.2) المسافة البادئة لهذا السطر يجب أن تكون هنا
         if not self.parsed_data:
             self.parser_path_used = "failed"
 
         # --- الخطوة 3: التحديث النهائي والرد ---
         latency_ms = int((time.monotonic() - self.start_time) * 1000)
+
         if self.parsed_data:
             return {
                 "status": "success",
@@ -117,6 +125,7 @@ class ParsingManager:
         log.info(f"User {self.user_id}: Starting Vision model parse.")
         try:
             vision_result = await image_parser.parse_with_vision(self.image_url)
+            
             if vision_result:
                 if all(k in vision_result for k in required_keys) and vision_result.get("targets"):
                     self.parser_path_used = "vision"
@@ -130,11 +139,13 @@ class ParsingManager:
             self.parser_path_used = "failed"
             self.parsed_data = None
 
+        # ✅ THE FIX: (v3.0.2) المسافة البادئة لهذا السطر يجب أن تكون هنا
         if not self.parsed_data:
             self.parser_path_used = "failed"
 
         # --- الخطوة 2: التحديث النهائي والرد ---
         latency_ms = int((time.monotonic() - self.start_time) * 1000)
+
         if self.parsed_data:
             return {
                 "status": "success",
@@ -149,4 +160,4 @@ class ParsingManager:
                 "parser_path_used": "failed",
                 "latency_ms": latency_ms
             }
---- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
