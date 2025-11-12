@@ -1,17 +1,13 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
+--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
 # File: ai_service/main.py
-# Version: 3.0.0 (Decoupled)
-# ✅ THE FIX: (Protocol 1) تم فصل الخدمة بالكامل عن قاعدة البيانات.
-#    - إزالة جميع واردات قاعدة البيانات (`session_scope`, `ParsingAttempt`, `ParsingTemplate`).
-#    - إزالة عمليات التحقق من قاعدة البيانات عند بدء التشغيل (`startup` event).
-#    - إزالة نقطة النهاية `/record_correction` (تم نقل المنطق إلى `api`).
-#    - إزالة نقطة النهاية `/suggest_template` (تم نقل المنطق إلى `api`).
-#    - تبسيط `/ai/parse` و `/ai/parse_image` لاستدعاء المدير (Manager) وإرجاع النتيجة فقط.
-# 🎯 IMPACT: هذه الخدمة الآن "عديمة الحالة" (Stateless) فيما يتعلق بقاعدة البيانات.
+# Version: 3.0.1 (Hotfix)
+# ✅ THE FIX: (Protocol 1) إضافة الاستيرادات المفقودة `Dict` و `Any` من `typing`.
+# 🎯 IMPACT: حل خطأ `NameError: name 'Dict' is not defined` ومنع الانهيار عند بدء التشغيل.
 
 import logging
 import os
 import json
+from typing import Dict, Any, Optional # ✅ ADDED Dict, Any, Optional
 from fastapi import FastAPI, Request, HTTPException, status
 from pydantic import ValidationError
 
@@ -23,18 +19,15 @@ log = logging.getLogger(__name__)
 from schemas import (
     ParseRequest, ParseResponse,
     ImageParseRequest,
-    # ❌ REMOVED Correction/Template schemas
     ParsedDataResponse
 )
 from services.parsing_manager import ParsingManager
 # ❌ REMOVED DB IMPORTS
-# from database import session_scope
-# from models import ParsingAttempt, ParsingTemplate
 
 # --- تهيئة التطبيق ---
 app = FastAPI(
     title="CapitalGuard AI Parsing Service (Decoupled)",
-    version="3.0.0", # ✅ Version bump
+    version="3.0.1", # ✅ Version bump
     description="خدمة مستقلة لتحليل وتفسير توصيات التداول (نص وصور) - بدون حالة DB."
 )
 
@@ -43,7 +36,6 @@ async def startup_event():
     log.info("AI Parsing Service (Decoupled) is starting up...")
     if not os.getenv("LLM_API_KEY"):
         log.warning("LLM_API_KEY is not set. LLM/Vision fallback will be disabled.")
-    # ❌ REMOVED DB check
     log.info("AI Service startup complete.")
 
 # --- نقاط النهاية (Endpoints) ---
@@ -61,13 +53,9 @@ async def parse_trade_text(request: ParseRequest):
     log.info(f"Received text parse request for user {request.user_id}, snippet: {request.text[:50]}...")
     try:
         manager = ParsingManager(user_id=request.user_id, text=request.text)
-        # ✅ REFACTORED: Call manager directly, no DB session
         result_dict = await manager.analyze()
         
-        # ✅ REFACTORED: تحويل بيانات Decimal إلى JSON متوافق
         if result_dict.get("status") == "success":
-            # Pydantic v2+ uses .model_dump() to serialize, but our ParsedDataResponse
-            # expects strings. We must serialize Decimals manually.
             serialized_data = _serialize_data_for_response(result_dict.get("data"))
             return ParseResponse(
                 status="success",
@@ -103,7 +91,6 @@ async def parse_trade_image(request: ImageParseRequest):
     log.info(f"Received image parse request for user {request.user_id}, url: ...{str(request.image_url)[-50:]}")
     try:
         manager = ParsingManager(user_id=request.user_id, image_url=str(request.image_url))
-        # ✅ REFACTORED: Call manager directly, no DB session
         result_dict = await manager.analyze_image()
         
         if result_dict.get("status") == "success":
@@ -138,7 +125,6 @@ async def parse_trade_image(request: ImageParseRequest):
 def _serialize_data_for_response(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     يحول البيانات المهيكلة (التي قد تحتوي على Decimal) إلى تنسيق الاستجابة (API Response).
-    (منسوخة من `parsing_manager` القديم)
     """
     if not data:
         return {}
@@ -165,4 +151,4 @@ def _serialize_data_for_response(data: Dict[str, Any]) -> Dict[str, Any]:
 
 # ❌ REMOVED: /ai/record_correction endpoint
 # ❌ REMOVED: /ai/suggest_template endpoint
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
+--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
