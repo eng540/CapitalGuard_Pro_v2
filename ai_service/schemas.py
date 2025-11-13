@@ -1,9 +1,10 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/schemas.py ---
 # File: ai_service/schemas.py
-# Version: 2.0.0 (Decoupled)
-# ✅ THE FIX: (Protocol 1) إزالة Schemas المتعلقة بقاعدة البيانات (Correction/Template).
-#    - إزالة `attempt_id` من `ParseResponse`.
-# 🎯 IMPACT: Schemas تعكس الآن خدمة تحليل نقية وعديمة الحالة.
+# Version: 2.1.0 (v5.1 Engine Compatible)
+# ✅ THE FIX: (Protocol 1) لا توجد تغييرات. هذا الملف متوافق بالفعل.
+#    - `ParsedDataResponse` يتوقع `strings` للأسعار، وهو ما
+#      تقوم دالة `_serialize_data_for_response` (في main.py) بإنشائه.
+# 🎯 IMPACT: هذا الملف جاهز.
 
 from pydantic import BaseModel, Field, HttpUrl
 from typing import List, Optional, Dict, Any, Union
