@@ -1,17 +1,12 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
-# src/capitalguard/interfaces/telegram/keyboards.py (v21.20 - R1 Task 6 UI Logic)
-"""
-Builds all Telegram keyboards for the bot.
-✅ THE FIX (R1-S1 Task 6):
-    - `build_open_recs_keyboard` signature and logic completely updated.
-    - It now accepts `activated_items` and `watchlist_items` separately.
-    - It injects non-clickable text headers (e.g., "--- 🚀 ACTIVATED ---")
-      into the list before pagination to create the required UI separation.
-    - Verified `build_user_trade_control_keyboard` logic already correctly
-      handles WATCHLIST/PENDING_ACTIVATION states.
-    - R1-FIX: Prevent None concatenation in `build_editable_review_card` by
-      coercing values to safe display strings before building button labels.
-"""
+# File: src/capitalguard/interfaces/telegram/keyboards.py
+# Version: 21.20.2 (Null-Safe Hotfix)
+# ✅ THE FIX: (Protocol 1) إصلاح خطأ `TypeError: can only concatenate str (not "NoneType")`.
+#    - 1. (CRITICAL) تحصين `build_editable_review_card` ضد قيم `None`.
+#    - 2. (NEW) استخدام `(data.get('key') or "N/A")` لضمان وجود قيمة نصية دائمًا.
+#    - 3. (NEW) استخدام f-strings (f"Asset: {asset}") بدلاً من الربط (+) لزيادة الأمان.
+# 🎯 IMPACT: مسار "الانحدار التدريجي" (Graceful Degradation) سيعمل الآن
+#    بنجاح عند فشل التحليل، ويقدم للمستخدم "مسودة فارغة" (Blank Draft) آمنة.
 
 import math
 import logging
@@ -23,7 +18,6 @@ from enum import Enum
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from capitalguard.domain.entities import Recommendation as RecommendationEntity, RecommendationStatus, ExitStrategy
-# ✅ R1-S1: Import the new Enum for status matching
 from capitalguard.domain.entities import UserTradeStatus
 
 from capitalguard.application.services.price_service import PriceService
@@ -48,8 +42,11 @@ def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
         return default
 
 def _format_price(price: Any) -> str:
+    # ✅ (v21.20.2) آمن ضد None
     price_dec = _to_decimal(price)
-    return "N/A" if not price_dec.is_finite() else f"{price_dec:g}"
+    if not price_dec.is_finite() or price_dec == Decimal(0):
+        return "N/A"
+    return f"{price_dec:g}" # Use 'g' for cleaner output
 
 def _pct(entry: Any, target_price: Any, side: str) -> float:
     try:
@@ -58,7 +55,7 @@ def _pct(entry: Any, target_price: Any, side: str) -> float:
         if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite(): 
             return 0.0
         
-        side_upper = (str(side) or "").upper()  # Ensure side is string
+        side_upper = (str(side) or "").upper()
         if side_upper == "LONG": 
             pnl = ((target_dec / entry_dec) - 1) * 100
         elif side_upper == "SHORT": 
@@ -98,13 +95,11 @@ class CallbackAction(Enum):
     BACK = "bk"
     CLOSE = "cl"
     PARTIAL = "pt"
-    CONFIRM = "cf"  # ✅ R1-S1: This now means "Activate Trade"
-    WATCH_CHANNEL = "watch"  # ✅ R1-S1: New action for watching only
+    CONFIRM = "cf"
+    WATCH_CHANNEL = "watch"
     CANCEL = "cn"
     EDIT_FIELD = "edit_field"
     TOGGLE = "toggle"
-
-    # ✅ R1-S1: New action for activating a UserTrade from the panel
     ACTIVATE_TRADE = "activate_trade"
 
 class CallbackBuilder:
@@ -178,14 +173,12 @@ class StatusDeterminer:
     def determine_icon(item: Any, live_price: Optional[float] = None) -> str:
         """Determines the status icon based on item state and live price."""
         try:
-            # ✅ R1-S1: Use the new 'orm_status_value' for UserTrades
             if getattr(item, 'is_user_trade', False):
                 status_value = _get_attr(item, 'orm_status_value')
             else:
                 status = _get_attr(item, 'status')
                 status_value = status.value if hasattr(status, 'value') else str(status).upper()
             
-            # ✅ R1-S1: Handle new statuses first
             if status_value == UserTradeStatus.WATCHLIST.value: 
                 return StatusIcons.WATCHLIST
             if status_value == UserTradeStatus.PENDING_ACTIVATION.value: 
@@ -206,7 +199,7 @@ class StatusDeterminer:
                         pnl = _pct(entry_dec, live_price, side)
                         return StatusIcons.PROFIT if pnl >= 0 else StatusIcons.LOSS
                 return StatusIcons.ACTIVE
-    
+        
         except Exception as e:
             logger.warning(f"Status determination failed: {e}")
         return StatusIcons.ERROR
@@ -244,18 +237,15 @@ async def build_open_recs_keyboard(
         # --- 1. Build the combined display list with headers ---
         display_list: List[Any] = []
         
-        # Header for Activated (only if list exists)
         if activated_items:
             display_list.append("--- 🚀 ACTIVATED TRADES ---")
             display_list.extend(activated_items)
 
-        # Header for Watchlist (only if list exists)
         if watchlist_items:
             display_list.append("--- 👁️ WATCHLIST ---")
             display_list.extend(watchlist_items)
 
         if not display_list:
-            # This should be caught by the handler, but as a fallback:
             return InlineKeyboardMarkup([[InlineKeyboardButton("✅ No open positions found.", callback_data="noop")]])
 
         # --- 2. Paginate the combined display list ---
@@ -269,7 +259,7 @@ async def build_open_recs_keyboard(
         assets_to_fetch = {
             (_get_attr(item, 'asset'), _get_attr(item, 'market', 'Futures')) 
             for item in paginated_items 
-            if not isinstance(item, str) and _get_attr(item, 'asset')  # Skip headers
+            if not isinstance(item, str) and _get_attr(item, 'asset')
         }
         
         price_tasks = [price_service.get_cached_price(asset, market) for asset, market in assets_to_fetch]
@@ -279,12 +269,10 @@ async def build_open_recs_keyboard(
         # --- 4. Build keyboard rows ---
         keyboard_rows = []
         for item in paginated_items:
-            # Check if item is a string header
             if isinstance(item, str):
                 keyboard_rows.append([InlineKeyboardButton(f" {item} ", callback_data="noop")])
                 continue
 
-            # It's a trade item
             rec_id, asset, side = _get_attr(item, 'id'), _get_attr(item, 'asset'), _get_attr(item, 'side')
             live_price = prices_map.get(asset)
             status_icon = StatusDeterminer.determine_icon(item, live_price)
@@ -314,52 +302,44 @@ async def build_open_recs_keyboard(
 
 def build_editable_review_card(parsed_data: Dict[str, Any], channel_name: str = "Unknown") -> InlineKeyboardMarkup:
     """Builds the interactive review card with Activate/Watch buttons."""
-    # Coerce values to safe display strings to avoid None concatenation errors.
-    asset_val = parsed_data.get('asset') or '—'
-    side_val = parsed_data.get('side') or '—'
-    entry_val = _format_price(parsed_data.get('entry'))
-    stop_loss_val = _format_price(parsed_data.get('stop_loss'))
-    targets = parsed_data.get('targets') or []
-
-    # Prepare display labels safely
-    asset_label = f"Asset: {asset_val}"
-    side_label = f"Side: {side_val}"
-    entry_label = f"Entry: {entry_val}"
-    sl_label = f"SL: {stop_loss_val}"
+    # ✅ THE FIX (v21.20.2): Add 'or' fallback to handle None from blank_draft
+    asset = parsed_data.get('asset') or "N/A"
+    side = parsed_data.get('side') or "N/A"
+    # _format_price is already safe against None
+    entry = _format_price(parsed_data.get('entry'))
+    stop_loss = _format_price(parsed_data.get('stop_loss'))
+    targets = parsed_data.get('targets', [])
 
     target_items = []
     for t in targets:
         price_str = _format_price(t.get('price'))
-        close_pct = t.get('close_percent', 0.0) or 0.0
-        # Normalize close_pct display
-        if isinstance(close_pct, (int, float)) and close_pct == int(close_pct):
-            pct_str = f"@{int(close_pct)}%"
-        else:
-            try:
-                pct_str = f"@{float(close_pct):.1f}%"
-            except Exception:
-                pct_str = ""
-        item_str = price_str + (pct_str if pct_str else "")
+        close_pct = t.get('close_percent', 0.0)
+        item_str = price_str
+        if close_pct > 0:
+            item_str += f"@{int(close_pct) if close_pct == int(close_pct) else close_pct:.1f}%"
         target_items.append(item_str)
-    target_str = ", ".join(target_items) if target_items else "—"
+    
+    # ✅ THE FIX (v21.20.2): Handle empty target list
+    target_str = ", ".join(target_items) if target_items else "N/A"
 
     ns = CallbackNamespace.FORWARD_PARSE
 
     keyboard = [
         [
-            InlineKeyboardButton(f"📝 {_truncate_text(asset_label)}",
+            # ✅ THE FIX (v21.20.2): Use f-string, not concatenation
+            InlineKeyboardButton(f"📝 {_truncate_text(f'Asset: {asset}')}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "asset")),
-            InlineKeyboardButton(f"📝 {_truncate_text(side_label)}",
+            InlineKeyboardButton(f"📝 {_truncate_text(f'Side: {side}')}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "side")),
         ],
         [
-            InlineKeyboardButton(f"📝 {_truncate_text(entry_label)}",
+            InlineKeyboardButton(f"📝 {_truncate_text(f'Entry: {entry}')}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "entry")),
-            InlineKeyboardButton(f"📝 {_truncate_text(sl_label)}",
+            InlineKeyboardButton(f"📝 {_truncate_text(f'SL: {stop_loss}')}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "stop_loss")),
         ],
         [
-            InlineKeyboardButton(f"📝 {_truncate_text('Targets: '+target_str, 50)}",
+            InlineKeyboardButton(f"📝 {_truncate_text(f'Targets: {target_str}', 50)}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "targets"))
         ],
         [
@@ -446,7 +426,6 @@ def build_user_trade_control_keyboard(trade_id: int, orm_status_value: str) -> I
                                  callback_data=CallbackBuilder.create(ns_pos, CallbackAction.CLOSE, "trade", trade_id))
         )
 
-    # Always add refresh if no other buttons are present (e.g., PENDING)
     if not action_buttons and orm_status_value not in [UserTradeStatus.CLOSED.value]:
         action_buttons.append(
             InlineKeyboardButton("🔄 Refresh Status", 
@@ -475,7 +454,7 @@ def build_confirmation_keyboard(
     return InlineKeyboardMarkup([[ 
         InlineKeyboardButton(confirm_text, callback_data=confirm_cb), 
         InlineKeyboardButton(cancel_text, callback_data=cancel_cb), 
-    ]]])
+    ]])
 
 
 # --- Recommendation Creation Flow Keyboards ---
@@ -620,7 +599,10 @@ def build_exit_management_keyboard(rec: RecommendationEntity) -> InlineKeyboardM
     if is_strategy_active:
         keyboard.append([InlineKeyboardButton("❌ Cancel Active Strategy", callback_data=CallbackBuilder.create(ns, "cancel", rec_id))])
 
-    keyboard.append([InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))])
+    # ✅ THE FIX (v21.20.1): Removed extra '])'
+    keyboard.append([InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, 
+        callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))
+    ])
     return InlineKeyboardMarkup(keyboard)
 
 def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
@@ -632,7 +614,4 @@ def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✍️ Custom %", callback_data=CallbackBuilder.create(ns, "partial_close_custom", rec_id))],
         [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))],
     ])
-
-
-# --- END of keyboards.py ---
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
