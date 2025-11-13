@@ -1,28 +1,21 @@
 #ai_service/services/image_parser.py
 
-#Version: 3.0.0 (Multi-Provider Engine — Robust, Retries, Fixed Extractors)
+#Version: 3.0.1 (Multi-Provider Engine — Fixed MIME Type Issue)
 
-""" Multi-provider Image Parser (v3.0.0)
+""" Multi-provider Image Parser (v3.0.1)
 
 Improvements in this release:
 
-Correct and compatible payload builders for Google (Gemini 2.x), OpenAI (gpt-4o), Anthropic Claude (shape-compatible), and Qwen-VL styles.
-
-Robust response extraction for multiple provider response shapes.
-
-Exponential backoff + retry for transient HTTP errors (429/5xx).
-
-Safer JSON extraction (find outermost JSON object using first '{' & last '}' to avoid accidental mid-text captures).
-
-Size-check for images with graceful failure hint (avoid 413).
-
-Clear telemetry of attempted providers and errors.
-
-Automatic fallback: if provider=openrouter and model family=google and direct GOOGLE_API_KEY is present, then upon OpenRouter failure will attempt direct Google endpoint (transparent).
-
-Defensive headers handling per-provider.
-
-Re-uses parsing_utils normalization and llm_parser financial checks.
+- Fixed MIME type detection for Telegram images (application/octet-stream)
+- Correct and compatible payload builders for Google (Gemini 2.x), OpenAI (gpt-4o), Anthropic Claude (shape-compatible), and Qwen-VL styles.
+- Robust response extraction for multiple provider response shapes.
+- Exponential backoff + retry for transient HTTP errors (429/5xx).
+- Safer JSON extraction (find outermost JSON object using first '{' & last '}' to avoid accidental mid-text captures).
+- Size-check for images with graceful failure hint (avoid 413).
+- Clear telemetry of attempted providers and errors.
+- Automatic fallback: if provider=openrouter and model family=google and direct GOOGLE_API_KEY is present, then upon OpenRouter failure will attempt direct Google endpoint (transparent).
+- Defensive headers handling per-provider.
+- Re-uses parsing_utils normalization and llm_parser financial checks.
 
 
 Environment variables used:
@@ -67,6 +60,9 @@ from services.llm_parser import (
 
 log = logging.getLogger(__name__)
 telemetry_log = logging.getLogger("ai_service.telemetry")
+
+# Supported MIME types for vision models
+SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
 
 # Environment-driven config
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google").lower()
@@ -141,6 +137,23 @@ EXTRACTION RULES (FROM IMAGE)
 
 
 8. Market/Order: Default to "Futures" and "LIMIT". Respond ONLY with the JSON object. """
+
+
+def _detect_image_format(image_bytes: bytes) -> str:
+    """Detect image format from magic bytes and return appropriate MIME type."""
+    if image_bytes.startswith(b'\xff\xd8\xff'):
+        return "image/jpeg"
+    elif image_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+        return "image/png"
+    elif image_bytes.startswith(b'RIFF') and len(image_bytes) > 12 and image_bytes[8:12] == b'WEBP':
+        return "image/webp"
+    elif image_bytes.startswith(b'\x00\x00\x00 ftypheic') or image_bytes.startswith(b'\x00\x00\x00 ftypheix'):
+        return "image/heic"
+    elif image_bytes.startswith(b'\x00\x00\x00 ftypmif1') or image_bytes.startswith(b'\x00\x00\x00 ftypmsf1'):
+        return "image/heif"
+    else:
+        # Default to JPEG for unknown formats
+        return "image/jpeg"
 
 
 # --------------------
@@ -358,18 +371,32 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
     attempted: List[Dict[str, Any]] = []
     final_errors: List[str] = []
 
-    # 1) Download image
+    # 1) Download image with improved MIME type detection
     try:
         async with httpx.AsyncClient() as client:
             get_resp = await client.get(image_url, timeout=20.0)
             get_resp.raise_for_status()
             image_bytes = get_resp.content
+            
+            # Improved MIME type detection for Telegram images
             mime = get_resp.headers.get("content-type", "image/jpeg") or "image/jpeg"
+            if mime == "application/octet-stream":
+                # Detect actual image format from magic bytes
+                detected_mime = _detect_image_format(image_bytes)
+                log.info(f"Detected image format: {detected_mime} (was: {mime})")
+                mime = detected_mime
+            
+            # Ensure MIME type is supported
+            if mime not in SUPPORTED_MIME_TYPES:
+                log.warning(f"Unsupported MIME type: {mime}. Converting to JPEG.")
+                mime = "image/jpeg"
+            
             # Quick size hint: warn if > 4.5MB (some providers have tight limits)
             size_bytes = len(image_bytes)
             if size_bytes > 4_500_000:
                 log.warning("Image larger than 4.5MB. Consider resizing before sending to avoid 413 errors.", extra=log_meta_base)
             image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+            
     except httpx.RequestError as e:
         log.error(f"Failed to download image: {e}", exc_info=True)
         telemetry_log.info(json.dumps({**log_meta_base, "success": False, "error": "download_failed"}))
