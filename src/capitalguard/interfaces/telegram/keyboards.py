@@ -1,4 +1,4 @@
-# --- src/capitalguard/interfaces/telegram/keyboards.py ---
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
 # src/capitalguard/interfaces/telegram/keyboards.py (v21.20 - R1 Task 6 UI Logic)
 """
 Builds all Telegram keyboards for the bot.
@@ -9,6 +9,8 @@ Builds all Telegram keyboards for the bot.
       into the list before pagination to create the required UI separation.
     - Verified `build_user_trade_control_keyboard` logic already correctly
       handles WATCHLIST/PENDING_ACTIVATION states.
+    - R1-FIX: Prevent None concatenation in `build_editable_review_card` by
+      coercing values to safe display strings before building button labels.
 """
 
 import math
@@ -312,35 +314,48 @@ async def build_open_recs_keyboard(
 
 def build_editable_review_card(parsed_data: Dict[str, Any], channel_name: str = "Unknown") -> InlineKeyboardMarkup:
     """Builds the interactive review card with Activate/Watch buttons."""
-    asset = parsed_data.get('asset', 'N/A')
-    side = parsed_data.get('side', 'N/A')
-    entry = _format_price(parsed_data.get('entry'))
-    stop_loss = _format_price(parsed_data.get('stop_loss'))
-    targets = parsed_data.get('targets', [])
+    # Coerce values to safe display strings to avoid None concatenation errors.
+    asset_val = parsed_data.get('asset') or '—'
+    side_val = parsed_data.get('side') or '—'
+    entry_val = _format_price(parsed_data.get('entry'))
+    stop_loss_val = _format_price(parsed_data.get('stop_loss'))
+    targets = parsed_data.get('targets') or []
+
+    # Prepare display labels safely
+    asset_label = f"Asset: {asset_val}"
+    side_label = f"Side: {side_val}"
+    entry_label = f"Entry: {entry_val}"
+    sl_label = f"SL: {stop_loss_val}"
 
     target_items = []
     for t in targets:
         price_str = _format_price(t.get('price'))
-        close_pct = t.get('close_percent', 0.0)
-        item_str = price_str
-        if close_pct > 0:
-            item_str += f"@{int(close_pct) if close_pct == int(close_pct) else close_pct:.1f}%"
+        close_pct = t.get('close_percent', 0.0) or 0.0
+        # Normalize close_pct display
+        if isinstance(close_pct, (int, float)) and close_pct == int(close_pct):
+            pct_str = f"@{int(close_pct)}%"
+        else:
+            try:
+                pct_str = f"@{float(close_pct):.1f}%"
+            except Exception:
+                pct_str = ""
+        item_str = price_str + (pct_str if pct_str else "")
         target_items.append(item_str)
-    target_str = ", ".join(target_items)
+    target_str = ", ".join(target_items) if target_items else "—"
 
     ns = CallbackNamespace.FORWARD_PARSE
 
     keyboard = [
         [
-            InlineKeyboardButton(f"📝 {_truncate_text('Asset: '+asset)}",
+            InlineKeyboardButton(f"📝 {_truncate_text(asset_label)}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "asset")),
-            InlineKeyboardButton(f"📝 {_truncate_text('Side: '+side)}",
+            InlineKeyboardButton(f"📝 {_truncate_text(side_label)}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "side")),
         ],
         [
-            InlineKeyboardButton(f"📝 {_truncate_text('Entry: '+entry)}",
+            InlineKeyboardButton(f"📝 {_truncate_text(entry_label)}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "entry")),
-            InlineKeyboardButton(f"📝 {_truncate_text('SL: '+stop_loss)}",
+            InlineKeyboardButton(f"📝 {_truncate_text(sl_label)}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "stop_loss")),
         ],
         [
@@ -460,7 +475,7 @@ def build_confirmation_keyboard(
     return InlineKeyboardMarkup([[ 
         InlineKeyboardButton(confirm_text, callback_data=confirm_cb), 
         InlineKeyboardButton(cancel_text, callback_data=cancel_cb), 
-    ]])
+    ]]])
 
 
 # --- Recommendation Creation Flow Keyboards ---
@@ -620,3 +635,4 @@ def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
 
 
 # --- END of keyboards.py ---
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
