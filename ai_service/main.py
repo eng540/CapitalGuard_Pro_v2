@@ -1,13 +1,17 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
 # File: ai_service/main.py
-# Version: 3.0.1 (Hotfix)
-# ✅ THE FIX: (Protocol 1) إضافة الاستيرادات المفقودة `Dict` و `Any` من `typing`.
-# 🎯 IMPACT: حل خطأ `NameError: name 'Dict' is not defined` ومنع الانهيار عند بدء التشغيل.
+# Version: 3.1.0 (v5.1 Engine Refactor)
+# ✅ THE FIX: (Protocol 1) تحديث للتعامل مع Decimals من v5.1 Engine.
+#    - 1. (MAINTAIN) الحفاظ على "الفصل" (Decoupled) - لا يوجد اتصال بقاعدة البيانات.
+#    - 2. (NEW) إضافة دالة `_serialize_data_for_response` لتحويل `Decimals`
+#       التي يتم إرجاعها من `ParsingManager` إلى `strings` لـ JSON.
+# 🎯 IMPACT: هذا الملف الآن يتوافق تمامًا مع مخرجات v5.1 Engine.
 
 import logging
 import os
 import json
-from typing import Dict, Any, Optional # ✅ ADDED Dict, Any, Optional
+from typing import Dict, Any, Optional, List # ✅ ADDED
+from decimal import Decimal # ✅ ADDED
 from fastapi import FastAPI, Request, HTTPException, status
 from pydantic import ValidationError
 
@@ -27,7 +31,7 @@ from services.parsing_manager import ParsingManager
 # --- تهيئة التطبيق ---
 app = FastAPI(
     title="CapitalGuard AI Parsing Service (Decoupled)",
-    version="3.0.1", # ✅ Version bump
+    version="3.1.0", # ✅ Version bump
     description="خدمة مستقلة لتحليل وتفسير توصيات التداول (نص وصور) - بدون حالة DB."
 )
 
@@ -45,6 +49,34 @@ async def health_check():
     """نقطة نهاية للتحقق من صحة الخدمة."""
     return {"status": "ok"}
 
+# --- ✅ NEW (v3.1): Helper function to serialize Decimals ---
+def _serialize_data_for_response(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    يحول البيانات المهيكلة (التي قد تحتوي على Decimal) إلى تنسيق الاستجابة (API Response).
+    """
+    if not data:
+        return {}
+    
+    entry = data.get("entry")
+    stop_loss = data.get("stop_loss")
+    targets = data.get("targets", [])
+
+    return {
+        "asset": data.get("asset"),
+        "side": data.get("side"),
+        "entry": str(entry) if entry is not None else None,
+        "stop_loss": str(stop_loss) if stop_loss is not None else None,
+        "targets": [
+            {
+                "price": str(t.get("price")) if t.get("price") is not None else "0",
+                "close_percent": t.get("close_percent", 0.0)
+            } for t in targets
+        ],
+        "market": data.get("market", "Futures"),
+        "order_type": data.get("order_type", "LIMIT"),
+        "notes": data.get("notes")
+    }
+
 @app.post("/ai/parse", response_model=ParseResponse)
 async def parse_trade_text(request: ParseRequest):
     """
@@ -56,6 +88,7 @@ async def parse_trade_text(request: ParseRequest):
         result_dict = await manager.analyze()
         
         if result_dict.get("status") == "success":
+            # ✅ (v3.1) Serialize Decimals to strings for the response
             serialized_data = _serialize_data_for_response(result_dict.get("data"))
             return ParseResponse(
                 status="success",
@@ -94,6 +127,7 @@ async def parse_trade_image(request: ImageParseRequest):
         result_dict = await manager.analyze_image()
         
         if result_dict.get("status") == "success":
+            # ✅ (v3.1) Serialize Decimals to strings for the response
             serialized_data = _serialize_data_for_response(result_dict.get("data"))
             return ParseResponse(
                 status="success",
@@ -120,35 +154,4 @@ async def parse_trade_image(request: ImageParseRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected internal error occurred: {e}"
         )
-
-# --- ✅ ADDED: Helper function to serialize Decimals ---
-def _serialize_data_for_response(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    يحول البيانات المهيكلة (التي قد تحتوي على Decimal) إلى تنسيق الاستجابة (API Response).
-    """
-    if not data:
-        return {}
-    
-    entry = data.get("entry")
-    stop_loss = data.get("stop_loss")
-    targets = data.get("targets", [])
-
-    return {
-        "asset": data.get("asset"),
-        "side": data.get("side"),
-        "entry": str(entry) if entry is not None else None,
-        "stop_loss": str(stop_loss) if stop_loss is not None else None,
-        "targets": [
-            {
-                "price": str(t.get("price")) if t.get("price") is not None else "0",
-                "close_percent": t.get("close_percent", 0.0)
-            } for t in targets
-        ],
-        "market": data.get("market", "Futures"),
-        "order_type": data.get("order_type", "LIMIT"),
-        "notes": data.get("notes")
-    }
-
-# ❌ REMOVED: /ai/record_correction endpoint
-# ❌ REMOVED: /ai/suggest_template endpoint
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
