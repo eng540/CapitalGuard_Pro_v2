@@ -1,12 +1,10 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/llm_parser.py ---
 # File: ai_service/services/llm_parser.py
-# Version: 5.0.0 (v5.0 Engine Core)
-# ✅ THE FIX: (Protocol 1) تمت إعادة بناء هذا الملف بالكامل ليتوافق مع v5.0.
-#    - 1. (DRY) تم حذف جميع الدوال المكررة (like _financial_consistency_check).
-#    - 2. (NEW) أصبح الآن يستدعي الأدوات الموحدة من `parsing_utils`
-#       (مثل `_post_with_retries`, `_safe_outer_json_extract`).
-#    - 3. (NEW) يدعم الآن (Google, OpenAI, Claude, OpenRouter) لتحليل النصوص.
-# 🎯 IMPACT: هذا الملف الآن موثوق، مرن، ويتبع نفس منطق `image_parser.py`.
+# Version: 5.1.0 (v5.1 Engine Refactor)
+# ✅ THE FIX: (Protocol 1) تم إصلاح التبعيات الدائرية (Circular Dependencies).
+#    - 1. (DRY) تم حذف جميع الدوال المساعدة (مثل _build_google_headers, _extract_google_response).
+#    - 2. (NEW) أصبح الآن يستدعي *فقط* الأدوات الموحدة من `parsing_utils`.
+# 🎯 IMPACT: هذا الملف الآن "نظيف" (Clean) ومتوافق مع v5.1 Engine.
 
 import os
 import re
@@ -17,7 +15,7 @@ from decimal import Decimal
 
 import httpx
 
-# --- ✅ استيراد مصدر الحقيقة الوحيد (v5.0) ---
+# --- ✅ استيراد مصدر الحقيقة الوحيد (v5.1) ---
 from services.parsing_utils import (
     parse_decimal_token, 
     normalize_targets,
@@ -28,9 +26,11 @@ from services.parsing_utils import (
     _safe_outer_json_extract,
     _extract_claude_response,
     _extract_qwen_response,
-    # (نستورد هذه من utils أيضًا إذا تم نقلها، ولكن llm_parser الأصلي كان لديه هذا)
+    # (الاستيرادات التي كانت مفقودة في utils)
     _extract_google_response,
-    _extract_openai_response
+    _extract_openai_response,
+    _build_google_headers,
+    _build_openai_headers
 )
 
 log = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "")
 if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
     log.warning("LLM environment variables incomplete. LLM parsing may be skipped.")
 
-# --- ✅ (v5.0) Prompt موحد للنصوص ---
+# --- (v5.0) Prompt موحد للنصوص ---
 SYSTEM_PROMPT_TEXT = os.getenv("LLM_SYSTEM_PROMPT_TEXT") or """
 You are an expert financial analyst. Your task is to extract structured data from a forwarded trade signal (text).
 Return ONLY a valid JSON object with fields: asset, side, entry, stop_loss, targets, notes (optional).
