@@ -18,14 +18,21 @@ import asyncio
 from typing import Any, Dict, Optional, Tuple, List
 import httpx
 
-# Reuse parsing utilities and validation helpers
-from services.parsing_utils import parse_decimal_token, normalize_targets
-from services.llm_parser import (
+
+from services.parsing_utils import (
+    parse_decimal_token, 
+    normalize_targets,
     _financial_consistency_check,
-    _build_google_headers,
+    _model_family,
+    _headers_for_call,
+    _post_with_retries,
+    _safe_outer_json_extract,
     _extract_google_response,
-    _build_openai_headers,
     _extract_openai_response,
+    _extract_claude_response,
+    _extract_qwen_response,
+    _smart_signal_selector,
+    _has_obvious_errors
 )
 
 # ✅ THE FIX (v4.0.1): Use __name__ for the logger
