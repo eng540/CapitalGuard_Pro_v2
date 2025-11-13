@@ -1,13 +1,15 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_utils.py ---
 # File: ai_service/services/parsing_utils.py
-# Version: 2.0.0 (v5.0 Engine Core)
-# ✅ THE FIX: (Protocol 1) ترقية إلى مكتبة أدوات مركزية للمحرك v5.0.
-#    - 1. (NEW) إضافة آلية إعادة المحاولة: `_post_with_retries`.
-#    - 2. (NEW) إضافة "محدد الإشارة الذكي": `_smart_signal_selector` و `_has_obvious_errors`.
-#    - 3. (NEW) إضافة "مستخرج JSON الآمن": `_safe_outer_json_extract`.
-#    - 4. (NEW) إضافة مستخرِجات مخصصة: `_extract_claude_response`, `_extract_qwen_response`.
-#    - 5. (NEW) إضافة مساعدين: `_model_family`, `_headers_for_call`.
-#    - 6. (MOVED) نقل `_financial_consistency_check` (من llm_parser) إلى هنا.
+# Version: 2.1.0 (v5.0 Engine Core - Hotfix)
+# ✅ THE FIX: (Protocol 1) إصلاح خطأ `ImportError`.
+#    - 1. (MOVED) تمت إضافة `_extract_google_response` و `_extract_openai_response`
+#       (التي تم نقلها من `llm_parser` القديم) إلى ملف الأدوات الموحد هذا.
+#    - 2. (NEW) إضافة آلية إعادة المحاولة: `_post_with_retries`.
+#    - 3. (NEW) إضافة "محدد الإشارة الذكي": `_smart_signal_selector` و `_has_obvious_errors`.
+#    - 4. (NEW) إضافة "مستخرج JSON الآمن": `_safe_outer_json_extract`.
+#    - 5. (NEW) إضافة مستخرِجات مخصصة: `_extract_claude_response`, `_extract_qwen_response`.
+#    - 6. (NEW) إضافة مساعدين: `_model_family`, `_headers_for_call`.
+#    - 7. (MOVED) نقل `_financial_consistency_check` (من llm_parser) إلى هنا.
 # 🎯 IMPACT: هذا الملف أصبح الآن "مصدر الحقيقة" (SSoT) لجميع عمليات التحليل.
 
 import os
@@ -192,7 +194,6 @@ def normalize_targets(
 def _financial_consistency_check(data: Dict[str, Any]) -> bool:
     """Strict numeric checks (v5.0). Expects Decimals."""
     try:
-        # Data from normalize_targets/parse_decimal_token should be Decimal
         entry = data["entry"]
         sl = data["stop_loss"]
         side = str(data["side"]).strip().upper()
@@ -247,6 +248,23 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
 
 
 # --- 3. v5.0 Engine Helpers (NEW/MOVED) ---
+
+# ✅ THE FIX (v2.1): Add the missing extractors
+def _extract_google_response(response_json: Dict[str, Any]) -> str:
+    """Extracts text content from a Google Gemini response."""
+    try:
+        return response_json["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError, TypeError) as e:
+        log.warning(f"Failed to extract Google response: {e}")
+        return json.dumps(response_json)
+
+def _extract_openai_response(response_json: Dict[str, Any]) -> str:
+    """Extracts text content from an OpenAI/OpenRouter response."""
+    try:
+        return response_json["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        log.warning(f"Failed to extract OpenAI response: {e}")
+        return json.dumps(response_json)
 
 def _model_family(model_name: str) -> str:
     """Detects the model family from its name."""
