@@ -1,16 +1,12 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_utils.py ---
 # File: ai_service/services/parsing_utils.py
-# Version: 2.2.0 (v5.1 Engine Core - ImportError Hotfix)
-# ✅ THE FIX: (Protocol 1) إصلاح خطأ `ImportError` الحرج.
-#    - 1. (MOVED) تمت إضافة `_extract_google_response` و `_extract_openai_response`.
-#    - 2. (MOVED) تمت إضافة `_build_google_headers` و `_build_openai_headers`.
-#    - 3. (NEW) إضافة آلية إعادة المحاولة: `_post_with_retries`.
-#    - 4. (NEW) إضافة "محدد الإشارة الذكي": `_smart_signal_selector` (لإصلاح خطأ JSON Array).
-#    - 5. (NEW) إضافة "مستخرج JSON الآمن": `_safe_outer_json_extract` (لإصلاح خطأ JSON Array).
-#    - 6. (NEW) إضافة مستخرِجات مخصصة: `_extract_claude_response`, `_extract_qwen_response`.
-#    - 7. (NEW) إضافة مساعدين: `_model_family`, `_headers_for_call`.
-#    - 8. (MOVED) نقل `_financial_consistency_check` (من llm_parser) إلى هنا.
-# 🎯 IMPACT: هذا الملف أصبح الآن "مصدر الحقيقة" (SSoT) لجميع عمليات التحليل.
+# Version: 2.2.1 (v5.2 Engine - JSON Comma Hotfix)
+# ✅ THE FIX: (Protocol 1) إصلاح خطأ `JSONDecodeError: Extra data` (بسبب 107,787.79).
+#    - 1. (NEW) تحديث `_safe_outer_json_extract` ليتضمن "تنظيف مسبق" (Pre-Sanitization)
+#       لإزالة الفواصل (commas) من داخل الأرقام قبل محاولة `json.loads`.
+#    - 2. (MAINTAIN) الحفاظ على جميع إصلاحات v2.2.0 (إضافة `_extract_google_response`
+#       و `_build_google_headers` والمساعدين الآخرين) لحل `ImportError`.
+# 🎯 IMPACT: هذا الملف الآن موثوق، ومرن ضد أخطاء تنسيق JSON الشائعة.
 
 import os
 import re
@@ -249,7 +245,7 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
 
 # --- 3. v5.0 Engine Helpers (NEW/MOVED) ---
 
-# ✅ THE FIX (v2.2.0): Add the missing extractors
+# ✅ (v2.2.0): Add the missing extractors
 def _extract_google_response(response_json: Dict[str, Any]) -> str:
     """Extracts text content from a Google Gemini response."""
     try:
@@ -266,7 +262,7 @@ def _extract_openai_response(response_json: Dict[str, Any]) -> str:
         log.warning(f"Failed to extract OpenAI response: {e}")
         return json.dumps(response_json)
 
-# ✅ THE FIX (v2.2.0): Add the missing header builders
+# ✅ (v2.2.0): Add the missing header builders
 def _build_google_headers(api_key: str) -> Dict[str, str]:
     return {"Content-Type": "application/json", "X-goog-api-key": api_key}
 
@@ -351,17 +347,32 @@ def _safe_outer_json_extract(text: str) -> Optional[str]:
     if not text:
         return None
     
+    json_block = None
+
     # 1. Try to find ```json ... ``` (Most reliable)
     m_fence = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL | re.IGNORECASE)
     if m_fence:
-        return m_fence.group(1)
-
-    # 2. Try to find non-greedy { ... } or [ ... ]
-    m_nongreedy = re.search(r'(\[.*?\]|\{.*?\})', text, re.DOTALL)
-    if m_nongreedy:
-        return m_nongreedy.group(1)
+        json_block = m_fence.group(1)
+    else:
+        # 2. Try to find non-greedy { ... } or [ ... ]
+        m_nongreedy = re.search(r'(\[.*?\]|\{.*?\})', text, re.DOTALL)
+        if m_nongreedy:
+            json_block = m_nongreedy.group(1)
         
-    return None
+    if not json_block:
+        return None
+
+    # ✅ THE FIX (v2.2.1 / v5.2 Engine): Pre-sanitize the JSON block
+    # Remove commas inside numbers (e.g., "entry": 107,787.79 -> "entry": 107787.79)
+    # This regex targets commas that are between two digits.
+    try:
+        # Iteratively remove commas between digits
+        sanitized_block = json_block
+        sanitized_block = re.sub(r'(\d),(\d{3})', r'\1\2', sanitized_block)
+        sanitized_block = re.sub(r'(\d),(\d{3})', r'\1\2', sanitized_block) # Run again for millions
+        return sanitized_block
+    except Exception:
+        return json_block # Return original if regex fails
 
 def _extract_claude_response(response_json: Dict[str, Any]) -> str:
     """ Handle multiple Claude response shapes. """
