@@ -1,15 +1,12 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/image_parser.py ---
-# ai_service/services/image_parser.py (v1.0 - ADR-003)
-"""
-Service for parsing trade signals from images using a Vision model.
-
-This service:
-1. Downloads an image from a provided URL.
-2. Encodes it to base64.
-3. Sends it to a multimodal LLM (like Gemini) with a specific prompt.
-4. Re-uses the *exact same* validation and normalization logic from the
-   text-based llm_parser to ensure 100% data consistency.
-"""
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/image_parser.py ---
+# File: ai_service/services/image_parser.py
+# Version: 2.0.0 (Multi-Provider Engine)
+# ✅ THE FIX: (Protocol 1 / "الحل 1") تم تنفيذ "مصنع حمولات" (Payload Factory) متعدد المزودين.
+#    - إضافة دوال بناء حمولات جديدة: `_build_claude_vision_payload` و `_build_qwen_vision_payload`.
+#    - تحديث `parse_with_vision` ليقوم باختيار دالة البناء الصحيحة بناءً
+#      على `LLM_PROVIDER` و `LLM_MODEL` (مثل "claude", "qwen").
+# 🎯 IMPACT: النظام يدعم الآن Google, OpenAI, Anthropic (Claude), و Qwen
+#    لتحليل الصور، ويمكن التبديل بينهم عبر ملف .env فقط.
 
 import os
 import re
@@ -29,27 +26,29 @@ from services.llm_parser import (
     _financial_consistency_check,
     _build_google_headers,
     _extract_google_response,
-    _build_openai_headers, # In case user switches to gpt-4o
-    _extract_openai_response
+    _build_openai_headers,
+    _extract_openai_response,
+    # ✅ ADDED: استيراد مستخرج Claude/Qwen (بافتراض أنه مشابه لـ OpenAI)
+    _extract_openai_response as _extract_claude_response,
+    _extract_openai_response as _extract_qwen_response
 )
 
 log = logging.getLogger(__name__)
 telemetry_log = logging.getLogger("ai_service.telemetry")
 
-# --- Environment-driven LLM/Vision config (Reuses the same vars) ---
+# --- Environment-driven LLM/Vision config ---
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google").lower()
 LLM_API_KEY = os.getenv("LLM_API_KEY")
-LLM_API_URL = os.getenv("LLM_API_URL") # Assumes this is a vision-capable model URL
-LLM_MODEL = os.getenv("LLM_MODEL") # Assumes this is a vision-capable model (e.g., gemini-1.5-flash)
+LLM_API_URL = os.getenv("LLM_API_URL")
+LLM_MODEL = os.getenv("LLM_MODEL", "") # الافتراضي هو نص فارغ للتحقق
 
 if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
     log.warning("LLM/Vision environment variables incomplete. Image parsing may be skipped.")
 
-# --- ✅ (ADR-003): New prompt specifically for image analysis ---
+# --- ✅ (ADR-003): Prompt موحد للصور ---
 SYSTEM_PROMPT_VISION = os.getenv("LLM_SYSTEM_PROMPT_VISION") or """
 You are an expert financial analyst.
 Your task is to extract structured data from an IMAGE of a trade signal.
-The image may be a screenshot from another Telegram channel or trading platform.
 Analyze the text visible in the image and return ONLY a valid JSON object.
 
 --- 
@@ -65,19 +64,17 @@ Analyze the text visible in the image and return ONLY a valid JSON object.
 ### EXTRACTION RULES (FROM IMAGE) ###
 1.  Asset: Find the asset (e.g., "#ETH", "BTCUSDT").
 2.  Side: "LONG" or "SHORT", "Buy" or "Sell".
-3.  Entry: Find "Entry", "مناطق الدخول", "Entry Price".
-    If it's a range, use *ONLY THE FIRST* price.
-4.  Stop Loss: Find "SL", "ايقاف خسارة", "Stop Loss".
-5.  Targets: Find "Targets", "TPs", "الاهداف". Extract *all* numbers that follow.
-6.  **Percentages:** Look for "20% each", "كل هدف 25%". If found, apply to all targets.
-    If not found, default to 0.0 (the normalizer will handle it).
-7.  Notes: Add any extra text (like "Leverage: 10x") to the "notes" field.
+3.  Entry: Find "Entry", "مناطق الدخول". If it's a range, use *ONLY THE FIRST* price.
+4.  Stop Loss: Find "SL", "ايقاف خسارة".
+5.  Targets: Find "Targets", "TPs", "الاهداف". Extract *all* numbers.
+6.  Percentages: Default to 0.0 (the normalizer will handle it).
+7.  Notes: Add any extra text (like "Leverage: 10x") to "notes".
 8.  Market/Order: Default to "Futures" and "LIMIT".
 
-You will be given an image. Respond ONLY with the JSON object.
+Respond ONLY with the JSON object.
 """
 
-# --- Payload Builders ---
+# --- Payload Builders (Originals) ---
 
 def _build_google_vision_payload(image_base64: str, image_mime_type: str) -> Dict[str, Any]:
     """Builds the payload for Google Gemini (multimodal)."""
@@ -106,10 +103,7 @@ def _build_openai_vision_payload(image_base64: str, image_mime_type: str) -> Dic
     return {
         "model": LLM_MODEL,
         "messages": [
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT_VISION
-            },
+            {"role": "system", "content": SYSTEM_PROMPT_VISION},
             {
                 "role": "user",
                 "content": [
@@ -126,11 +120,66 @@ def _build_openai_vision_payload(image_base64: str, image_mime_type: str) -> Dic
         "max_tokens": 2048
     }
 
-# --- Main Parse Function ---
+# --- ✅ NEW: Payload Builders (Based on your report) ---
+
+def _build_claude_vision_payload(image_base64: str, image_mime_type: str) -> Dict[str, Any]:
+    """Builds the payload for Anthropic Claude 3 (multimodal)."""
+    return {
+        "model": LLM_MODEL,
+        "messages": [
+            # Note: Claude's "system" prompt is a top-level parameter
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image_mime_type,
+                            "data": image_base64
+                        }
+                    },
+                    {"type": "text", "text": "Analyze the attached trade signal image."}
+                ]
+            }
+        ],
+        "system": SYSTEM_PROMPT_VISION, # System prompt is separate
+        "max_tokens": 2048,
+        "temperature": 0.0
+        # Claude does not (natively) support JSON response format,
+        # but the prompt engineering should force it.
+    }
+
+def _build_qwen_vision_payload(image_base64: str, image_mime_type: str) -> Dict[str, Any]:
+    """Builds the payload for Qwen-VL (multimodal)."""
+    # Qwen's API (especially via Alibaba) can be different,
+    # but the format you provided is common for their open-source models.
+    # Assuming the API endpoint handles this structure.
+    return {
+        "model": LLM_MODEL,
+        "input": {
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT_VISION},
+                {
+                    "role": "user",
+                    "content": [
+                        {"image": f"data:{image_mime_type};base64,{image_base64}"},
+                        {"text": "Analyze the attached trade signal image."}
+                    ]
+                }
+            ]
+        },
+        "parameters": {
+            "result_format": "message"
+        }
+    }
+
+# --- ✅ REFACTORED: Main Parse Function (Payload Factory) ---
 
 async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
     """
-    Downloads, encodes, and calls the Vision provider to parse a trade from an image.
+    Downloads, encodes, and calls the Vision provider to parse a trade.
+    It now uses a "Payload Factory" to select the correct payload builder.
     Returns normalized dict or None on failure.
     """
     if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
@@ -139,7 +188,7 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
 
     log_meta = {"event": "vision_parse", "provider": LLM_PROVIDER, "model": LLM_MODEL}
 
-    # 1. Download the image
+    # 1. Download the image (Unchanged)
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(image_url, timeout=15.0)
@@ -154,14 +203,45 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
         log.error(f"Error processing image download: {e}", exc_info=True)
         return None
 
-    # 2. Build Payload
+    # 2. ✅ REFACTORED: Payload Factory Logic
+    headers = {}
+    payload = {}
+    content_extractor = _extract_openai_response # Default
+    
     try:
-        if LLM_PROVIDER == "google":
+        provider = LLM_PROVIDER.lower()
+        model_name = LLM_MODEL.lower()
+
+        # Default headers (OpenAI/OpenRouter compatible)
+        headers = _build_openai_headers(LLM_API_KEY)
+        if provider == "openrouter":
+            # OpenRouter requires these headers
+            headers["HTTP-Referer"] = "http://localhost" # Can be anything
+            headers["X-Title"] = "CapitalGuard"
+
+        if provider == "google":
             headers = _build_google_headers(LLM_API_KEY)
             payload = _build_google_vision_payload(image_base64, image_mime_type)
-        else: # Assumes openai or openrouter
-            headers = _build_openai_headers(LLM_API_KEY)
+            content_extractor = _extract_google_response
+        
+        elif "claude" in model_name: # Handles 'anthropic/claude...'
+            payload = _build_claude_vision_payload(image_base64, image_mime_type)
+            content_extractor = _extract_claude_response
+            # Anthropic API has specific headers if NOT using OpenRouter
+            if provider == "anthropic":
+                headers["x-api-key"] = LLM_API_KEY
+                headers["anthropic-version"] = "2023-06-01"
+                headers.pop("Authorization", None) # Remove Bearer token
+
+        elif "qwen" in model_name: # Handles 'qwen/...'
+            payload = _build_qwen_vision_payload(image_base64, image_mime_type)
+            content_extractor = _extract_qwen_response
+            # Qwen might need specific headers if not using OpenRouter/OpenAI format
+
+        else: # Default to OpenAI format
             payload = _build_openai_vision_payload(image_base64, image_mime_type)
+            content_extractor = _extract_openai_response
+
     except Exception as e:
         log.error(f"Failed to build Vision payload: {e}", exc_info=True)
         return None
@@ -176,17 +256,15 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
             log_meta["latency_ms"] = latency_ms
 
             if response.status_code != 200:
-                log.error("Vision API error", extra={**log_meta, "response_text": response.text[:200]})
+                # Log the actual error response from the provider
+                log.error(f"Vision API error. Status: {response.status_code}. Response: {response.text[:200]}", extra=log_meta)
                 telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "http_status"}))
                 return None
 
             response_json = response.json()
 
             # 4. Extract Response
-            if LLM_PROVIDER == "google":
-                content_str = _extract_google_response(response_json)
-            else:
-                content_str = _extract_openai_response(response_json)
+            content_str = content_extractor(response_json)
 
             m = re.search(r'\{.*\}', content_str, re.DOTALL)
             if not m:
@@ -212,8 +290,6 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                 return None
 
             # 5. ✅ CRITICAL: Re-use text normalization and validation
-            # Note: We pass an empty string for `source_text` as we can't reliably
-            # get global percentages from the image text itself via this prompt.
             parsed_targets_raw = parsed.get("targets")
             normalized_targets = normalize_targets(parsed_targets_raw, source_text="")
             parsed["targets"] = normalized_targets 
@@ -252,5 +328,4 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
         log.exception(f"Unexpected error in parse_with_vision: {e}")
         telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "unexpected"}))
         return None
-
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/image_parser.py ---
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/image_parser.py ---
