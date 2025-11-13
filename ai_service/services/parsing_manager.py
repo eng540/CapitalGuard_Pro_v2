@@ -1,10 +1,11 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
 # File: ai_service/services/parsing_manager.py
-# Version: 3.0.2 (Indentation Hotfix)
-# ✅ THE FIX: (Protocol 1) إصلاح خطأ `IndentationError` الحرج.
-#    - تمت مراجعة جميع المسافات البادئة في دوال `analyze` و `analyze_image`
-#      لضمان تطابق الكتل (blocks) بعد إزالة منطق قاعدة البيانات.
-# 🎯 IMPACT: ستعمل الخدمة الآن بنجاح بعد فصل قاعدة البيانات.
+# Version: 3.1.0 (v5.1 Engine Refactor)
+# ✅ THE FIX: (Protocol 1) تم تحديث هذا الملف ليتوافق مع v5.1.
+#    - 1. (MAINTAIN) الحفاظ على منطق "الفصل" (Decoupled) - لا يوجد اتصال بقاعدة البيانات.
+#    - 2. (NEW) هذا الملف يستدعي الآن `llm_parser` (v5.1) و `image_parser` (v5.1)
+#       اللذين تم إصلاحهما بالكامل.
+# 🎯 IMPACT: هذا يكمل ترقية `ai-service` إلى v5.1 Engine.
 
 import logging
 import time
@@ -15,8 +16,8 @@ from decimal import Decimal
 # from database import session_scope
 # from models import ParsingAttempt, ParsingTemplate, User
 
-# استيراد المحللات
-from services import regex_parser
+# استيراد المحللات (الآن v5.1)
+from services import regex_parser # (ملاحظة: regex_parser لا يزال يستخدم DB)
 from services import llm_parser
 from services import image_parser
 
@@ -26,7 +27,7 @@ log = logging.getLogger(__name__)
 
 class ParsingManager:
     """
-    (v3.0.2 - Decoupled)
+    (v3.1.0 - Decoupled)
     يدير دورة حياة تحليل التوصية (بدون اتصال بقاعدة البيانات).
     """
 
@@ -51,6 +52,7 @@ class ParsingManager:
         required_keys = ['asset', 'side', 'entry', 'stop_loss', 'targets']
 
         # --- الخطوة 1: المسار السريع (Regex) ---
+        # (ملاحظة: هذا المسار لا يزال يتطلب اتصال DB. إذا تم تعطيل DB، سيفشل هذا بهدوء)
         try:
             # ✅ REFACTORED: Regex parser no longer needs a session
             # We pass 'user_id' instead of 'session'
@@ -59,7 +61,7 @@ class ParsingManager:
             if regex_result and all(k in regex_result for k in required_keys) and regex_result.get('targets'):
                 log.info(f"Regex parser succeeded for user {self.user_id}.")
                 self.parser_path_used = "regex"
-                self.parsed_data = regex_result
+                self.parsed_data = regex_result # (يحتوي على Decimals)
             elif regex_result:
                 log.warning(f"Regex parser result for user {self.user_id} was incomplete. Falling back to LLM.")
                 self.parsed_data = None
@@ -67,7 +69,7 @@ class ParsingManager:
                 self.parsed_data = None
                 
         except Exception as e:
-            log.error(f"Regex parser failed unexpectedly: {e}", exc_info=True)
+            log.error(f"Regex parser failed unexpectedly (maybe DB connection?): {e}", exc_info=True)
             self.parsed_data = None
 
         # --- الخطوة 2: المسار الذكي (LLM) ---
@@ -83,17 +85,19 @@ class ParsingManager:
                              self.parsed_data = None
                         else:
                              self.parser_path_used = "llm"
-                             self.parsed_data = llm_result
+                             self.parsed_data = llm_result # (يحتوي على Decimals)
                     else:
                          log.error(f"LLM result for user {self.user_id} was incomplete (missing keys). Failing.")
                          self.parser_path_used = "failed"
                          self.parsed_data = None
+                else:
+                    self.parser_path_used = "failed"
+                    self.parsed_data = None
             except Exception as e:
                 log.error(f"LLM parser failed unexpectedly: {e}", exc_info=True)
                 self.parser_path_used = "failed"
                 self.parsed_data = None
 
-        # ✅ THE FIX: (v3.0.2) المسافة البادئة لهذا السطر يجب أن تكون هنا
         if not self.parsed_data:
             self.parser_path_used = "failed"
 
@@ -103,7 +107,7 @@ class ParsingManager:
         if self.parsed_data:
             return {
                 "status": "success",
-                "data": self.parsed_data,
+                "data": self.parsed_data, # (يحتوي على Decimals)
                 "parser_path_used": self.parser_path_used,
                 "latency_ms": latency_ms
             }
@@ -129,17 +133,19 @@ class ParsingManager:
             if vision_result:
                 if all(k in vision_result for k in required_keys) and vision_result.get("targets"):
                     self.parser_path_used = "vision"
-                    self.parsed_data = vision_result
+                    self.parsed_data = vision_result # (يحتوي على Decimals)
                 else:
                     log.error(f"Vision result for user {self.user_id} was incomplete. Failing.")
                     self.parser_path_used = "failed"
                     self.parsed_data = None
+            else:
+                self.parser_path_used = "failed"
+                self.parsed_data = None
         except Exception as e:
             log.error(f"Vision parser failed unexpectedly: {e}", exc_info=True)
             self.parser_path_used = "failed"
             self.parsed_data = None
 
-        # ✅ THE FIX: (v3.0.2) المسافة البادئة لهذا السطر يجب أن تكون هنا
         if not self.parsed_data:
             self.parser_path_used = "failed"
 
@@ -149,7 +155,7 @@ class ParsingManager:
         if self.parsed_data:
             return {
                 "status": "success",
-                "data": self.parsed_data,
+                "data": self.parsed_data, # (يحتوي على Decimals)
                 "parser_path_used": self.parser_path_used,
                 "latency_ms": latency_ms
             }
