@@ -1,29 +1,45 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_utils.py ---
-# File: ai_service/services/parsing_utils.py
-# Version: 2.2.0 (v5.1 Engine Core - ImportError Hotfix)
-# ✅ THE FIX: (Protocol 1) إصلاح خطأ `ImportError`.
-#    - 1. (MOVED) تمت إضافة `_extract_google_response` و `_extract_openai_response`.
-#    - 2. (MOVED) تمت إضافة `_build_google_headers` و `_build_openai_headers`.
-#    - 3. (NEW) إضافة آلية إعادة المحاولة: `_post_with_retries`.
-#    - 4. (NEW) إضافة "محدد الإشارة الذكي": `_smart_signal_selector`.
-#    - 5. (NEW) إضافة "مستخرج JSON الآمن": `_safe_outer_json_extract`.
-#    - 6. (NEW) إضافة مستخرِجات مخصصة: `_extract_claude_response`, `_extract_qwen_response`.
-#    - 7. (NEW) إضافة مساعدين: `_model_family`, `_headers_for_call`.
-#    - 8. (MOVED) نقل `_financial_consistency_check` (من llm_parser) إلى هنا.
-# 🎯 IMPACT: هذا الملف أصبح الآن "مصدر الحقيقة" (SSoT) لجميع عمليات التحليل.
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/image_parser.py ---
+# File: ai_service/services/image_parser.py
+# Version: 5.0.0 (Production-Grade Multi-Provider Engine)
+# ✅ THE FIX: (Protocol 1 / v5.0 Engine)
+#    - 1. (BLOCKER) إصلاح `NameError: name 'name' is not defined` -> `__name__`.
+#    - 2. (BLOCKER) إصلاح `MimeType Error`: فرض "image/jpeg" لحل خطأ Google 400.
+#    - 3. (BLOCKER) إصلاح `JSONDecodeError: Extra data`: إضافة `_smart_signal_selector`
+#       ودعم المصفوفات (Arrays) عند استلام إشارات متعددة (مثل KITE/DCR).
+#    - 4. (LOGIC) تحسين `_safe_outer_json_extract` لاستخدام regex "غير طماع" والبحث عن ```json.
+# 🎯 IMPACT: هذا الملف الآن جاهز للإنتاج، مرن، وموثوق.
 
 import os
 import re
 import json
 import logging
+import base64
 import asyncio
+from typing import Any, Dict, Optional, Tuple, List
 import httpx
-from decimal import Decimal, InvalidOperation
-from typing import Dict, Any, List, Optional, Tuple
 
+# Reuse parsing utilities and validation helpers
+from services.parsing_utils import parse_decimal_token, normalize_targets
+from services.llm_parser import (
+    _financial_consistency_check,
+    _build_google_headers,
+    _extract_google_response,
+    _build_openai_headers,
+    _extract_openai_response,
+)
+
+# ✅ THE FIX (v4.0.1): Use __name__ for the logger
 log = logging.getLogger(__name__)
+telemetry_log = logging.getLogger("ai_service.telemetry")
 
-# --- Retry/backoff config ---
+# Environment/config
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openrouter").lower()
+LLM_API_KEY = os.getenv("LLM_API_KEY")
+LLM_API_URL = os.getenv("LLM_API_URL")
+LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")       # optional direct fallback
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")       # optional direct fallback
+
 try:
     IMAGE_PARSE_MAX_RETRIES = int(os.getenv("IMAGE_PARSE_MAX_RETRIES", "3"))
 except Exception:
@@ -34,248 +50,30 @@ try:
 except Exception:
     IMAGE_PARSE_BACKOFF_BASE = 1.0
 
+if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
+    log.warning("Vision env incomplete. Image parsing may be skipped or limited.")
 
-# --- 1. Core Parsers (Original) ---
-_AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-_SUFFIXES = {"K": Decimal("1000"), "M": Decimal("1000000"), "B": Decimal("1000000000")}
+# ✅ THE FIX (v5.0): Updated prompt as requested in review
+SYSTEM_PROMPT_VISION = os.getenv("LLM_SYSTEM_PROMPT_VISION") or """ You are an expert financial analyst. Your task is to extract structured data from an IMAGE of a trade signal.
+CRITICAL VALIDATION RULES:
+1. Asset/Side/Entry/SL/Targets: You must find all five fields. If any are missing, respond with {"error": "Missing required fields."}.
+2. LONG Validation: If "side" is "LONG", "stop_loss" must be less than "entry".
+3. SHORT Validation: If "side" is "SHORT", "stop_loss" must be greater than "entry".
+4. If validation fails, respond with {"error": "Financial validation failed (e.g., SL vs Entry)."}.
 
-def _normalize_arabic_numerals(s: str) -> str:
-    if not s: return ""
-    return s.translate(_AR_TO_EN_DIGITS)
+CRITICAL EXTRACTION RULES:
+1. If the image contains multiple trade signals, extract ONLY THE FIRST COMPLETE signal that has all required fields (asset, side, entry, stop_loss, targets).
+2. Prioritize signals with more targets.
+3. Return ONLY ONE JSON object, never an array.
 
-def parse_decimal_token(token: str) -> Optional[Decimal]:
-    """(Source of Truth) Parses a single numeric token (supports K/M/B) to Decimal."""
-    if token is None: return None
-    try:
-        s = _normalize_arabic_numerals(str(token)).strip().lower().replace(',', '')
-        if not s: return None
-        multiplier = Decimal("1")
-        num_part = s
-        if s.endswith('k'):
-            multiplier = _SUFFIXES["K"]
-            num_part = s[:-1]
-        elif s.endswith('m'):
-            multiplier = _SUFFIXES["M"]
-            num_part = s[:-1]
-        elif s.endswith('b'):
-            multiplier = _SUFFIXES["B"]
-            num_part = s[:-1]
-        if not num_part: return None
-        if not re.fullmatch(r"[+\-]?\d*\.?\d+", num_part): return None
-        val = Decimal(num_part) * multiplier
-        return val if val.is_finite() and val >= 0 else None
-    except (InvalidOperation, TypeError, ValueError) as e:
-        log.debug(f"Failed to parse Decimal token: '{token}', error: {e}")
-        return None
-
-def _parse_token_price_and_pct(token: str) -> Dict[str, Optional[Decimal]]:
-    """Parses a single target token (e.g., "6k@25%") to Decimal."""
-    if not token or not str(token).strip():
-        raise ValueError("Empty target token")
-    token = str(token).strip()
-    price_part, pct_part = token, "0"
-    if '@' in token:
-        parts = token.split('@', 1)
-        if len(parts) == 2:
-            price_part, pct_part = parts[0], parts[1].strip().rstrip('%')
-        else:
-            price_part = parts[0]
-    price = parse_decimal_token(price_part)
-    pct = parse_decimal_token(pct_part)
-    return {"price": price, "pct": pct}
-
-def _extract_each_percentage_from_text(source_text: str) -> Optional[Decimal]:
-    """(v1.3.0) Searches for global percentage patterns."""
-    if not source_text: return None
-    normalized_text = _normalize_arabic_numerals(source_text)
-    patterns = [
-        r'\(?\s*(\d{1,3}(?:\.\d+)?)\s*%\s*(?:each|per target|لكل هدف|كل هدف|كل منها)\)?',
-        r'(?:(?:close|اغلاق|إغلاق)\s*)(\d{1,3}(?:\.\d+)?)\s*%?(?:\s*(?:each|TP|هدف|targets|عند كل هدف))?',
-        r'(?:(?:لكل|بنسبة|النسبة)\s*)(\d{1,3}(?:\.\d+)?)\s*%?',
-        r'(\d{1,3}(?:\.\d+)?)\s*(?:each|لكل)\s*(?:هدف|TP|target)'
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, normalized_text, re.IGNORECASE)
-        if m:
-            try:
-                val = Decimal(m.group(1))
-                if 0 <= val <= 100:
-                    log.debug(f"Found global percentage: {val}% using pattern: {pattern}")
-                    return val
-            except Exception:
-                continue
-    return None
-
-def normalize_targets(
-    targets_raw: Any, 
-    source_text: str = ""
-) -> List[Dict[str, Any]]:
-    """(Source of Truth - v2.0) Normalizes any target format into a clean list."""
-    normalized: List[Dict[str, Any]] = []
-    if not targets_raw:
-        return normalized
-
-    each_pct = _extract_each_percentage_from_text(source_text)
-
-    # Case 1: List of dicts (correct format)
-    if isinstance(targets_raw, list) and targets_raw and isinstance(targets_raw[0], dict):
-        for t in targets_raw:
-            try:
-                raw_price = t.get("price") if isinstance(t, dict) else t
-                price_val = parse_decimal_token(str(raw_price))
-                if price_val is None or price_val <= 0: continue
-                
-                close_pct_raw = t.get("close_percent", None)
-                close_pct = Decimal(str(close_pct_raw)) if close_pct_raw is not None else None
-                
-                if close_pct is None and each_pct is not None:
-                    close_pct = each_pct
-                elif close_pct is None:
-                    close_pct = Decimal("0")
-
-                normalized.append({"price": price_val, "close_percent": float(close_pct)}) # Store Decimal
-            except Exception as e:
-                log.debug(f"Skipping malformed target dict entry: {t} ({e})")
-
-    # Case 2: List of raw values (numbers, strings)
-    elif isinstance(targets_raw, list):
-        tokens_flat: List[str] = []
-        for item in targets_raw:
-            if item is None: continue
-            s = _normalize_arabic_numerals(str(item)).strip()
-            parts = re.split(r'[\s\n,/\-→]+', s)
-            tokens_flat.extend([p.strip() for p in parts if p.strip()])
-
-        for tok in tokens_flat:
-            try:
-                parsed = _parse_token_price_and_pct(tok)
-                price = parsed["price"]
-                pct = parsed["pct"]
-                
-                if price is None or price <= 0: continue
-                if pct is None and each_pct is not None:
-                    pct = each_pct
-                elif pct is None:
-                    pct = Decimal("0")
-
-                normalized.append({"price": price, "close_percent": float(pct)}) # Store Decimal
-            except Exception as e:
-                log.debug(f"Skipped token while normalizing targets: '{tok}' ({e})")
-    
-    # Case 3: Single string with multiple numbers
-    elif isinstance(targets_raw, str):
-        s = _normalize_arabic_numerals(targets_raw).strip()
-        tokens = re.split(r'[\s\n,/\-→]+', s)
-        
-        for tok in tokens:
-            tok = tok.strip()
-            if not tok: continue
-            try:
-                parsed = _parse_token_price_and_pct(tok)
-                price = parsed["price"]
-                pct = parsed["pct"]
-                if price is None or price <= 0: continue
-                if pct is None and each_pct is not None:
-                    pct = each_pct
-                elif pct is None:
-                    pct = Decimal("0")
-                normalized.append({"price": price, "close_percent": float(pct)}) # Store Decimal
-            except Exception:
-                continue
-
-    # Apply 100% last target rule
-    if normalized and all(t["close_percent"] == 0.0 for t in normalized):
-        normalized[-1]["close_percent"] = 100.0
-        
-    return normalized
+Respond ONLY with the JSON object. """
 
 
-# --- 2. Validation (Moved from llm_parser) ---
-def _financial_consistency_check(data: Dict[str, Any]) -> bool:
-    """Strict numeric checks (v5.0). Expects Decimals."""
-    try:
-        entry = data["entry"]
-        sl = data["stop_loss"]
-        side = str(data["side"]).strip().upper()
-        targets_raw = data.get("targets", [])
-        
-        if not (isinstance(entry, Decimal) and isinstance(sl, Decimal)):
-             entry = parse_decimal_token(str(entry))
-             sl = parse_decimal_token(str(sl))
-
-        if not isinstance(targets_raw, list) or len(targets_raw) == 0:
-            log.warning("Targets missing or empty in financial check.")
-            return False
-
-        prices: List[Decimal] = []
-        for t in targets_raw:
-            price_val = t["price"] if isinstance(t.get("price"), Decimal) else parse_decimal_token(str(t.get("price")))
-            if price_val:
-                prices.append(price_val)
-
-        if not prices:
-             log.warning("No valid target prices found in financial check.")
-             return False
-        if entry <= 0 or sl <= 0:
-            log.warning("Entry or SL non-positive.")
-            return False
-        if len(set(prices)) != len(prices):
-            log.warning("Duplicate targets detected.")
-            return False
-
-        if side == "LONG":
-            if not (sl < entry):
-                log.warning(f"LONG check failed: SL {sl} >= Entry {entry}")
-                return False
-            if any(p <= entry for p in prices):
-                log.warning("At least one LONG target <= entry")
-                return False
-        elif side == "SHORT":
-            if not (sl > entry):
-                log.warning(f"SHORT check failed: SL {sl} <= Entry {entry}")
-                return False
-            if any(p >= entry for p in prices):
-                log.warning("At least one SHORT target >= entry")
-                return False
-        else:
-            log.warning(f"Invalid side value: {side}")
-            return False
-
-        return True
-    except (InvalidOperation, TypeError, KeyError, AttributeError) as e:
-        log.warning(f"Financial check exception: {e}. Data: {data}")
-        return False
-
-
-# --- 3. v5.0 Engine Helpers (NEW/MOVED) ---
-
-# ✅ THE FIX (v2.2.0): Add the missing extractors
-def _extract_google_response(response_json: Dict[str, Any]) -> str:
-    """Extracts text content from a Google Gemini response."""
-    try:
-        return response_json["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError) as e:
-        log.warning(f"Failed to extract Google response: {e}")
-        return json.dumps(response_json)
-
-def _extract_openai_response(response_json: Dict[str, Any]) -> str:
-    """Extracts text content from an OpenAI/OpenRouter response."""
-    try:
-        return response_json["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as e:
-        log.warning(f"Failed to extract OpenAI response: {e}")
-        return json.dumps(response_json)
-
-# ✅ THE FIX (v2.2.0): Add the missing header builders
-def _build_google_headers(api_key: str) -> Dict[str, str]:
-    return {"Content-Type": "application/json", "X-goog-api-key": api_key}
-
-def _build_openai_headers(api_key: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
+# ------------------------
+# Model-family detection
+# ------------------------
 
 def _model_family(model_name: str) -> str:
-    """Detects the model family from its name."""
     mn = (model_name or "").lower()
     if not mn: return "unknown"
     if "gemini" in mn or mn.startswith("google/"): return "google"
@@ -284,27 +82,200 @@ def _model_family(model_name: str) -> str:
     if "qwen" in mn or "alibaba" in mn: return "qwen"
     return "other" # Default to OpenAI compatible
 
+# ------------------------
+# Payload builders (provider-aware)
+# ------------------------
+
+def _build_google_vision_payload(image_b64: str, mime: str) -> Dict[str, Any]:
+    # ✅ THE FIX (v5.0): Force a safe mime_type
+    safe_mime = "image/jpeg" if mime not in ["image/jpeg", "image/png", "image/webp"] else mime
+    return {
+        "contents": [
+            {"parts": [
+                {"text": SYSTEM_PROMPT_VISION},
+                {"inline_data": {"mime_type": safe_mime, "data": image_b64}}
+            ]}
+        ],
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.0}
+    }
+
+def _build_openai_vision_payload(image_b64: str, mime: str) -> Dict[str, Any]:
+    # OpenAI / OpenRouter OpenAI-style payload (data URL)
+    safe_mime = "image/jpeg" if mime not in ["image/jpeg", "image/png", "image/webp"] else mime
+    return {
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT_VISION},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:{safe_mime};base64,{image_b64}"}}
+            ]}
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 2048
+    }
+
+def _build_claude_vision_payload(image_b64: str, mime: str) -> Dict[str, Any]:
+    # Compatible with Anthropic direct API
+    safe_mime = "image/jpeg" if mime not in ["image/jpeg", "image/png", "image/webp"] else mime
+    return {
+        "model": LLM_MODEL,
+        "system": SYSTEM_PROMPT_VISION,
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "image", "source": {
+                    "type": "base64",
+                    "media_type": safe_mime,
+                    "data": image_b64,
+                }},
+                {"type": "text", "text": "Extract trade signal JSON from the attached image."}
+            ]}
+        ],
+        "max_tokens": 2048,
+        "temperature": 0.0
+    }
+
+def _build_openrouter_openai_style_payload(image_b64: str, mime: str) -> Dict[str, Any]:
+    # OpenRouter universally accepts the OpenAI payload format
+    return _build_openai_vision_payload(image_b64, mime)
+
+# ------------------------
+# Response extractors
+# ------------------------
+
+def _safe_outer_json_extract(text: str) -> Optional[str]:
+    """ Extract outermost JSON object using fenced blocks or non-greedy regex. """
+    if not text:
+        return None
+    
+    # 1. Try to find ```json ... ``` (Most reliable)
+    m_fence = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL | re.IGNORECASE)
+    if m_fence:
+        return m_fence.group(1)
+
+    # 2. Try to find a non-greedy { ... } (Catches JSON Arrays too)
+    # ✅ THE FIX (v5.0): Use non-greedy regex
+    m_nongreedy = re.search(r'(\[.*?\]|\{.*?\})', text, re.DOTALL)
+    if m_nongreedy:
+        return m_nongreedy.group(1)
+        
+    return None
+
+def _extract_claude_response(response_json: Dict[str, Any]) -> str:
+    """ Handle multiple Claude response shapes. """
+    try:
+        # Standard Claude response
+        if "content" in response_json and isinstance(response_json["content"], list):
+            for block in response_json["content"]:
+                if block.get("type") == "text":
+                    return block.get("text", "")
+        # Fallback for completion-style
+        if "completion" in response_json:
+            return response_json["completion"]
+        # Fallback for OpenRouter-proxied Claude
+        if "choices" in response_json:
+            return response_json["choices"][0].get("message", {}).get("content", "")
+        return json.dumps(response_json)
+    except Exception:
+        return json.dumps(response_json)
+
+def _extract_qwen_response(response_json: Dict[str, Any]) -> str:
+    """ Handle multiple Qwen response shapes. """
+    try:
+        # Standard Qwen/Dashscope
+        if "output" in response_json and "text" in response_json["output"]:
+            return response_json["output"]["text"]
+        # Common OpenRouter/proxied Qwen
+        if "choices" in response_json:
+            return response_json["choices"][0].get("message", {}).get("content", "")
+        if "result" in response_json:
+            return response_json["result"]
+        return json.dumps(response_json)
+    except Exception:
+        return json.dumps(response_json)
+
+# ------------------------
+# ✅ NEW (v5.0): Smart Signal Selector
+# ------------------------
+
+def _has_obvious_errors(signal: Dict) -> bool:  
+    """Detect obvious data extraction errors"""  
+    try:  
+        entry = float(signal.get("entry", 0))  
+        sl = float(signal.get("stop_loss", 0)) if signal.get("stop_loss") else 0  
+          
+        # Check for order of magnitude errors (e.g., KITE signal 0.078 vs 0.76)
+        if sl > 0 and entry > 0 and abs(sl - entry) / entry > 5:  # 500% difference
+            log.warning(f"Signal {signal.get('asset')} has obvious error: Entry {entry}, SL {sl}")
+            return True  
+              
+        return False  
+    except (ValueError, TypeError):  
+        return True
+
+def _smart_signal_selector(signals: List[Dict]) -> Optional[Dict]:  
+    """Select best trade signal based on completeness and quality"""  
+    if not signals:  
+        return None  
+      
+    scored = []  
+    for signal in signals:  
+        if not isinstance(signal, dict):  
+            continue  
+              
+        score = 0  
+        required = ["asset", "side", "entry", "stop_loss", "targets"]  
+          
+        # Base score for required fields
+        present_fields = sum(1 for k in required if k in signal and signal[k] is not None)  
+        score += present_fields * 10  
+          
+        # Bonus for complete signals
+        if present_fields == len(required):  
+            score += 20  
+              
+        # Bonus for more targets
+        targets = signal.get("targets", [])  
+        if isinstance(targets, list) and targets:  
+            score += min(len(targets), 5)  
+              
+        # Penalty for obvious data errors
+        if _has_obvious_errors(signal):  
+            score -= 15  
+              
+        scored.append((score, signal))  
+      
+    return max(scored, key=lambda x: x[0])[1] if scored else None  
+
+
+# ------------------------
+# Headers builder
+# ------------------------
+
 def _headers_for_call(call_style: str, api_key: str) -> Dict[str, str]:
-    """Builds the correct headers based on the provider type."""
     if call_style == "google_direct":
-        return _build_google_headers(api_key)
+        return {"Content-Type": "application/json", "X-goog-api-key": api_key}
     if call_style == "openai_direct":
-        return _build_openai_headers(api_key)
+        return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     if call_style == "openrouter_bearer":
-        headers = _build_openai_headers(api_key) # Start with OpenAI headers
-        headers["HTTP-Referer"] = "http://localhost" # Required by OpenRouter
-        headers["X-Title"] = "CapitalGuard"
-        return headers
+        return {
+            "Authorization": f"Bearer {api_key}", 
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost",
+            "X-Title": "CapitalGuard"
+        }
     if call_style == "anthropic_direct":
         return {
             "x-api-key": api_key, 
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01"
         }
-    return _build_openai_headers(api_key) # Default
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+# ------------------------
+# POST with retries/backoff
+# ------------------------
 
 async def _post_with_retries(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]], int, str]:
-    """(Source of Truth) POSTs data with exponential backoff on transient errors."""
     attempt = 0
     last_text = ""
     while attempt <= IMAGE_PARSE_MAX_RETRIES:
@@ -346,85 +317,240 @@ async def _post_with_retries(url: str, headers: Dict[str, str], payload: Dict[st
     log.error(f"All retries failed. Last error snippet: {last_text}")
     return False, None, 0, last_text
 
-def _safe_outer_json_extract(text: str) -> Optional[str]:
-    """ Extract outermost JSON object using fenced blocks or non-greedy regex. """
-    if not text:
-        return None
-    
-    # 1. Try to find ```json ... ``` (Most reliable)
-    m_fence = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL | re.IGNORECASE)
-    if m_fence:
-        return m_fence.group(1)
+# ------------------------
+# Main function: parse_with_vision
+# ------------------------
 
-    # 2. Try to find non-greedy { ... } or [ ... ]
-    m_nongreedy = re.search(r'(\[.*?\]|\{.*?\})', text, re.DOTALL)
-    if m_nongreedy:
-        return m_nongreedy.group(1)
+async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
+    """ Downloads image, encodes, and calls provider endpoint(s). """
+    if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
+        log.debug("Vision configuration incomplete; skipping vision parse.")
+        return None
+
+    family = _model_family(LLM_MODEL)
+    provider = (LLM_PROVIDER or "").lower()
+    log_meta_base = {"event": "vision_parse", "provider": provider, "model": LLM_MODEL, "family": family, "image_url": image_url}
+    attempted: List[Dict[str, Any]] = []
+    final_errors: List[str] = []
+
+    # 1) Download image
+    try:
+        async with httpx.AsyncClient() as client:
+            get_resp = await client.get(image_url, timeout=20.0)
+            get_resp.raise_for_status()
+            image_bytes = get_resp.content
+            
+            # ✅ THE FIX (v5.0): Force a safe mime_type
+            _original_mime = get_resp.headers.get("content-type", "image/jpeg") or "image/jpeg"
+            mime = "image/jpeg" # Use a safe default
+            if _original_mime in ["image/png", "image/webp"]:
+                mime = _original_mime
+            elif _original_mime != "image/jpeg":
+                log.info(f"Detected image format: {mime} (was: {_original_mime})")
+
+            size_bytes = len(image_bytes)
+            if size_bytes > 4_500_000:
+                log.warning("Image larger than 4.5MB; consider resizing to avoid provider limits.", extra=log_meta_base)
+            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+    except httpx.RequestError as e:
+        log.error(f"Failed to download image: {e}", exc_info=True)
+        telemetry_log.info(json.dumps({**log_meta_base, "success": False, "error": "download_failed"}))
+        return None
+    except Exception as e:
+        log.exception(f"Image download/processing error: {e}")
+        telemetry_log.info(json.dumps({**log_meta_base, "success": False, "error": "download_exception"}))
+        return None
+
+    # 2) Build candidate calls
+    candidates: List[Tuple[str, Dict[str, str], Dict[str, Any], str]] = []
+    try:
+        prov = provider
+        if prov == "google":
+            headers = _headers_for_call("google_direct", LLM_API_KEY)
+            payload = _build_google_vision_payload(image_b64, mime)
+            candidates.append((LLM_API_URL, headers, payload, "google"))
+            
+        elif prov == "openai":
+            key = OPENAI_API_KEY if OPENAI_API_KEY else LLM_API_KEY
+            headers = _headers_for_call("openai_direct", key)
+            payload = _build_openai_vision_payload(image_b64, mime)
+            candidates.append((LLM_API_URL, headers, payload, "openai"))
+            
+        elif prov == "anthropic":
+            headers = _headers_for_call("anthropic_direct", LLM_API_KEY)
+            payload = _build_claude_vision_payload(image_b64, mime)
+            candidates.append((LLM_API_URL, headers, payload, "anthropic"))
+            
+        elif prov == "openrouter":
+            headers_or = _headers_for_call("openrouter_bearer", LLM_API_KEY)
+            payload_or = _build_openrouter_openai_style_payload(image_b64, mime)
+            candidates.append((LLM_API_URL, headers_or, payload_or, family if family != "unknown" else "openai"))
         
+        else:
+            headers = _headers_for_call("openrouter_bearer", LLM_API_KEY)
+            payload = _build_openrouter_openai_style_payload(image_b64, mime)
+            candidates.append((LLM_API_URL, headers, payload, "openai"))
+            
+    except Exception as e:
+        log.exception(f"Failed to build candidate payloads: {e}")
+        return None
+
+    # 3) Iterate candidates and apply fallback logic
+    for api_url, headers, payload, call_family in candidates:
+        meta = {**log_meta_base, "api_url": api_url, "attempt_family": call_family}
+        telemetry_log.info(json.dumps({**meta, "attempt": "primary"}))
+        
+        success, resp_json, status, resp_text = await _post_with_retries(api_url, headers, payload)
+        attempted.append({"api_url": api_url, "family": call_family, "status": status, "resp_snip": (resp_text or "")[:800]})
+        
+        if success and resp_json:
+            try:
+                if call_family == "google":
+                    raw_text = _extract_google_response(resp_json)
+                elif call_family == "anthropic":
+                    raw_text = _extract_claude_response(resp_json)
+                elif call_family == "qwen":
+                    raw_text = _extract_qwen_response(resp_json)
+                else: # Default to OpenAI
+                    raw_text = _extract_openai_response(resp_json)
+            except Exception as e:
+                log.exception(f"Extractor error: {e}")
+                final_errors.append(f"extractor_exception:{e}")
+                continue
+
+            json_block = _safe_outer_json_extract(raw_text)
+            if not json_block:
+                final_errors.append(f"no_json_family_{call_family}_status_{status}")
+                telemetry_log.info(json.dumps({**meta, "success": False, "error": "no_json", "snippet": raw_text[:200]}))
+                continue
+
+            try:
+                parsed_json = json.loads(json_block)
+                if isinstance(parsed_json, str) and parsed_json.strip().startswith(('{', '[')):
+                    parsed_json = json.loads(parsed_json)
+            except Exception as e:
+                log.exception(f"JSON decode error after extraction: {e}")
+                final_errors.append(f"json_decode:{e}")
+                continue
+            
+            # ✅ THE FIX (v5.0): Handle JSON Array response
+            parsed_object = None
+            if isinstance(parsed_json, list):
+                log.info(f"Received array of {len(parsed_json)} signals. Selecting best candidate.")
+                selected_signal = _smart_signal_selector(parsed_json)
+                if selected_signal:
+                    parsed_object = selected_signal
+                    log.info(f"Selected signal: {parsed_object.get('asset')}")
+                else:
+                    log.warning("JSON array received, but no valid/complete signals found.")
+                    final_errors.append("no_valid_signal_in_array")
+                    telemetry_log.info(json.dumps({**meta, "success": False, "error": "no_valid_signal_in_array"}))
+                    continue # Try next candidate
+            elif isinstance(parsed_json, dict):
+                parsed_object = parsed_json
+            else:
+                log.warning(f"Extracted JSON is not a list or dict. Type: {type(parsed_json)}")
+                final_errors.append("invalid_json_type")
+                continue
+            # --- End v5.0 Fix ---
+
+            if parsed_object.get("error"):
+                final_errors.append(f"llm_reported:{parsed_object.get('error')}")
+                telemetry_log.info(json.dumps({**meta, "success": False, "error": "llm_reported", "detail": parsed_object.get('error')}))
+                continue
+
+            required = ["asset", "side", "entry", "stop_loss", "targets"]
+            if not all(k in parsed_object for k in required):
+                final_errors.append(f"missing_keys_family_{call_family}")
+                telemetry_log.info(json.dumps({**meta, "success": False, "error": "missing_keys", "missing": [k for k in required if k not in parsed_object]}))
+                continue
+
+            try:
+                parsed_targets_raw = parsed_object.get("targets")
+                parsed_object["targets"] = normalize_targets(parsed_targets_raw, source_text="")
+                entry_val = parse_decimal_token(str(parsed_object["entry"]))
+                sl_val = parse_decimal_token(str(parsed_object["stop_loss"]))
+                if entry_val is None or sl_val is None:
+                    final_errors.append("entry_sl_parse_error")
+                    telemetry_log.info(json.dumps({**meta, "success": False, "error": "entry_sl_parse"}))
+                    continue
+                parsed_object["entry"] = str(entry_val)
+                parsed_object["stop_loss"] = str(sl_val)
+                if not _financial_consistency_check(parsed_object):
+                    final_errors.append("financial_consistency_failed")
+                    telemetry_log.info(json.dumps({**meta, "success": False, "error": "financial_check"}))
+                    continue
+
+                parsed_object.setdefault("market", parsed_object.get("market", "Futures"))
+                parsed_object.setdefault("order_type", parsed_object.get("order_type", "LIMIT"))
+                parsed_object.setdefault("notes", parsed_object.get("notes", ""))
+                
+                telemetry_log.info(json.dumps({**meta, "success": True, "asset": parsed_object.get("asset"), "side": parsed_object.get("side"), "num_targets": len(parsed_object.get("targets", []))}))
+                return parsed_object  # ✅ SUCCESS
+
+            except Exception as e:
+                log.exception(f"Postprocess error: {e}")
+                final_errors.append(f"postprocess_exception:{e}")
+                continue
+        
+        else: # Primary call failed
+            telemetry_log.info(json.dumps({**meta, "success": False, "status": status, "resp_snip": (resp_text or "")[:400]}))
+
+            # Fallback Logic
+            if provider == "openrouter" and GOOGLE_API_KEY:
+                google_url = os.getenv("GOOGLE_API_URL_FALLBACK", "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent")
+                g_headers = _headers_for_call("google_direct", GOOGLE_API_KEY)
+                g_payload = _build_google_vision_payload(image_b64, mime)
+                
+                log_meta_fallback = {**log_meta_base, "attempt": "google_direct_fallback", "api_url": google_url}
+                telemetry_log.info(json.dumps(log_meta_fallback))
+                
+                success2, resp_json2, status2, resp_text2 = await _post_with_retries(google_url, g_headers, g_payload)
+                attempted.append({"api_url": google_url, "family": "google_direct", "status": status2, "resp_snip": (resp_text2 or "")[:800]})
+                
+                if success2 and resp_json2:
+                    try:
+                        raw2 = _extract_google_response(resp_json2)
+                        jb2 = _safe_outer_json_extract(raw2)
+                        if jb2:
+                            parsed2_json = json.loads(jb2)
+                            
+                            # ✅ THE FIX (v5.0): Apply array check to fallback
+                            parsed2 = None
+                            if isinstance(parsed2_json, list):
+                                parsed2 = _smart_signal_selector(parsed2_json)
+                            elif isinstance(parsed2_json, dict):
+                                parsed2 = parsed2_json
+                            
+                            if not parsed2:
+                                final_errors.append("google_direct:no_valid_signal")
+                                continue
+
+                            if not all(k in parsed2 for k in required): continue
+                            parsed2["targets"] = normalize_targets(parsed2.get("targets"), source_text="")
+                            entry_v = parse_decimal_token(str(parsed2["entry"]))
+                            sl_v = parse_decimal_token(str(parsed2["stop_loss"]))
+                            if entry_v is None or sl_v is None: continue
+                            parsed2["entry"] = str(entry_v)
+                            parsed2["stop_loss"] = str(sl_v)
+                            if not _financial_consistency_check(parsed2): continue
+                            
+                            parsed2.setdefault("market", parsed2.get("market", "Futures"))
+                            parsed2.setdefault("order_type", parsed2.get("order_type", "LIMIT"))
+                            parsed2.setdefault("notes", parsed2.get("notes", ""))
+                            
+                            telemetry_log.info(json.dumps({**log_meta_fallback, "success": True, "asset": parsed2.get("asset")}))
+                            return parsed2 # ✅ SUCCESS (on fallback)
+                            
+                    except Exception as e:
+                        log.exception(f"google_direct_fallback postprocess error: {e}")
+                        final_errors.append(f"google_direct_postprocess:{e}")
+                        continue
+
+    # nothing succeeded
+    telemetry_log.info(json.dumps({**log_meta_base, "success": False, "attempted": attempted, "errors": final_errors}))
+    log.warning(f"Vision parse failed for image {image_url}. Attempts: {len(attempted)} Errors: {final_errors}")
     return None
 
-def _extract_claude_response(response_json: Dict[str, Any]) -> str:
-    """ Handle multiple Claude response shapes. """
-    try:
-        # Standard Claude response
-        if "content" in response_json and isinstance(response_json["content"], list):
-            for block in response_json["content"]:
-                if block.get("type") == "text":
-                    return block.get("text", "")
-        # Fallback for completion-style
-        if "completion" in response_json:
-            return response_json["completion"]
-        # Fallback for OpenRouter-proxied Claude
-        if "choices" in response_json:
-            return response_json["choices"][0].get("message", {}).get("content", "")
-        return json.dumps(response_json)
-    except Exception:
-        return json.dumps(response_json)
-
-def _extract_qwen_response(response_json: Dict[str, Any]) -> str:
-    """ Handle multiple Qwen response shapes. """
-    try:
-        if "output" in response_json and "text" in response_json["output"]:
-            return response_json["output"]["text"]
-        if "choices" in response_json:
-            return response_json["choices"][0].get("message", {}).get("content", "")
-        if "result" in response_json:
-            return response_json["result"]
-        return json.dumps(response_json)
-    except Exception:
-        return json.dumps(response_json)
-
-def _has_obvious_errors(signal: Dict) -> bool:  
-    """Detect obvious data extraction errors"""  
-    try:  
-        entry = float(signal.get("entry", 0))  
-        sl = float(signal.get("stop_loss", 0)) if signal.get("stop_loss") else 0  
-        if sl > 0 and entry > 0 and abs(sl - entry) / entry > 5:  # 500% difference
-            log.warning(f"Signal {signal.get('asset')} has obvious error: Entry {entry}, SL {sl}")
-            return True  
-        return False  
-    except (ValueError, TypeError):  
-        return True
-
-def _smart_signal_selector(signals: List[Dict]) -> Optional[Dict]:  
-    """Select best trade signal based on completeness and quality"""  
-    if not signals:  
-        return None  
-    scored = []  
-    for signal in signals:  
-        if not isinstance(signal, dict):  
-            continue  
-        score = 0  
-        required = ["asset", "side", "entry", "stop_loss", "targets"]  
-        present_fields = sum(1 for k in required if k in signal and signal[k] is not None)  
-        score += present_fields * 10  
-        if present_fields == len(required):  
-            score += 20  
-        targets = signal.get("targets", [])  
-        if isinstance(targets, list) and targets:  
-            score += min(len(targets), 5)  
-        if _has_obvious_errors(signal):  
-            score -= 15  
-        scored.append((score, signal))  
-    return max(scored, key=lambda x: x[0])[1] if scored else None  
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_utils.py ---
+# End of file
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/image_parser.py ---
