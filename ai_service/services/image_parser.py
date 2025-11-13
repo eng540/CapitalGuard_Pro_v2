@@ -1,13 +1,11 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/image_parser.py ---
 # File: ai_service/services/image_parser.py
-# Version: 5.0.0 (Production-Grade Multi-Provider Engine)
-# ✅ THE FIX: (Protocol 1 / v5.0 Engine)
-#    - 1. (BLOCKER) إصلاح `NameError: name 'name' is not defined` -> `__name__`.
-#    - 2. (BLOCKER) إصلاح `MimeType Error`: فرض "image/jpeg" لحل خطأ Google 400.
-#    - 3. (BLOCKER) إصلاح `JSONDecodeError: Extra data`: إضافة `_smart_signal_selector`
-#       ودعم المصفوفات (Arrays) عند استلام إشارات متعددة (مثل KITE/DCR).
-#    - 4. (LOGIC) تحسين `_safe_outer_json_extract` لاستخدام regex "غير طماع" والبحث عن ```json.
-# 🎯 IMPACT: هذا الملف الآن جاهز للإنتاج، مرن، وموثوق.
+# Version: 5.1.0 (v5.1 Engine Refactor)
+# ✅ THE FIX: (Protocol 1) تم إصلاح التبعيات الدائرية (Circular Dependencies).
+#    - 1. (BLOCKER) تم حذف `from services.llm_parser import ...`.
+#    - 2. (NEW) أصبح الآن يستدعي *فقط* الأدوات الموحدة من `parsing_utils`.
+#    - 3. (MAINTAIN) الحفاظ على منطق `_smart_signal_selector` و `MimeType` من v5.0.
+# 🎯 IMPACT: هذا الملف الآن "نظيف" (Clean) ويكسر التبعية الدائرية (Circular Dependency).
 
 import os
 import re
@@ -18,7 +16,7 @@ import asyncio
 from typing import Any, Dict, Optional, Tuple, List
 import httpx
 
-
+# --- ✅ استيراد مصدر الحقيقة الوحيد (v5.1) ---
 from services.parsing_utils import (
     parse_decimal_token, 
     normalize_targets,
@@ -27,20 +25,20 @@ from services.parsing_utils import (
     _headers_for_call,
     _post_with_retries,
     _safe_outer_json_extract,
-    _extract_google_response,
-    _extract_openai_response,
     _extract_claude_response,
     _extract_qwen_response,
-    _smart_signal_selector,
-    _has_obvious_errors
+    _extract_google_response,
+    _extract_openai_response,
+    _build_google_headers,
+    _build_openai_headers,
+    _smart_signal_selector # (لإصلاح خطأ JSON Array)
 )
 
-# ✅ THE FIX (v4.0.1): Use __name__ for the logger
 log = logging.getLogger(__name__)
 telemetry_log = logging.getLogger("ai_service.telemetry")
 
 # Environment/config
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openrouter").lower()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google").lower()
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_API_URL = os.getenv("LLM_API_URL")
 LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
@@ -60,7 +58,7 @@ except Exception:
 if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
     log.warning("Vision env incomplete. Image parsing may be skipped or limited.")
 
-# ✅ THE FIX (v5.0): Updated prompt as requested in review
+# Prompt (v5.0)
 SYSTEM_PROMPT_VISION = os.getenv("LLM_SYSTEM_PROMPT_VISION") or """ You are an expert financial analyst. Your task is to extract structured data from an IMAGE of a trade signal.
 CRITICAL VALIDATION RULES:
 1. Asset/Side/Entry/SL/Targets: You must find all five fields. If any are missing, respond with {"error": "Missing required fields."}.
@@ -77,24 +75,11 @@ Respond ONLY with the JSON object. """
 
 
 # ------------------------
-# Model-family detection
-# ------------------------
-
-def _model_family(model_name: str) -> str:
-    mn = (model_name or "").lower()
-    if not mn: return "unknown"
-    if "gemini" in mn or mn.startswith("google/"): return "google"
-    if mn.startswith("gpt-") or mn.startswith("openai/") or "gpt-4o" in mn: return "openai"
-    if "claude" in mn or mn.startswith("anthropic/"): return "anthropic"
-    if "qwen" in mn or "alibaba" in mn: return "qwen"
-    return "other" # Default to OpenAI compatible
-
-# ------------------------
 # Payload builders (provider-aware)
 # ------------------------
 
 def _build_google_vision_payload(image_b64: str, mime: str) -> Dict[str, Any]:
-    # ✅ THE FIX (v5.0): Force a safe mime_type
+    # ✅ (v5.0): Force a safe mime_type
     safe_mime = "image/jpeg" if mime not in ["image/jpeg", "image/png", "image/webp"] else mime
     return {
         "contents": [
@@ -107,7 +92,6 @@ def _build_google_vision_payload(image_b64: str, mime: str) -> Dict[str, Any]:
     }
 
 def _build_openai_vision_payload(image_b64: str, mime: str) -> Dict[str, Any]:
-    # OpenAI / OpenRouter OpenAI-style payload (data URL)
     safe_mime = "image/jpeg" if mime not in ["image/jpeg", "image/png", "image/webp"] else mime
     return {
         "model": LLM_MODEL,
@@ -122,7 +106,6 @@ def _build_openai_vision_payload(image_b64: str, mime: str) -> Dict[str, Any]:
     }
 
 def _build_claude_vision_payload(image_b64: str, mime: str) -> Dict[str, Any]:
-    # Compatible with Anthropic direct API
     safe_mime = "image/jpeg" if mime not in ["image/jpeg", "image/png", "image/webp"] else mime
     return {
         "model": LLM_MODEL,
@@ -142,187 +125,7 @@ def _build_claude_vision_payload(image_b64: str, mime: str) -> Dict[str, Any]:
     }
 
 def _build_openrouter_openai_style_payload(image_b64: str, mime: str) -> Dict[str, Any]:
-    # OpenRouter universally accepts the OpenAI payload format
     return _build_openai_vision_payload(image_b64, mime)
-
-# ------------------------
-# Response extractors
-# ------------------------
-
-def _safe_outer_json_extract(text: str) -> Optional[str]:
-    """ Extract outermost JSON object using fenced blocks or non-greedy regex. """
-    if not text:
-        return None
-    
-    # 1. Try to find ```json ... ``` (Most reliable)
-    m_fence = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL | re.IGNORECASE)
-    if m_fence:
-        return m_fence.group(1)
-
-    # 2. Try to find a non-greedy { ... } (Catches JSON Arrays too)
-    # ✅ THE FIX (v5.0): Use non-greedy regex
-    m_nongreedy = re.search(r'(\[.*?\]|\{.*?\})', text, re.DOTALL)
-    if m_nongreedy:
-        return m_nongreedy.group(1)
-        
-    return None
-
-def _extract_claude_response(response_json: Dict[str, Any]) -> str:
-    """ Handle multiple Claude response shapes. """
-    try:
-        # Standard Claude response
-        if "content" in response_json and isinstance(response_json["content"], list):
-            for block in response_json["content"]:
-                if block.get("type") == "text":
-                    return block.get("text", "")
-        # Fallback for completion-style
-        if "completion" in response_json:
-            return response_json["completion"]
-        # Fallback for OpenRouter-proxied Claude
-        if "choices" in response_json:
-            return response_json["choices"][0].get("message", {}).get("content", "")
-        return json.dumps(response_json)
-    except Exception:
-        return json.dumps(response_json)
-
-def _extract_qwen_response(response_json: Dict[str, Any]) -> str:
-    """ Handle multiple Qwen response shapes. """
-    try:
-        # Standard Qwen/Dashscope
-        if "output" in response_json and "text" in response_json["output"]:
-            return response_json["output"]["text"]
-        # Common OpenRouter/proxied Qwen
-        if "choices" in response_json:
-            return response_json["choices"][0].get("message", {}).get("content", "")
-        if "result" in response_json:
-            return response_json["result"]
-        return json.dumps(response_json)
-    except Exception:
-        return json.dumps(response_json)
-
-# ------------------------
-# ✅ NEW (v5.0): Smart Signal Selector
-# ------------------------
-
-def _has_obvious_errors(signal: Dict) -> bool:  
-    """Detect obvious data extraction errors"""  
-    try:  
-        entry = float(signal.get("entry", 0))  
-        sl = float(signal.get("stop_loss", 0)) if signal.get("stop_loss") else 0  
-          
-        # Check for order of magnitude errors (e.g., KITE signal 0.078 vs 0.76)
-        if sl > 0 and entry > 0 and abs(sl - entry) / entry > 5:  # 500% difference
-            log.warning(f"Signal {signal.get('asset')} has obvious error: Entry {entry}, SL {sl}")
-            return True  
-              
-        return False  
-    except (ValueError, TypeError):  
-        return True
-
-def _smart_signal_selector(signals: List[Dict]) -> Optional[Dict]:  
-    """Select best trade signal based on completeness and quality"""  
-    if not signals:  
-        return None  
-      
-    scored = []  
-    for signal in signals:  
-        if not isinstance(signal, dict):  
-            continue  
-              
-        score = 0  
-        required = ["asset", "side", "entry", "stop_loss", "targets"]  
-          
-        # Base score for required fields
-        present_fields = sum(1 for k in required if k in signal and signal[k] is not None)  
-        score += present_fields * 10  
-          
-        # Bonus for complete signals
-        if present_fields == len(required):  
-            score += 20  
-              
-        # Bonus for more targets
-        targets = signal.get("targets", [])  
-        if isinstance(targets, list) and targets:  
-            score += min(len(targets), 5)  
-              
-        # Penalty for obvious data errors
-        if _has_obvious_errors(signal):  
-            score -= 15  
-              
-        scored.append((score, signal))  
-      
-    return max(scored, key=lambda x: x[0])[1] if scored else None  
-
-
-# ------------------------
-# Headers builder
-# ------------------------
-
-def _headers_for_call(call_style: str, api_key: str) -> Dict[str, str]:
-    if call_style == "google_direct":
-        return {"Content-Type": "application/json", "X-goog-api-key": api_key}
-    if call_style == "openai_direct":
-        return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    if call_style == "openrouter_bearer":
-        return {
-            "Authorization": f"Bearer {api_key}", 
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost",
-            "X-Title": "CapitalGuard"
-        }
-    if call_style == "anthropic_direct":
-        return {
-            "x-api-key": api_key, 
-            "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01"
-        }
-    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-# ------------------------
-# POST with retries/backoff
-# ------------------------
-
-async def _post_with_retries(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]], int, str]:
-    attempt = 0
-    last_text = ""
-    while attempt <= IMAGE_PARSE_MAX_RETRIES:
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(url, headers=headers, json=payload, timeout=30.0)
-                status = resp.status_code
-                text_snip = resp.text[:4000]
-                last_text = text_snip
-
-                if status == 200:
-                    try:
-                        return True, resp.json(), status, text_snip
-                    except Exception as json_e:
-                        log.error(f"HTTP 200 OK, but JSON decode failed: {json_e}", exc_info=True)
-                        return False, None, status, text_snip
-                
-                if status in (429, 500, 502, 503, 504): # Transient errors
-                    backoff = IMAGE_PARSE_BACKOFF_BASE * (2 ** attempt)
-                    log.warning(f"Transient HTTP {status}. Backing off {backoff}s (attempt {attempt+1}/{IMAGE_PARSE_MAX_RETRIES}).", extra={"status": status})
-                    await asyncio.sleep(backoff)
-                    attempt += 1
-                    continue
-                
-                log.warning(f"Fatal HTTP status {status}. No retry.", extra={"status": status, "resp_snip": text_snip[:400]})
-                return False, None, status, text_snip
-                
-        except httpx.RequestError as e: # Network errors
-            backoff = IMAGE_PARSE_BACKOFF_BASE * (2 ** attempt)
-            log.warning(f"HTTP request error: {e}. Backoff {backoff}s (attempt {attempt+1}/{IMAGE_PARSE_MAX_RETRIES}).")
-            await asyncio.sleep(backoff)
-            attempt += 1
-            last_text = str(e)
-            continue
-        except Exception as e:
-            log.exception(f"Unexpected POST error: {e}")
-            return False, None, 0, str(e)
-            
-    log.error(f"All retries failed. Last error snippet: {last_text}")
-    return False, None, 0, last_text
 
 # ------------------------
 # Main function: parse_with_vision
@@ -436,7 +239,7 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                 if isinstance(parsed_json, str) and parsed_json.strip().startswith(('{', '[')):
                     parsed_json = json.loads(parsed_json)
             except Exception as e:
-                log.exception(f"JSON decode error after extraction: {e}")
+                log.error(f"JSON decode error after extraction: {e}. Snippet: {json_block[:200]}", exc_info=True)
                 final_errors.append(f"json_decode:{e}")
                 continue
             
@@ -481,8 +284,9 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                     final_errors.append("entry_sl_parse_error")
                     telemetry_log.info(json.dumps({**meta, "success": False, "error": "entry_sl_parse"}))
                     continue
-                parsed_object["entry"] = str(entry_val)
-                parsed_object["stop_loss"] = str(sl_val)
+                parsed_object["entry"] = entry_val # Return Decimal
+                parsed_object["stop_loss"] = sl_val # Return Decimal
+                
                 if not _financial_consistency_check(parsed_object):
                     final_errors.append("financial_consistency_failed")
                     telemetry_log.info(json.dumps({**meta, "success": False, "error": "financial_check"}))
@@ -493,7 +297,7 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                 parsed_object.setdefault("notes", parsed_object.get("notes", ""))
                 
                 telemetry_log.info(json.dumps({**meta, "success": True, "asset": parsed_object.get("asset"), "side": parsed_object.get("side"), "num_targets": len(parsed_object.get("targets", []))}))
-                return parsed_object  # ✅ SUCCESS
+                return parsed_object  # ✅ SUCCESS (Returns dict with Decimals)
 
             except Exception as e:
                 log.exception(f"Postprocess error: {e}")
@@ -522,7 +326,6 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                         if jb2:
                             parsed2_json = json.loads(jb2)
                             
-                            # ✅ THE FIX (v5.0): Apply array check to fallback
                             parsed2 = None
                             if isinstance(parsed2_json, list):
                                 parsed2 = _smart_signal_selector(parsed2_json)
@@ -538,8 +341,8 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                             entry_v = parse_decimal_token(str(parsed2["entry"]))
                             sl_v = parse_decimal_token(str(parsed2["stop_loss"]))
                             if entry_v is None or sl_v is None: continue
-                            parsed2["entry"] = str(entry_v)
-                            parsed2["stop_loss"] = str(sl_v)
+                            parsed2["entry"] = entry_v # Return Decimal
+                            parsed2["stop_loss"] = sl_v # Return Decimal
                             if not _financial_consistency_check(parsed2): continue
                             
                             parsed2.setdefault("market", parsed2.get("market", "Futures"))
@@ -558,6 +361,4 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
     telemetry_log.info(json.dumps({**log_meta_base, "success": False, "attempted": attempted, "errors": final_errors}))
     log.warning(f"Vision parse failed for image {image_url}. Attempts: {len(attempted)} Errors: {final_errors}")
     return None
-
-# End of file
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/image_parser.py ---
