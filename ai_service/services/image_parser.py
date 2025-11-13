@@ -65,7 +65,7 @@ from services.llm_parser import (
     _extract_openai_response,
 )
 
-log = logging.getLogger(name)
+log = logging.getLogger(__name__)
 telemetry_log = logging.getLogger("ai_service.telemetry")
 
 # Environment-driven config
