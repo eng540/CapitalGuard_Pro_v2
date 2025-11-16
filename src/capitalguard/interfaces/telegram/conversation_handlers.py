@@ -17,7 +17,7 @@ import asyncio
 import re # ✅ Added for master_reply_handler
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional, Dict, Any, Union
-
+from telegram import CallbackQuery
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     Application, ContextTypes, ConversationHandler, CommandHandler,
