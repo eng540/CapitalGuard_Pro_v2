@@ -1,4 +1,4 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/strategy/engine.py ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/strategy/engine.py --- v4
 """
 src/capitalguard/application/strategy/engine.py — StrategyEngine v4.0
 
