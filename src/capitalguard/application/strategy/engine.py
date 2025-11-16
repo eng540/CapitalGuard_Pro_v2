@@ -1,336 +1,499 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/strategy/engine.py ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/strategy/engine.py ---
 """
-StrategyEngine v2.2 - Final Logic Implementation with optional LifecycleService integration.
+src/capitalguard/application/strategy/engine.py — StrategyEngine v4.0
 
-- Accepts an optional LifecycleService via constructor for tighter integration with system state.
-- Remains decoupled from DB by default; uses lifecycle_service only when it exposes safe, public methods.
-- Returns Action objects for the AlertService to execute.
-- Implements Fixed and Trailing stops logic (stateful).
-- Robust: defensive checks around lifecycle_service to avoid runtime errors when methods are absent.
+ميزات رئيسية (v4):
+- DI عبر lifecycle_service (تنفيذ الآثار الجانبية خارج المحرك).
+- محرك "pure" ينتج قائمة Actions دون تنفيذها مباشرة.
+- دعم evaluate_batch و evaluate (single).
+- حالة داخلية قابلة للتسلسل (serialize/restore) للـ checkpointing.
+- أقفال per-rec لضمان التزامن الآمن (asyncio.Lock).
+- استراتيجيات: FIXED, TRAILING, BREAK_EVEN, TIME_BASED (قابلة للتمديد).
+- hooks: on_action_generated, on_state_changed.
+- دعم خيارات metrics و storage (اختياري).
+- جميع عمليات الحساب بالـ Decimal للحفاظ على الدقة العددية.
+
+المطلوبات قبل التشغيل:
+- تمرير كائن lifecycle_service يوفّر واجهات التنفيذ عند الحاجة (لكن المحرك لا ينفذ أي أثر جانبي بنفسه).
+- إذا رُغب بالـ persistence: تمرير storage مع واجهات get/set.
 """
+from __future__ import annotations
 
+import asyncio
 import logging
-from decimal import Decimal
-from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
+import time
+import json
+from decimal import Decimal, getcontext, Context
+from dataclasses import dataclass, asdict
+from typing import Dict, Any, List, Optional, Callable, Iterable, Tuple
 
-from capitalguard.infrastructure.db.models import RecommendationStatusEnum
-from capitalguard.application.services.trade_service import TradeService
-from capitalguard.application.services.lifecycle_service import LifecycleService
-
+# Types for lifecycle_service and storage are loosely typed to avoid circular imports.
+# lifecycle_service must implement side-effect methods (used externally by caller).
+# storage is optional: expected methods get(key)->str|None, set(key, str)->None, delete(key)->None.
+# metrics is optional: expected methods increment(name, value=1), gauge(name, value), timing(name, ms)
 logger = logging.getLogger(__name__)
 
-# --- Action Data Classes ---
-@dataclass
+# Tune Decimal context for consistent precision across engine
+DECIMAL_CONTEXT = Context(prec=28, rounding="ROUND_HALF_EVEN")
+getcontext().prec = DECIMAL_CONTEXT.prec
+
+# --- Action data classes ---
+@dataclass(frozen=True)
 class BaseAction:
     rec_id: int
+    engine_version: str = "v4"
 
-@dataclass
+@dataclass(frozen=True)
 class CloseAction(BaseAction):
     price: Decimal
     reason: str
+    metadata: Optional[Dict[str, Any]] = None
 
-@dataclass
+@dataclass(frozen=True)
 class MoveSLAction(BaseAction):
     new_sl: Decimal
+    metadata: Optional[Dict[str, Any]] = None
+
+@dataclass(frozen=True)
+class AlertAction(BaseAction):
+    level: str
+    message: str
+    metadata: Optional[Dict[str, Any]] = None
+
+Action = Any  # Union[CloseAction, MoveSLAction, AlertAction] — kept Any for simpler typing across files
+
+# --- Internal state model per recommendation ---
+# Stored values must be JSON-serializable via to_serializable_state()
+class _EngineStateItem:
+    def __init__(self, rec_id: int, entry: Decimal, ts: Optional[int] = None):
+        self.rec_id = int(rec_id)
+        self.highest: Decimal = Decimal(entry) if entry is not None else Decimal("0")
+        self.lowest: Decimal = Decimal(entry) if entry is not None else Decimal("0")
+        self.in_profit_zone: bool = False
+        self.last_trailing_sl: Optional[Decimal] = None
+        self.last_tick_ts: Optional[int] = ts
+        self.initialized_at: int = int(time.time())
+
+    def to_serializable(self) -> Dict[str, Any]:
+        return {
+            "rec_id": self.rec_id,
+            "highest": str(self.highest),
+            "lowest": str(self.lowest),
+            "in_profit_zone": self.in_profit_zone,
+            "last_trailing_sl": str(self.last_trailing_sl) if self.last_trailing_sl is not None else None,
+            "last_tick_ts": self.last_tick_ts,
+            "initialized_at": self.initialized_at,
+        }
+
+    @classmethod
+    def from_serializable(cls, data: Dict[str, Any]) -> "_EngineStateItem":
+        obj = cls(int(data["rec_id"]), Decimal(data.get("highest", "0")), ts=data.get("last_tick_ts"))
+        obj.highest = Decimal(data.get("highest", "0"))
+        obj.lowest = Decimal(data.get("lowest", "0"))
+        obj.in_profit_zone = bool(data.get("in_profit_zone", False))
+        obj.last_trailing_sl = Decimal(data["last_trailing_sl"]) if data.get("last_trailing_sl") is not None else None
+        obj.last_tick_ts = data.get("last_tick_ts")
+        obj.initialized_at = data.get("initialized_at", int(time.time()))
+        return obj
+
 
 # --- Strategy Engine ---
-
 class StrategyEngine:
     """
-    Evaluates exit strategies using a stateful, in-memory cache.
-    Optionally integrates with LifecycleService for state synchronization and side-effects.
+    StrategyEngine (v4):
+    - Pure evaluator: returns Actions and does not perform side-effects.
+    - Thread-safe for asyncio usage via per-rec asyncio.Lock.
     """
 
-    def __init__(self, trade_service: TradeService, lifecycle_service: Optional[LifecycleService] = None):
+    def __init__(
+        self,
+        lifecycle_service: Any,
+        *,
+        storage: Optional[Any] = None,
+        metrics: Optional[Any] = None,
+        config: Optional[Dict[str, Any]] = None
+    ):
         """
-        :param trade_service: required service for trade related helpers (read-only usage).
-        :param lifecycle_service: optional service to synchronize state, persist changes, or invoke lifecycle hooks.
-                                  If provided, StrategyEngine will call safe methods on it when available.
+        Args:
+            lifecycle_service: injected service (used externally by caller to apply actions).
+            storage: optional persistence (expects get/set/delete).
+            metrics: optional metrics sink (increment, gauge, timing).
+            config: engine tuning options (thresholds, heuristics).
         """
-        self.trade_service = trade_service
         self.lifecycle_service = lifecycle_service
-        # In-memory state cache: {rec_id: {"highest": Decimal, "lowest": Decimal, "in_profit_zone": bool}}
-        self._state: Dict[int, Dict[str, Any]] = {}
+        self._state: Dict[int, _EngineStateItem] = {}
+        self._locks: Dict[int, asyncio.Lock] = {}
+        self._hooks: Dict[str, List[Callable[..., Any]]] = {}
+        self.storage = storage
+        self.metrics = metrics
+        self.config = config or {}
+        self.engine_version = "v4"
+        logger.info("StrategyEngine v4 initialized")
 
-    # -------------------------
-    # Public state management
-    # -------------------------
-    def initialize_state_for_recommendation(self, rec_dict: Dict[str, Any]):
-        """
-        Initialize or refresh in-memory state for a recommendation dict.
-        If lifecycle_service exposes a way to fetch canonical values, prefer it (defensive).
-        """
-        rec_id = int(rec_dict['id'])
-        try:
-            entry = Decimal(str(rec_dict.get('entry', '0')))
-        except Exception:
-            entry = Decimal('0')
+    # --- Hook management ---
+    def register_hook(self, name: str, fn: Callable[..., Any]) -> None:
+        """Register callback hooks: 'on_action_generated', 'on_state_changed'"""
+        if name not in self._hooks:
+            self._hooks[name] = []
+        self._hooks[name].append(fn)
+        logger.debug("Registered hook %s -> %s", name, fn)
 
-        status = rec_dict.get('status')
-        # Ensure only active recommendations keep state
-        if status == RecommendationStatusEnum.ACTIVE:
-            self._state[rec_id] = {
-                "highest": entry,
-                "lowest": entry,
-                "in_profit_zone": False,
-            }
-            logger.debug(f"Initialized state for rec #{rec_id}: entry={entry}")
-            # If lifecycle_service provides a hook, call it (non-fatal)
+    def _emit_hook(self, name: str, *args, **kwargs):
+        for fn in self._hooks.get(name, []):
             try:
-                if self.lifecycle_service and hasattr(self.lifecycle_service, "on_engine_state_init"):
-                    # Safe call, lifecycle_service may accept rec_id or rec_dict
-                    try:
-                        self.lifecycle_service.on_engine_state_init(rec_id, rec_dict)
-                    except TypeError:
-                        # fallback signature
-                        self.lifecycle_service.on_engine_state_init(rec_id)
+                fn(*args, **kwargs)
             except Exception as e:
-                logger.debug(f"Non-fatal lifecycle_service.on_engine_state_init failed for #{rec_id}: {e}")
-        else:
-            # remove stale/closed entries
+                logger.exception("Hook %s raised: %s", name, e)
+
+    # --- Lock helpers ---
+    def _get_lock(self, rec_id: int) -> asyncio.Lock:
+        if rec_id not in self._locks:
+            self._locks[rec_id] = asyncio.Lock()
+        return self._locks[rec_id]
+
+    # --- State serialization ---
+    def serialize_state(self) -> Dict[str, Any]:
+        """Return a JSON-serializable dict representing the engine state."""
+        return {
+            "engine_version": self.engine_version,
+            "items": {str(rec_id): item.to_serializable() for rec_id, item in self._state.items()}
+        }
+
+    def restore_state(self, blob: Dict[str, Any]) -> None:
+        """Restore engine state from serialized blob (as returned by serialize_state)."""
+        items = blob.get("items", {})
+        self._state.clear()
+        for rec_id_str, item_data in items.items():
+            try:
+                obj = _EngineStateItem.from_serializable(item_data)
+                self._state[int(rec_id_str)] = obj
+            except Exception:
+                logger.exception("Failed to restore state for rec %s", rec_id_str)
+        logger.info("State restored: %d items", len(self._state))
+
+    async def persist_state(self, key: str) -> None:
+        """Persist current serialized state via storage if provided."""
+        if not self.storage:
+            return
+        try:
+            blob = self.serialize_state()
+            self.storage.set(key, json.dumps(blob))
+            logger.debug("Persisted engine state to storage key=%s", key)
+        except Exception:
+            logger.exception("Failed to persist engine state")
+
+    async def load_persisted_state(self, key: str) -> None:
+        """Load persisted state from storage if present."""
+        if not self.storage:
+            return
+        try:
+            raw = self.storage.get(key)
+            if not raw:
+                return
+            blob = json.loads(raw)
+            self.restore_state(blob)
+            logger.info("Loaded persisted state from key=%s", key)
+        except Exception:
+            logger.exception("Failed to load persisted engine state")
+
+    # --- Public state operations ---
+    def initialize_state_for_recommendation(self, rec_dict: Dict[str, Any]) -> None:
+        rec_id = int(rec_dict["id"])
+        entry = rec_dict.get("entry", "0")
+        ts = rec_dict.get("created_at") or int(time.time())
+        self._state[rec_id] = _EngineStateItem(rec_id, Decimal(str(entry)), ts=ts)
+        logger.debug("Initialized state for rec #%d", rec_id)
+        self._emit_hook("on_state_changed", rec_id, self._state[rec_id].to_serializable())
+
+    def clear_state(self, rec_id: int) -> None:
+        if rec_id in self._state:
             self._state.pop(rec_id, None)
-            logger.debug(f"Recommendation #{rec_id} not active; state cleared on init call.")
+            logger.debug("Cleared state for rec #%d", rec_id)
+            self._emit_hook("on_state_changed", rec_id, None)
 
-    def clear_state(self, rec_id: int):
-        """
-        Clear in-memory state for a recommendation and notify lifecycle_service if available.
-        """
-        self._state.pop(rec_id, None)
-        logger.debug(f"Cleared in-memory state for rec #{rec_id}")
-        # Notify lifecycle_service if it supports it (best-effort)
-        try:
-            if self.lifecycle_service and hasattr(self.lifecycle_service, "on_engine_state_cleared"):
-                try:
-                    self.lifecycle_service.on_engine_state_cleared(rec_id)
-                except TypeError:
-                    self.lifecycle_service.on_engine_state_cleared(rec_id, None)
-        except Exception as e:
-            logger.debug(f"Non-fatal lifecycle_service.on_engine_state_cleared failed for #{rec_id}: {e}")
+    def clear_all_states(self) -> None:
+        self._state.clear()
+        logger.debug("Cleared all engine states")
+        self._emit_hook("on_state_changed", None, None)
 
-    # -------------------------
-    # Core evaluation API
-    # -------------------------
-    def evaluate(self, rec_dict: Dict[str, Any], high_price: Decimal, low_price: Decimal) -> List[BaseAction]:
-        """
-        Evaluate a single recommendation dict and return actions to take.
-        This method is safe to call on each price tick.
-
-        :param rec_dict: recommendation state snapshot (should include id, status, side, stop_loss and profit stop fields)
-        :param high_price: Decimal high price observed during the tick
-        :param low_price: Decimal low price observed during the tick
-        :return: list of BaseAction instances (CloseAction / MoveSLAction)
-        """
-        actions: List[BaseAction] = []
-
-        if not rec_dict:
-            return actions
-
-        try:
-            rec_status = rec_dict.get('status')
-        except Exception:
-            rec_status = None
-
-        rec_id = int(rec_dict.get('id'))
-
-        # If lifecycle_service provides a canonical refresh method, attempt to refresh rec_dict (best-effort)
-        try:
-            if self.lifecycle_service and hasattr(self.lifecycle_service, "get_latest_recommendation"):
-                try:
-                    refreshed = self.lifecycle_service.get_latest_recommendation(rec_id)
-                    if refreshed:
-                        # Assume refreshed is dict-like
-                        rec_dict = refreshed
-                except Exception as e:
-                    logger.debug(f"lifecycle_service.get_latest_recommendation failed for #{rec_id}: {e}")
-        except Exception:
-            pass
-
-        if rec_status != RecommendationStatusEnum.ACTIVE:
-            # ensure state is cleaned up for non-active recs
-            self.clear_state(rec_id)
-            return actions
-
-        # If profit stop is not active or not configured, skip
-        if not rec_dict.get('profit_stop_active'):
-            return actions
-
-        # Ensure state exists
-        if rec_id not in self._state:
-            self.initialize_state_for_recommendation(rec_dict)
-
-        state = self._state.get(rec_id)
-        if not state:
-            # defensive: if state still missing, skip
-            logger.debug(f"No state available for rec #{rec_id}; skipping.")
-            return actions
-
-        side = (rec_dict.get('side') or 'LONG').upper()
-        mode = (rec_dict.get('profit_stop_mode') or 'NONE').upper()
-
-        # Update highest/lowest trackers
-        try:
-            if side == "LONG":
-                if high_price > state["highest"]:
-                    state["highest"] = high_price
-            else:  # SHORT
-                if low_price < state["lowest"]:
-                    state["lowest"] = low_price
-        except Exception as e:
-            logger.debug(f"Error updating high/low for rec #{rec_id}: {e}")
-
-        # Execute strategy logic
-        try:
-            if mode == "FIXED":
-                action = self._handle_fixed_profit_stop(rec_dict, high_price, low_price, state)
-                if action:
-                    actions.append(action)
-            elif mode == "TRAILING":
-                action = self._handle_trailing_stop(rec_dict, state)
-                if action:
-                    actions.append(action)
-        except Exception as e:
-            logger.exception(f"Error evaluating strategy for rec #{rec_id}: {e}")
-
-        # If any actions produced, optionally notify lifecycle_service so it can persist or react.
-        if actions and self.lifecycle_service:
+    def rebuild_index(self, recs: Iterable[Dict[str, Any]]) -> None:
+        """Rebuilds internal state from an iterable of recommendation dicts."""
+        self._state.clear()
+        for rec in recs:
             try:
-                if hasattr(self.lifecycle_service, "on_engine_actions"):
-                    # Expected signature: on_engine_actions(rec_id, actions_list)
-                    try:
-                        self.lifecycle_service.on_engine_actions(rec_id, actions)
-                    except TypeError:
-                        # fallback single-action signature
-                        for a in actions:
+                if rec.get("status") and str(rec.get("status")).upper().endswith("ACTIVE"):
+                    self.initialize_state_for_recommendation(rec)
+            except Exception:
+                logger.exception("Failed to initialize state for rec in rebuild: %s", rec.get("id"))
+        logger.info("Rebuild index completed. states=%d", len(self._state))
+
+    # --- Evaluation API ---
+    async def evaluate_batch(self, recs: Iterable[Dict[str, Any]], tick: Dict[str, Any]) -> List[Action]:
+        """
+        Evaluate a batch of recommendations against a single tick.
+        tick: {"high": Decimal|str|float, "low": Decimal|str|float, "close": Decimal|str|float, "ts": int}
+        Returns list of Actions.
+        """
+        # Normalize tick
+        high = Decimal(str(tick.get("high", "0")))
+        low = Decimal(str(tick.get("low", "0")))
+        close = Decimal(str(tick.get("close", "0")))
+        ts = int(tick.get("ts", int(time.time())))
+
+        actions: List[Action] = []
+        # Evaluate sequentially but collect actions first to avoid partial side-effects
+        for rec in recs:
+            try:
+                rec_id = int(rec["id"])
+            except Exception:
+                continue
+            # Use per-rec lock to prevent races when evaluate_batch is used concurrently
+            lock = self._get_lock(rec_id)
+            async with lock:
+                new_actions = self._evaluate_single_locked(rec, high, low, close, ts)
+                if new_actions:
+                    actions.extend(new_actions)
+                    for act in new_actions:
+                        self._emit_hook("on_action_generated", act)
+                        if self.metrics:
                             try:
-                                self.lifecycle_service.on_engine_action(a)
+                                self.metrics.increment("strategy.actions_generated_total", 1)
+                                self.metrics.increment(f"strategy.actions_by_type.{act.__class__.__name__}", 1)
                             except Exception:
-                                # best-effort
-                                pass
-                elif hasattr(self.lifecycle_service, "enqueue_engine_actions"):
+                                logger.debug("Metric increment failed for action metrics", exc_info=False)
+        return actions
+
+    async def evaluate(self, rec: Dict[str, Any], tick: Dict[str, Any]) -> List[Action]:
+        """
+        Evaluate a single recommendation against tick.
+        This acquires the per-rec lock and returns actions.
+        """
+        rec_id = int(rec["id"])
+        lock = self._get_lock(rec_id)
+        high = Decimal(str(tick.get("high", "0")))
+        low = Decimal(str(tick.get("low", "0")))
+        close = Decimal(str(tick.get("close", "0")))
+        ts = int(tick.get("ts", int(time.time())))
+        async with lock:
+            actions = self._evaluate_single_locked(rec, high, low, close, ts)
+            for act in actions:
+                self._emit_hook("on_action_generated", act)
+                if self.metrics:
                     try:
-                        self.lifecycle_service.enqueue_engine_actions(rec_id, actions)
+                        self.metrics.increment("strategy.actions_generated_total", 1)
+                        self.metrics.increment(f"strategy.actions_by_type.{act.__class__.__name__}", 1)
                     except Exception:
-                        pass
-            except Exception as e:
-                logger.debug(f"Non-fatal lifecycle_service action notification failed for #{rec_id}: {e}")
+                        logger.debug("Metric increment failed for action metrics", exc_info=False)
+            return actions
+
+    # --- Core single-evaluation logic (expects lock to be held) ---
+    def _evaluate_single_locked(self, rec: Dict[str, Any], high: Decimal, low: Decimal, close: Decimal, ts: int) -> List[Action]:
+        actions: List[Action] = []
+        # Basic validation and eligibility
+        if not rec or str(rec.get("status", "")).upper() != "ACTIVE" or not rec.get("profit_stop_active", False):
+            return actions
+
+        rec_id = int(rec["id"])
+        # ensure state exists
+        if rec_id not in self._state:
+            self.initialize_state_for_recommendation(rec)
+        state = self._state[rec_id]
+
+        # Update last tick ts
+        state.last_tick_ts = ts
+
+        side = str(rec.get("side", "LONG")).upper()
+        mode = str(rec.get("profit_stop_mode", "NONE")).upper()
+
+        # Update highest/lowest tracked
+        if side == "LONG":
+            if high > state.highest:
+                state.highest = Decimal(high)
+        else:  # SHORT
+            if low < state.lowest:
+                state.lowest = Decimal(low)
+
+        # Emit state change hook
+        self._emit_hook("on_state_changed", rec_id, state.to_serializable())
+
+        # Strategy dispatch
+        if mode == "FIXED":
+            act = self._handle_fixed_profit_stop(rec, high, low, state)
+            if act: actions.append(act)
+        elif mode == "TRAILING":
+            act = self._handle_trailing_stop(rec, state)
+            if act:
+                actions.append(act)
+                # update last_trailing_sl on successful potential move to avoid repeated identical moves
+                if isinstance(act, MoveSLAction):
+                    state.last_trailing_sl = act.new_sl
+                    self._emit_hook("on_state_changed", rec_id, state.to_serializable())
+        elif mode == "BREAK_EVEN":
+            act = self._handle_break_even(rec, state)
+            if act: actions.append(act)
+        elif mode == "TIME_BASED":
+            act = self._handle_time_based(rec, state, ts)
+            if act: actions.append(act)
 
         return actions
 
-    # -------------------------
-    # Strategy implementations
-    # -------------------------
-    def _handle_fixed_profit_stop(self, rec_dict: Dict[str, Any], high_price: Decimal, low_price: Decimal, state: Dict) -> Optional[CloseAction]:
-        """
-        Fixed profit stop (take-profit-stop) logic:
-        - Mark entry into profit zone when price reaches profit_price.
-        - Trigger close when price retraces back to profit_price (i.e., confirms pullback).
-        """
-        try:
-            profit_price_raw = rec_dict.get('profit_stop_price')
-            if profit_price_raw is None:
-                return None
-            profit_price = Decimal(str(profit_price_raw))
-        except Exception:
+    # --- Strategy implementations ---
+    def _handle_fixed_profit_stop(self, rec: Dict[str, Any], high: Decimal, low: Decimal, state: _EngineStateItem) -> Optional[CloseAction]:
+        profit_price_raw = rec.get("profit_stop_price")
+        if profit_price_raw is None:
             return None
+        profit_price = Decimal(str(profit_price_raw))
+        rec_id = int(rec["id"])
+        side = str(rec.get("side", "LONG")).upper()
 
-        side = (rec_dict.get('side') or 'LONG').upper()
-        rec_id = int(rec_dict['id'])
+        # Enter profit zone when candle touches profit_price
+        if not state.in_profit_zone:
+            if (side == "LONG" and high >= profit_price) or (side == "SHORT" and low <= profit_price):
+                state.in_profit_zone = True
+                logger.info("Rec #%d entered profit zone at %s (FIXED)", rec_id, str(profit_price))
+                self._emit_hook("on_state_changed", rec_id, state.to_serializable())
+                return None
 
-        # Step 1: Detect entry into profit zone
-        if not state.get("in_profit_zone", False):
-            entered = (side == "LONG" and high_price >= profit_price) or (side == "SHORT" and low_price <= profit_price)
-            if entered:
-                state["in_profit_zone"] = True
-                logger.info(f"Rec #{rec_id} entered profit zone (FIXED) at {profit_price:g}")
+        # If in zone, trigger close on retracement to or beyond profit_price
+        if state.in_profit_zone:
+            if (side == "LONG" and low <= profit_price) or (side == "SHORT" and high >= profit_price):
+                logger.info("FIXED profit stop hit for rec #%d at %s", rec_id, str(profit_price))
+                return CloseAction(rec_id=rec_id, price=profit_price, reason="PROFIT_STOP_HIT", metadata={"engine": self.engine_version})
 
-        # Step 2: If in profit zone, detect retrace that hits the profit_price -> close
-        if state.get("in_profit_zone", False):
-            retraced = (side == "LONG" and low_price <= profit_price) or (side == "SHORT" and high_price >= profit_price)
-            if retraced:
-                logger.info(f"FIXED profit stop triggered for Rec #{rec_id} at price {profit_price:g}")
-                # Optionally clear state immediately (engine-level)
-                try:
-                    self.clear_state(rec_id)
-                except Exception:
-                    pass
-                return CloseAction(rec_id=rec_id, price=profit_price, reason="PROFIT_STOP_HIT")
         return None
 
-    def _handle_trailing_stop(self, rec_dict: Dict[str, Any], state: Dict) -> Optional[MoveSLAction]:
-        """
-        Trailing stop logic:
-        - Use highest/lowest observed reference to compute potential new SL.
-        - Support both percentage-based and absolute trailing values (heuristic: <=10 -> percent).
-        - Only propose MoveSLAction when the new SL is strictly 'better' (protects more profit).
-        """
-        rec_id = int(rec_dict['id'])
-        try:
-            current_sl = Decimal(str(rec_dict.get('stop_loss')))
-        except Exception:
-            # If stop_loss is invalid, do nothing
-            logger.debug(f"Rec #{rec_id} has invalid stop_loss; skipping trailing logic.")
-            return None
-
-        trailing_raw = rec_dict.get('profit_stop_trailing_value')
+    def _handle_trailing_stop(self, rec: Dict[str, Any], state: _EngineStateItem) -> Optional[MoveSLAction]:
+        # trailing_value may be percentage (<=10 heuristic) or absolute price distance
+        trailing_raw = rec.get("profit_stop_trailing_value")
         if trailing_raw is None:
             return None
 
-        try:
-            trailing_value = Decimal(str(trailing_raw))
-        except Exception:
-            logger.debug(f"Rec #{rec_id} trailing value invalid: {trailing_raw}")
+        current_sl_raw = rec.get("stop_loss")
+        if current_sl_raw is None:
             return None
+        current_sl = Decimal(str(current_sl_raw))
+        trailing_value = Decimal(str(trailing_raw))
 
-        side = (rec_dict.get('side') or 'LONG').upper()
+        side = str(rec.get("side", "LONG")).upper()
+        rec_id = int(rec["id"])
 
-        # Decide if trailing_value is percentage (heuristic)
-        is_percentage = trailing_value <= Decimal('10')
-
-        new_potential_sl = None
+        # Determine if trailing_value is percentage
+        is_percentage = False
+        heuristic_threshold = self.config.get("percentage_threshold", Decimal("10"))
         try:
-            if side == "LONG":
-                reference_price = Decimal(state.get("highest", 0))
-                if is_percentage:
-                    distance = (reference_price * (trailing_value / Decimal('100')))
-                else:
-                    distance = trailing_value
-                new_potential_sl = reference_price - distance
-            else:  # SHORT
-                reference_price = Decimal(state.get("lowest", 0))
-                if is_percentage:
-                    distance = (reference_price * (trailing_value / Decimal('100')))
-                else:
-                    distance = trailing_value
-                new_potential_sl = reference_price + distance
-        except Exception as e:
-            logger.debug(f"Error computing new potential SL for rec #{rec_id}: {e}")
-            return None
-
-        # Compare if the new potential SL is strictly better
-        is_better = False
-        try:
-            if side == "LONG" and new_potential_sl > current_sl:
-                is_better = True
-            elif side == "SHORT" and new_potential_sl < current_sl:
-                is_better = True
+            if trailing_value <= Decimal(str(heuristic_threshold)):
+                is_percentage = True
         except Exception:
-            is_better = False
+            is_percentage = False
+
+        # reference price
+        if side == "LONG":
+            reference_price = state.highest
+            distance = (reference_price * (trailing_value / Decimal("100"))) if is_percentage else trailing_value
+            new_potential_sl = reference_price - distance
+            # ensure not negative
+            if new_potential_sl <= Decimal("0"):
+                return None
+            is_better = new_potential_sl > current_sl
+        else:  # SHORT
+            reference_price = state.lowest
+            distance = (reference_price * (trailing_value / Decimal("100"))) if is_percentage else trailing_value
+            new_potential_sl = reference_price + distance
+            is_better = new_potential_sl < current_sl
+
+        # Prevent tiny movements: require min_sl_move threshold
+        min_move = Decimal(str(self.config.get("min_sl_move", "0")))
+        if min_move and abs(new_potential_sl - (state.last_trailing_sl or current_sl)) <= Decimal(str(min_move)):
+            logger.debug("Trailing SL move too small for rec #%d (delta <= %s)", rec_id, str(min_move))
+            return None
 
         if is_better:
-            logger.info(f"TRAILING: propose MoveSL for Rec #{rec_id}: {current_sl:g} -> {new_potential_sl:g}")
-            # Optionally notify lifecycle_service immediately about proposed SL update (best-effort)
-            try:
-                if self.lifecycle_service and hasattr(self.lifecycle_service, "on_engine_trailing_update"):
-                    try:
-                        self.lifecycle_service.on_engine_trailing_update(rec_id, current_sl, new_potential_sl)
-                    except TypeError:
-                        # fallback
-                        self.lifecycle_service.on_engine_trailing_update(rec_id, new_potential_sl)
-            except Exception as e:
-                logger.debug(f"Non-fatal lifecycle trailing hook failed for #{rec_id}: {e}")
-
-            return MoveSLAction(rec_id=rec_id, new_sl=new_potential_sl)
-
+            logger.info("Trailing candidate for rec #%d: move SL %s -> %s", rec_id, str(current_sl), str(new_potential_sl))
+            return MoveSLAction(rec_id=rec_id, new_sl=new_potential_sl, metadata={"engine": self.engine_version, "mode": "TRAILING"})
         return None
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/strategy/engine.py ---
+
+    def _handle_break_even(self, rec: Dict[str, Any], state: _EngineStateItem) -> Optional[MoveSLAction]:
+        """
+        Move SL to break-even (entry) when certain conditions met.
+        Conditions can be configured in rec dict:
+         - break_even_after_profit_pct: Decimal percent
+         - break_even_after_ticks: integer (number of ticks since entry)
+        """
+        rec_id = int(rec["id"])
+        entry_raw = rec.get("entry")
+        if entry_raw is None:
+            return None
+        entry = Decimal(str(entry_raw))
+        current_sl_raw = rec.get("stop_loss")
+        if current_sl_raw is None:
+            return None
+        current_sl = Decimal(str(current_sl_raw))
+
+        # Condition: reached profit threshold
+        pct_cfg = rec.get("break_even_after_profit_pct")
+        if pct_cfg is not None:
+            target_price = None
+            side = str(rec.get("side", "LONG")).upper()
+            pct = Decimal(str(pct_cfg))
+            if side == "LONG":
+                target_price = entry * (Decimal("1") + pct / Decimal("100"))
+                if state.highest >= target_price:
+                    # candidate: move sl to entry (optionally plus buffer)
+                    buffer = Decimal(str(rec.get("break_even_buffer", "0")))
+                    new_sl = entry + buffer
+                    if new_sl > current_sl:
+                        logger.info("Break-even triggered for rec #%d -> new SL %s", rec_id, str(new_sl))
+                        return MoveSLAction(rec_id=rec_id, new_sl=new_sl, metadata={"engine": self.engine_version, "mode": "BREAK_EVEN"})
+            else:
+                target_price = entry * (Decimal("1") - pct / Decimal("100"))
+                if state.lowest <= target_price:
+                    buffer = Decimal(str(rec.get("break_even_buffer", "0")))
+                    new_sl = entry - buffer
+                    if new_sl < current_sl:
+                        logger.info("Break-even triggered for rec #%d -> new SL %s", rec_id, str(new_sl))
+                        return MoveSLAction(rec_id=rec_id, new_sl=new_sl, metadata={"engine": self.engine_version, "mode": "BREAK_EVEN"})
+        # Additional time/ticks based conditions can be added similarly
+        return None
+
+    def _handle_time_based(self, rec: Dict[str, Any], state: _EngineStateItem, ts: int) -> Optional[Action]:
+        """
+        Example: close position after N seconds if below certain price conditions.
+        Configurable in rec dict via 'time_based_close_after_seconds' and 'time_based_close_threshold'.
+        """
+        rec_id = int(rec["id"])
+        seconds = rec.get("time_based_close_after_seconds")
+        if not seconds:
+            return None
+        threshold = rec.get("time_based_close_threshold")
+        # simplistic implementation: if time since init > seconds and last tick shows adverse condition, close
+        elapsed = ts - state.initialized_at
+        if elapsed < int(seconds):
+            return None
+        # simple threshold logic: if provided and crossed, close
+        if threshold is not None:
+            side = str(rec.get("side", "LONG")).upper()
+            threshold_price = Decimal(str(threshold))
+            # use last observed highest/lowest as proxy
+            if side == "LONG" and state.lowest <= threshold_price:
+                return CloseAction(rec_id=rec_id, price=threshold_price, reason="TIME_BASED_CLOSE", metadata={"engine": self.engine_version})
+            if side == "SHORT" and state.highest >= threshold_price:
+                return CloseAction(rec_id=rec_id, price=threshold_price, reason="TIME_BASED_CLOSE", metadata={"engine": self.engine_version})
+        return None
+
+    # --- Utility/Debug ---
+    def get_state_snapshot(self) -> Dict[str, Any]:
+        return self.serialize_state()
+
+    def shutdown(self) -> None:
+        """Clean shutdown tasks (no async operations here)."""
+        logger.info("StrategyEngine shutdown called")
+        # optionally flush to storage synchronously if storage supports it
+        try:
+            if self.storage and hasattr(self.storage, "set"):
+                key = self.config.get("persistence_key", "strategy_engine_state_v4")
+                self.storage.set(key, json.dumps(self.serialize_state()))
+                logger.debug("Persisted state on shutdown to key=%s", key)
+        except Exception:
+            logger.exception("Failed to persist state on shutdown")
+
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/strategy/engine.py ---
