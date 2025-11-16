@@ -1,11 +1,12 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
-# src/capitalguard/interfaces/telegram/ui_texts.py (v28.4 - NameError Hotfix)
-"""
-Contains helper functions for building the text content of Telegram messages.
-✅ FIX: Added missing '_get_attr' helper function to resolve NameError during card updates.
-✅ HOTFIX: Restored the missing `_normalize_pct_value` function to resolve a critical startup ImportError.
-This is the final, complete, and reliable version.
-"""
+# File: src/capitalguard/interfaces/telegram/ui_texts.py
+# Version: v29.1.0-R2 (Design 3 - Trade View)
+# ✅ THE FIX: (R2 Feature - Design 3)
+#    - 1. (REFACTORED) إعادة كتابة `build_trade_card_text` بالكامل.
+#    - 2. (NEW) تنفذ "التصميم 3" (تصميم TradingView/Binance)
+#       مع كتل نظيفة لـ "الأداء"، "السعر الحي"، و "خطة الخروج".
+#    - 3. (CLEAN) استخدام `_get_attr` و `_format_price` المستوردة
+#       لضمان الاتساق والنظافة.
+# 🎯 IMPACT: هذه هي واجهة عرض التفاصيل النهائية والاحترافية للنظام.
 
 from __future__ import annotations
 import logging
@@ -15,8 +16,10 @@ from datetime import datetime
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.domain.value_objects import Target
+# ✅ R2: Import helpers from a single source
+from capitalguard.interfaces.telegram.helpers import _get_attr, _to_decimal, _pct, _format_price
 
-log = logging.getLogger(__name__) # Added logger
+log = logging.getLogger(__name__)
 
 _STATUS_MAP = {
     RecommendationStatus.PENDING: "⏳ PENDING",
@@ -25,69 +28,36 @@ _STATUS_MAP = {
 }
 _SIDE_ICONS = {'LONG': '🟢', 'SHORT': '🔴'}
 
-# ✅ FIX: Added missing helper function
-def _get_attr(obj: Any, attr: str, default: Any = None) -> Any:
-    """Safely get .attr if exists, else x itself (for domain ValueObjects)."""
-    val = getattr(obj, attr, default)
-    return val.value if hasattr(val, 'value') else val
-
-def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
-    if isinstance(value, Decimal): return value
-    try: return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError): return default
-
-def _format_price(price: Any) -> str:
-    price_dec = _to_decimal(price)
-    if not price_dec.is_finite():
-        return "N/A"
-    return f"{price_dec:g}" # Use 'g' for cleaner output
-
-def _pct(entry: Any, target_price: Any, side: str) -> float:
-    entry_dec, target_dec = _to_decimal(entry), _to_decimal(target_price)
-    if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite(): return 0.0
-    side_upper = (_get_attr(side, "value") or "").upper() # Use _get_attr
-    try:
-        if side_upper == "LONG": pnl = ((target_dec / entry_dec) - 1) * 100
-        elif side_upper == "SHORT": pnl = ((entry_dec / target_dec) - 1) * 100
-        else: return 0.0
-        return float(pnl)
-    except (InvalidOperation, TypeError, ZeroDivisionError): return 0.0
-
-# ✅ RESTORED FUNCTION
-def _normalize_pct_value(pct_raw: Any) -> Decimal:
-    """
-    Normalize the output of ui_texts._pct to a Decimal for numeric comparisons.
-    Accepts numbers, Decimal, or formatted strings like '+1.23%' or '1.23'.
-    Falls back to Decimal(0) on parse failure while logging a warning.
-    """
-    try:
-        if isinstance(pct_raw, Decimal):
-            return pct_raw
-        if isinstance(pct_raw, (int, float)):
-            return Decimal(str(pct_raw))
-        if isinstance(pct_raw, str):
-            s = pct_raw.strip().replace('%', '').replace('+', '').replace(',', '')
-            return Decimal(s)
-        return Decimal(str(pct_raw))
-    except (InvalidOperation, Exception) as exc:
-        log.warning("Unable to normalize pct value '%s' (%s); defaulting to 0", pct_raw, exc)
-        return Decimal(0)
+# --- (Helpers _to_decimal, _pct, _format_price, _get_attr
+#      are now imported from helpers.py or keyboards.py) ---
 
 def _format_pnl(pnl: float) -> str:
     return f"{pnl:+.2f}%"
 
-def _rr(entry: Any, sl: Any, first_target: Optional[Target]) -> str:
+def _rr(entry: Any, sl: Any, targets: List[Target]) -> str:
+    """Calculates Risk/Reward based on the *first* target."""
     try:
         entry_dec, sl_dec = _to_decimal(entry), _to_decimal(sl)
-        if first_target is None or not entry_dec.is_finite() or not sl_dec.is_finite(): return "—"
+        if not targets:
+            return "1:—"
+        
+        first_target = targets[0]
+        first_target_price = _to_decimal(_get_attr(first_target, 'price'))
+
+        if not entry_dec.is_finite() or not sl_dec.is_finite() or not first_target_price.is_finite():
+            return "1:—"
+            
         risk = abs(entry_dec - sl_dec)
-        if risk.is_zero(): return "∞"
-        reward = abs(_to_decimal(first_target.price.value) - entry_dec)
+        if risk.is_zero(): return "1:∞"
+        
+        reward = abs(first_target_price - entry_dec)
         ratio = reward / risk
         return f"1:{ratio:.2f}"
-    except Exception: return "—"
+    except Exception:
+        return "1:—"
 
 def _calculate_weighted_pnl(rec: Recommendation) -> float:
+    """Calculates final PnL based on event log for partial closures."""
     total_pnl_contribution = 0.0
     total_percent_closed = 0.0
     
@@ -125,36 +95,69 @@ def _get_result_text(pnl: float) -> str:
     else: return "🛡️ BREAKEVEN"
 
 def _build_header(rec: Recommendation) -> str:
-    status_text = _STATUS_MAP.get(rec.status, "UNKNOWN")
-    side_icon = _SIDE_ICONS.get(rec.side.value, '⚪')
+    """Builds the header (Design 3)."""
+    status_text = _STATUS_MAP.get(_get_attr(rec, 'status'), "UNKNOWN")
+    side_icon = _SIDE_ICONS.get(_get_attr(rec, 'side'), '⚪')
     id_prefix = "Trade" if getattr(rec, 'is_user_trade', False) else "Signal"
-    return f"<b>{status_text} | #{_get_attr(rec.asset, 'value')} | {_get_attr(rec.side, 'value')}</b> {side_icon} | {id_prefix} #{rec.id}"
+    
+    # ✅ R2 (Design 3): New Header
+    return f"{side_icon} *{_get_attr(rec.asset, 'value')} | {_get_attr(rec.side, 'value')} | #{rec.id}*"
+    
 
 def _build_live_price_section(rec: Recommendation) -> str:
+    """Builds the Live Price block (Design 3)."""
     live_price = getattr(rec, "live_price", None)
-    if rec.status != RecommendationStatus.ACTIVE or live_price is None: return ""
-    pnl = _pct(rec.entry.value, live_price, rec.side.value)
+    if _get_attr(rec, 'status') != RecommendationStatus.ACTIVE or live_price is None:
+        return ""
+        
+    pnl = _pct(_get_attr(rec, 'entry'), live_price, _get_attr(rec, 'side'))
     pnl_icon = '🟢' if pnl >= 0 else '🔴'
+    
+    # Calculate price change (optional, stubbed)
+    price_change_pct = "+0.00%" # (This would require fetching 24h data)
+
     return "\n".join([
-        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
-        f"💹 <b>Live Price:</b> <code>{_format_price(live_price)}</code> ({pnl_icon} {_format_pnl(pnl)})",
-        "─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
+        "━━━━━━━━━━━━━━━━━━",
+        "📈 *السعر الحيّ*",
+        f"`{_format_price(live_price)}`  `({price_change_pct})`",
+        f"PnL: `{_format_pnl(pnl)}` {pnl_icon}"
     ])
 
 def _build_performance_section(rec: Recommendation) -> str:
-    entry_price, stop_loss = rec.entry.value, rec.stop_loss.value
-    sl_pnl = _pct(entry_price, stop_loss, rec.side.value)
-    first_target = rec.targets.values[0] if rec.targets.values else None
+    """Builds the Performance block (Design 3)."""
+    entry_price = _get_attr(rec, 'entry')
+    stop_loss = _get_attr(rec, 'stop_loss')
+    targets = _get_attr(rec, 'targets', [])
+    targets_list = targets.values if hasattr(targets, 'values') else []
+    
+    rr_str = _rr(entry_price, stop_loss, targets_list)
+    
+    # PnL logic for non-active states
+    pnl_str = "—"
+    live_price = getattr(rec, "live_price", None)
+    
+    if _get_attr(rec, 'status') == RecommendationStatus.ACTIVE and live_price is not None:
+        pnl = _pct(entry_price, live_price, _get_attr(rec, 'side'))
+        pnl_str = f"{_format_pnl(pnl)}"
+    elif _get_attr(rec, 'status') == RecommendationStatus.CLOSED:
+        pnl = _calculate_weighted_pnl(rec)
+        pnl_str = f"{_format_pnl(pnl)} (Final)"
+
     return "\n".join([
-        "📊 <b>PERFORMANCE</b>",
-        f"💰 Entry: <code>{_format_price(entry_price)}</code>",
-        f"🛑 Stop: <code>{_format_price(stop_loss)}</code> ({_format_pnl(sl_pnl)})",
-        f"💡 Risk/Reward (Plan): ~<code>{_rr(entry_price, stop_loss, first_target)}</code>"
+        "📊 *الأداء*",
+        f"Entry: `{_format_price(entry_price)}`",
+        f"Stop: `{_format_price(stop_loss)}`",
+        f"Risk/Reward: `{rr_str}`",
+        f"PnL: `{pnl_str}`"
     ])
 
 def _build_exit_plan_section(rec: Recommendation) -> str:
-    lines = ["\n🎯 <b>EXIT PLAN</b>"]
-    entry_price = rec.entry.value
+    """Builds the Exit Plan block (Design 3)."""
+    lines = ["🎯 *خطة الخروج*"]
+    entry_price = _get_attr(rec, 'entry')
+    targets = _get_attr(rec, 'targets', [])
+    targets_list = targets.values if hasattr(targets, 'values') else []
+    
     hit_targets = set()
     if rec.events:
         for event in rec.events:
@@ -164,69 +167,66 @@ def _build_exit_plan_section(rec: Recommendation) -> str:
                     hit_targets.add(target_num)
                 except (ValueError, IndexError):
                     continue
-    next_tp_index = -1
-    for i in range(1, len(rec.targets.values) + 1):
-        if i not in hit_targets:
-            next_tp_index = i
-            break
-    for i, target in enumerate(rec.targets.values, start=1):
-        pct_value = _pct(entry_price, target.price.value, rec.side.value)
-        if i in hit_targets: icon = "✅"
-        elif i == next_tp_index: icon = "🚀"
-        else: icon = "⏳"
-        line = f"  • {icon} TP{i}: <code>{_format_price(target.price.value)}</code> ({_format_pnl(pct_value)})"
-        if 0 < target.close_percent < 100:
-            line += f" | Close {target.close_percent:.0f}%"
+                    
+    if not targets_list:
+        return "🎯 *خطة الخروج*\n • `N/A`"
+
+    for i, target in enumerate(targets_list, start=1):
+        pct_value = _pct(entry_price, _get_attr(target, 'price'), _get_attr(rec, 'side'))
+        icon = "✅" if i in hit_targets else "⏳"
+        
+        line = f"  • {icon} TP{i}: `{_format_price(_get_attr(target, 'price'))}` ({_format_pnl(pct_value)})"
+        
+        close_pct = _get_attr(target, 'close_percent', 0.0)
+        if 0 < close_pct < 100:
+            line += f" | Close {close_pct:.0f}%"
+        elif close_pct == 100 and i == len(targets_list):
+            line += " | Close 100%"
+            
         lines.append(line)
     return "\n".join(lines)
 
-def _build_logbook_section(rec: Recommendation) -> str:
-    lines = []
-    log_events = [
-        event for event in (rec.events or []) 
-        if getattr(event, "event_type", "") in ("PARTIAL_CLOSE_MANUAL", "PARTIAL_CLOSE_AUTO", "FINAL_CLOSE")
-    ]
-    if not log_events:
-        return ""
-    lines.append("\n📋 <b>LOGBOOK</b>")
-    for event in sorted(log_events, key=lambda ev: getattr(ev, "event_timestamp", datetime.min)):
-        data = getattr(event, "event_data", {}) or {}
-        pnl = data.get('pnl_on_part', 0.0)
-        trigger = data.get('triggered_by', 'MANUAL')
-        icon = "💰" if pnl >= 0 else "⚠️"
-        lines.append(f"  • {icon} Closed {data.get('closed_percent', 0):.0f}% at <code>{_format_price(data.get('price', 0))}</code> ({_format_pnl(pnl)}) [{trigger}]")
-    return "\n".join(lines)
-
 def _build_summary_section(rec: Recommendation) -> str:
+    """Builds the Summary block for CLOSED trades (Design 3)."""
     pnl = _calculate_weighted_pnl(rec)
     return "\n".join([
-        "📊 <b>TRADE SUMMARY</b>",
-        f"💰 Entry: <code>{_format_price(rec.entry.value)}</code>",
-        f"🏁 Final Exit Price: <code>{_format_price(rec.exit_price)}</code>",
-        f"{'📈' if pnl >= 0 else '📉'} <b>Final Weighted Result: {_format_pnl(pnl)}</b> ({_get_result_text(pnl)})",
+        "📊 *ملخص الصفقة*",
+        f"Entry: `{_format_price(_get_attr(rec, 'entry'))}`",
+        f"🏁 Final Exit: `{_format_price(_get_attr(rec, 'exit_price'))}`",
+        f"{'📈' if pnl >= 0 else '📉'} *Final Result: {_format_pnl(pnl)}* ({_get_result_text(pnl)})",
     ])
 
 def build_trade_card_text(rec: Recommendation) -> str:
-    # Use _get_attr for all domain object access
+    """
+    ✅ R2 (Design 3): Builds the full trade detail view.
+    """
     header = _build_header(rec)
     parts = [header]
     
-    if rec.status == RecommendationStatus.CLOSED:
-        parts.append("─ ─ ─ ─ ─ ─ ─ ─ ─ ─")
+    if _get_attr(rec, 'status') == RecommendationStatus.CLOSED:
+        parts.append("━━━━━━━━━━━━━━━━━━")
         parts.append(_build_summary_section(rec))
-        parts.append(_build_logbook_section(rec))
+        parts.append("━━━━━━━━━━━━━━━━━━")
     else:
-        if section := _build_live_price_section(rec): parts.append(section)
+        # Build Active/Pending view
+        if section := _build_live_price_section(rec):
+            parts.append(section)
+        
+        parts.append("━━━━━━━━━━━━━━━━━━")
         parts.append(_build_performance_section(rec))
+        parts.append("━━━━━━━━━━━━━━━━━━")
         parts.append(_build_exit_plan_section(rec))
-        if section := _build_logbook_section(rec): parts.append(section)
-
-    parts.append("────────────────────")
-    parts.append(f"#{_get_attr(rec.asset, 'value')} #Signal")
-    if rec.notes: parts.append(f"📝 Notes: <i>{rec.notes}</i>")
+        parts.append("━━━━━━━━━━━━━━━━━━")
+    
+    if rec.notes:
+        parts.append(f"📝 Notes: *{rec.notes}*")
+        
+    # Escape for MarkdownV2
+    # (Note: The handler (management_handlers.py) is responsible for escaping)
     return "\n".join(filter(None, parts))
 
 def build_review_text_with_price(draft: dict, preview_price: Optional[float]) -> str:
+    """Builds the text for the creation review card."""
     asset, side, market = draft.get("asset", "N/A"), draft.get("side", "N/A"), draft.get("market", "Futures")
     entry, sl = draft.get("entry", Decimal(0)), draft.get("stop_loss", Decimal(0))
     raw_tps = draft.get("targets", [])
@@ -239,6 +239,7 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
         if close_percent == 100 and i == len(raw_tps): suffix = ""
         
         target_lines.append(f"  • TP{i}: <code>{_format_price(price)}</code> ({_format_pnl(pct_value)}){suffix}")
+    
     base_text = (
         f"📝 <b>REVIEW RECOMMENDATION</b>\n"
         f"─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
@@ -247,7 +248,8 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
         f"🛑 Stop: <code>{_format_price(sl)}</code>\n"
         f"🎯 Targets:\n" + "\n".join(target_lines) + "\n"
     )
-    if preview_price is not None: base_text += f"\n💹 Current Price: <code>{_format_price(preview_price)}</code>"
+    if preview_price is not None:
+        base_text += f"\n💹 Current Price: <code>{_format_price(preview_price)}</code>"
+    
     base_text += "\n\nReady to publish?"
     return base_text
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---

@@ -1,12 +1,14 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
 # File: src/capitalguard/interfaces/telegram/keyboards.py
-# Version: 21.20.2 (Null-Safe Hotfix)
-# ✅ THE FIX: (Protocol 1) إصلاح خطأ `TypeError: can only concatenate str (not "NoneType")`.
-#    - 1. (CRITICAL) تحصين `build_editable_review_card` ضد قيم `None`.
-#    - 2. (NEW) استخدام `(data.get('key') or "N/A")` لضمان وجود قيمة نصية دائمًا.
-#    - 3. (NEW) استخدام f-strings (f"Asset: {asset}") بدلاً من الربط (+) لزيادة الأمان.
-# 🎯 IMPACT: مسار "الانحدار التدريجي" (Graceful Degradation) سيعمل الآن
-#    بنجاح عند فشل التحليل، ويقدم للمستخدم "مسودة فارغة" (Blank Draft) آمنة.
+# Version: v25.0.0-R2 (Design 3 - Buttons Final)
+# ✅ THE FIX: (R2 Feature - Design 3)
+#    - 1. (REFACTORED) `analyst_control_panel_keyboard` و
+#       `build_user_trade_control_keyboard` تم تحديثهما بالكامل
+#       ليطابقا "التصميم 3" (مصفوفة الأزرار 2x3).
+#    - 2. (REFACTORED) `build_open_recs_keyboard` (الذي تم تسليمه سابقًا)
+#       مُدمج هنا لضمان الاكتمال.
+#    - 3. (NEW) `build_channels_list_keyboard` (الذي تم تسليمه سابقًا)
+#       مُدمج هنا لضمان الاكتمال.
+# 🎯 IMPACT: هذا الملف ينفذ واجهة المستخدم الاحترافية الجديدة بالكامل.
 
 import math
 import logging
@@ -20,14 +22,17 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from capitalguard.domain.entities import Recommendation as RecommendationEntity, RecommendationStatus, ExitStrategy
 from capitalguard.domain.entities import UserTradeStatus
 
-from capitalguard.application.services.price_service import PriceService
+# ✅ R2: Import PriceService for type hinting
+if False:
+    from capitalguard.application.services.price_service import PriceService
 
 logger = logging.getLogger(__name__)
 
 # --- Constants ---
-ITEMS_PER_PAGE = 8
-MAX_BUTTON_TEXT_LENGTH = 40
-MAX_CALLBACK_DATA_LENGTH = 64  # Telegram limit is 64 bytes
+ITEMS_PER_PAGE_HUB = 6 # (Design 2 has 6 items)
+ITEMS_PER_PAGE_CHANNELS = 8
+MAX_BUTTON_TEXT_LENGTH = 60 # (Increased for card text)
+MAX_CALLBACK_DATA_LENGTH = 64
 
 # --- Internal Helpers ---
 def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
@@ -42,11 +47,10 @@ def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
         return default
 
 def _format_price(price: Any) -> str:
-    # ✅ (v21.20.2) آمن ضد None
     price_dec = _to_decimal(price)
     if not price_dec.is_finite() or price_dec == Decimal(0):
         return "N/A"
-    return f"{price_dec:g}" # Use 'g' for cleaner output
+    return f"{price_dec:g}"
 
 def _pct(entry: Any, target_price: Any, side: str) -> float:
     try:
@@ -54,7 +58,6 @@ def _pct(entry: Any, target_price: Any, side: str) -> float:
         target_dec = _to_decimal(target_price)
         if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite(): 
             return 0.0
-        
         side_upper = (str(side) or "").upper()
         if side_upper == "LONG": 
             pnl = ((target_dec / entry_dec) - 1) * 100
@@ -82,16 +85,18 @@ class CallbackNamespace(Enum):
     POSITION = "pos"
     RECOMMENDATION = "rec"
     EXIT_STRATEGY = "exit"
-    NAVIGATION = "nav"
+    NAVIGATION = "nav" # (Legacy)
     PUBLICATION = "pub"
     FORWARD_PARSE = "fwd_parse"
     SAVE_TEMPLATE = "save_template"
-    MGMT = "mgmt"
+    MGMT = "mgmt" # ✅ R2: New namespace for Hub navigation
 
 class CallbackAction(Enum):
     SHOW = "sh"
     UPDATE = "up"
-    NAVIGATE = "nv"
+    NAVIGATE = "nv" # (Legacy)
+    SHOW_LIST = "show_list" # ✅ R2: New navigation action
+    HUB = "hub" # ✅ R2: New hub action
     BACK = "bk"
     CLOSE = "cl"
     PARTIAL = "pt"
@@ -108,6 +113,7 @@ class CallbackBuilder:
         """Builds a callback data string, ensuring it fits Telegram limits."""
         ns_val = namespace.value if isinstance(namespace, CallbackNamespace) else namespace
         act_val = action.value if isinstance(action, CallbackAction) else action
+        # ✅ R2: Ensure all params are strings
         param_str = ":".join(map(str, params))
         base = f"{ns_val}:{act_val}"
         if param_str: 
@@ -134,7 +140,7 @@ class CallbackBuilder:
             return {'raw': callback_data, 'error': 'Parsing failed'}
 
 def parse_cq_parts(callback_data: str) -> List[str]:
-    """Legacy helper, use CallbackBuilder.parse instead for structured data."""
+    """Legacy helper."""
     parsed = CallbackBuilder.parse(callback_data)
     parts = []
     if parsed.get('namespace'): 
@@ -148,23 +154,23 @@ def parse_cq_parts(callback_data: str) -> List[str]:
 
 # --- UI Constants ---
 class StatusIcons:
-    PENDING = "⏳"
+    PENDING = "⏳" # Used for PENDING_ACTIVATION
     ACTIVE = "▶️"
     PROFIT = "🟢"
     LOSS = "🔴"
     CLOSED = "🏁"
     ERROR = "⚠️"
-    BREAK_EVEN = "🛡️"
+    BREAK_EVEN = "🔵"
     SHADOW = "👻"
     WATCHLIST = "👁️"
 
 class ButtonTexts:
-    BACK_TO_LIST = "⬅️ Back to List"
-    BACK_TO_MAIN = "⬅️ Back to Panel"
-    PREVIOUS = "⬅️ Previous"
-    NEXT = "Next ➡️"
-    CONFIRM = "✅ Confirm"
-    CANCEL = "❌ Cancel"
+    BACK_TO_LIST = "⬅️ العودة للقائمة"
+    BACK_TO_MAIN = "🏠 الرئيسية" # ✅ R2: "Home"
+    PREVIOUS = "⬅️"
+    NEXT = "➡️"
+    CONFIRM = "✅ تأكيد"
+    CANCEL = "❌ إلغاء"
 
 
 # --- Status & Navigation Logic ---
@@ -173,7 +179,8 @@ class StatusDeterminer:
     def determine_icon(item: Any, live_price: Optional[float] = None) -> str:
         """Determines the status icon based on item state and live price."""
         try:
-            if getattr(item, 'is_user_trade', False):
+            is_trade = getattr(item, 'is_user_trade', False)
+            if is_trade:
                 status_value = _get_attr(item, 'orm_status_value')
             else:
                 status = _get_attr(item, 'status')
@@ -188,16 +195,21 @@ class StatusDeterminer:
             
             if status_value == RecommendationStatus.CLOSED.value: 
                 return StatusIcons.CLOSED
+                
             if status_value in [RecommendationStatus.ACTIVE.value, UserTradeStatus.ACTIVATED.value]:
                 entry_dec = _to_decimal(_get_attr(item, 'entry'))
                 sl_dec = _to_decimal(_get_attr(item, 'stop_loss'))
-                if entry_dec > 0 and sl_dec > 0 and abs(entry_dec - sl_dec) / entry_dec < Decimal('0.0005'): 
-                    return StatusIcons.BREAK_EVEN
+                
                 if live_price is not None:
                     side = _get_attr(item, 'side')
                     if entry_dec > 0:
                         pnl = _pct(entry_dec, live_price, side)
-                        return StatusIcons.PROFIT if pnl >= 0 else StatusIcons.LOSS
+                        if pnl > 0.05:
+                            return StatusIcons.PROFIT
+                        elif pnl < -0.05:
+                            return StatusIcons.LOSS
+                        else:
+                            return StatusIcons.BREAK_EVEN # PnL is near 0
                 return StatusIcons.ACTIVE
         
         except Exception as e:
@@ -207,109 +219,196 @@ class StatusDeterminer:
 class NavigationBuilder:
     @staticmethod
     def build_pagination(current_page: int, total_pages: int,
-                         base_ns: CallbackNamespace = CallbackNamespace.NAVIGATION,
-                         base_action: CallbackAction = CallbackAction.NAVIGATE,
+                         base_ns: CallbackNamespace = CallbackNamespace.MGMT,
+                         base_action: CallbackAction = CallbackAction.SHOW_LIST,
                          extra_params: Tuple = ()
-                         ) -> List[List[InlineKeyboardButton]]:
+                         ) -> List[InlineKeyboardButton]:
         """Builds pagination buttons using CallbackBuilder."""
         buttons = []
         if current_page > 1: 
-            buttons.append(InlineKeyboardButton(ButtonTexts.PREVIOUS, callback_data=CallbackBuilder.create(base_ns, base_action, current_page - 1, *extra_params)))
+            buttons.append(InlineKeyboardButton(ButtonTexts.PREVIOUS, callback_data=CallbackBuilder.create(base_ns, base_action, *(extra_params + (current_page - 1,)))))
         if total_pages > 1: 
             buttons.append(InlineKeyboardButton(f"📄 {current_page}/{total_pages}", callback_data="noop"))
         if current_page < total_pages: 
-            buttons.append(InlineKeyboardButton(ButtonTexts.NEXT, callback_data=CallbackBuilder.create(base_ns, base_action, current_page + 1, *extra_params)))
-        return [buttons] if buttons else []
+            buttons.append(InlineKeyboardButton(ButtonTexts.NEXT, callback_data=CallbackBuilder.create(base_ns, base_action, *(extra_params + (current_page + 1,)))))
+        
+        return buttons
 
-# --- Keyboard Factories ---
+# --- Keyboard Factories (R2 REFACTORED) ---
 
 async def build_open_recs_keyboard(
-    activated_items: List[Any], 
-    watchlist_items: List[Any], 
+    items_list: List[Any], 
     current_page: int, 
-    price_service: PriceService
+    price_service: "PriceService",
+    list_type: str # ✅ R2: "activated" or "watchlist"
 ) -> InlineKeyboardMarkup:
     """
-    ✅ R1-S1 (Task 6) Updated Keyboard Builder.
-    Builds the paginated keyboard, separating Activated and Watchlist items.
+    ✅ R2 (Design 2 & 4) Updated Keyboard Builder.
+    Builds the paginated "Card UI" keyboard for Activated or Watchlist items.
     """
     try:
-        # --- 1. Build the combined display list with headers ---
-        display_list: List[Any] = []
-        
-        if activated_items:
-            display_list.append("--- 🚀 ACTIVATED TRADES ---")
-            display_list.extend(activated_items)
+        if not items_list:
+            return InlineKeyboardMarkup([
+                [InlineKeyboardButton("📭 لا توجد صفقات هنا.", callback_data="noop")],
+                [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, CallbackAction.HUB))]
+            ])
 
-        if watchlist_items:
-            display_list.append("--- 👁️ WATCHLIST ---")
-            display_list.extend(watchlist_items)
-
-        if not display_list:
-            return InlineKeyboardMarkup([[InlineKeyboardButton("✅ No open positions found.", callback_data="noop")]])
-
-        # --- 2. Paginate the combined display list ---
-        total_items = len(display_list)
-        total_pages = math.ceil(total_items / ITEMS_PER_PAGE) or 1
+        # --- 2. Paginate the display list ---
+        total_items = len(items_list)
+        total_pages = math.ceil(total_items / ITEMS_PER_PAGE_HUB) or 1
         current_page = max(1, min(current_page, total_pages))
-        start_index = (current_page - 1) * ITEMS_PER_PAGE
-        paginated_items = display_list[start_index : start_index + ITEMS_PER_PAGE]
+        start_index = (current_page - 1) * ITEMS_PER_PAGE_HUB
+        paginated_items = items_list[start_index : start_index + ITEMS_PER_PAGE_HUB]
         
         # --- 3. Fetch prices only for items on the current page ---
         assets_to_fetch = {
             (_get_attr(item, 'asset'), _get_attr(item, 'market', 'Futures')) 
-            for item in paginated_items 
-            if not isinstance(item, str) and _get_attr(item, 'asset')
+            for item in paginated_items if _get_attr(item, 'asset')
         }
         
         price_tasks = [price_service.get_cached_price(asset, market) for asset, market in assets_to_fetch]
         price_results = await asyncio.gather(*price_tasks, return_exceptions=True)
-        prices_map = {asset_market[0]: price for asset_market, price in zip(assets_to_fetch, price_results) if not isinstance(price, Exception)}
+        prices_map = {asset_market[0]: price for asset_market, price in zip(assets_to_fetch, price_results) if not isinstance(price, Exception) and price is not None}
 
-        # --- 4. Build keyboard rows ---
+        # --- 4. Build keyboard rows (Design 2 & 4) ---
         keyboard_rows = []
         for item in paginated_items:
-            if isinstance(item, str):
-                keyboard_rows.append([InlineKeyboardButton(f" {item} ", callback_data="noop")])
-                continue
-
             rec_id, asset, side = _get_attr(item, 'id'), _get_attr(item, 'asset'), _get_attr(item, 'side')
+            entry = _get_attr(item, 'entry')
             live_price = prices_map.get(asset)
+            
             status_icon = StatusDeterminer.determine_icon(item, live_price)
-            button_text = f"#{rec_id} - {asset} ({side})"
+            item_type_str = 'trade' if getattr(item, 'is_user_trade', False) else 'rec'
+
+            # Build the card text (Design 2 / Design 4)
+            card_lines = []
             
-            if live_price is not None and status_icon in [StatusIcons.PROFIT, StatusIcons.LOSS]:
-                pnl = _pct(_get_attr(item, 'entry'), live_price, side)
-                button_text = f"{status_icon} {button_text} | PnL: {pnl:+.2f}%"
-            else:
-                button_text = f"{status_icon} {button_text}"
+            if list_type == "activated":
+                pnl_str = "PnL: N/A"
+                if live_price is not None:
+                    pnl = _pct(entry, live_price, side)
+                    pnl_str = f"PnL: {pnl:+.2f}%"
+                
+                card_lines = [
+                    f"{status_icon} {asset} ({side})",
+                    pnl_str,
+                    f"Entry: {_format_price(entry)}"
+                ]
+            else: # Watchlist (Design 4)
+                status_icon = StatusIcons.WATCHLIST
+                price_str = f"السعر الحالي: {_format_price(live_price)}" if live_price else "السعر: N/A"
+                card_lines = [
+                    f"{status_icon} {asset} ({side})",
+                    price_str,
+                    f"Entry: {_format_price(entry)}" # Show planned entry
+                ]
+
+            card_text = "\n".join(card_lines)
             
-            item_type = 'trade' if getattr(item, 'is_user_trade', False) else 'rec'
-            callback_data = CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, item_type, rec_id)
-            keyboard_rows.append([InlineKeyboardButton(_truncate_text(button_text), callback_data=callback_data)])
+            # Add separator
+            keyboard_rows.append([InlineKeyboardButton("━━━━━━━━━━━━━━━━━━", callback_data="noop")])
+            
+            # The card itself is the button
+            callback_data = CallbackBuilder.create(
+                CallbackNamespace.POSITION, CallbackAction.SHOW, 
+                item_type_str, rec_id, 
+                list_type, current_page # Pass context for "Back" button
+            )
+            keyboard_rows.append([InlineKeyboardButton(_truncate_text(card_text, 60), callback_data=callback_data)])
         
         # --- 5. Add navigation ---
-        keyboard_rows.extend(NavigationBuilder.build_pagination(current_page, total_pages))
-        keyboard_rows.append([InlineKeyboardButton("🔄 Refresh List", callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, current_page))])
+        keyboard_rows.append([InlineKeyboardButton("━━━━━━━━━━━━━━━━━━", callback_data="noop")])
+        
+        nav_buttons = NavigationBuilder.build_pagination(
+            current_page, 
+            total_pages,
+            base_ns=CallbackNamespace.MGMT,
+            base_action=CallbackAction.SHOW_LIST,
+            extra_params=(list_type,) # Pass list_type in navigation
+        )
+        if nav_buttons:
+            keyboard_rows.append(nav_buttons)
+            
+        keyboard_rows.append([InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, CallbackAction.HUB))])
         return InlineKeyboardMarkup(keyboard_rows)
     
     except Exception as e:
         logger.error(f"Open recs keyboard build failed: {e}", exc_info=True)
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("⚠️ Error Loading Data", callback_data="noop")],
-            [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.NAVIGATION, CallbackAction.NAVIGATE, 1))]
+            [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, CallbackAction.HUB))]
         ])
+
+# ✅ R2 (Design 5): New keyboard for showing channel list
+def build_channels_list_keyboard(
+    channels_summary: List[Dict[str, Any]], 
+    current_page: int, 
+    list_type: str = "channels"
+) -> InlineKeyboardMarkup:
+    """
+    Builds the paginated "Card UI" keyboard for Watched Channels list (Design 5).
+    """
+    try:
+        if not channels_summary:
+            return InlineKeyboardMarkup([
+                [InlineKeyboardButton("📭 لا توجد قنوات للمتابعة.", callback_data="noop")],
+                [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, CallbackAction.HUB))]
+            ])
+
+        # --- Paginate ---
+        total_items = len(channels_summary)
+        total_pages = math.ceil(total_items / ITEMS_PER_PAGE_CHANNELS) or 1
+        current_page = max(1, min(current_page, total_pages))
+        start_index = (current_page - 1) * ITEMS_PER_PAGE_CHANNELS
+        paginated_items = channels_summary[start_index : start_index + ITEMS_PER_PAGE_CHANNELS]
+        
+        keyboard_rows = []
+        for item in paginated_items:
+            channel_id = item.get("id") # This is WatchedChannel ID or "direct"
+            title = item.get("title", "Unknown Channel")
+            count = item.get("count", 0)
+            
+            card_text = f"📡 {title} — {count} صفقات"
+            
+            keyboard_rows.append([InlineKeyboardButton("━━━━━━━━━━━━━━━━━━", callback_data="noop")])
+            
+            callback_data = CallbackBuilder.create(
+                CallbackNamespace.MGMT, CallbackAction.SHOW_LIST, 
+                f"channel_detail_{channel_id}", 1 # Go to page 1 of this channel's list
+            )
+            keyboard_rows.append([InlineKeyboardButton(_truncate_text(card_text, 60), callback_data=callback_data)])
+        
+        # --- Navigation ---
+        keyboard_rows.append([InlineKeyboardButton("━━━━━━━━━━━━━━━━━━", callback_data="noop")])
+        
+        nav_buttons = NavigationBuilder.build_pagination(
+            current_page, 
+            total_pages,
+            base_ns=CallbackNamespace.MGMT,
+            base_action=CallbackAction.SHOW_LIST,
+            extra_params=(list_type,)
+        )
+        if nav_buttons:
+            keyboard_rows.append(nav_buttons)
+            
+        keyboard_rows.append([InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, CallbackAction.HUB))])
+        return InlineKeyboardMarkup(keyboard_rows)
+
+    except Exception as e:
+        logger.error(f"Channels list keyboard build failed: {e}", exc_info=True)
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚠️ Error Loading Channels", callback_data="noop")],
+            [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, CallbackAction.HUB))]
+        ])
+
 
 def build_editable_review_card(parsed_data: Dict[str, Any], channel_name: str = "Unknown") -> InlineKeyboardMarkup:
     """Builds the interactive review card with Activate/Watch buttons."""
-    # ✅ THE FIX (v21.20.2): Add 'or' fallback to handle None from blank_draft
     asset = parsed_data.get('asset') or "N/A"
     side = parsed_data.get('side') or "N/A"
-    # _format_price is already safe against None
     entry = _format_price(parsed_data.get('entry'))
     stop_loss = _format_price(parsed_data.get('stop_loss'))
     targets = parsed_data.get('targets', [])
-
     target_items = []
     for t in targets:
         price_str = _format_price(t.get('price'))
@@ -318,15 +417,11 @@ def build_editable_review_card(parsed_data: Dict[str, Any], channel_name: str = 
         if close_pct > 0:
             item_str += f"@{int(close_pct) if close_pct == int(close_pct) else close_pct:.1f}%"
         target_items.append(item_str)
-    
-    # ✅ THE FIX (v21.20.2): Handle empty target list
     target_str = ", ".join(target_items) if target_items else "N/A"
 
     ns = CallbackNamespace.FORWARD_PARSE
-
     keyboard = [
         [
-            # ✅ THE FIX (v21.20.2): Use f-string, not concatenation
             InlineKeyboardButton(f"📝 {_truncate_text(f'Asset: {asset}')}",
                                  callback_data=CallbackBuilder.create(ns, CallbackAction.EDIT_FIELD, "asset")),
             InlineKeyboardButton(f"📝 {_truncate_text(f'Side: {side}')}",
@@ -356,65 +451,50 @@ def build_editable_review_card(parsed_data: Dict[str, Any], channel_name: str = 
     return InlineKeyboardMarkup(keyboard)
 
 
-# --- Existing Keyboard Factories ---
-
+# --- Management Sub-menu Keyboards (REFACTORED for R2 Nav) ---
 def analyst_control_panel_keyboard(rec: RecommendationEntity) -> InlineKeyboardMarkup:
-    """Unified control panel for active recommendations."""
+    """
+    Unified control panel for active recommendations.
+    ✅ R2 (Design 3): Matches the new 2x3 button layout.
+    """
     rec_id = _get_attr(rec, 'id')
-    status = _get_attr(rec, 'status')
-    
-    is_active = False
-    
-    if hasattr(status, 'value'):
-        status_value = status.value
-        is_active = (status_value == RecommendationStatus.ACTIVE.value)
-    elif isinstance(status, str):
-        status_value = status.upper()
-        is_active = (status_value == RecommendationStatus.ACTIVE.value.upper())
-    else:
-        is_active = (status == RecommendationStatus.ACTIVE)
-    
     ns_rec = CallbackNamespace.RECOMMENDATION
-    ns_pos = CallbackNamespace.POSITION
     ns_exit = CallbackNamespace.EXIT_STRATEGY
-    ns_nav = CallbackNamespace.NAVIGATION
-
-    if not is_active:
-        return InlineKeyboardMarkup([[
-            InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(ns_nav, CallbackAction.NAVIGATE, 1))
-        ]])
+    ns_pos = CallbackNamespace.POSITION
 
     keyboard = [
         [ 
-            InlineKeyboardButton("🔄 Refresh Price", callback_data=CallbackBuilder.create(ns_pos, CallbackAction.SHOW, 'rec', rec_id)),
+            InlineKeyboardButton("🔄 تحديث السعر", callback_data=CallbackBuilder.create(ns_pos, CallbackAction.SHOW, 'rec', rec_id)),
             InlineKeyboardButton("💰 Partial Close", callback_data=CallbackBuilder.create(ns_rec, "partial_close_menu", rec_id)),
+        ],
+        [ 
             InlineKeyboardButton("❌ Full Close", callback_data=CallbackBuilder.create(ns_rec, "close_menu", rec_id)),
+            InlineKeyboardButton("📈 إدارة المخاطرة/الخروج", callback_data=CallbackBuilder.create(ns_exit, "show_menu", rec_id)),
         ],
-        [ 
-            InlineKeyboardButton("📈 Manage Exit/Risk", callback_data=CallbackBuilder.create(ns_exit, "show_menu", rec_id)),
-            InlineKeyboardButton("✏️ Edit Trade Data", callback_data=CallbackBuilder.create(ns_rec, "edit_menu", rec_id)),
-        ],
-        [ 
-            InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(ns_nav, CallbackAction.NAVIGATE, 1))
-        ],
+        [
+            InlineKeyboardButton("✏️ تعديل البيانات", callback_data=CallbackBuilder.create(ns_rec, "edit_menu", rec_id)),
+        ]
+        # (The "Back" button is added by the caller, _send_or_edit_position_panel)
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def build_user_trade_control_keyboard(trade_id: int, orm_status_value: str) -> InlineKeyboardMarkup:
     """
     Keyboard for managing a personal UserTrade.
-    ✅ R1-S1: Updated to show "Activate" or "Close" based on status.
+    ✅ R2 (Design 3): Matches the new button layout.
     """
     ns_pos = CallbackNamespace.POSITION
-    ns_nav = CallbackNamespace.NAVIGATION
     
     action_buttons = []
     
-    # Check against the string values from the Enum
     if orm_status_value in (UserTradeStatus.WATCHLIST.value, UserTradeStatus.PENDING_ACTIVATION.value):
         action_buttons.append(
             InlineKeyboardButton("🚀 Activate Trade", 
                                  callback_data=CallbackBuilder.create(ns_pos, CallbackAction.ACTIVATE_TRADE, "trade", trade_id))
+        )
+        action_buttons.append(
+            InlineKeyboardButton("❌ Close Trade", 
+                                 callback_data=CallbackBuilder.create(ns_pos, CallbackAction.CLOSE, "trade", trade_id))
         )
     elif orm_status_value == UserTradeStatus.ACTIVATED.value:
         action_buttons.append(
@@ -431,12 +511,12 @@ def build_user_trade_control_keyboard(trade_id: int, orm_status_value: str) -> I
             InlineKeyboardButton("🔄 Refresh Status", 
                                  callback_data=CallbackBuilder.create(ns_pos, CallbackAction.SHOW, "trade", trade_id))
         )
+    
+    # (The "Back" button is added by the caller)
+    return InlineKeyboardMarkup([action_buttons]) if action_buttons else None
 
-    return InlineKeyboardMarkup([
-        action_buttons,
-        [InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(ns_nav, CallbackAction.NAVIGATE, 1))],
-    ])
 
+# --- (Other Keyboards: build_confirmation_keyboard, creation flow, etc. remain) ---
 
 def build_confirmation_keyboard(
     namespace: Union[CallbackNamespace, str],
@@ -447,17 +527,11 @@ def build_confirmation_keyboard(
     """Builds a generic Yes/No confirmation keyboard using CallbackBuilder."""
     confirm_cb = CallbackBuilder.create(namespace, CallbackAction.CONFIRM, item_id)
     cancel_cb = CallbackBuilder.create(namespace, CallbackAction.CANCEL, item_id)
-    
-    if len(confirm_cb.encode('utf-8')) > MAX_CALLBACK_DATA_LENGTH or len(cancel_cb.encode('utf-8')) > MAX_CALLBACK_DATA_LENGTH:
-        logger.warning(f"Confirm CB data > 64 bytes for {namespace}:{item_id}")
-    
     return InlineKeyboardMarkup([[ 
         InlineKeyboardButton(confirm_text, callback_data=confirm_cb), 
         InlineKeyboardButton(cancel_text, callback_data=cancel_cb), 
     ]])
 
-
-# --- Recommendation Creation Flow Keyboards ---
 def main_creation_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Interactive Builder", callback_data="method_interactive")],
@@ -507,7 +581,6 @@ def review_final_keyboard(review_token: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("❌ Cancel Creation", callback_data=CallbackBuilder.create(ns, "cancel", short_token))],
     ])
 
-# Channel Picker
 def build_channel_picker_keyboard(review_token: str, channels: Iterable[Any], selected_ids: Set[int], page: int = 1, per_page: int = 6) -> InlineKeyboardMarkup:
     """Builds the paginated channel selection keyboard using CallbackBuilder."""
     try:
@@ -552,7 +625,6 @@ def build_channel_picker_keyboard(review_token: str, channels: Iterable[Any], se
         logger.error(f"Error building channel picker: {e}", exc_info=True)
         return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Error - Back to Review", callback_data=CallbackBuilder.create(CallbackNamespace.PUBLICATION, CallbackAction.BACK, review_token[:12]))]])
 
-# --- Other keyboards ---
 def public_channel_keyboard(rec_id: int, bot_username: Optional[str]) -> Optional[InlineKeyboardMarkup]:
     buttons = []
     if bot_username:
@@ -566,13 +638,12 @@ def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineK
     return None
 
 
-# --- Management Sub-menu Keyboards ---
 def build_close_options_keyboard(rec_id: int) -> InlineKeyboardMarkup:
     ns = CallbackNamespace.RECOMMENDATION
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📉 Close at Market", callback_data=CallbackBuilder.create(ns, "close_market", rec_id))],
         [InlineKeyboardButton("✍️ Close at Price", callback_data=CallbackBuilder.create(ns, "close_manual", rec_id))],
-        [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))],
+        # (Back button added by caller)
     ])
 
 def build_trade_data_edit_keyboard(rec_id: int) -> InlineKeyboardMarkup:
@@ -582,7 +653,7 @@ def build_trade_data_edit_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🛑 Edit Stop Loss", callback_data=CallbackBuilder.create(ns, "edit_sl", rec_id))],
         [InlineKeyboardButton("🎯 Edit Targets", callback_data=CallbackBuilder.create(ns, "edit_tp", rec_id))],
         [InlineKeyboardButton("📝 Edit Notes", callback_data=CallbackBuilder.create(ns, "edit_notes", rec_id))],
-        [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))],
+        # (Back button added by caller)
     ])
 
 def build_exit_management_keyboard(rec: RecommendationEntity) -> InlineKeyboardMarkup:
@@ -598,11 +669,8 @@ def build_exit_management_keyboard(rec: RecommendationEntity) -> InlineKeyboardM
     ]
     if is_strategy_active:
         keyboard.append([InlineKeyboardButton("❌ Cancel Active Strategy", callback_data=CallbackBuilder.create(ns, "cancel", rec_id))])
-
-    # ✅ THE FIX (v21.20.1): Removed extra '])'
-    keyboard.append([InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, 
-        callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))
-    ])
+    
+    # (Back button added by caller)
     return InlineKeyboardMarkup(keyboard)
 
 def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
@@ -612,6 +680,5 @@ def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💰 Close 25%", callback_data=CallbackBuilder.create(ns, CallbackAction.PARTIAL, rec_id, "25"))],
         [InlineKeyboardButton("💰 Close 50%", callback_data=CallbackBuilder.create(ns, CallbackAction.PARTIAL, rec_id, "50"))],
         [InlineKeyboardButton("✍️ Custom %", callback_data=CallbackBuilder.create(ns, "partial_close_custom", rec_id))],
-        [InlineKeyboardButton(ButtonTexts.BACK_TO_MAIN, callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))],
+        # (Back button added by caller)
     ])
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---

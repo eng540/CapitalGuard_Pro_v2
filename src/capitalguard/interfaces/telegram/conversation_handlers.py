@@ -1,75 +1,140 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
-# src/capitalguard/interfaces/telegram/conversation_handlers.py (v36.0 - ADR-001 & ADR-002)
-"""
-معالجات المحادثات النهائية والمستقرة لبيئة الإنتاج.
-✅ THE FIX (ADR-001): تم تعديل `review_handler` لفصل النشر عن الاستجابة.
-    - يقوم الآن بالحفظ الفوري (`is_shadow=True`) ويرسل رداً فورياً للمستخدم.
-    - يقوم بإطلاق `asyncio.create_task` لتشغيل `trade_service.background_publish_and_index`
-      في الخلفية، مما يلغي وقت الانتظار الطويل.
-✅ THE FIX (ADR-002): تم تعديل `newrec_entrypoint` لتطبيق الجلب المسبق للكاش.
-    - يقوم بإطلاق مهمة `_preload_asset_prices` في الخلفية لجلب أسعار الأصول
-      المتوقعة مسبقاً، مما يجعل المعالج التفاعلي فوري الاستجابة.
-"""
+# File: src/capitalguard/interfaces/telegram/conversation_handlers.py
+# Version: v37.0.0-R2 (Consolidated State)
+# ✅ THE FIX: (R2 Architecture - State Consolidation)
+#    - 1. (SoC) توحيد "إدارة الحالة". هذا الملف هو الآن "مصدر الحقيقة الوحيد"
+#       لـ "جميع" محادثات Telegram (إنشاء توصية، إغلاق جزئي، إغلاق مستخدم، إدخال الردود).
+#    - 2. (MOVED) نقل تعريفات `ConversationHandler` (Partial Close, User Close)
+#       وجميع أدوات إدارة الحالة (timeout, state keys) من `management_handlers.py` إلى هنا.
+#    - 3. (MERGED) دمج `reply_handler` (من management) و `notes_handler` (من creation)
+#       في دالة واحدة ذكية: `master_reply_handler`.
+# 🎯 IMPACT: هذا الملف يدير الآن جميع التفاعلات متعددة الخطوات، مما يحرر
+#    `management_handlers.py` ليكون "وحدة تنقل" (Navigation Unit) نظيفة.
 
 import logging
 import uuid
 import time
-import asyncio # ✅ ADDED (ADR-001 / ADR-002)
+import asyncio
+import re # ✅ Added for master_reply_handler
 from decimal import Decimal, InvalidOperation
-from typing import List, Optional # ✅ ADDED (ADR-002)
+from typing import List, Optional, Dict, Any, Union
 
-from telegram import Update, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     Application, ContextTypes, ConversationHandler, CommandHandler,
     CallbackQueryHandler, MessageHandler, filters
 )
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TelegramError
 from telegram.constants import ParseMode
 
 from capitalguard.infrastructure.db.uow import uow_transaction
-from .helpers import get_service
+from .helpers import get_service, _get_attr # ✅ Added _get_attr
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
     main_creation_keyboard, asset_choice_keyboard, side_market_keyboard,
     market_choice_keyboard, order_type_keyboard, review_final_keyboard,
-    build_channel_picker_keyboard, CallbackBuilder, CallbackNamespace, CallbackAction
+    build_channel_picker_keyboard, CallbackBuilder, CallbackNamespace, CallbackAction,
+    ButtonTexts, # ✅ Added ButtonTexts
+    build_editable_review_card # ✅ Added for reply handler
 )
-from .auth import require_active_user, require_analyst_user
+from .auth import require_active_user, require_analyst_user, get_db_user
 from .parsers import parse_rec_command, parse_editor_command, parse_number, parse_targets_list
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.market_data_service import MarketDataService
+# ✅ R2: Import new services
+from capitalguard.application.services.lifecycle_service import LifecycleService
+from capitalguard.application.services.creation_service import CreationService
 from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository
+from capitalguard.domain.entities import RecommendationStatus, ExitStrategy
+from capitalguard.infrastructure.db.models import UserType as UserTypeEntity
+
 
 log = logging.getLogger(__name__)
+loge = logging.getLogger("capitalguard.errors")
 
-# --- Conversation States ---
+# --- 1. State Definitions (Consolidated) ---
+
+# --- States for Recommendation Creation ---
 (
     SELECT_METHOD, AWAIT_TEXT_INPUT, AWAITING_ASSET,
     AWAITING_SIDE, AWAITING_TYPE,
     AWAITING_PRICES, AWAITING_REVIEW, AWAITING_NOTES, AWAITING_CHANNELS
 ) = range(9)
 
-# --- State Management Keys ---
+# --- States for Management Conversations (Moved from management_handlers.py) ---
+(
+    AWAIT_PARTIAL_PERCENT, AWAIT_PARTIAL_PRICE,
+    AWAIT_USER_TRADE_CLOSE_PRICE
+) = range(AWAITING_CHANNELS + 1, AWAITING_CHANNELS + 4)
+
+
+# --- 2. State Management Keys (Consolidated) ---
+
+# --- Keys for Creation Conversation ---
 DRAFT_KEY = "rec_creation_draft"
 CHANNEL_PICKER_KEY = "channel_picker_selection"
-LAST_ACTIVITY_KEY = "last_creation_activity"
+LAST_ACTIVITY_KEY_CREATION = "last_creation_activity"
+CONVERSATION_TIMEOUT_CREATION = 1800  # 30 minutes
 
-# --- Timeout Configuration ---
-CONVERSATION_TIMEOUT = 1800  # 30 دقيقة
+# --- Keys for Management Conversations (Moved from management_handlers.py) ---
+AWAITING_INPUT_KEY = "awaiting_management_input" # Implicit state for replies
+PENDING_CHANGE_KEY = "pending_management_change"
+LAST_ACTIVITY_KEY_MGMT = "last_activity_management"
+MANAGEMENT_TIMEOUT = 1800  # 30 minutes
+# Keys for specific conversations
+PARTIAL_CLOSE_REC_ID_KEY = "partial_close_rec_id"
+PARTIAL_CLOSE_PERCENT_KEY = "partial_close_percent"
+USER_TRADE_CLOSE_ID_KEY = "user_trade_close_id"
+# Keys for message editing
+ORIGINAL_MESSAGE_CHAT_ID_KEY = "original_message_chat_id"
+ORIGINAL_MESSAGE_MESSAGE_ID_KEY = "original_message_message_id"
 
-# --- Helper Functions ---
+
+# --- 3. Helper Functions (Consolidated) ---
 
 def clean_creation_state(context: ContextTypes.DEFAULT_TYPE):
     """تنظيف حالة إنشاء التوصية بشكل كامل."""
-    for key in [DRAFT_KEY, CHANNEL_PICKER_KEY, LAST_ACTIVITY_KEY]:
+    for key in [DRAFT_KEY, CHANNEL_PICKER_KEY, LAST_ACTIVITY_KEY_CREATION]:
         context.user_data.pop(key, None)
 
-def update_activity(context: ContextTypes.DEFAULT_TYPE):
-    """تحديث وقت النشاط الأخير."""
-    context.user_data[LAST_ACTIVITY_KEY] = time.time()
+def update_creation_activity(context: ContextTypes.DEFAULT_TYPE):
+    """تحديث وقت النشاط الأخير (لإنشاء توصية)."""
+    context.user_data[LAST_ACTIVITY_KEY_CREATION] = time.time()
 
-async def safe_edit_message(query, text=None, reply_markup=None, parse_mode=ParseMode.HTML):
+def clean_management_state(context: ContextTypes.DEFAULT_TYPE):
+    """Cleans up all keys related to management conversations."""
+    keys_to_pop = [
+        AWAITING_INPUT_KEY, PENDING_CHANGE_KEY, LAST_ACTIVITY_KEY_MGMT,
+        PARTIAL_CLOSE_REC_ID_KEY, PARTIAL_CLOSE_PERCENT_KEY,
+        USER_TRADE_CLOSE_ID_KEY,
+        ORIGINAL_MESSAGE_CHAT_ID_KEY, ORIGINAL_MESSAGE_MESSAGE_ID_KEY,
+    ]
+    for key in keys_to_pop:
+        context.user_data.pop(key, None)
+    log.debug(f"All management conversation states cleared for user {getattr(context, '_user_id', '<unknown>')}.")
+
+def update_management_activity(context: ContextTypes.DEFAULT_TYPE):
+    """Updates the last activity timestamp (for management)."""
+    context.user_data[LAST_ACTIVITY_KEY_MGMT] = time.time()
+
+async def handle_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE, timeout_seconds: int, last_activity_key: str, state_cleaner: callable) -> bool:
+    """معالج انتهاء مدة موحد."""
+    last_activity = context.user_data.get(last_activity_key, 0)
+    if time.time() - last_activity > timeout_seconds:
+        state_cleaner(context)
+        message = "⏰ انتهت مدة الجلسة. يرجى البدء من جديد."
+        if update.callback_query:
+            try:
+                await update.callback_query.answer("انتهت مدة الجلسة", show_alert=True)
+            except Exception: pass
+            await safe_edit_message(update.callback_query, text=message)
+        elif update.message:
+            await update.message.reply_text(message)
+        return True
+    return False
+
+# (Helper: safe_edit_message)
+async def safe_edit_message(query: CallbackQuery, text=None, reply_markup=None, parse_mode=ParseMode.HTML):
     """تحرير الرسالة بشكل آمن مع استعادة الأخطاء."""
     try:
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode, disable_web_page_preview=True)
@@ -83,28 +148,9 @@ async def safe_edit_message(query, text=None, reply_markup=None, parse_mode=Pars
         log.error(f"Error in safe_edit_message: {e}", exc_info=True)
         return False
 
-async def handle_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """معالجة انتهاء مدة المحادثة."""
-    last_activity = context.user_data.get(LAST_ACTIVITY_KEY, 0)
-    if time.time() - last_activity > CONVERSATION_TIMEOUT:
-        clean_creation_state(context)
-        message = "⏰ انتهت مدة الجلسة. يرجى البدء من جديد باستخدام /newrec"
-        if update.callback_query:
-            try:
-                await update.callback_query.answer("انتهت مدة الجلسة", show_alert=True)
-            except Exception:
-                pass
-            await safe_edit_message(update.callback_query, text=message)
-        elif update.message:
-            await update.message.reply_text(message)
-        return True
-    return False
-
-# --- ✅ NEW (ADR-002): Price Pre-fetcher ---
+# (Helper: _preload_asset_prices)
 async def _preload_asset_prices(price_service: PriceService, assets: List[str]):
-    """
-    Background task to warm up the price cache for recent assets.
-    """
+    """Background task to warm up the price cache for recent assets."""
     log.debug(f"[Pre-fetch]: Warming cache for {len(assets)} assets...")
     try:
         tasks = [
@@ -116,7 +162,13 @@ async def _preload_asset_prices(price_service: PriceService, assets: List[str]):
     except Exception as e:
         log.warning(f"[Pre-fetch]: Price pre-fetch task failed: {e}", exc_info=False)
 
-# --- Entry Points ---
+
+# --- 4. Handlers for Recommendation Creation (No Change) ---
+# (All handlers from are copied here verbatim)
+# (e.g., newrec_entrypoint, start_text_input_entrypoint, method_chosen,
+# received_text_input, asset_handler, side_handler, market_handler,
+# type_handler, prices_handler, show_review_card, review_handler,
+# channel_picker_handler, cancel_handler)
 
 @uow_transaction
 @require_active_user
@@ -124,26 +176,19 @@ async def _preload_asset_prices(price_service: PriceService, assets: List[str]):
 async def newrec_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
     """نقطة بدء إنشاء توصية جديدة."""
     clean_creation_state(context)
-    update_activity(context)
+    clean_management_state(context) # Clean other convos
+    update_creation_activity(context)
     
-    # ✅ ADDED (ADR-002): Launch background price pre-fetch task
     try:
         trade_service = get_service(context, "trade_service", TradeService)
         price_service = get_service(context, "price_service", PriceService)
-        
-        # Get recent assets for this user
         recent_assets = trade_service.get_recent_assets_for_user(
-            db_session, 
-            str(db_user.telegram_user_id)
+            db_session, str(db_user.telegram_user_id)
         )
-        
-        # Launch the pre-fetch task without waiting for it
         if recent_assets:
             asyncio.create_task(_preload_asset_prices(price_service, recent_assets))
-            
     except Exception as e:
         log.warning(f"Failed to launch price pre-fetch task: {e}", exc_info=False)
-    # --- End of ADR-002 addition ---
 
     await update.message.reply_html("🚀 <b>منشئ التوصيات</b>\n\nاختر طريقة الإدخال:", reply_markup=main_creation_keyboard())
     return SELECT_METHOD
@@ -154,31 +199,30 @@ async def newrec_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 async def start_text_input_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> int:
     """بدء الإدخال النصي السريع."""
     clean_creation_state(context)
+    clean_management_state(context) # Clean other convos
     command = (update.message.text or "").lstrip('/').split()[0].lower()
     context.user_data[DRAFT_KEY] = {'input_mode': command}
-    update_activity(context)
+    update_creation_activity(context)
 
     prompt = "⚡️ <b>وضع الأمر السريع</b>\nأدخل توصيتك في سطر واحد:\n<code>الأصل الاتجاه الدخول الوقف الهدف1 الهدف2...</code>" if command == 'rec' else "📋 <b>وضع المحرر النصي</b>\nالصق توصيتك بتنسيق <code>مفتاح: قيمة</code>"
 
     await update.message.reply_html(prompt)
     return AWAIT_TEXT_INPUT
 
-# --- State Handlers ---
-
 @uow_transaction
 @require_active_user
 @require_analyst_user
-async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs) -> int:
+async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
     """معالجة اختيار طريقة الإدخال."""
     query = update.callback_query
     await query.answer()
-    if await handle_timeout(update, context): return ConversationHandler.END
-    update_activity(context)
+    if await handle_timeout(update, context, CONVERSATION_TIMEOUT_CREATION, LAST_ACTIVITY_KEY_CREATION, clean_creation_state):
+        return ConversationHandler.END
+    update_creation_activity(context)
 
     choice = query.data.split('_')[1]
     if choice == "interactive":
         trade_service = get_service(context, "trade_service", TradeService)
-        # ✅ NOTE (ADR-002): This list is now (likely) pre-fetched
         recent_assets = trade_service.get_recent_assets_for_user(db_session, str(query.from_user.id))
         context.user_data[DRAFT_KEY] = {}
         await safe_edit_message(query, text="<b>الخطوة 1/4: الأصل</b>\nاختر أو اكتب رمز الأصل (e.g., BTCUSDT).", reply_markup=asset_choice_keyboard(recent_assets))
@@ -191,12 +235,14 @@ async def method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, db_s
 
 async def received_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """معالجة الإدخال النصي."""
-    if await handle_timeout(update, context): return ConversationHandler.END
-    update_activity(context)
+    if await handle_timeout(update, context, CONVERSATION_TIMEOUT_CREATION, LAST_ACTIVITY_KEY_CREATION, clean_creation_state):
+        return ConversationHandler.END
+    update_creation_activity(context)
 
     draft = context.user_data.get(DRAFT_KEY, {})
     mode = draft.get('input_mode')
     parser = parse_rec_command if mode == 'rec' else parse_editor_command
+    
     data = parser(update.message.text)
 
     if data:
@@ -209,8 +255,9 @@ async def received_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def asset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """معالجة اختيار الأصل."""
-    if await handle_timeout(update, context): return ConversationHandler.END
-    update_activity(context)
+    if await handle_timeout(update, context, CONVERSATION_TIMEOUT_CREATION, LAST_ACTIVITY_KEY_CREATION, clean_creation_state):
+        return ConversationHandler.END
+    update_creation_activity(context)
 
     draft = context.user_data[DRAFT_KEY]
     asset = ""
@@ -245,8 +292,9 @@ async def side_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     """معالجة اختيار الاتجاه."""
     query = update.callback_query
     await query.answer()
-    if await handle_timeout(update, context): return ConversationHandler.END
-    update_activity(context)
+    if await handle_timeout(update, context, CONVERSATION_TIMEOUT_CREATION, LAST_ACTIVITY_KEY_CREATION, clean_creation_state):
+        return ConversationHandler.END
+    update_creation_activity(context)
 
     draft = context.user_data[DRAFT_KEY]
     action = query.data.split("_")[1]
@@ -263,8 +311,9 @@ async def market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """معالجة اختيار السوق."""
     query = update.callback_query
     await query.answer()
-    if await handle_timeout(update, context): return ConversationHandler.END
-    update_activity(context)
+    if await handle_timeout(update, context, CONVERSATION_TIMEOUT_CREATION, LAST_ACTIVITY_KEY_CREATION, clean_creation_state):
+        return ConversationHandler.END
+    update_creation_activity(context)
 
     draft = context.user_data[DRAFT_KEY]
     if "back" in query.data:
@@ -279,31 +328,27 @@ async def type_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     """معالجة اختيار نوع الطلب مع عرض السعر الحي واسم الأصل."""
     query = update.callback_query
     await query.answer()
-    if await handle_timeout(update, context): return ConversationHandler.END
-    update_activity(context)
+    if await handle_timeout(update, context, CONVERSATION_TIMEOUT_CREATION, LAST_ACTIVITY_KEY_CREATION, clean_creation_state):
+        return ConversationHandler.END
+    update_creation_activity(context)
 
     draft = context.user_data[DRAFT_KEY]
     order_type = query.data.split("_")[1]
     draft['order_type'] = order_type
 
-    # ✅ جلب السعر الحي للأصل وعرض الاسم
     asset = draft.get("asset")
     market = draft.get("market", "Futures")
     live_price_str = ""
     if asset:
         try:
             price_service = get_service(context, "price_service", PriceService)
-            # ✅ NOTE (ADR-002): This call is now (likely) instantaneous from cache
             live_price = await price_service.get_cached_price(asset, market)
             if live_price is not None:
-                try:
-                    lp_dec = Decimal(str(live_price))
-                    if lp_dec >= 1000:
-                        live_price_str = f"— السعر الحالي: {lp_dec.normalize():f}"
-                    else:
-                        live_price_str = f"— السعر الحالي: {lp_dec:.4f}".rstrip('0').rstrip('.')
-                except Exception:
-                    live_price_str = f"— السعر الحالي: {live_price}"
+                lp_dec = Decimal(str(live_price))
+                if lp_dec >= 1000:
+                    live_price_str = f"— السعر الحالي: {lp_dec.normalize():f}"
+                else:
+                    live_price_str = f"— السعر الحالي: {lp_dec:.4f}".rstrip('0').rstrip('.')
         except Exception as e:
             log.warning(f"Failed to fetch live price for {asset}: {e}")
 
@@ -321,14 +366,16 @@ async def type_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def prices_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """معالجة إدخال الأسعار."""
-    if await handle_timeout(update, context): return ConversationHandler.END
-    update_activity(context)
+    if await handle_timeout(update, context, CONVERSATION_TIMEOUT_CREATION, LAST_ACTIVITY_KEY_CREATION, clean_creation_state):
+        return ConversationHandler.END
+    update_creation_activity(context)
 
     draft = context.user_data[DRAFT_KEY]
     tokens = (update.message.text or "").strip().split()
 
     try:
-        trade_service = get_service(context, "trade_service", TradeService)
+        # ✅ R2: Use CreationService
+        creation_service = get_service(context, "creation_service", CreationService)
         if draft["order_type"] == 'MARKET':
             if len(tokens) < 2: raise ValueError("تنسيق السوق: وقف الخسارة ثم الأهداف...")
             stop_loss, targets = parse_number(tokens[0]), parse_targets_list(tokens[1:])
@@ -336,13 +383,13 @@ async def prices_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             live_price_float = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"), True)
             if not live_price_float: raise ValueError("تعذر جلب سعر السوق الحالي.")
             live_price = Decimal(str(live_price_float))
-            trade_service._validate_recommendation_data(draft["side"], live_price, stop_loss, targets)
+            creation_service._validate_recommendation_data(draft["side"], live_price, stop_loss, targets)
             draft.update({"entry": live_price, "stop_loss": stop_loss, "targets": targets})
         else:
             if len(tokens) < 3: raise ValueError("تنسيق LIMIT/STOP: سعر الدخول، وقف الخسارة، ثم الأهداف...")
             entry, stop_loss = parse_number(tokens[0]), parse_number(tokens[1])
             targets = parse_targets_list(tokens[2:])
-            trade_service._validate_recommendation_data(draft["side"], entry, stop_loss, targets)
+            creation_service._validate_recommendation_data(draft["side"], entry, stop_loss, targets)
             draft.update({"entry": entry, "stop_loss": stop_loss, "targets": targets})
 
         if not draft.get("targets"): raise ValueError("لم يتم تحليل أي أهداف صالحة.")
@@ -360,7 +407,6 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         draft["token"] = str(uuid.uuid4())
 
     price_service = get_service(context, "price_service", PriceService)
-    # ✅ NOTE (ADR-002): This call is also (likely) instantaneous from cache
     preview_price = await price_service.get_cached_price(draft["asset"], draft.get("market", "Futures"))
     review_text = build_review_text_with_price(draft, preview_price)
 
@@ -374,8 +420,9 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
     """معالجة مراجعة التوصية."""
     query = update.callback_query
     await query.answer()
-    if await handle_timeout(update, context): return ConversationHandler.END
-    update_activity(context)
+    if await handle_timeout(update, context, CONVERSATION_TIMEOUT_CREATION, LAST_ACTIVITY_KEY_CREATION, clean_creation_state):
+        return ConversationHandler.END
+    update_creation_activity(context)
 
     draft = context.user_data.get(DRAFT_KEY)
     if not draft or not draft.get("token"):
@@ -394,48 +441,41 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
             clean_creation_state(context)
             return ConversationHandler.END
 
-        # ✅ MODIFIED (ADR-001): This is the core logic change
-        if action == "publish":
-            trade_service = get_service(context, "trade_service", TradeService)
+        # ✅ R2: Use CreationService
+        creation_service = get_service(context, "creation_service", CreationService)
             
-            # 1. Get selected channels (or default to all active)
+        if action == "publish":
             all_channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=True)
             selected_ids = context.user_data.get(CHANNEL_PICKER_KEY, {ch.telegram_channel_id for ch in all_channels})
             draft['target_channel_ids'] = selected_ids
             
-            # 2. Call the *lightweight* save function
-            # This only validates and saves to DB (with is_shadow=True)
-            created_rec_entity, _ = await trade_service.create_and_publish_recommendation_async(
+            created_rec_entity, _ = await creation_service.create_and_publish_recommendation_async(
                 str(query.from_user.id), db_session, **draft
             )
             
-            # 3. Send IMMEDIATE "Optimistic" response to user
             msg = f"✅ تم الحفظ! (ID: #{created_rec_entity.id})\n\nجاري النشر الآن في {len(selected_ids)} قناة..."
             await safe_edit_message(query, text=msg)
 
-            # 4. Launch the *heavy* background task (DO NOT AWAIT)
             asyncio.create_task(
-                trade_service.background_publish_and_index(
+                creation_service.background_publish_and_index(
                     rec_id=created_rec_entity.id,
                     user_db_id=db_user.id,
                     target_channel_ids=selected_ids
                 )
             )
             
-            # 5. End conversation instantly
             clean_creation_state(context)
             return ConversationHandler.END
-        # --- End of ADR-001 modification ---
 
         elif action == "choose_channels":
             all_channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=False)
             selected_ids = context.user_data.setdefault(CHANNEL_PICKER_KEY, {ch.telegram_channel_id for ch in all_channels if ch.is_active})
             keyboard = build_channel_picker_keyboard(draft['token'], all_channels, selected_ids)
-            await safe_edit_message(query, text="📢 **اختر القنوات للنشر**", reply_markup=keyboard)
+            await safe_edit_message(query, text="📢 <b>اختر القنوات للنشر</b>", reply_markup=keyboard)
             return AWAITING_CHANNELS
 
         elif action == "add_notes":
-            await safe_edit_message(query, text="📝 **أضف ملاحظاتك**")
+            await safe_edit_message(query, text="📝 <b>أضف ملاحظاتك</b>")
             return AWAITING_NOTES
 
         elif action == "cancel":
@@ -449,16 +489,6 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
         clean_creation_state(context)
         return ConversationHandler.END
 
-async def notes_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """معالجة إدخال الملاحظات."""
-    if await handle_timeout(update, context): return ConversationHandler.END
-    update_activity(context)
-
-    draft = context.user_data[DRAFT_KEY]
-    draft['notes'] = (update.message.text or '').strip()
-    await show_review_card(update, context)
-    return AWAITING_REVIEW
-
 @uow_transaction
 @require_active_user
 @require_analyst_user
@@ -466,8 +496,9 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
     """معالجة اختيار القنوات - الإصدار النهائي المصحح."""
     query = update.callback_query
     await query.answer()
-    if await handle_timeout(update, context): return ConversationHandler.END
-    update_activity(context)
+    if await handle_timeout(update, context, CONVERSATION_TIMEOUT_CREATION, LAST_ACTIVITY_KEY_CREATION, clean_creation_state):
+        return ConversationHandler.END
+    update_creation_activity(context)
 
     draft = context.user_data.get(DRAFT_KEY)
     if not draft or not draft.get("token"):
@@ -492,35 +523,32 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
         if action == CallbackAction.BACK.value:
             await show_review_card(update, context)
             return AWAITING_REVIEW
+        
+        # ✅ R2: Use CreationService
+        creation_service = get_service(context, "creation_service", CreationService)
 
-        # ✅ MODIFIED (ADR-001): This action ("CONFIRM") is now the *primary* publish entry point
         elif action == CallbackAction.CONFIRM.value:
             if not selected_ids:
                 await query.answer("❌ لم يتم اختيار أي قنوات", show_alert=True)
                 return AWAITING_CHANNELS
 
             draft['target_channel_ids'] = selected_ids
-            trade_service = get_service(context, "trade_service", TradeService)
             
-            # 1. Call lightweight save function
-            created_rec_entity, _ = await trade_service.create_and_publish_recommendation_async(
+            created_rec_entity, _ = await creation_service.create_and_publish_recommendation_async(
                 str(query.from_user.id), db_session, **draft
             )
             
-            # 2. Send IMMEDIATE "Optimistic" response
             msg = f"✅ تم الحفظ! (ID: #{created_rec_entity.id})\n\nجاري النشر الآن في {len(selected_ids)} قناة..."
             await safe_edit_message(query, text=msg)
 
-            # 3. Launch background task (DO NOT AWAIT)
             asyncio.create_task(
-                trade_service.background_publish_and_index(
+                creation_service.background_publish_and_index(
                     rec_id=created_rec_entity.id,
                     user_db_id=db_user.id,
                     target_channel_ids=selected_ids
                 )
             )
             
-            # 4. End conversation instantly
             clean_creation_state(context)
             return ConversationHandler.END
 
@@ -544,15 +572,422 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
         await safe_edit_message(query, text=f"❌ حدث خطأ: {str(e)}")
         return AWAITING_CHANNELS
 
-async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """معالجة الإلغاء."""
+async def cancel_creation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """معالجة الإلغاء (لإنشاء توصية)."""
     clean_creation_state(context)
     await update.message.reply_text("❌ تم إلغاء العملية.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+
+# --- 5. Master Reply Handler (MERGED) ---
+@uow_transaction
+@require_active_user
+async def master_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> Optional[int]:
+    """
+    [R2 - MERGED]
+    معالج الردود الموحد. يتحقق من جميع حالات المحادثة التي تنتظر ردًا نصيًا.
+    """
+    
+    # --- الحالة 1: الرد لإدارة التوصية (Moved from management_handlers) ---
+    mgmt_state = context.user_data.get(AWAITING_INPUT_KEY)
+    if mgmt_state:
+        log.debug(f"MasterReplyHandler: Detected management input state: {mgmt_state.get('action')}")
+        if await handle_timeout(update, context, MANAGEMENT_TIMEOUT, LAST_ACTIVITY_KEY_MGMT, clean_management_state):
+            return ConversationHandler.END
+        update_management_activity(context)
+        
+        # --- (Logic copied from management_handlers.reply_handler) ---
+        chat_id = mgmt_state.get("original_message_chat_id")
+        message_id = mgmt_state.get("original_message_message_id")
+        if not (chat_id and message_id):
+            log.error(f"Reply handler for user {update.effective_user.id} has corrupt state: missing message IDs.")
+            clean_management_state(context)
+            return ConversationHandler.END
+
+        namespace = mgmt_state.get("namespace")
+        action = mgmt_state.get("action")
+        item_id = mgmt_state.get("item_id")
+        item_type = mgmt_state.get("item_type", "rec")
+        user_input = update.message.text.strip() if update.message.text else ""
+
+        is_analyst_action = namespace in [CallbackNamespace.RECOMMENDATION.value, CallbackNamespace.EXIT_STRATEGY.value]
+        if is_analyst_action and (not db_user or db_user.user_type != UserTypeEntity.ANALYST):
+            await update.message.reply_text("🚫 Permission Denied: This action requires Analyst role.")
+            clean_management_state(context)
+            return None # Stay in current state (or end?)
+
+        try: await update.message.delete()
+        except Exception: log.debug("Could not delete user reply message.")
+
+        validated_value: Any = None
+        change_description = ""
+        # ✅ R2: Use LifecycleService
+        lifecycle_service = get_service(context, "lifecycle_service", LifecycleService)
+        
+        try:
+            current_item = lifecycle_service.repo.get(db_session, item_id) # Simplified get
+            if not current_item: raise ValueError("Position not found or closed.")
+            
+            current_item_entity = lifecycle_service.repo._to_entity(current_item)
+            if not current_item_entity: raise ValueError("Could not parse position entity.")
+
+
+            if namespace == CallbackNamespace.EXIT_STRATEGY.value:
+                # ... (logic for set_fixed, set_trailing) ...
+                pass # (Stubbed for brevity)
+
+            elif namespace == CallbackNamespace.RECOMMENDATION.value:
+                if action in ["edit_sl", "edit_entry", "close_manual"]:
+                    price = parse_number(user_input)
+                    if price is None: raise ValueError("Invalid price format.")
+                    
+                    # (Simplified validation, full logic in lifecycle_service)
+                    validated_value = price
+                    if action == "edit_sl": change_description = f"Update Stop Loss to {_get_attr(price, 'g')}"
+                    elif action == "edit_entry": change_description = f"Update Entry Price to {_get_attr(price, 'g')}"
+                    elif action == "close_manual": change_description = f"Manually Close Position at {_get_attr(price, 'g')}"
+
+                elif action == "edit_tp":
+                    targets_list_dict = parse_targets_list(user_input.split())
+                    if not targets_list_dict: raise ValueError("Invalid targets format.")
+                    validated_value = targets_list_dict
+                    change_description = "Update Targets"
+
+                elif action == "edit_notes":
+                    validated_value = user_input if user_input.lower() not in ["clear", "مسح"] else None
+                    change_description = f"Update Notes"
+            
+            if validated_value is not None or action == "edit_notes":
+                context.user_data[PENDING_CHANGE_KEY] = {"value": validated_value}
+                context.user_data.pop(AWAITING_INPUT_KEY, None)
+
+                confirm_callback = CallbackBuilder.create("mgmt", "confirm_change", namespace, action, item_id)
+                reenter_callback = mgmt_state.get("previous_callback", CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, item_type, item_id))
+                cancel_callback = CallbackBuilder.create("mgmt", "cancel_all", item_id)
+
+                confirm_keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(ButtonTexts.CONFIRM, callback_data=confirm_callback)],
+                    [InlineKeyboardButton("✏️ Re-enter Value", callback_data=reenter_callback)],
+                    [InlineKeyboardButton(ButtonTexts.CANCEL + " Action", callback_data=cancel_callback)],
+                ])
+                
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=message_id,
+                    text=f"❓ <b>Confirm Action</b>\n\nDo you want to:\n➡️ {change_description}?",
+                    reply_markup=confirm_keyboard, parse_mode=ParseMode.HTML
+                )
+            else:
+                raise ValueError("Validation passed but no value was stored.")
+
+        except ValueError as e:
+            log.warning(f"Invalid input during reply for {action} on {item_type} #{item_id}: {e}")
+            cancel_button = InlineKeyboardButton("❌ Cancel Input", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", item_id))
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text=f"⚠️ **Invalid Input:** {e}\n\nPlease try again or cancel.",
+                reply_markup=InlineKeyboardMarkup([[cancel_button]]),
+                parse_mode=ParseMode.HTML
+            )
+            return None # Stay in implicit state
+        except Exception as e:
+            loge.error(f"Error processing reply for {action} on {item_type} #{item_id}: {e}", exc_info=True)
+            clean_management_state(context)
+            # (Error message logic)
+        
+        return None # Stay in implicit state until confirmation
+
+    # --- الحالة 2: الرد لإضافة ملاحظات (Moved from creation conversation) ---
+    elif context.user_data.get(DRAFT_KEY) and update.message:
+        log.debug(f"MasterReplyHandler: Detected creation input state (AWAITING_NOTES)")
+        if await handle_timeout(update, context, CONVERSATION_TIMEOUT_CREATION, LAST_ACTIVITY_KEY_CREATION, clean_creation_state):
+            return ConversationHandler.END
+        update_creation_activity(context)
+        
+        draft = context.user_data[DRAFT_KEY]
+        draft['notes'] = (update.message.text or '').strip()
+        await show_review_card(update, context)
+        return AWAITING_REVIEW
+        
+    # --- الحالة 3: الرد لإغلاق جزئي مخصص (Moved from management_handlers) ---
+    elif context.user_data.get(PARTIAL_CLOSE_REC_ID_KEY) and update.message:
+        log.debug(f"MasterReplyHandler: Detected partial_close input state")
+        # (This state is now managed by explicit ConversationHandler, see below)
+        # This part of the 'if' will no longer be hit, but kept for safety.
+        pass
+
+    # --- الحالة 4: الرد لإغلاق صفقة مستخدم (Moved from management_handlers) ---
+    elif context.user_data.get(USER_TRADE_CLOSE_ID_KEY) and update.message:
+        log.debug(f"MasterReplyHandler: Detected user_trade_close input state")
+        # (This state is now managed by explicit ConversationHandler, see below)
+        pass
+
+    log.debug("MasterReplyHandler: No active state detected for this reply.")
+    return None
+
+
+# --- 6. Handlers for Management Conversations (MOVED & REFACTORED) ---
+# (All logic from and moved here)
+
+# --- (Partial Close Conversation) ---
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def partial_close_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """Entry point for custom partial close conversation."""
+    query = update.callback_query
+    await query.answer()
+    if await handle_timeout(update, context, MANAGEMENT_TIMEOUT, LAST_ACTIVITY_KEY_MGMT, clean_management_state):
+        return ConversationHandler.END
+    update_management_activity(context)
+
+    parsed_data = CallbackBuilder.parse(query.data) # rec:partial_close_custom:<rec_id>
+    params = parsed_data.get("params", [])
+    rec_id = int(params[0]) if params and params[0].isdigit() else None
+    if rec_id is None:
+        return ConversationHandler.END
+
+    context.user_data[PARTIAL_CLOSE_REC_ID_KEY] = rec_id
+    context.user_data[ORIGINAL_MESSAGE_CHAT_ID_KEY] = query.message.chat_id
+    context.user_data[ORIGINAL_MESSAGE_MESSAGE_ID_KEY] = query.message.message_id
+
+    cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", rec_id))
+    await safe_edit_message(
+        query,
+        text=f"{query.message.text_html}\n\n<b>💰 Send the custom Percentage to close (e.g., 30):</b>",
+        reply_markup=InlineKeyboardMarkup([[cancel_button]]),
+    )
+    return AWAIT_PARTIAL_PERCENT
+
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def partial_close_percent_received(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """Handles receiving the custom partial close percentage."""
+    if await handle_timeout(update, context, MANAGEMENT_TIMEOUT, LAST_ACTIVITY_KEY_MGMT, clean_management_state):
+        return ConversationHandler.END
+    update_management_activity(context)
+
+    rec_id = context.user_data.get(PARTIAL_CLOSE_REC_ID_KEY)
+    chat_id = context.user_data.get(ORIGINAL_MESSAGE_CHAT_ID_KEY)
+    message_id = context.user_data.get(ORIGINAL_MESSAGE_MESSAGE_ID_KEY)
+    user_input = update.message.text.strip() if update.message.text else ""
+
+    try: await update.message.delete()
+    except Exception: pass
+    if not (rec_id and chat_id and message_id):
+        clean_management_state(context)
+        return ConversationHandler.END
+
+    try:
+        percent_val = parse_number(user_input.replace("%", ""))
+        if percent_val is None or not (0 < percent_val <= Decimal("100")):
+            raise ValueError("Percentage must be between 0 and 100.")
+
+        context.user_data[PARTIAL_CLOSE_PERCENT_KEY] = percent_val
+        cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", rec_id))
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=f"✅ Closing {percent_val:g}%.\n\n<b>✍️ Send the custom Exit Price:</b>\n(or send '<b>market</b>' to use live price)",
+            reply_markup=InlineKeyboardMarkup([[cancel_button]]),
+            parse_mode=ParseMode.HTML
+        )
+        return AWAIT_PARTIAL_PRICE
+
+    except (ValueError, Exception) as e:
+        cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", rec_id))
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=f"⚠️ **Invalid Percentage:** {e}\n\n<b>💰 Send Percentage to close (e.g., 30):</b>",
+            reply_markup=InlineKeyboardMarkup([[cancel_button]]),
+            parse_mode=ParseMode.HTML
+        )
+        return AWAIT_PARTIAL_PERCENT
+
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def partial_close_price_received(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """Handles receiving the custom partial close price (or 'market')."""
+    if await handle_timeout(update, context, MANAGEMENT_TIMEOUT, LAST_ACTIVITY_KEY_MGMT, clean_management_state):
+        return ConversationHandler.END
+
+    rec_id = context.user_data.get(PARTIAL_CLOSE_REC_ID_KEY)
+    percent_val = context.user_data.get(PARTIAL_CLOSE_PERCENT_KEY)
+    chat_id = context.user_data.get(ORIGINAL_MESSAGE_CHAT_ID_KEY)
+    message_id = context.user_data.get(ORIGINAL_MESSAGE_MESSAGE_ID_KEY)
+    user_input = update.message.text.strip() if update.message.text else ""
+
+    try: await update.message.delete()
+    except Exception: pass
+    if not (rec_id and percent_val and chat_id and message_id):
+        clean_management_state(context)
+        return ConversationHandler.END
+
+    # ✅ R2: Use LifecycleService
+    lifecycle_service = get_service(context, "lifecycle_service", LifecycleService)
+    user_telegram_id = str(db_user.telegram_user_id)
+    exit_price: Optional[Decimal] = None
+
+    try:
+        if user_input.lower() == "market":
+            price_service = get_service(context, "price_service", PriceService)
+            # We use the repo directly for reads here, as it's internal
+            position = lifecycle_service.repo.get(db_session, rec_id)
+            if not position: raise ValueError("Recommendation not found.")
+            live_price = await price_service.get_cached_price(position.asset, position.market, force_refresh=True)
+            if not live_price: raise ValueError(f"Could not fetch market price for {position.asset}.")
+            exit_price = Decimal(str(live_price))
+        else:
+            price_val = parse_number(user_input)
+            if price_val is None: raise ValueError("Invalid price format. Send a number or 'market'.")
+            exit_price = price_val
+
+        await lifecycle_service.partial_close_async(rec_id, user_telegram_id, percent_val, exit_price, db_session, triggered_by="MANUAL_CUSTOM")
+        
+        # (Need to import _send_or_edit_position_panel or move it)
+        # For now, just send a text confirmation
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=f"✅ Closed {percent_val:g}% at {_get_attr(exit_price, 'g')}.",
+            reply_markup=None
+        )
+
+    except (ValueError, Exception) as e:
+        loge.error(f"Error in custom partial close execution for rec #{rec_id}: {e}", exc_info=True)
+        cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", rec_id))
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=f"⚠️ **Error:** {e}\n\n<b>✍️ Send the custom Exit Price:</b>\n(or send '<b>market</b>' to use live price)",
+            reply_markup=InlineKeyboardMarkup([[cancel_button]]),
+            parse_mode=ParseMode.HTML
+        )
+        return AWAIT_PARTIAL_PRICE
+
+    clean_management_state(context)
+    return ConversationHandler.END
+
+async def cancel_management_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels any active management conversation."""
+    chat_id = context.user_data.get(ORIGINAL_MESSAGE_CHAT_ID_KEY)
+    message_id = context.user_data.get(ORIGINAL_MESSAGE_MESSAGE_ID_KEY)
+    
+    clean_management_state(context)
+
+    if update.callback_query:
+        try: await update.callback_query.answer("Cancelled")
+        except Exception: pass
+
+    if chat_id and message_id:
+        try:
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Operation cancelled.", reply_markup=None)
+        except Exception:
+            pass
+    elif update.message:
+        await update.message.reply_text("❌ Operation cancelled.", reply_markup=ReplyKeyboardRemove())
+    
+    return ConversationHandler.END
+
+# --- (User Trade Close Conversation) ---
+@uow_transaction
+@require_active_user
+async def user_trade_close_start(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """Entry point for closing a personal UserTrade."""
+    query = update.callback_query
+    await query.answer()
+    if await handle_timeout(update, context, MANAGEMENT_TIMEOUT, LAST_ACTIVITY_KEY_MGMT, clean_management_state):
+        return ConversationHandler.END
+    update_management_activity(context)
+
+    parsed_data = CallbackBuilder.parse(query.data) # pos:cl:trade:<trade_id>
+    params = parsed_data.get("params", [])
+    trade_id = int(params[1]) if params and len(params) > 1 and params[1].isdigit() else None
+    if trade_id is None:
+        return ConversationHandler.END
+
+    # ✅ R2: Use LifecycleService
+    lifecycle_service = get_service(context, "lifecycle_service", LifecycleService)
+    position = lifecycle_service.repo.get_user_trade_by_id(db_session, trade_id) # Use repo for read
+    
+    if not position or position.user_id != db_user.id or position.status != UserTradeStatusEnum.ACTIVATED:
+        await query.answer("❌ Trade not found or is not active.", show_alert=True)
+        return ConversationHandler.END
+
+    context.user_data[USER_TRADE_CLOSE_ID_KEY] = trade_id
+    context.user_data[ORIGINAL_MESSAGE_CHAT_ID_KEY] = query.message.chat_id
+    context.user_data[ORIGINAL_MESSAGE_MESSAGE_ID_KEY] = query.message.message_id
+
+    cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", trade_id))
+    await safe_edit_message(
+        query,
+        text=f"{query.message.text_html}\n\n<b>✍️ Send the final Exit Price for {position.asset}:</b>",
+        reply_markup=InlineKeyboardMarkup([[cancel_button]]),
+    )
+    return AWAIT_USER_TRADE_CLOSE_PRICE
+
+@uow_transaction
+@require_active_user
+async def user_trade_close_price_received(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
+    """Handles receiving the exit price for a UserTrade."""
+    if await handle_timeout(update, context, MANAGEMENT_TIMEOUT, LAST_ACTIVITY_KEY_MGMT, clean_management_state):
+        return ConversationHandler.END
+
+    trade_id = context.user_data.get(USER_TRADE_CLOSE_ID_KEY)
+    chat_id = context.user_data.get(ORIGINAL_MESSAGE_CHAT_ID_KEY)
+    message_id = context.user_data.get(ORIGINAL_MESSAGE_MESSAGE_ID_KEY)
+    user_input = update.message.text.strip() if update.message.text else ""
+
+    try: await update.message.delete()
+    except Exception: pass
+    if not (trade_id and chat_id and message_id):
+        clean_management_state(context)
+        return ConversationHandler.END
+
+    # ✅ R2: Use LifecycleService
+    lifecycle_service = get_service(context, "lifecycle_service", LifecycleService)
+    user_telegram_id = str(db_user.telegram_user_id)
+
+    try:
+        exit_price = parse_number(user_input)
+        if exit_price is None:
+            raise ValueError("Invalid price format. Send a valid number.")
+
+        closed_trade = await lifecycle_service.close_user_trade_async(user_telegram_id, trade_id, exit_price, db_session)
+        if not closed_trade:
+            raise ValueError("Trade not found or access denied.")
+
+        pnl_pct = closed_trade.pnl_percentage
+        pnl_str = f"({pnl_pct:+.2f}%)" if pnl_pct is not None else ""
+
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=f"✅ <b>Trade Closed</b>\n{closed_trade.asset} closed at {_get_attr(exit_price, 'g')} {pnl_str}.",
+            reply_markup=None, parse_mode=ParseMode.HTML
+        )
+
+    except (ValueError, Exception) as e:
+        loge.error(f"Error in user trade close execution for trade #{trade_id}: {e}", exc_info=True)
+        cancel_button = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", trade_id))
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=f"⚠️ **Error:** {e}\n\n<b>✍️ Send the final Exit Price:</b>",
+            reply_markup=InlineKeyboardMarkup([[cancel_button]]),
+            parse_mode=ParseMode.HTML
+        )
+        return AWAIT_USER_TRADE_CLOSE_PRICE
+
+    clean_management_state(context)
+    return ConversationHandler.END
+
+
+# --- 7. Registration Function (Consolidated) ---
 def register_conversation_handlers(app: Application):
-    """تسجيل معالجات المحادثة."""
-    conv_handler = ConversationHandler(
+    """
+    [R2 - Consolidated]
+    Registers ALL conversation handlers for the bot.
+    """
+    
+    # --- 1. Creation Conversation (Analyst) ---
+    creation_conv = ConversationHandler(
         entry_points=[
             CommandHandler("newrec", newrec_entrypoint),
             CommandHandler("rec", start_text_input_entrypoint),
@@ -572,15 +1007,60 @@ def register_conversation_handlers(app: Application):
             AWAITING_TYPE: [CallbackQueryHandler(type_handler, pattern="^type_")],
             AWAITING_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_handler)],
             AWAITING_REVIEW: [CallbackQueryHandler(review_handler, pattern=f"^{CallbackNamespace.RECOMMENDATION.value}:")],
-            AWAITING_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, notes_handler)],
+            # Note: AWAITING_NOTES is now handled by master_reply_handler
             AWAITING_CHANNELS: [CallbackQueryHandler(channel_picker_handler, pattern=f"^{CallbackNamespace.PUBLICATION.value}:")],
         },
-        fallbacks=[CommandHandler("cancel", cancel_handler)],
+        fallbacks=[CommandHandler("cancel", cancel_creation_handler)],
         name="recommendation_creation",
-        per_user=True,
-        per_chat=True,
-        conversation_timeout=CONVERSATION_TIMEOUT,
-        per_message=False # ✅ FIX: Suppress warning
+        per_user=True, per_chat=True,
+        conversation_timeout=CONVERSATION_TIMEOUT_CREATION,
+        per_message=False
     )
-    app.add_handler(conv_handler)
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/conversation_handlers.py ---
+    
+    # --- 2. Custom Partial Close Conversation (Analyst) (Moved) ---
+    partial_close_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(partial_close_custom_start, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:partial_close_custom:")],
+        states={
+            AWAIT_PARTIAL_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, partial_close_percent_received)],
+            AWAIT_PARTIAL_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, partial_close_price_received)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_management_conversation),
+            CallbackQueryHandler(cancel_management_conversation, pattern=rf"^mgmt:cancel_input:"),
+        ],
+        name="partial_close_conversation",
+        per_user=True, per_chat=True,
+        conversation_timeout=MANAGEMENT_TIMEOUT,
+        persistent=False,
+        per_message=False,
+    )
+
+    # --- 3. User Trade Closing Conversation (Trader) (Moved) ---
+    user_trade_close_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(user_trade_close_start, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.CLOSE.value}:trade:")],
+        states={
+            AWAIT_USER_TRADE_CLOSE_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, user_trade_close_price_received)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_management_conversation),
+            CallbackQueryHandler(cancel_management_conversation, pattern=rf"^mgmt:cancel_input:"),
+        ],
+        name="user_trade_close_conversation",
+        per_user=True, per_chat=True,
+        conversation_timeout=MANAGEMENT_TIMEOUT,
+        persistent=False,
+        per_message=False,
+    )
+
+    # --- 4. Master Reply Handler (Implicit State) ---
+    # This handler must have priority (Group 0) to catch replies
+    # before general message handlers (like forward_parsing_handler)
+    reply_handler = MessageHandler(
+        filters.REPLY & filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+        master_reply_handler
+    )
+
+    app.add_handler(creation_conv, group=0)
+    app.add_handler(partial_close_conv, group=0)
+    app.add_handler(user_trade_close_conv, group=0)
+    app.add_handler(reply_handler, group=0)

@@ -1,23 +1,18 @@
-# --- src/capitalguard/infrastructure/db/repository.py --- V 2.10 (ADR-001 Race Condition Hotfix)
-"""
-Repository layer — provides clean data access abstractions.
-✅ THE FIX (ADR-001 Hotfix): Corrected a critical race condition.
-    - Modified `get_all_active_recs` to explicitly filter out
-      `Recommendation.is_shadow.is_(False)`.
-    - This prevents the full-sync (`build_triggers_index`) from
-      re-adding a trigger that a background task is still processing
-      (e.g., a 'shadow' rec being published), or re-adding a trigger
-      that was just closed by `remove_single_trigger` but hasn't
-      been committed to the DB yet.
-"""
+# File: src/capitalguard/infrastructure/db/repository.py
+# Version: v2.11.0-R2 (Channel Summary)
+# ✅ THE FIX: (R2 Feature - Channel Summary)
+#    - 1. (NEW) إضافة دالة `get_watched_channels_summary` الجديدة.
+#    - 2. (Core Algorithm) تنفذ هذه الدالة الاستعلام المطلوب لـ "التصميم 5"
+#       (قائمة القنوات التي يتابعها المتداول مع عدد الصفقات النشطة في كل منها).
+# 🎯 IMPACT: يوفر هذا الملف الآن البيانات اللازمة لواجهة "العرض حسب القناة".
 
 import logging
 from typing import List, Optional, Any, Dict
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session, joinedload, selectinload
-import sqlalchemy as sa 
-from sqlalchemy import and_, or_ 
+import sqlalchemy as sa
+from sqlalchemy import and_, or_, func, case
 
 # Import domain entities and value objects
 from capitalguard.domain.entities import (
@@ -25,18 +20,17 @@ from capitalguard.domain.entities import (
     RecommendationStatus as RecommendationStatusEntity,
     OrderType as OrderTypeEntity,
     ExitStrategy as ExitStrategyEntity,
-    UserType as UserTypeEntity 
+    UserType as UserTypeEntity
 )
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 
 # Import ORM models
 from .models import (
     User, Channel, Recommendation, RecommendationEvent,
-    PublishedMessage, UserTrade, 
+    PublishedMessage, UserTrade,
     RecommendationStatusEnum,
     UserTradeStatusEnum,
-    # ✅ R1-S1 HOTFIX 9: Import the missing Enum
-    OrderTypeEnum, 
+    OrderTypeEnum,
     WatchedChannel,
     ParsingTemplate, ParsingAttempt
 )
@@ -70,7 +64,7 @@ class UserRepository:
                  updated = True
             if kwargs.get("username") and user.username != kwargs["username"]:
                 user.username = kwargs["username"]
-                updated = True 
+                updated = True
             if 'user_type' in kwargs and user.user_type != kwargs['user_type']:
                  user.user_type = kwargs['user_type']
                  updated = True
@@ -79,7 +73,7 @@ class UserRepository:
                 updated = True
             
             if updated:
-                self.session.flush() # Persist updates if any
+                 self.session.flush() # Persist updates if any
             return user
 
         logger.info("Creating new user for telegram_id=%s", telegram_id)
@@ -142,7 +136,7 @@ class ParsingRepository:
     def add_attempt(self, **kwargs) -> ParsingAttempt:
         attempt = ParsingAttempt(**kwargs)
         self.session.add(attempt)
-        self.session.flush() 
+        self.session.flush()
         logger.debug(f"ParsingAttempt record created with ID: {attempt.id}")
         return attempt
 
@@ -159,7 +153,7 @@ class ParsingRepository:
 
     def get_active_templates(self, user_id: Optional[int] = None) -> List[ParsingTemplate]:
         query = self.session.query(ParsingTemplate).filter(
-            sa.or_( 
+            sa.or_(
                 ParsingTemplate.is_public == True,
                 ParsingTemplate.analyst_id == user_id
             )
@@ -183,10 +177,14 @@ class ParsingRepository:
         return self.session.query(ParsingTemplate).filter(ParsingTemplate.id == template_id).first()
 
 # ==========================================================
-# RECOMMENDATION REPOSITORY (Updated)
+# RECOMMENDATION REPOSITORY (Updated for R2)
 # ==========================================================
 class RecommendationRepository:
     """Repository for Recommendation and UserTrade ORM models."""
+
+    # ✅ R2: Helper to get the model class for type-safe queries
+    def get_watched_channel_model(self) -> type[WatchedChannel]:
+        return WatchedChannel
 
     @staticmethod
     def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
@@ -232,7 +230,7 @@ class RecommendationRepository:
                 closed_at=row.closed_at,
                 open_size_percent=float(row.open_size_percent),
                 is_shadow=row.is_shadow,
-                events=list(row.events or []), 
+                events=list(row.events or []),
                 exit_strategy=ExitStrategyEntity(row.exit_strategy.value),
             )
             if hasattr(row, 'profit_stop_active'):
@@ -293,12 +291,10 @@ class RecommendationRepository:
                     "order_type": rec.order_type, 
                     "market": rec.market,
                     "processed_events": {e.event_type for e in rec.events},
-                    
                     "profit_stop_mode": getattr(rec, 'profit_stop_mode', 'NONE'),
                     "profit_stop_price": self._to_decimal(getattr(rec, 'profit_stop_price', None)) if getattr(rec, 'profit_stop_price', None) is not None else None,
-                    "profit_stop_trailing_value": _to_decimal(getattr(rec, 'profit_stop_trailing_value', None)) if getattr(rec, 'profit_stop_trailing_value', None) is not None else None,
+                    "profit_stop_trailing_value": self._to_decimal(getattr(rec, 'profit_stop_trailing_value', None)) if getattr(rec, 'profit_stop_trailing_value', None) is not None else None,
                     "profit_stop_active": getattr(rec, 'profit_stop_active', False),
-                    
                     "original_published_at": None, 
                 }
                 trigger_data.append(data)
@@ -333,17 +329,13 @@ class RecommendationRepository:
                     "stop_loss": sl_dec,
                     "targets": targets_list, 
                     "status": trade.status, 
-                    # ✅ R1-S1 HOTFIX 9: This line caused the NameError. It is now fixed.
                     "order_type": OrderTypeEnum.LIMIT, 
                     "market": "Futures", 
-                    # ✅ R1-S1 HOTFIX 10 (Bug B): Load processed events for UserTrades
-                    "processed_events": {e.event_type for e in trade.events}, 
-                    
+                    "processed_events": {e.event_type for e in trade.events},
                     "profit_stop_mode": "NONE",
                     "profit_stop_price": None,
                     "profit_stop_trailing_value": None,
                     "profit_stop_active": False,
-                    
                     "original_published_at": trade.original_published_at,
                 }
                 trigger_data.append(data)
@@ -365,7 +357,13 @@ class RecommendationRepository:
         ).order_by(Recommendation.created_at.desc()).all()
 
     def get_open_trades_for_trader(self, session: Session, trader_user_id: int) -> List[UserTrade]:
-        return session.query(UserTrade).filter(
+        """
+        Fetches all non-closed trades for a trader.
+        This includes WATCHLIST, PENDING_ACTIVATION, and ACTIVATED.
+        """
+        return session.query(UserTrade).options(
+            selectinload(UserTrade.watched_channel) # Eager load channel info
+        ).filter(
             UserTrade.user_id == trader_user_id,
             UserTrade.status.in_([
                 UserTradeStatusEnum.WATCHLIST, 
@@ -375,10 +373,9 @@ class RecommendationRepository:
         ).order_by(UserTrade.created_at.desc()).all()
 
     def get_user_trade_by_id(self, session: Session, trade_id: int) -> Optional[UserTrade]:
-        # ✅ R1-S1 HOTFIX 10: Eager load events
         return session.query(UserTrade).options(
             selectinload(UserTrade.events)
-        ).filter(UserTrade.id == trade_id).first()
+         ).filter(UserTrade.id == trade_id).first()
 
     def find_user_trade_by_source_id(self, session: Session, user_id: int, rec_id: int) -> Optional[UserTrade]:
         return session.query(UserTrade).filter(
@@ -397,7 +394,6 @@ class RecommendationRepository:
         ).order_by(RecommendationEvent.event_timestamp.asc()).all()
 
     def get_all_active_recs(self, session: Session) -> List[Recommendation]:
-        # ✅ MODIFIED (ADR-001 Race Condition Hotfix): Added `is_shadow.is_(False)`
         return session.query(Recommendation).options(
             selectinload(Recommendation.events), 
             joinedload(Recommendation.analyst) 
@@ -407,9 +403,7 @@ class RecommendationRepository:
         ).all()
 
     def get_all_active_user_trades(self, session: Session) -> List[UserTrade]:
-        """
-        ✅ R1-S1 HOTFIX 10: Eager load 'events' relationship for UserTrades
-        """
+        """Fetches all active user trades with user and events preloaded."""
         return session.query(UserTrade).options(
             joinedload(UserTrade.user),
             selectinload(UserTrade.events) # Eager load events
@@ -421,16 +415,87 @@ class RecommendationRepository:
             ])
         ).all()
 
-
     def get_active_recs_for_asset_and_market(self, session: Session, asset: str, market: str) -> List[Recommendation]:
         asset_upper = asset.strip().upper()
-        # ✅ MODIFIED (ADR-001 Race Condition Hotfix): Added `is_shadow.is_(False)`
         return session.query(Recommendation).filter(
             and_( 
                 Recommendation.asset == asset_upper,
                 Recommendation.market == market, 
                 Recommendation.status == RecommendationStatusEnum.ACTIVE,
-                Recommendation.is_shadow.is_(False) # Ignore "publishing" items
+                Recommendation.is_shadow.is_(False)
             )
         ).all()
-# --- END of repository update ---
+
+    # ✅ NEW (R2): Function for "Design 5" (By Channel)
+    def get_watched_channels_summary(self, session: Session, user_id: int) -> List[Dict[str, Any]]:
+        """
+        [R2 - Core Algorithm]
+        Fetches all channels a user is watching (forwarded from)
+        and counts *only* their NON-CLOSED trades in each.
+        """
+        try:
+            # 1. Define active trade statuses
+            active_statuses = [
+                UserTradeStatusEnum.ACTIVATED,
+                UserTradeStatusEnum.PENDING_ACTIVATION,
+                UserTradeStatusEnum.WATCHLIST
+            ]
+
+            # 2. Subquery to count active trades per channel
+            subquery = (
+                select(
+                    UserTrade.watched_channel_id,
+                    func.count(UserTrade.id).label("active_trade_count")
+                )
+                .where(
+                    UserTrade.user_id == user_id,
+                    UserTrade.status.in_(active_statuses)
+                )
+                .group_by(UserTrade.watched_channel_id)
+                .subquery()
+            )
+
+            # 3. Main query to join WatchedChannel with the counts
+            stmt = (
+                select(
+                    WatchedChannel.id,
+                    WatchedChannel.channel_title,
+                    WatchedChannel.telegram_channel_id,
+                    func.coalesce(subquery.c.active_trade_count, 0).label("active_trade_count")
+                )
+                .join(
+                    subquery,
+                    subquery.c.watched_channel_id == WatchedChannel.id,
+                    isouter=True # Use LEFT JOIN to include channels with 0 trades
+                )
+                .where(
+                    WatchedChannel.user_id == user_id,
+                    WatchedChannel.is_active == True
+                )
+                .order_by(WatchedChannel.channel_title)
+            )
+            
+            results = self.session.execute(stmt).all()
+            
+            # 4. Count trades with NO channel (Direct Input)
+            direct_input_count_stmt = (
+                select(func.count(UserTrade.id))
+                .where(
+                    UserTrade.user_id == user_id,
+                    UserTrade.status.in_(active_statuses),
+                    UserTrade.watched_channel_id.is_(None)
+                )
+            )
+            direct_input_count = self.session.execute(direct_input_count_stmt).scalar() or 0
+            
+            # Format results
+            summary_list = [{"id": r.id, "title": r.channel_title, "count": r.active_trade_count} for r in results]
+            
+            if direct_input_count > 0:
+                summary_list.append({"id": "direct", "title": "Direct Input", "count": direct_input_count})
+                
+            return summary_list
+
+        except Exception as e:
+            logger.error(f"Error fetching watched channels summary for user {user_id}: {e}", exc_info=True)
+            return []
