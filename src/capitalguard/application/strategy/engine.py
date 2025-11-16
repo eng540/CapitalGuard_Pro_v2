@@ -1,4 +1,4 @@
---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/strategy/engine.py ---
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/strategy/engine.py ---
 """
 StrategyEngine v2.2 - Final Logic Implementation with optional LifecycleService integration.
 
@@ -333,4 +333,4 @@ class StrategyEngine:
             return MoveSLAction(rec_id=rec_id, new_sl=new_potential_sl)
 
         return None
---- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/strategy/engine.py ---
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/strategy/engine.py ---
