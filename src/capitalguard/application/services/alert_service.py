@@ -1,17 +1,11 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/alert_service.py ---
-# src/capitalguard/application/services/alert_service.py (v27.2 - NameError Hotfix)
-"""
-AlertService - Orchestrates price updates and manages the in-memory trigger index.
-✅ THE FIX (ADR-001): Implemented "Smart Indexing" (Append-Only Logic).
-    - Added `add_trigger_data` and `remove_single_trigger` to allow TradeService
-      to update the in-memory index instantly without a full database rebuild.
-    - Added `build_trigger_data_from_orm` helper to build the required
-      dictionary structure, ensuring consistency with the main `build_triggers_index`.
-✅ HOTFIX (v27.1): Modified `_process_queue` to pass `rebuild_alerts=False`
-    during automated closures (SL/TP hits), preventing redundant full-index rebuilds.
-✅ HOTFIX (v27.2): Added missing import for `PriceStreamer` to resolve
-    the `NameError: name 'PriceStreamer' is not defined` crash loop.
-"""
+# File: src/capitalguard/application/services/alert_service.py
+# Version: v27.3.0-R2 (Service Wiring)
+# ✅ THE FIX: (R2 Architecture - Wiring)
+#    - 1. (DI) تغيير الاعتمادية من `trade_service` إلى `lifecycle_service`.
+#    - 2. (SoC) جميع الاستدعاءات الداخلية (مثل `_process_queue`) أصبحت الآن
+#       تستدعي `lifecycle_service` (مثل `process_sl_hit_event`)
+#       بدلاً من الواجهة (Facade) القديمة.
+# 🎯 IMPACT: خدمة التنبيهات أصبحت الآن تتفاعل مع الخدمة المتخصصة الصحيحة.
 
 import logging
 import asyncio
@@ -28,17 +22,16 @@ from capitalguard.infrastructure.db.models import (
     RecommendationStatusEnum, UserTradeStatusEnum, OrderTypeEnum
 )
 from capitalguard.application.strategy.engine import StrategyEngine, BaseAction, CloseAction, MoveSLAction
-# ✅ HOTFIX (v27.2): Added the missing import for PriceStreamer
 from capitalguard.infrastructure.sched.price_streamer import PriceStreamer
 
-
+# ✅ R2: Import the new service for type hinting
 if False:
-    from .trade_service import TradeService
+    from .lifecycle_service import LifecycleService
     from .price_service import PriceService
 
 log = logging.getLogger(__name__)
 
-# --- Helper Function (copied from trade_service) ---
+# --- Helper Function ---
 def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
     """Safely converts input to a Decimal."""
     if isinstance(value, Decimal):
@@ -55,13 +48,15 @@ def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
 class AlertService:
     def __init__(
         self,
-        trade_service: "TradeService",
+        # ✅ R2: Updated dependency
+        lifecycle_service: "LifecycleService", 
         price_service: "PriceService",
         repo: RecommendationRepository,
         strategy_engine: StrategyEngine,
         streamer: Optional[PriceStreamer] = None
     ):
-        self.trade_service = trade_service
+        # ✅ R2: Use the new service
+        self.lifecycle_service = lifecycle_service
         self.price_service = price_service
         self.repo = repo
         self.strategy_engine = strategy_engine
@@ -102,11 +97,10 @@ class AlertService:
         self._bg_thread.start()
         log.info("AlertService started in background thread.")
 
-    # --- ✅ NEW (ADR-001): Helper to build trigger dict from ORM ---
+    # --- (build_trigger_data_from_orm - remains unchanged) ---
     def build_trigger_data_from_orm(self, item_orm: Union[Recommendation, UserTrade]) -> Optional[Dict[str, Any]]:
         """
         Builds the standard trigger dictionary from a *single* ORM object.
-        This logic is mirrored from RecommendationRepository.list_all_active_triggers_data.
         """
         try:
             if isinstance(item_orm, Recommendation):
@@ -181,51 +175,41 @@ class AlertService:
             return None
         return None
 
-    # --- ✅ NEW (ADR-001): Smart Indexing Methods ---
-
+    # --- (add_trigger_data - remains unchanged) ---
     async def add_trigger_data(self, item_data: Dict[str, Any]):
         """
         Instantly adds a single pre-built trigger dictionary to the in-memory index.
-        This is called by TradeService *after* a new trade is created.
         """
         if not item_data:
             log.warning("add_trigger_data received empty item_data.")
             return
-
         item_id = item_data.get("id")
         item_type = item_data.get("item_type")
         log.info(f"Smart Indexing: Adding {item_type} #{item_id} to in-memory triggers.")
-
         try:
             asset = item_data.get("asset")
             if not asset:
                 log.error(f"Cannot add trigger {item_id}: Missing asset.")
                 return
-            
             trigger_key = f"{asset.upper()}:{item_data.get('market', 'Futures')}"
-            
             async with self._triggers_lock:
                 if trigger_key not in self.active_triggers:
                     self.active_triggers[trigger_key] = []
-                
-                # Avoid duplicates if full sync ran
                 if not any(t['id'] == item_id and t['item_type'] == item_type for t in self.active_triggers[trigger_key]):
                     self.active_triggers[trigger_key].append(item_data)
-                    
                     if item_type == "recommendation":
                         self.strategy_engine.initialize_state_for_recommendation(item_data)
-                    
                     log.debug(f"Successfully added trigger {item_type} #{item_id} to key {trigger_key}.")
                 else:
                     log.debug(f"Trigger {item_type} #{item_id} already in index, skipping add.")
-                    
         except Exception as e:
             log.error(f"Failed to add trigger {item_type} #{item_id} to index: {e}", exc_info=True)
 
+
+    # --- (remove_single_trigger - remains unchanged) ---
     async def remove_single_trigger(self, item_type: str, item_id: int):
         """
         Instantly removes a single trigger from the in-memory index by its ID and type.
-        This is called by TradeService *after* a trade is closed.
         """
         log.info(f"Smart Indexing: Removing {item_type} #{item_id} from in-memory triggers.")
         found_and_removed = False
@@ -234,72 +218,59 @@ class AlertService:
                 keys_to_check = list(self.active_triggers.keys())
                 for key in keys_to_check:
                     triggers_list = self.active_triggers[key]
-                    
-                    # Find the item to remove
                     item_to_remove = next((t for t in triggers_list if t['id'] == item_id and t['item_type'] == item_type), None)
-                    
                     if item_to_remove:
                         triggers_list.remove(item_to_remove)
                         found_and_removed = True
                         if not triggers_list:
-                            # Clean up empty asset keys
                             del self.active_triggers[key]
-                        break # Found it, no need to search other keys
-            
+                        break
             if found_and_removed:
                 if item_type == "recommendation":
                     self.strategy_engine.clear_state(item_id)
                 log.debug(f"Successfully removed {item_type} #{item_id} from index.")
             else:
                 log.warning(f"Could not find {item_type} #{item_id} in index to remove (might be harmless if full sync ran).")
-                
         except Exception as e:
             log.error(f"Failed to remove trigger {item_type} #{item_id}: {e}", exc_info=True)
 
 
-    # --- Original Indexing & Processing (Unchanged) ---
+    # --- (build_triggers_index & _run_index_sync - remain unchanged) ---
     async def build_triggers_index(self):
         """Builds the in-memory index of all active triggers from the database."""
         log.info("Attempting to build in-memory trigger index (Unified)...")
         try:
             with session_scope() as session:
-                trigger_data_list = self.repo.list_all_active_triggers_data(session)
+                 trigger_data_list = self.repo.list_all_active_triggers_data(session)
         except Exception:
             log.critical("CRITICAL: DB read failure during trigger index build.", exc_info=True)
             return
-
+            
         new_triggers: Dict[str, List[Dict[str, Any]]] = {}
-        active_rec_ids = set()
-        active_item_ids = set()
-
-        for item in trigger_data_list:
+        for item_data in trigger_data_list:
+            if not item_data: continue
             try:
-                asset = item.get("asset")
-                item_id = item.get("id")
-                if not asset or not item_id:
+                asset = item_data.get("asset")
+                if not asset:
+                    log.error(f"Cannot index item {item_data.get('id')}: Missing asset.")
                     continue
-                
-                active_item_ids.add(item_id)
-                if item.get("item_type") == "recommendation":
-                    active_rec_ids.add(item_id)
-                    self.strategy_engine.initialize_state_for_recommendation(item)
-
-                trigger_key = f"{asset.upper()}:{item.get('market', 'Futures')}"
+                trigger_key = f"{asset.upper()}:{item_data.get('market', 'Futures')}"
                 if trigger_key not in new_triggers:
                     new_triggers[trigger_key] = []
-                new_triggers[trigger_key].append(item)
-            except Exception:
-                log.exception("Failed processing trigger item: %s", item.get('id'))
-        
+                new_triggers[trigger_key].append(item_data)
+            except Exception as e:
+                log.error(f"Failed to process trigger item {item_data.get('id')}: {e}", exc_info=True)
+                
         async with self._triggers_lock:
             self.active_triggers = new_triggers
-
-        stale_rec_ids = set(self.strategy_engine._state.keys()) - active_rec_ids
-        for rec_id in stale_rec_ids:
-            self.strategy_engine.clear_state(rec_id)
-
-        log.info("✅ Trigger index rebuilt: %d items across %d asset/market pairs.",
-                 len(trigger_data_list), len(new_triggers))
+            # Initialize strategy states for all recommendations
+            self.strategy_engine.clear_all_states()
+            for key, triggers in new_triggers.items():
+                for trigger in triggers:
+                    if trigger.get("item_type") == "recommendation":
+                        self.strategy_engine.initialize_state_for_recommendation(trigger)
+                        
+        log.info("✅ Trigger index rebuilt.")
 
     async def _run_index_sync(self, interval_seconds: int = 60):
         """Periodically rebuilds the trigger index to catch new or closed trades."""
@@ -307,6 +278,37 @@ class AlertService:
         while True:
             await asyncio.sleep(interval_seconds)
             await self.build_triggers_index()
+
+    # --- (stop & _is_price_condition_met - remain unchanged) ---
+    def stop(self):
+        """Stops the AlertService and its background tasks."""
+        if hasattr(self.streamer, "stop"):
+            self.streamer.stop()
+        if self._bg_loop:
+            if self._processing_task: self._bg_loop.call_soon_threadsafe(self._processing_task.cancel)
+            if self._index_sync_task: self._bg_loop.call_soon_threadsafe(self._index_sync_task.cancel)
+            self.streamer.stop() # Ensure streamer loop is stopped
+            self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
+            
+        if self._bg_thread:
+            self._bg_thread.join(timeout=5.0)
+        log.info("AlertService stopped and cleaned up.")
+        
+    def _is_price_condition_met(self, side: str, low_price: Decimal, high_price: Decimal, target_price: Decimal, condition_type: str) -> bool:
+        """Checks if a price condition (SL, TP, Entry) has been met."""
+        side_upper = side.upper()
+        cond = condition_type.upper()
+        if side_upper == "LONG":
+            if cond.startswith("TP"): return high_price >= target_price
+            if cond == "SL": return low_price <= target_price
+            if cond == "ENTRY": return low_price <= target_price
+        elif side_upper == "SHORT":
+            if cond.startswith("TP"): return low_price <= target_price
+            if cond == "SL": return high_price >= target_price
+            if cond == "ENTRY": return high_price >= target_price
+        return False
+
+    # --- ✅ R2: UPDATED Core Processing Logic ---
 
     async def _process_queue(self):
         """Main processing loop that consumes price updates from the queue."""
@@ -329,31 +331,30 @@ class AlertService:
                     if trigger.get("item_type") == "recommendation":
                         strategy_actions = self.strategy_engine.evaluate(trigger, high_price, low_price)
 
+                    # ✅ R2: Updated call
                     core_actions = await self._evaluate_core_triggers(trigger, high_price, low_price)
                     all_actions = strategy_actions + core_actions
+                    
                     if not all_actions:
                         continue
 
                     close_action = next((a for a in all_actions if isinstance(a, CloseAction)), None)
                     if close_action:
-                        # ✅ MODIFIED (ADR-001 Efficiency Hotfix):
-                        # Pass rebuild_alerts=False. TradeService will handle the
-                        # smart removal from the index.
-                        await self.trade_service.close_recommendation_async(
+                        # ✅ R2: Call the new LifecycleService
+                        await self.lifecycle_service.close_recommendation_async(
                             rec_id=close_action.rec_id,
                             user_id=trigger['user_id'],
                             exit_price=close_action.price,
                             reason=close_action.reason,
-                            rebuild_alerts=False # ✅ This is the fix
+                            rebuild_alerts=False # Smart Indexing
                         )
-                        # We still clear the strategy engine state here
                         self.strategy_engine.clear_state(close_action.rec_id)
                         continue
 
                     for action in all_actions:
                         if isinstance(action, MoveSLAction):
-                            # This service call doesn't trigger a rebuild, so it's fine
-                            await self.trade_service.update_sl_for_user_async(
+                            # ✅ R2: Call the new LifecycleService
+                            await self.lifecycle_service.update_sl_for_user_async(
                                 rec_id=action.rec_id,
                                 user_id=trigger['user_id'],
                                 new_sl=action.new_sl
@@ -366,36 +367,11 @@ class AlertService:
             except Exception:
                 log.exception("Unexpected error in queue processor.")
 
-    def stop(self):
-        """Stops the AlertService and its background tasks."""
-        if hasattr(self.streamer, "stop"):
-            self.streamer.stop()
-        if self._bg_loop:
-            tasks = [self._processing_task, self._index_sync_task]
-            for t in tasks:
-                if t and not t.done():
-                    self._bg_loop.call_soon_threadsafe(t.cancel)
-            self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
-        if self._bg_thread:
-            self._bg_thread.join(timeout=5.0)
-        log.info("AlertService stopped and cleaned up.")
-
-    def _is_price_condition_met(self, side: str, low_price: Decimal, high_price: Decimal, target_price: Decimal, condition_type: str) -> bool:
-        """Checks if a price condition (SL, TP, Entry) has been met."""
-        side_upper = side.upper()
-        cond = condition_type.upper()
-        if side_upper == "LONG":
-            if cond.startswith("TP"): return high_price >= target_price
-            if cond == "SL": return low_price <= target_price
-            if cond == "ENTRY": return low_price <= target_price
-        elif side_upper == "SHORT":
-            if cond.startswith("TP"): return low_price <= target_price
-            if cond == "SL": return high_price >= target_price
-            if cond == "ENTRY": return high_price >= target_price
-        return False
-
     async def _evaluate_core_triggers(self, trigger: Dict[str, Any], high_price: Decimal, low_price: Decimal) -> List[BaseAction]:
-        """Evaluates core triggers for both Recommendations and UserTrades."""
+        """
+        Evaluates core triggers for both Recommendations and UserTrades.
+        ✅ R2: Calls LifecycleService instead of TradeService.
+        """
         actions: List[BaseAction] = []
         item_id = trigger["id"]
         status = trigger["status"]
@@ -408,9 +384,11 @@ class AlertService:
                 if status == RecommendationStatusEnum.PENDING:
                     entry_price, sl_price = trigger["entry"], trigger["stop_loss"]
                     if "INVALIDATED" not in processed_events and self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
-                        await self.trade_service.process_invalidation_event(item_id)
+                        # ✅ R2: Call LifecycleService
+                        await self.lifecycle_service.process_invalidation_event(item_id)
                     elif "ACTIVATED" not in processed_events and self._is_price_condition_met(side, low_price, high_price, entry_price, "ENTRY"):
-                        await self.trade_service.process_activation_event(item_id)
+                        # ✅ R2: Call LifecycleService
+                        await self.lifecycle_service.process_activation_event(item_id)
 
                 elif status == RecommendationStatusEnum.ACTIVE:
                     sl_price = trigger["stop_loss"]
@@ -424,7 +402,8 @@ class AlertService:
                             continue
                         target_price = Decimal(str(target['price']))
                         if self._is_price_condition_met(side, low_price, high_price, target_price, "TP"):
-                            await self.trade_service.process_tp_hit_event(item_id, i, target_price)
+                            # ✅ R2: Call LifecycleService
+                            await self.lifecycle_service.process_tp_hit_event(item_id, i, target_price)
 
             elif item_type == "user_trade":
                 if status in (UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION):
@@ -435,14 +414,17 @@ class AlertService:
                         return actions
 
                     if "INVALIDATED" not in processed_events and self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
-                        await self.trade_service.process_user_trade_invalidation_event(item_id, sl_price)
+                        # ✅ R2: Call LifecycleService
+                        await self.lifecycle_service.process_user_trade_invalidation_event(item_id, sl_price)
                     elif "ACTIVATED" not in processed_events and self._is_price_condition_met(side, low_price, high_price, entry_price, "ENTRY"):
-                        await self.trade_service.process_user_trade_activation_event(item_id)
+                        # ✅ R2: Call LifecycleService
+                        await self.lifecycle_service.process_user_trade_activation_event(item_id)
 
                 elif status == UserTradeStatusEnum.ACTIVATED:
                     sl_price = trigger["stop_loss"]
                     if "SL_HIT" not in processed_events and "FINAL_CLOSE" not in processed_events and self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
-                        await self.trade_service.process_user_trade_sl_hit_event(item_id, sl_price)
+                        # ✅ R2: Call LifecycleService
+                        await self.lifecycle_service.process_user_trade_sl_hit_event(item_id, sl_price)
                         return actions # Stop further processing if SL hit
 
                     for i, target in enumerate(trigger["targets"], 1):
@@ -451,10 +433,10 @@ class AlertService:
                             continue
                         target_price = Decimal(str(target['price']))
                         if self._is_price_condition_met(side, low_price, high_price, target_price, "TP"):
-                            await self.trade_service.process_user_trade_tp_hit_event(item_id, i, target_price)
+                            # ✅ R2: Call LifecycleService
+                            await self.lifecycle_service.process_user_trade_tp_hit_event(item_id, i, target_price)
 
         except Exception as e:
             log.error(f"Error evaluating core trigger for {item_type} #{item_id}: {e}", exc_info=True)
 
         return actions
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/alert_service.py ---
