@@ -1,23 +1,21 @@
 # File: src/capitalguard/interfaces/telegram/conversation_handlers.py
-# Version: v37.0.0-R2 (Consolidated State)
-# ✅ THE FIX: (R2 Architecture - State Consolidation)
-#    - 1. (SoC) توحيد "إدارة الحالة". هذا الملف هو الآن "مصدر الحقيقة الوحيد"
-#       لـ "جميع" محادثات Telegram (إنشاء توصية، إغلاق جزئي، إغلاق مستخدم، إدخال الردود).
-#    - 2. (MOVED) نقل تعريفات `ConversationHandler` (Partial Close, User Close)
-#       وجميع أدوات إدارة الحالة (timeout, state keys) من `management_handlers.py` إلى هنا.
-#    - 3. (MERGED) دمج `reply_handler` (من management) و `notes_handler` (من creation)
-#       في دالة واحدة ذكية: `master_reply_handler`.
-# 🎯 IMPACT: هذا الملف يدير الآن جميع التفاعلات متعددة الخطوات، مما يحرر
-#    `management_handlers.py` ليكون "وحدة تنقل" (Navigation Unit) نظيفة.
+# Version: v37.0.1-R2 (Critical SyntaxError Hotfix)
+# ✅ THE FIX: (R2 Architecture - SyntaxError Hotfix)
+#    - 1. (CRITICAL) إصلاح `SyntaxError: invalid syntax` الذي أبلغ عنه المستخدم.
+#    - 2. (MOVED) تم نقل استدعاء `get_service(context, "creation_service", ...)`
+#       إلى *داخل* البلوك الشرطي `if action == "publish":` (في `review_handler`)
+#       و `elif action == CallbackAction.CONFIRM.value:` (في `channel_picker_handler`).
+#    - 3. (CLEAN) هذا يحل مشكلة قطع سلسلة `if/elif` ويجعل الملف قابلاً للتشغيل.
+# 🎯 IMPACT: الملف الآن خالٍ من الأخطاء النحوية الحرجة وجاهز للعمل.
 
 import logging
 import uuid
 import time
 import asyncio
-import re # ✅ Added for master_reply_handler
+import re 
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional, Dict, Any, Union
-from telegram import CallbackQuery
+
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     Application, ContextTypes, ConversationHandler, CommandHandler,
@@ -27,14 +25,14 @@ from telegram.error import BadRequest, TelegramError
 from telegram.constants import ParseMode
 
 from capitalguard.infrastructure.db.uow import uow_transaction
-from .helpers import get_service, _get_attr # ✅ Added _get_attr
+from .helpers import get_service, _get_attr
 from .ui_texts import build_review_text_with_price
 from .keyboards import (
     main_creation_keyboard, asset_choice_keyboard, side_market_keyboard,
     market_choice_keyboard, order_type_keyboard, review_final_keyboard,
     build_channel_picker_keyboard, CallbackBuilder, CallbackNamespace, CallbackAction,
-    ButtonTexts, # ✅ Added ButtonTexts
-    build_editable_review_card # ✅ Added for reply handler
+    ButtonTexts,
+    build_editable_review_card
 )
 from .auth import require_active_user, require_analyst_user, get_db_user
 from .parsers import parse_rec_command, parse_editor_command, parse_number, parse_targets_list
@@ -164,11 +162,9 @@ async def _preload_asset_prices(price_service: PriceService, assets: List[str]):
 
 
 # --- 4. Handlers for Recommendation Creation (No Change) ---
-# (All handlers from are copied here verbatim)
 # (e.g., newrec_entrypoint, start_text_input_entrypoint, method_chosen,
 # received_text_input, asset_handler, side_handler, market_handler,
-# type_handler, prices_handler, show_review_card, review_handler,
-# channel_picker_handler, cancel_handler)
+# type_handler, prices_handler, show_review_card)
 
 @uow_transaction
 @require_active_user
@@ -440,11 +436,11 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
             await safe_edit_message(query, text="❌ جلسة منتهية الصلاحية.")
             clean_creation_state(context)
             return ConversationHandler.END
-
-        # ✅ R2: Use CreationService
-        creation_service = get_service(context, "creation_service", CreationService)
             
         if action == "publish":
+            # ✅ [FIX 1] HOTFIX: Move service retrieval *inside* the block
+            creation_service = get_service(context, "creation_service", CreationService)
+            
             all_channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=True)
             selected_ids = context.user_data.get(CHANNEL_PICKER_KEY, {ch.telegram_channel_id for ch in all_channels})
             draft['target_channel_ids'] = selected_ids
@@ -523,11 +519,11 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
         if action == CallbackAction.BACK.value:
             await show_review_card(update, context)
             return AWAITING_REVIEW
-        
-        # ✅ R2: Use CreationService
-        creation_service = get_service(context, "creation_service", CreationService)
 
-        if action == CallbackAction.CONFIRM.value:
+        elif action == CallbackAction.CONFIRM.value:
+            # ✅ [FIX 2] HOTFIX: Move service retrieval *inside* the block
+            creation_service = get_service(context, "creation_service", CreationService)
+
             if not selected_ids:
                 await query.answer("❌ لم يتم اختيار أي قنوات", show_alert=True)
                 return AWAITING_CHANNELS
@@ -596,7 +592,6 @@ async def master_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             return ConversationHandler.END
         update_management_activity(context)
         
-        # --- (Logic copied from management_handlers.reply_handler) ---
         chat_id = mgmt_state.get("original_message_chat_id")
         message_id = mgmt_state.get("original_message_message_id")
         if not (chat_id and message_id):
@@ -614,7 +609,7 @@ async def master_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if is_analyst_action and (not db_user or db_user.user_type != UserTypeEntity.ANALYST):
             await update.message.reply_text("🚫 Permission Denied: This action requires Analyst role.")
             clean_management_state(context)
-            return None # Stay in current state (or end?)
+            return None 
 
         try: await update.message.delete()
         except Exception: log.debug("Could not delete user reply message.")
@@ -641,7 +636,6 @@ async def master_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     price = parse_number(user_input)
                     if price is None: raise ValueError("Invalid price format.")
                     
-                    # (Simplified validation, full logic in lifecycle_service)
                     validated_value = price
                     if action == "edit_sl": change_description = f"Update Stop Loss to {_get_attr(price, 'g')}"
                     elif action == "edit_entry": change_description = f"Update Entry Price to {_get_attr(price, 'g')}"
@@ -712,7 +706,6 @@ async def master_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     elif context.user_data.get(PARTIAL_CLOSE_REC_ID_KEY) and update.message:
         log.debug(f"MasterReplyHandler: Detected partial_close input state")
         # (This state is now managed by explicit ConversationHandler, see below)
-        # This part of the 'if' will no longer be hit, but kept for safety.
         pass
 
     # --- الحالة 4: الرد لإغلاق صفقة مستخدم (Moved from management_handlers) ---
@@ -726,7 +719,6 @@ async def master_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # --- 6. Handlers for Management Conversations (MOVED & REFACTORED) ---
-# (All logic from and moved here)
 
 # --- (Partial Close Conversation) ---
 @uow_transaction
@@ -831,7 +823,6 @@ async def partial_close_price_received(update: Update, context: ContextTypes.DEF
     try:
         if user_input.lower() == "market":
             price_service = get_service(context, "price_service", PriceService)
-            # We use the repo directly for reads here, as it's internal
             position = lifecycle_service.repo.get(db_session, rec_id)
             if not position: raise ValueError("Recommendation not found.")
             live_price = await price_service.get_cached_price(position.asset, position.market, force_refresh=True)
@@ -844,8 +835,6 @@ async def partial_close_price_received(update: Update, context: ContextTypes.DEF
 
         await lifecycle_service.partial_close_async(rec_id, user_telegram_id, percent_val, exit_price, db_session, triggered_by="MANUAL_CUSTOM")
         
-        # (Need to import _send_or_edit_position_panel or move it)
-        # For now, just send a text confirmation
         await context.bot.edit_message_text(
             chat_id=chat_id, message_id=message_id,
             text=f"✅ Closed {percent_val:g}% at {_get_attr(exit_price, 'g')}.",
@@ -908,7 +897,7 @@ async def user_trade_close_start(update: Update, context: ContextTypes.DEFAULT_T
     lifecycle_service = get_service(context, "lifecycle_service", LifecycleService)
     position = lifecycle_service.repo.get_user_trade_by_id(db_session, trade_id) # Use repo for read
     
-    if not position or position.user_id != db_user.id or position.status != "ACTIVATED":
+    if not position or position.user_id != db_user.id or position.status != UserTradeStatusEnum.ACTIVATED:
         await query.answer("❌ Trade not found or is not active.", show_alert=True)
         return ConversationHandler.END
 
@@ -1007,7 +996,7 @@ def register_conversation_handlers(app: Application):
             AWAITING_TYPE: [CallbackQueryHandler(type_handler, pattern="^type_")],
             AWAITING_PRICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, prices_handler)],
             AWAITING_REVIEW: [CallbackQueryHandler(review_handler, pattern=f"^{CallbackNamespace.RECOMMENDATION.value}:")],
-            # Note: AWAITING_NOTES is now handled by master_reply_handler
+            AWAITING_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, master_reply_handler)],
             AWAITING_CHANNELS: [CallbackQueryHandler(channel_picker_handler, pattern=f"^{CallbackNamespace.PUBLICATION.value}:")],
         },
         fallbacks=[CommandHandler("cancel", cancel_creation_handler)],
@@ -1053,8 +1042,6 @@ def register_conversation_handlers(app: Application):
     )
 
     # --- 4. Master Reply Handler (Implicit State) ---
-    # This handler must have priority (Group 0) to catch replies
-    # before general message handlers (like forward_parsing_handler)
     reply_handler = MessageHandler(
         filters.REPLY & filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
         master_reply_handler
