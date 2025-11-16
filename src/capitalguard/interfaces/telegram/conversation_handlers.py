@@ -15,7 +15,7 @@ import asyncio
 import re 
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional, Dict, Any, Union
-
+from telegram import CallbackQuery
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     Application, ContextTypes, ConversationHandler, CommandHandler,
