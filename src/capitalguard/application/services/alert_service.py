@@ -1,4 +1,4 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/alert_service.py ---v4
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/alert_service.py ---v28
 """
 AlertService v28.1-R3 (Final corrected)
 - Fully compatible with StrategyEngine v4 (pure engine returning Actions).
