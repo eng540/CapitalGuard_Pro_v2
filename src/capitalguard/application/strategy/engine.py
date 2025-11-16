@@ -24,7 +24,7 @@ import logging
 import time
 import json
 from decimal import Decimal, getcontext, Context
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Dict, Any, List, Optional, Callable, Iterable, Tuple
 
 # Types for lifecycle_service and storage are loosely typed to avoid circular imports.
@@ -41,7 +41,8 @@ getcontext().prec = DECIMAL_CONTEXT.prec
 @dataclass(frozen=True)
 class BaseAction:
     rec_id: int
-    engine_version: str = "v4"
+    # prevent engine_version from becoming an __init__ parameter to avoid dataclass ordering issues
+    engine_version: str = field(init=False, default="v4")
 
 @dataclass(frozen=True)
 class CloseAction(BaseAction):
