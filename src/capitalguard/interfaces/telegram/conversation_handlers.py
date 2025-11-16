@@ -527,7 +527,7 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
         # ✅ R2: Use CreationService
         creation_service = get_service(context, "creation_service", CreationService)
 
-        elif action == CallbackAction.CONFIRM.value:
+        if action == CallbackAction.CONFIRM.value:
             if not selected_ids:
                 await query.answer("❌ لم يتم اختيار أي قنوات", show_alert=True)
                 return AWAITING_CHANNELS
@@ -908,7 +908,7 @@ async def user_trade_close_start(update: Update, context: ContextTypes.DEFAULT_T
     lifecycle_service = get_service(context, "lifecycle_service", LifecycleService)
     position = lifecycle_service.repo.get_user_trade_by_id(db_session, trade_id) # Use repo for read
     
-    if not position or position.user_id != db_user.id or position.status != UserTradeStatusEnum.ACTIVATED:
+    if not position or position.user_id != db_user.id or position.status != "ACTIVATED":
         await query.answer("❌ Trade not found or is not active.", show_alert=True)
         return ConversationHandler.END
 
