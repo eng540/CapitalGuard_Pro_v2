@@ -1,12 +1,12 @@
 # File: src/capitalguard/boot.py
-# Version: v3.1.0-R2 (Service Wiring)
-# ✅ THE FIX: (R2 Architecture - Wiring)
-#    - 1. (DI) حقن `CreationService` و `LifecycleService` في `TradeService` (الواجهة).
-#    - 2. (DI) حقن `LifecycleService` (الجديدة) في `AlertService` و `StrategyEngine`
-#       بدلاً من `TradeService` القديمة لإدارة الأحداث.
-#    - 3. (DI) حقن `AlertService` في الخدمات الجديدة (`CreationService`, `LifecycleService`)
-#       للسماح بالفهرسة الذكية (Smart Indexing).
-# 🎯 IMPACT: النظام الآن موصول (wired) بالكامل وفقًا للمعمارية الجديدة (SoC).
+# Version: v3.1.1-R2 (Hotfix)
+# ✅ THE FIX: (R2 Architecture - Hotfix)
+#    - 1. (CRITICAL) إصلاح `ImportError` الذي كان يسبب انهيار النظام.
+#    - 2. (REMOVED) إزالة `PerformanceRepository` من الاستيراد الخاص بـ `repository.py`.
+#    - 3. (NEW) إضافة استيراد `PerformanceRepository` من ملفه الصحيح
+#       `performance_repository.py`.
+# 🎯 IMPACT: هذا الإصلاح يحل الـ `ImportError` ويجعل النظام قابلاً للتشغيل
+#    وفقًا للهيكلة الجديدة.
 
 import logging
 from typing import Dict, Any, Optional
@@ -32,8 +32,11 @@ from capitalguard.infrastructure.db.repository import (
     UserRepository,
     ChannelRepository,
     ParsingRepository,
-    PerformanceRepository
+    # ❌ REMOVED: PerformanceRepository (كان هذا هو الخطأ)
 )
+# ✅ NEW (R2): Import the new repository from its correct file
+from capitalguard.infrastructure.db.performance_repository import PerformanceRepository
+
 from capitalguard.infrastructure.notify.telegram import TelegramNotifier
 from capitalguard.infrastructure.execution.binance_exec import BinanceExec, BinanceCreds
 
@@ -58,6 +61,7 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         services["user_repo_class"] = UserRepository
         services["channel_repo_class"] = ChannelRepository
         services["parsing_repo_class"] = ParsingRepository
+        # ✅ R2: Register new repository class
         services["performance_repo_class"] = PerformanceRepository
 
         # --- Core Services (Instances) ---
