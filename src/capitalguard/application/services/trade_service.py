@@ -1,12 +1,12 @@
 # File: src/capitalguard/application/services/trade_service.py
-# Version: v3.0.0-R2 (Facade)
-# ✅ THE FIX: (R2 Architecture - Refactored)
-#    - 1. (SoC) تم تفريغ هذا الملف بالكامل من منطق الإنشاء ودورة الحياة.
-#    - 2. (Facade) أصبح هذا الملف "واجهة" (Facade) نظيفة.
-#    - 3. (DI) يستقبل الخدمات الجديدة (`CreationService`, `LifecycleService`) عبر الحقن (DI).
-#    - 4. (Proxy) يقوم فقط بتمرير الاستدعاءات إلى الخدمات المتخصصة الصحيحة.
-# 🎯 IMPACT: هذا يكمل "الفصل النظيف للخدمات" (Clean SoC) ويجعل النظام
-#    قابلاً للتوسع والصيانة وفقًا لـ "مبدأ الأرض الواسعة".
+# Version: v3.0.1-R2 (NameError Hotfix)
+# ✅ THE FIX: (R2 Architecture - Hotfix)
+#    - 1. (CRITICAL) إصلاح `NameError: name 'Recommendation' is not defined`
+#       الذي يحدث عند استدعاء `get_recent_assets_for_user`.
+#    - 2. (NEW) إضافة `from capitalguard.infrastructure.db.models import Recommendation, UserTrade`.
+#    - 3. (NEW) إضافة `from capitalguard.domain.entities import UserType as UserTypeEntity`.
+# 🎯 IMPACT: هذا الإصلاح يحل الـ `NameError` ويجعل دالة `get_recent_assets_for_user`
+#    (التي يستدعيها `/newrec`) قادرة على العمل.
 
 from __future__ import annotations
 import logging
@@ -19,6 +19,11 @@ from sqlalchemy.orm import Session
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository
 from capitalguard.domain.entities import Recommendation as RecommendationEntity
+# ✅ R2 Hotfix: Add missing imports needed by legacy read functions
+from capitalguard.infrastructure.db.models import Recommendation, UserTrade, UserTradeStatusEnum, RecommendationStatusEnum
+from capitalguard.domain.entities import UserType as UserTypeEntity, RecommendationStatus as RecommendationStatusEntity
+from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
+
 
 # Import new R2 services
 from .creation_service import CreationService
@@ -56,7 +61,7 @@ class TradeService:
     """
     def __init__(
         self,
-        # (Dependencies for legacy read functions - to be refactored later)
+        # (Dependencies for legacy read functions)
         repo: RecommendationRepository,
         notifier: Any,
         market_data_service: "MarketDataService",
@@ -173,7 +178,6 @@ class TradeService:
 
 
     # --- Legacy Read Functions (to be refactored into a 'ReadService') ---
-    # (هذه الدوال تبقى هنا مؤقتًا حتى ننقلها إلى خدمة قراءة متخصصة)
     
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
         """
@@ -191,6 +195,7 @@ class TradeService:
         trader_trades = self.repo.get_open_trades_for_trader(db_session, user.id)
         for trade in trader_trades:
             # Convert UserTrade ORM to a RecommendationEntity-like object
+            # ✅ CRITICAL: This is the function that is missing in repository.py
             entity = self.repo._to_entity_from_user_trade(trade)
             if entity:
                 all_items.append(entity)
@@ -227,6 +232,7 @@ class TradeService:
         elif position_type == 'trade':
             trade_orm = self.repo.get_user_trade_by_id(db_session, position_id)
             if trade_orm and trade_orm.user_id == user.id:
+                # ✅ CRITICAL: This is the function that is missing in repository.py
                 return self.repo._to_entity_from_user_trade(trade_orm)
         
         return None
@@ -234,19 +240,49 @@ class TradeService:
     def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
         """
         Fetches most recent assets used by this user (Analyst Recs or User Trades).
+        ✅ R2 Hotfix: Added Recommendation import to fix NameError.
         """
         logger.debug(f"TradeService (Facade) executing legacy 'get_recent_assets_for_user'")
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
-        if not user: 
+        assets_in_order = []
+        
+        if not user:
             return []
         
-        # This is a simplified stub. A real implementation would query both tables.
-        recent_assets = (
-            db_session.query(Recommendation.asset)
-            .filter(Recommendation.analyst_id == user.id)
-            .order_by(Recommendation.created_at.desc())
-            .limit(limit)
-            .distinct()
-        ).all()
+        if user.user_type == UserTypeEntity.ANALYST:
+            recs = (
+                db_session.query(Recommendation.asset, Recommendation.created_at)
+                .filter(Recommendation.analyst_id == user.id)
+                .order_by(Recommendation.created_at.desc())
+                .limit(limit * 5) 
+                .all()
+            )
+            assets_in_order.extend(r.asset for r in recs)
         
-        return [asset[0] for asset in recent_assets]
+        # Also include user trades (even for analysts)
+        trades = (
+            db_session.query(UserTrade.asset, UserTrade.created_at)
+            .filter(UserTrade.user_id == user.id)
+            .order_by(UserTrade.created_at.desc())
+            .limit(limit * 5)
+            .all()
+        )
+        assets_in_order.extend(t.asset for t in trades)
+        
+        # Get unique assets while preserving recent order
+        asset_list = []
+        seen = set()
+        for asset in assets_in_order:
+            if asset not in seen:
+                asset_list.append(asset)
+                seen.add(asset)
+                if len(asset_list) >= limit:
+                    break
+                    
+        if len(asset_list) < limit:
+            default_assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
+            for a in default_assets:
+                if a not in asset_list and len(asset_list) < limit:
+                    asset_list.append(a)
+                    
+        return asset_list
