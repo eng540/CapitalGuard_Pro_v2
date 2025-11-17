@@ -1,18 +1,19 @@
 # File: src/capitalguard/infrastructure/db/repository.py
-# Version: v2.11.0-R2 (Channel Summary)
-# ✅ THE FIX: (R2 Feature - Channel Summary)
-#    - 1. (NEW) إضافة دالة `get_watched_channels_summary` الجديدة.
-#    - 2. (Core Algorithm) تنفذ هذه الدالة الاستعلام المطلوب لـ "التصميم 5"
-#       (قائمة القنوات التي يتابعها المتداول مع عدد الصفقات النشطة في كل منها).
-# 🎯 IMPACT: يوفر هذا الملف الآن البيانات اللازمة لواجهة "العرض حسب القناة".
+# Version: v2.11.1-R2 (AttributeError Hotfix)
+# ✅ THE FIX: (R2 Architecture - Hotfix)
+#    - 1. (CRITICAL) إصلاح `AttributeError: 'RecommendationRepository' object has no attribute '_to_entity_from_user_trade'`.
+#    - 2. (NEW) إضافة دالة `_to_entity_from_user_trade` (المفقودة) كـ `staticmethod`.
+#    - 3. (IMPORTS) إضافة الاستدعاءات الضرورية (UserTrade, Enums) لدعم الدالة الجديدة.
+# 🎯 IMPACT: هذا الإصلاح يحل الـ `AttributeError` ويجعل `/myportfolio` قابلاً للعمل.
 
 import logging
 from typing import List, Optional, Any, Dict
 from decimal import Decimal, InvalidOperation
+from datetime import datetime # ✅ Added import
 
 from sqlalchemy.orm import Session, joinedload, selectinload
 import sqlalchemy as sa
-from sqlalchemy import and_, or_, func, case
+from sqlalchemy import and_, or_, func, select, case
 
 # Import domain entities and value objects
 from capitalguard.domain.entities import (
@@ -27,9 +28,9 @@ from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 # Import ORM models
 from .models import (
     User, Channel, Recommendation, RecommendationEvent,
-    PublishedMessage, UserTrade,
+    PublishedMessage, UserTrade, # ✅ Added UserTrade
     RecommendationStatusEnum,
-    UserTradeStatusEnum,
+    UserTradeStatusEnum, # ✅ Added UserTradeStatusEnum
     OrderTypeEnum,
     WatchedChannel,
     ParsingTemplate, ParsingAttempt
@@ -241,6 +242,63 @@ class RecommendationRepository:
             return entity
         except Exception as e:
             logger.error(f"Error translating ORM Recommendation ID {getattr(row, 'id', 'N/A')} to entity: {e}", exc_info=True)
+            return None
+
+    # ✅✅✅ [FIX 2] HOTFIX: Added the missing helper function `_to_entity_from_user_trade`
+    @staticmethod
+    def _to_entity_from_user_trade(trade: UserTrade) -> Optional[RecommendationEntity]:
+        """
+        Converts a UserTrade ORM object into a RecommendationEntity-like object
+        for unified display in handlers.
+        """
+        if not trade: 
+            return None
+        try:
+            # Map UserTradeStatus to RecommendationStatus for display
+            if trade.status == UserTradeStatusEnum.CLOSED:
+                domain_status = RecommendationStatusEntity.CLOSED
+            elif trade.status == UserTradeStatusEnum.ACTIVATED:
+                domain_status = RecommendationStatusEntity.ACTIVE
+            else: # WATCHLIST or PENDING_ACTIVATION
+                domain_status = RecommendationStatusEntity.PENDING
+
+            targets_data = trade.targets or []
+            formatted_targets = [
+                {"price": RecommendationRepository._to_decimal(t.get("price")),
+                 "close_percent": t.get("close_percent", 0.0)} 
+                 for t in targets_data if t.get("price") is not None
+            ]
+
+            trade_entity = RecommendationEntity(
+                id=trade.id,
+                asset=Symbol(trade.asset),
+                side=Side(trade.side),
+                entry=Price(RecommendationRepository._to_decimal(trade.entry)),
+                stop_loss=Price(RecommendationRepository._to_decimal(trade.stop_loss)),
+                targets=Targets(formatted_targets),
+                status=domain_status,
+                order_type=OrderTypeEntity.MARKET, # Default for user trades
+                created_at=trade.created_at,
+                closed_at=trade.closed_at,
+                exit_price=float(trade.close_price) if trade.close_price is not None else None,
+                exit_strategy=ExitStrategyEntity.MANUAL_CLOSE_ONLY, # Default
+                analyst_id=trade.user_id # Use user_id as the "owner" context
+            )
+            
+            # Add the critical attributes the UI relies on
+            setattr(trade_entity, 'is_user_trade', True)
+            setattr(trade_entity, 'orm_status_value', trade.status.value) 
+            if trade.pnl_percentage is not None:
+                setattr(trade_entity, 'final_pnl_percentage', float(trade.pnl_percentage))
+            
+            # Add fields needed by _send_or_edit_position_panel
+            setattr(trade_entity, 'market', "Futures") # Assume futures default
+            setattr(trade_entity, 'notes', None)
+            setattr(trade_entity, 'activated_at', trade.activated_at)
+            
+            return trade_entity
+        except Exception as e:
+            logger.error(f"Error translating ORM UserTrade ID {getattr(trade, 'id', 'N/A')} to entity: {e}", exc_info=True)
             return None
 
     def get(self, session: Session, rec_id: int) -> Optional[Recommendation]:
