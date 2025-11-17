@@ -1,15 +1,19 @@
 # File: src/capitalguard/infrastructure/db/repository.py
-# Version: v2.11.1-R2 (AttributeError Hotfix)
+# Version: v2.11.2-R2 (ValueError Hotfix)
 # ✅ THE FIX: (R2 Architecture - Hotfix)
-#    - 1. (CRITICAL) إصلاح `AttributeError: 'RecommendationRepository' object has no attribute '_to_entity_from_user_trade'`.
-#    - 2. (NEW) إضافة دالة `_to_entity_from_user_trade` (المفقودة) كـ `staticmethod`.
-#    - 3. (IMPORTS) إضافة الاستدعاءات الضرورية (UserTrade, Enums) لدعم الدالة الجديدة.
-# 🎯 IMPACT: هذا الإصلاح يحل الـ `AttributeError` ويجعل `/myportfolio` قابلاً للعمل.
+#    - 1. (CRITICAL) إصلاح `ValueError: Targets must be a non-empty list of dictionaries`
+#       الذي كان يسبب انهيار `/myportfolio` .
+#    - 2. (NEW) إضافة "حارس" (Guard) في `_to_entity` و `_to_entity_from_user_trade`.
+#    - 3. (LOGIC) إذا لم يتم العثور على أهداف صالحة (`formatted_targets` فارغة)،
+#       ستقوم الدالة الآن بإرجاع `None` بدلاً من الانهيار عند استدعاء `Targets()`.
+#    - 4. (SAFE) الكود المستدعي (في `trade_service.py`) جاهز للتعامل مع `None` (if entity: ...).
+# 🎯 IMPACT: هذا الإصلاح يحل الـ `ValueError` ويجعل `/myportfolio`
+#    قادرًا على عرض الصفقات (وسيتجاهل الصفقات التي ليس لها أهداف).
 
 import logging
 from typing import List, Optional, Any, Dict
 from decimal import Decimal, InvalidOperation
-from datetime import datetime # ✅ Added import
+from datetime import datetime 
 
 from sqlalchemy.orm import Session, joinedload, selectinload
 import sqlalchemy as sa
@@ -28,9 +32,9 @@ from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
 # Import ORM models
 from .models import (
     User, Channel, Recommendation, RecommendationEvent,
-    PublishedMessage, UserTrade, # ✅ Added UserTrade
+    PublishedMessage, UserTrade, 
     RecommendationStatusEnum,
-    UserTradeStatusEnum, # ✅ Added UserTradeStatusEnum
+    UserTradeStatusEnum,
     OrderTypeEnum,
     WatchedChannel,
     ParsingTemplate, ParsingAttempt
@@ -183,7 +187,6 @@ class ParsingRepository:
 class RecommendationRepository:
     """Repository for Recommendation and UserTrade ORM models."""
 
-    # ✅ R2: Helper to get the model class for type-safe queries
     def get_watched_channel_model(self) -> type[WatchedChannel]:
         return WatchedChannel
 
@@ -210,8 +213,12 @@ class RecommendationRepository:
                  "close_percent": t.get("close_percent", 0.0)} 
                  for t in targets_data if t.get("price") is not None
             ]
+            
+            # ✅ [FIX 1] HOTFIX: Check for empty targets before calling Targets()
             if not formatted_targets:
-                 logger.warning(f"Recommendation {row.id} has no valid targets in JSON data: {row.targets}")
+                 logger.warning(f"Recommendation {row.id} has no valid targets. Skipping entity conversion.")
+                 return None # This prevents the ValueError
+
             entity = RecommendationEntity(
                 id=row.id,
                 analyst_id=row.analyst_id,
@@ -244,7 +251,6 @@ class RecommendationRepository:
             logger.error(f"Error translating ORM Recommendation ID {getattr(row, 'id', 'N/A')} to entity: {e}", exc_info=True)
             return None
 
-    # ✅✅✅ [FIX 2] HOTFIX: Added the missing helper function `_to_entity_from_user_trade`
     @staticmethod
     def _to_entity_from_user_trade(trade: UserTrade) -> Optional[RecommendationEntity]:
         """
@@ -268,6 +274,11 @@ class RecommendationRepository:
                  "close_percent": t.get("close_percent", 0.0)} 
                  for t in targets_data if t.get("price") is not None
             ]
+
+            # ✅ [FIX 1] HOTFIX: Check for empty targets before calling Targets()
+            if not formatted_targets:
+                logger.warning(f"UserTrade {trade.id} has no valid targets. Skipping entity conversion.")
+                return None # This prevents the ValueError
 
             trade_entity = RecommendationEntity(
                 id=trade.id,
@@ -329,6 +340,11 @@ class RecommendationRepository:
                       "close_percent": t.get("close_percent", 0.0)}
                      for t in (rec.targets or []) if t.get("price") is not None
                 ]
+                
+                # ✅ [FIX 1] HOTFIX: Check for empty targets
+                if not targets_list:
+                    logger.warning(f"Skipping trigger for Rec ID {rec.id}: No valid targets found.")
+                    continue
 
                 user_id_str = str(rec.analyst.telegram_user_id) if rec.analyst else None
                 if not user_id_str:
@@ -370,6 +386,11 @@ class RecommendationRepository:
                       "close_percent": t.get("close_percent", 0.0)}
                      for t in (trade.targets or []) if t.get("price") is not None
                 ]
+                
+                # ✅ [FIX 1] HOTFIX: Check for empty targets
+                if not targets_list:
+                    logger.warning(f"Skipping trigger for UserTrade ID {trade.id}: No valid targets found.")
+                    continue
 
                 user_id_str = str(trade.user.telegram_user_id) if trade.user else None
                 if not user_id_str:
@@ -533,7 +554,7 @@ class RecommendationRepository:
                 .order_by(WatchedChannel.channel_title)
             )
             
-            results = self.session.execute(stmt).all()
+            results = session.execute(stmt).all()
             
             # 4. Count trades with NO channel (Direct Input)
             direct_input_count_stmt = (
@@ -544,7 +565,7 @@ class RecommendationRepository:
                     UserTrade.watched_channel_id.is_(None)
                 )
             )
-            direct_input_count = self.session.execute(direct_input_count_stmt).scalar() or 0
+            direct_input_count = session.execute(direct_input_count_stmt).scalar() or 0
             
             # Format results
             summary_list = [{"id": r.id, "title": r.channel_title, "count": r.active_trade_count} for r in results]
