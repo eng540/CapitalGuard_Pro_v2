@@ -1,5 +1,5 @@
 # File: src/capitalguard/interfaces/telegram/forward_parsing_handler.py
-# Version: v6.0.3 (Fixed Validation Signature & Enhanced AI Integration)
+# Version: v6.0.2 (Fixed Validation Signature & Enhanced AI Integration)
 # ✅ THE FIX: (Critical Validation Fix & AI Service Restoration)
 #    - 1. (CRITICAL) إصلاح تعارض تواقيع دالة التحقق `_validate_recommendation_data`
 #    - 2. (RESTORED) إعادة تفعيل خدمة تحليل الصور مع AI الحقيقي
