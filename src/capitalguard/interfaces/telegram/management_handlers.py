@@ -1,8 +1,8 @@
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v34.3.0-R2-FINAL (Production Stable)
-# ✅ STATUS: GOLD MASTER
-#    - Full Compatibility with TradeService v3.1.0
-#    - Robust Error Handling added to all entry points.
+# Version: v34.3.1-R2-FINAL (Stable - Service Alignment)
+# ✅ STATUS: GOLD MASTER - COMPATIBLE
+#    - Full Compatibility with TradeService v3.1.1.
+#    - Pure View Logic maintained.
 
 import logging
 import re 
@@ -12,16 +12,15 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    Bot,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     ContextTypes,
     CommandHandler,
 )
+from decimal import Decimal # Required for partial_close_fixed_handler
 
 # Infrastructure
 from capitalguard.infrastructure.db.uow import uow_transaction
@@ -48,7 +47,6 @@ from capitalguard.domain.entities import UserType as UserTypeEntity
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.lifecycle_service import LifecycleService
-from capitalguard.application.services.performance_service import PerformanceService
 
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors")
@@ -60,7 +58,7 @@ def _safe_escape_markdown(text: str) -> str:
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 async def safe_edit_message(
-    bot: Bot, chat_id: int, message_id: int, text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML
+    bot, chat_id: int, message_id: int, text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML
 ) -> bool:
     if not chat_id or not message_id: return False
     try:
@@ -91,15 +89,8 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
         trade_service = get_service(context, "trade_service", TradeService)
         items = trade_service.get_open_positions_for_user(db_session, str(db_user.telegram_user_id))
         
-        activated_count = 0
-        watchlist_count = 0
-        
-        for item in items:
-            u_status = getattr(item, 'unified_status', None)
-            if u_status == "ACTIVE":
-                activated_count += 1
-            elif u_status == "WATCHLIST":
-                watchlist_count += 1
+        activated_count = sum(1 for i in items if getattr(i, 'unified_status', None) == "ACTIVE")
+        watchlist_count = sum(1 for i in items if getattr(i, 'unified_status', None) == "WATCHLIST")
 
         header = "📊 *CapitalGuard — My Portfolio*\n" \
                  "منطقة التحكم الذكية لجميع صفقاتك."
@@ -141,7 +132,6 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
 async def management_callback_hub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer()
-    
     parsed_data = CallbackBuilder.parse(query.data)
     action = parsed_data.get("action")
     params = parsed_data.get("params", [])
