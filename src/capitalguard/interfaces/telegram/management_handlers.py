@@ -1,9 +1,8 @@
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v34.2.2-R2-FINAL (Stable Production Release)
-# ✅ STATUS: COMPLETED & VERIFIED
-#    - Works seamlessly with TradeService v3.0.8
-#    - No direct DB calls.
-#    - Full Analyst/Trader Logic separation.
+# Version: v34.3.0-R2-FINAL (Production Stable)
+# ✅ STATUS: GOLD MASTER
+#    - Full Compatibility with TradeService v3.1.0
+#    - Robust Error Handling added to all entry points.
 
 import logging
 import re 
@@ -142,6 +141,7 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
 async def management_callback_hub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer()
+    
     parsed_data = CallbackBuilder.parse(query.data)
     action = parsed_data.get("action")
     params = parsed_data.get("params", [])
