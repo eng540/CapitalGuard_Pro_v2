@@ -1,9 +1,9 @@
 # File: src/capitalguard/application/services/trade_service.py
-# Version: v3.0.3-R2 (Signature Mismatch Hotfix)
+# Version: v3.0.4-R2 (Entity Flags Fix)
 # ✅ THE FIX: (Critical Priority 1)
-#    - 1. (CRITICAL) إضافة دالة توافقية (`_validate_recommendation_data_legacy`) لمعالجة التوقيع القديم (5 متغيرات).
-#    - 2. (LOGIC) الدالة الجديدة تقوم بتحويل المتغيرات المنفصلة إلى قاموس بيانات واحد (Data Dict) واستدعاء الدالة الأساسية.
-# 🎯 IMPACT: تم حل خطأ 'takes from 2 to 3 positional arguments but 5 were given' ويعود نظام التحقق الآلي للعمل فوراً.
+#    - 1. (LOGIC) ضبط get_open_positions_for_user لتعيين is_user_trade=False لتوصيات المحلل.
+#    - 2. (LOGIC) ضبط get_position_details_for_user لتعيين نفس العلامة.
+# 🎯 IMPACT: الواجهة تميز الآن بين التوصية والصفقة وتعرض لوحة التحكم الصحيحة.
 
 from __future__ import annotations
 import logging
@@ -49,17 +49,13 @@ def _validate_recommendation_data(data: Dict[str, Any], is_rec: bool = True) -> 
     """
     Validates core recommendation data integrity (Entry vs SL consistency).
     Returns a dictionary of errors. Empty dict means success.
-    (This is the CLEAN/NEW signature expecting a data dictionary)
     """
     errors: Dict[str, str] = {}
-    
-    # 1. Check required fields
     required_fields = ['asset', 'side', 'entry', 'stop_loss']
     for field in required_fields:
         if data.get(field) is None:
             errors[field] = f"Missing required field: {field}"
             
-    # 2. Check for logical consistency (Entry vs SL)
     try:
         entry = data.get('entry')
         sl = data.get('stop_loss')
@@ -76,11 +72,9 @@ def _validate_recommendation_data(data: Dict[str, Any], is_rec: bool = True) -> 
             return errors
 
         if side.upper() == 'LONG':
-            # For LONG, Entry must be above SL (Entry > SL)
             if entry <= sl:
                 errors['sl_consistency'] = "For LONG, Entry price must be higher than Stop Loss price."
         elif side.upper() == 'SHORT':
-            # For SHORT, Entry must be below SL (Entry < SL)
             if entry >= sl:
                 errors['sl_consistency'] = "For SHORT, Entry price must be lower than Stop Loss price."
 
@@ -97,151 +91,92 @@ class TradeService:
     """
     def __init__(
         self,
-        # (Dependencies for legacy read functions)
         repo: RecommendationRepository,
         notifier: Any,
         market_data_service: "MarketDataService",
         price_service: "PriceService",
-        
-        # ✅ R2: Injected Services
         creation_service: "CreationService",
         lifecycle_service: "LifecycleService"
     ):
-        # Dependencies for legacy functions
         self.repo = repo
         self.notifier = notifier
         self.market_data_service = market_data_service
         self.price_service = price_service
-        
-        # ✅ R2: Services
         self.creation_service = creation_service
         self.lifecycle_service = lifecycle_service
-        
-        # Circular dependency injection
         self.alert_service: Optional["AlertService"] = None
 
-    # ✅ FIX 1: Expose the clean validation function (Data Dict signature)
     def _validate_recommendation_data(self, data: Dict[str, Any], is_rec: bool = True) -> Dict[str, str]:
-        """Proxy to the validation utility (New/Clean signature)."""
+        """Proxy to the validation utility."""
         return _validate_recommendation_data(data, is_rec)
-        
-    # ✅ FIX 1: The Legacy/Compatibility Validation Function (OLD signature)
-    # This function is added to catch calls from OLD handlers (like in forward_parsing_handler.py)
-    # The call in the handler passes 4 positional arguments + self (total 5)
+
     def _validate_recommendation_data_legacy(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict]) -> None:
-        """
-        [Compatibility Layer]
-        Validation function using the old (incorrect) signature.
-        It converts arguments to the modern Dict signature.
-        """
-        logger.warning("TradeService._validate_recommendation_data_legacy called (OLD SIGNATURE DETECTED).")
-        
-        data = {
-            'side': side,
-            'entry': entry,
-            'stop_loss': stop_loss,
-            'targets': targets # Targets are not part of core validation but included for completeness
-        }
-        
+        """[Compatibility Layer]"""
+        data = {'side': side, 'entry': entry, 'stop_loss': stop_loss, 'targets': targets}
         errors = self._validate_recommendation_data(data, is_rec=True)
-        
-        if errors:
-            # Raise ValueError to be caught by the calling handler (forward_parsing_handler)
-            # This maintains the error handling logic of the old handler.
-            raise ValueError(f"Validation Errors: {errors}")
+        if errors: raise ValueError(f"Validation Errors: {errors}")
     
     # --- CreationService Proxies ---
-
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
-        """[Proxy] توجيه إنشاء التوصية إلى CreationService."""
-        logger.debug(f"TradeService (Facade) proxying 'create_and_publish' to CreationService for user {user_id}")
         return await self.creation_service.create_and_publish_recommendation_async(user_id, db_session, **kwargs)
-    # (Rest of the proxies remain unchanged)
-    # ...
 
     async def background_publish_and_index(self, rec_id: int, user_db_id: int, target_channel_ids: Optional[Set[int]] = None):
-        """[Proxy] توجيه النشر الخلفي إلى CreationService."""
-        logger.debug(f"TradeService (Facade) proxying 'background_publish' to CreationService for Rec {rec_id}")
         return await self.creation_service.background_publish_and_index(rec_id, user_db_id, target_channel_ids)
 
     async def create_trade_from_forwarding_async(self, *args, **kwargs) -> Dict[str, Any]:
-        """[Proxy] توجيه إنشاء صفقة المتداول إلى CreationService."""
-        logger.debug(f"TradeService (Facade) proxying 'create_trade_from_forwarding' to CreationService")
         return await self.creation_service.create_trade_from_forwarding_async(*args, **kwargs)
 
     async def create_trade_from_recommendation(self, *args, **kwargs) -> Dict[str, Any]:
-        """[Proxy] توجيه تفعيل توصية رسمية إلى CreationService."""
-        logger.debug(f"TradeService (Facade) proxying 'create_trade_from_recommendation' to CreationService")
         return await self.creation_service.create_trade_from_recommendation(*args, **kwargs)
 
     # --- LifecycleService Proxies ---
-    
     async def close_user_trade_async(self, *args, **kwargs):
-        """[Proxy] توجيه إغلاق صفقة المتداول إلى LifecycleService."""
-        logger.debug(f"TradeService (Facade) proxying 'close_user_trade' to LifecycleService")
         return await self.lifecycle_service.close_user_trade_async(*args, **kwargs)
 
     async def close_recommendation_async(self, *args, **kwargs):
-        """[Proxy] توجيه إغلاق توصية المحلل إلى LifecycleService."""
-        logger.debug(f"TradeService (Facade) proxying 'close_recommendation' to LifecycleService")
         return await self.lifecycle_service.close_recommendation_async(*args, **kwargs)
 
     async def partial_close_async(self, *args, **kwargs):
-        """[Proxy] توجيه الإغلاق الجزئي إلى LifecycleService."""
         return await self.lifecycle_service.partial_close_async(*args, **kwargs)
 
     async def update_sl_for_user_async(self, *args, **kwargs):
-        """[Proxy] توجيه تحديث SL إلى LifecycleService."""
         return await self.lifecycle_service.update_sl_for_user_async(*args, **kwargs)
 
     async def update_targets_for_user_async(self, *args, **kwargs):
-        """[Proxy] توجيه تحديث TPs إلى LifecycleService."""
         return await self.lifecycle_service.update_targets_for_user_async(*args, **kwargs)
 
     async def update_entry_and_notes_async(self, *args, **kwargs):
-        """[Proxy] توجيه تحديث الدخول/الملاحظات إلى LifecycleService."""
         return await self.lifecycle_service.update_entry_and_notes_async(*args, **kwargs)
 
     async def set_exit_strategy_async(self, *args, **kwargs):
-        """[Proxy] توجيه ضبط استراتيجية الخروج إلى LifecycleService."""
         return await self.lifecycle_service.set_exit_strategy_async(*args, **kwargs)
 
     async def move_sl_to_breakeven_async(self, *args, **kwargs):
-        """[Proxy] توجيه نقل SL إلى الدخول إلى LifecycleService."""
         return await self.lifecycle_service.move_sl_to_breakeven_async(*args, **kwargs)
 
-    # --- Event Handler Proxies (Called by AlertService) ---
-
+    # --- Event Handler Proxies ---
     async def process_invalidation_event(self, *args, **kwargs):
-        """[Proxy Event] توجيه حدث الإلغاء إلى LifecycleService."""
         return await self.lifecycle_service.process_invalidation_event(*args, **kwargs)
 
     async def process_activation_event(self, *args, **kwargs):
-        """[Proxy Event] توجيه حدث التفعيل إلى LifecycleService."""
         return await self.lifecycle_service.process_activation_event(*args, **kwargs)
 
     async def process_sl_hit_event(self, *args, **kwargs):
-        """[Proxy Event] توجيه حدث SL إلى LifecycleService."""
         return await self.lifecycle_service.process_sl_hit_event(*args, **kwargs)
 
     async def process_tp_hit_event(self, *args, **kwargs):
-        """[Proxy Event] توجيه حدث TP إلى LifecycleService."""
         return await self.lifecycle_service.process_tp_hit_event(*args, **kwargs)
 
     async def process_user_trade_activation_event(self, *args, **kwargs):
-        """[Proxy Event] توجيه تفعيل صفقة المتداول إلى LifecycleService."""
         return await self.lifecycle_service.process_user_trade_activation_event(*args, **kwargs)
     
     async def process_user_trade_invalidation_event(self, *args, **kwargs):
-        """[Proxy Event] توجيه إلغاء صفقة المتداول إلى LifecycleService."""
         return await self.lifecycle_service.process_user_trade_invalidation_event(*args, **kwargs)
 
     async def process_user_trade_sl_hit_event(self, *args, **kwargs):
-        """[Proxy Event] توجيه SL صفقة المتداول إلى LifecycleService."""
         return await self.lifecycle_service.process_user_trade_sl_hit_event(*args, **kwargs)
 
     async def process_user_trade_tp_hit_event(self, *args, **kwargs):
-        """[Proxy Event] توجيه TP صفقة المتداول إلى LifecycleService."""
         return await self.lifecycle_service.process_user_trade_tp_hit_event(*args, **kwargs)
 
 
@@ -250,9 +185,7 @@ class TradeService:
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
         """
         Fetches all open positions (Analyst Recs + User Trades) for a user.
-        This is a complex query merging two different concepts.
         """
-        logger.debug(f"TradeService (Facade) executing legacy 'get_open_positions_for_user'")
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
         if not user: 
             return []
@@ -262,7 +195,6 @@ class TradeService:
         # 1. Get Trader's personal trades
         trader_trades = self.repo.get_open_trades_for_trader(db_session, user.id)
         for trade in trader_trades:
-            # Convert UserTrade ORM to a RecommendationEntity-like object
             entity = self.repo._to_entity_from_user_trade(trade)
             if entity:
                 all_items.append(entity)
@@ -276,6 +208,8 @@ class TradeService:
                 if not is_tracked:
                     entity = self.repo._to_entity(rec)
                     if entity:
+                        # ✅ FIX: Explicitly mark as Analyst Rec
+                        entity.is_user_trade = False 
                         all_items.append(entity)
                         
         # Sort by creation time descending
@@ -287,7 +221,6 @@ class TradeService:
         """
         Fetches details for a *single* position, checking for ownership.
         """
-        logger.debug(f"TradeService (Facade) executing legacy 'get_position_details_for_user'")
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
         if not user: 
             return None
@@ -295,7 +228,10 @@ class TradeService:
         if position_type == 'rec':
             rec_orm = self.repo.get(db_session, position_id)
             if rec_orm and rec_orm.analyst_id == user.id:
-                return self.repo._to_entity(rec_orm)
+                entity = self.repo._to_entity(rec_orm)
+                # ✅ FIX: Explicitly mark as Analyst Rec
+                if entity: entity.is_user_trade = False
+                return entity
         elif position_type == 'trade':
             trade_orm = self.repo.get_user_trade_by_id(db_session, position_id)
             if trade_orm and trade_orm.user_id == user.id:
@@ -307,7 +243,6 @@ class TradeService:
         """
         Fetches most recent assets used by this user (Analyst Recs or User Trades).
         """
-        logger.debug(f"TradeService (Facade) executing legacy 'get_recent_assets_for_user'")
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
         assets_in_order = []
         
