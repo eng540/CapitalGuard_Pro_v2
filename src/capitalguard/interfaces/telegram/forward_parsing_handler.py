@@ -1,9 +1,9 @@
 # File: src/capitalguard/interfaces/telegram/forward_parsing_handler.py
-# Version: 6.0.1 (Fixed ImportError & AI Integration)
-# ✅ THE FIX: (Critical Import Fix & AI Service Restoration)
-#    - 1. (CRITICAL) إصلاح `ImportError: cannot import name 'handle_management_timeout'`.
-#    - 2. (RESTORED) إعادة تفعيل خدمة تحليل الصور مع AI الحقيقي.
-#    - 3. (COMPATIBLE) الحفاظ على التوافق مع النظام الجديد.
+# Version: v6.0.2 (Fixed Validation Signature & Enhanced AI Integration)
+# ✅ THE FIX: (Critical Validation Fix & AI Service Restoration)
+#    - 1. (CRITICAL) إصلاح تعارض تواقيع دالة التحقق `_validate_recommendation_data`
+#    - 2. (RESTORED) إعادة تفعيل خدمة تحليل الصور مع AI الحقيقي
+#    - 3. (COMPATIBLE) الحفاظ على التوافق مع النظام الجديد
 
 import logging
 import asyncio
@@ -141,7 +141,6 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
 
     clean_parsing_conversation_state(context)
-    # ✅ تم إزالة update_management_activity
 
     if not AI_SERVICE_URL:
         await message.reply_text("❌ Feature unavailable: The analysis service is not configured.")
@@ -216,10 +215,12 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
                         )
                     }
                     trade_service: TradeService = get_service(context, "trade_service", TradeService)
+                    
+                    # ✅ الإصلاح: استخدام التوقيع الجديد لدالة التحقق
                     trade_service._validate_recommendation_data(
-                        hydrated_data['side'], hydrated_data['entry'],
-                        hydrated_data['stop_loss'], hydrated_data['targets']
+                        trade_data=hydrated_data
                     )
+                    
                 except (ValueError, TypeError) as e:
                     log.warning(f"AI Service returned invalid data for attempt {attempt_id}: {e}")
                     final_error_message = f"Analysis Failed: {e}"
@@ -309,7 +310,6 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
 
     clean_parsing_conversation_state(context)
-    # ✅ تم إزالة update_management_activity
 
     original_published_at = None
     channel_info = None
@@ -375,10 +375,12 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
                     )
                 }
                 trade_service: TradeService = get_service(context, "trade_service", TradeService)
+                
+                # ✅ الإصلاح: استخدام التوقيع الجديد لدالة التحقق
                 trade_service._validate_recommendation_data(
-                    hydrated_data['side'], hydrated_data['entry'],
-                    hydrated_data['stop_loss'], hydrated_data['targets']
+                    trade_data=hydrated_data
                 )
+                
             except (ValueError, TypeError) as e:
                 log.warning(f"AI Service (Image) returned invalid data for attempt {attempt_id}: {e}")
                 final_error_message = f"Analysis Failed: {e}"
@@ -497,7 +499,6 @@ async def _record_correction_local(
 async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer()
-    # ✅ تم إزالة handle_management_timeout و update_management_activity
 
     callback_data = CallbackBuilder.parse(query.data)
     action = callback_data.get('action')
@@ -559,9 +560,9 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         action_verb = "Activated" if status_to_set == "PENDING_ACTIVATION" else "Added to Watchlist"
 
         try:
+            # ✅ الإصلاح: استخدام التوقيع الجديد لدالة التحقق
             trade_service._validate_recommendation_data(
-                current_data['side'], current_data['entry'],
-                current_data['stop_loss'], current_data['targets']
+                trade_data=current_data
             )
         except ValueError as e:
             error_text = f"❌ **Error saving trade:** {html.escape(str(e))}"
@@ -664,7 +665,6 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 @uow_transaction
 @require_active_user
 async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
-    # ✅ تم إزالة handle_management_timeout و update_management_activity
     field_to_edit = context.user_data.get(EDITING_FIELD_KEY)
     current_data = context.user_data.get(CURRENT_EDIT_DATA_KEY)
     original_message_id = context.user_data.get(ORIGINAL_MESSAGE_ID_KEY)
@@ -849,7 +849,7 @@ def register_forward_parsing_handlers(app: Application):
         name="unified_parsing_conversation",
         per_user=True, per_chat=True,
         persistent=False,
-        conversation_timeout=PARSING_CONVERSATION_TIMEOUT,  # ✅ تم التغيير هنا
+        conversation_timeout=PARSING_CONVERSATION_TIMEOUT,
         per_message=False
     )
     app.add_handler(conv_handler, group=1)
