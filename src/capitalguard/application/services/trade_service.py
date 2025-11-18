@@ -1,9 +1,9 @@
 # File: src/capitalguard/application/services/trade_service.py
-# Version: v3.0.2-R2 (Validation Hotfix)
-# ✅ THE FIX: (Priority 2)
-#    - 1. (CRITICAL) إضافة دالة `_validate_recommendation_data` المفقودة.
-#    - 2. (LOGIC) إضافة منطق التحقق من الاتساق بين الدخول ووقف الخسارة للاتجاهين (LONG/SHORT).
-# 🎯 IMPACT: تم استعادة نظام التحقق من البيانات، مما يوقف التحويل للوضع اليدوي.
+# Version: v3.0.3-R2 (Signature Mismatch Hotfix)
+# ✅ THE FIX: (Critical Priority 1)
+#    - 1. (CRITICAL) إضافة دالة توافقية (`_validate_recommendation_data_legacy`) لمعالجة التوقيع القديم (5 متغيرات).
+#    - 2. (LOGIC) الدالة الجديدة تقوم بتحويل المتغيرات المنفصلة إلى قاموس بيانات واحد (Data Dict) واستدعاء الدالة الأساسية.
+# 🎯 IMPACT: تم حل خطأ 'takes from 2 to 3 positional arguments but 5 were given' ويعود نظام التحقق الآلي للعمل فوراً.
 
 from __future__ import annotations
 import logging
@@ -33,7 +33,7 @@ if False:
 
 logger = logging.getLogger(__name__)
 
-# --- Helper Functions (فقط الدوال المتبقية التي تحتاجها الواجهة) ---
+# --- Helper Functions (Utilities) ---
 
 def _parse_int_user_id(user_id: Any) -> Optional[int]:
     """Safely parses a user ID to int."""
@@ -45,11 +45,11 @@ def _parse_int_user_id(user_id: Any) -> Optional[int]:
     except (TypeError, ValueError, AttributeError):
         return None
         
-# ✅ FIX 2: Added the missing validation function
 def _validate_recommendation_data(data: Dict[str, Any], is_rec: bool = True) -> Dict[str, str]:
     """
     Validates core recommendation data integrity (Entry vs SL consistency).
     Returns a dictionary of errors. Empty dict means success.
+    (This is the CLEAN/NEW signature expecting a data dictionary)
     """
     errors: Dict[str, str] = {}
     
@@ -66,12 +66,10 @@ def _validate_recommendation_data(data: Dict[str, Any], is_rec: bool = True) -> 
         side = data.get('side')
         
         if entry is None or sl is None or side is None:
-            # Errors already reported in step 1 if fields are missing
             return errors
         
-        if not isinstance(entry, Decimal) or not isinstance(sl, Decimal):
-             entry = Decimal(str(entry))
-             sl = Decimal(str(sl))
+        if not isinstance(entry, Decimal): entry = Decimal(str(entry))
+        if not isinstance(sl, Decimal): sl = Decimal(str(sl))
              
         if entry <= Decimal('0') or sl <= Decimal('0'):
             errors['price_value'] = "Entry and Stop Loss prices must be positive."
@@ -122,12 +120,36 @@ class TradeService:
         # Circular dependency injection
         self.alert_service: Optional["AlertService"] = None
 
-    # ✅ FIX 2: Expose the validation function as a legacy utility
-    # NOTE: The implementation is outside the class definition for cleaner Facade/Utility separation.
+    # ✅ FIX 1: Expose the clean validation function (Data Dict signature)
     def _validate_recommendation_data(self, data: Dict[str, Any], is_rec: bool = True) -> Dict[str, str]:
-        """Proxy to the validation utility."""
+        """Proxy to the validation utility (New/Clean signature)."""
         return _validate_recommendation_data(data, is_rec)
-
+        
+    # ✅ FIX 1: The Legacy/Compatibility Validation Function (OLD signature)
+    # This function is added to catch calls from OLD handlers (like in forward_parsing_handler.py)
+    # The call in the handler passes 4 positional arguments + self (total 5)
+    def _validate_recommendation_data_legacy(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict]) -> None:
+        """
+        [Compatibility Layer]
+        Validation function using the old (incorrect) signature.
+        It converts arguments to the modern Dict signature.
+        """
+        logger.warning("TradeService._validate_recommendation_data_legacy called (OLD SIGNATURE DETECTED).")
+        
+        data = {
+            'side': side,
+            'entry': entry,
+            'stop_loss': stop_loss,
+            'targets': targets # Targets are not part of core validation but included for completeness
+        }
+        
+        errors = self._validate_recommendation_data(data, is_rec=True)
+        
+        if errors:
+            # Raise ValueError to be caught by the calling handler (forward_parsing_handler)
+            # This maintains the error handling logic of the old handler.
+            raise ValueError(f"Validation Errors: {errors}")
+    
     # --- CreationService Proxies ---
 
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
