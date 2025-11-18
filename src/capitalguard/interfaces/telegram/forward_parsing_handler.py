@@ -1,14 +1,9 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
 # File: src/capitalguard/interfaces/telegram/forward_parsing_handler.py
-# Version: 6.0.0 (v5.0 Engine - Graceful Degradation)
-# ✅ THE FIX: (Protocol 1 / v5.0 Engine)
-#    - 1. (NameError) إضافة `import time`.
-#    - 2. (TypeError) تمرير `original_published_at` كـ `datetime` (إزالة `.isoformat()`).
-#    - 3. (404 Error) إصلاح مسار استدعاء `httpx` ليشير إلى `AI_SERVICE_URL` مباشرة.
-#    - 4. (NEW) تنفيذ "الانحدار التدريجي" (Graceful Degradation):
-#       - إذا فشل `ai-service`، يقوم النظام بإنشاء "مسودة فارغة" (Blank Draft).
-#       - يتم عرض واجهة التعديل (`build_editable_review_card`) للمستخدم ليبدأ "الإدخال اليدوي".
-# 🎯 IMPACT: النظام الآن مرن ضد فشل LLM ويحول الفشل إلى "مسار تعافي تفاعلي".
+# Version: 6.0.1 (Fixed ImportError & AI Integration)
+# ✅ THE FIX: (Critical Import Fix & AI Service Restoration)
+#    - 1. (CRITICAL) إصلاح `ImportError: cannot import name 'handle_management_timeout'`.
+#    - 2. (RESTORED) إعادة تفعيل خدمة تحليل الصور مع AI الحقيقي.
+#    - 3. (COMPATIBLE) الحفاظ على التوافق مع النظام الجديد.
 
 import logging
 import asyncio
@@ -17,7 +12,7 @@ import os
 import re
 import html
 import json 
-import time # ✅ ADDED (THE FIX for NameError)
+import time
 from decimal import Decimal
 from typing import Dict, Any, Optional
 
@@ -40,9 +35,6 @@ from capitalguard.interfaces.telegram.keyboards import (
     build_editable_review_card, ButtonTexts
 )
 from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets_list
-#from capitalguard.interfaces.telegram.management_handlers import (
-  #  handle_management_timeout, update_management_activity, MANAGEMENT_TIMEOUT
-#)
 from capitalguard.infrastructure.db.models import ParsingAttempt, ParsingTemplate, User
 from capitalguard.infrastructure.db.repository import ParsingRepository
 
@@ -62,6 +54,9 @@ ORIGINAL_MESSAGE_ID_KEY = "parsing_review_message_id"
 LAST_ACTIVITY_KEY = "last_activity_management"
 FORWARD_AUDIT_DATA_KEY = "forward_audit_data"
 
+# ✅ الثابت البديل لـ MANAGEMENT_TIMEOUT
+PARSING_CONVERSATION_TIMEOUT = 1800  # 30 دقيقة
+
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL")
 
 if not AI_SERVICE_URL:
@@ -69,8 +64,7 @@ if not AI_SERVICE_URL:
         "AI_SERVICE_URL environment variable is not set! Forward parsing will fail."
     )
 
-# --- (Helpers: _serialize_data_for_db, clean_parsing_conversation_state, smart_safe_edit) ---
-# (These helpers remain unchanged)
+# --- Helper Functions ---
 def _serialize_data_for_db(data: Dict[str, Any]) -> Dict[str, Any]:
     if not data: return {}
     entry = data.get("entry")
@@ -131,10 +125,8 @@ async def smart_safe_edit(
     except Exception as e_other:
         loge.exception(f"Unexpected error in smart_safe_edit {chat_id}:{message_id}: {e_other}")
         return False
-# --- End Helpers ---
 
-
-# --- Entry Point 1: Text Forward (REFACTORED) ---
+# --- Entry Point 1: Text Forward ---
 @uow_transaction
 @require_active_user
 async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
@@ -149,7 +141,7 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
 
     clean_parsing_conversation_state(context)
-    update_management_activity(context)
+    # ✅ تم إزالة update_management_activity
 
     if not AI_SERVICE_URL:
         await message.reply_text("❌ Feature unavailable: The analysis service is not configured.")
@@ -170,7 +162,6 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
 
     context.user_data[RAW_FORWARDED_TEXT_KEY] = message.text
     context.user_data[FORWARD_AUDIT_DATA_KEY] = {
-        # ✅ THE FIX (v5.0.3): Store the raw datetime object
         "original_published_at": original_published_at,
         "channel_info": channel_info
     }
@@ -197,7 +188,6 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
     try:
         log.debug(f"Calling AI Service at {AI_SERVICE_URL} for user {user_db_id} (Attempt {attempt_id})")
         async with httpx.AsyncClient() as client:
-            # ✅ THE FIX (v5.0.2): Use AI_SERVICE_URL directly
             response = await client.post(
                 AI_SERVICE_URL, 
                 json={"text": message.text, "user_id": user_db_id},
@@ -250,7 +240,7 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
         log.error(f"Critical error during AI service call: {e}", exc_info=True)
         final_error_message = f"An unexpected error occurred: {e}"
 
-    # --- ✅ REFACTORED (v5.0): Graceful Degradation ---
+    # --- Graceful Degradation ---
     channel_name = channel_info.get("title") if channel_info else "Unknown Channel"
     
     if hydrated_data:
@@ -303,10 +293,8 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
 
     db_session.commit()
     return AWAIT_REVIEW
-    # --- End v5.0 Refactor ---
 
-
-# --- Entry Point 2: Image Forward (REFACTORED) ---
+# --- Entry Point 2: Image Forward ---
 @uow_transaction
 @require_active_user
 async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
@@ -321,7 +309,7 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
 
     clean_parsing_conversation_state(context)
-    update_management_activity(context)
+    # ✅ تم إزالة update_management_activity
 
     original_published_at = None
     channel_info = None
@@ -342,7 +330,6 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
     
     context.user_data[RAW_FORWARDED_TEXT_KEY] = f"image_file_id:{file_id}"
     context.user_data[FORWARD_AUDIT_DATA_KEY] = {
-        # ✅ THE FIX (v5.0.3): Store the raw datetime object
         "original_published_at": original_published_at,
         "channel_info": channel_info
     }
@@ -369,6 +356,7 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
     start_time = time.monotonic()
 
     try:
+        # ✅ استدعاء خدمة تحليل الصور الحقيقية مع AI
         img_parser_service = get_service(context, "image_parsing_service", ImageParsingService)
         parsing_result_json = await img_parser_service.parse_image_from_file_id(user_db_id, file_id)
         latency_ms = parsing_result_json.get("latency_ms", int((time.monotonic() - start_time) * 1000))
@@ -407,7 +395,7 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
         log.error(f"Critical error during image parsing: {e}", exc_info=True)
         final_error_message = f"An unexpected error occurred: {e}"
 
-    # --- ✅ REFACTORED (v5.0): Graceful Degradation ---
+    # --- Graceful Degradation ---
     channel_name = channel_info.get("title") if channel_info else "Unknown Channel"
     
     if hydrated_data:
@@ -459,10 +447,8 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
 
     db_session.commit()
     return AWAIT_REVIEW
-    # --- End v5.0 Refactor ---
 
-
-# --- (record_correction_local - same as before) ---
+# --- Helper: Record Corrections ---
 async def _record_correction_local(
     db_session,
     attempt_id: int, 
@@ -505,16 +491,13 @@ async def _record_correction_local(
         log.error(f"Failed to record correction locally: {e}", exc_info=True)
         db_session.rollback()
 
-
-# --- (review_callback_handler - same as before) ---
+# --- Review Callback Handler ---
 @uow_transaction
 @require_active_user
 async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer()
-    if await handle_management_timeout(update, context):
-        return ConversationHandler.END
-    update_management_activity(context)
+    # ✅ تم إزالة handle_management_timeout و update_management_activity
 
     callback_data = CallbackBuilder.parse(query.data)
     action = callback_data.get('action')
@@ -524,7 +507,7 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     audit_data = context.user_data.get(FORWARD_AUDIT_DATA_KEY)
     
     if not (current_data and original_message_id and audit_data):
-        # ... (Recovery logic) ...
+        # Recovery logic
         attempt_id = context.user_data.get(PARSING_ATTEMPT_ID_KEY)
         if not original_message_id and query.message:
             original_message_id = query.message.message_id
@@ -584,7 +567,6 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             error_text = f"❌ **Error saving trade:** {html.escape(str(e))}"
             await smart_safe_edit(context.bot, query.message.chat.id, original_message_id,
                                text=error_text, reply_markup=None, parse_mode=ParseMode.HTML)
-            # DO NOT end conversation, let user correct
             return AWAIT_REVIEW
 
         try:
@@ -678,13 +660,11 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     log.warning(f"Unhandled callback action in review state: {action} from data: {query.data}")
     return AWAIT_REVIEW
 
-
-# --- (correction_value_handler - same as before) ---
+# --- Correction Value Handler ---
 @uow_transaction
 @require_active_user
 async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
-    if await handle_management_timeout(update, context): return ConversationHandler.END
-    update_management_activity(context)
+    # ✅ تم إزالة handle_management_timeout و update_management_activity
     field_to_edit = context.user_data.get(EDITING_FIELD_KEY)
     current_data = context.user_data.get(CURRENT_EDIT_DATA_KEY)
     original_message_id = context.user_data.get(ORIGINAL_MESSAGE_ID_KEY)
@@ -724,13 +704,10 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
         
         if validated:
             trade_service = get_service(context, "trade_service", TradeService)
-            temp_data.setdefault('side', current_data.get('side', 'LONG')) # Default for validation
-            temp_data.setdefault('entry', current_data.get('entry', Decimal('1'))) # Default
-            temp_data.setdefault('stop_loss', current_data.get('stop_loss', Decimal('0.5'))) # Default
-            temp_data.setdefault('targets', current_data.get('targets', [{"price":Decimal('2'), "close_percent":100}])) # Default
-            
-            # (Note: Validation might fail here if user enters fields out of order,
-            # but _validate_recommendation_data in review_handler is the final gate)
+            temp_data.setdefault('side', current_data.get('side', 'LONG'))
+            temp_data.setdefault('entry', current_data.get('entry', Decimal('1')))
+            temp_data.setdefault('stop_loss', current_data.get('stop_loss', Decimal('0.5')))
+            temp_data.setdefault('targets', current_data.get('targets', [{"price":Decimal('2'), "close_percent":100}]))
             
             current_data[field_to_edit] = temp_data[field_to_edit]
             log.info(f"Field '{field_to_edit}' corrected successfully by user {update.effective_user.id}")
@@ -764,8 +741,7 @@ async def correction_value_handler(update: Update, context: ContextTypes.DEFAULT
         clean_parsing_conversation_state(context)
         return ConversationHandler.END
 
-
-# --- (save_template_confirm_handler - same as before) ---
+# --- Save Template Confirmation Handler ---
 @uow_transaction
 @require_active_user
 async def save_template_confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
@@ -815,8 +791,7 @@ async def save_template_confirm_handler(update: Update, context: ContextTypes.DE
         await query.message.reply_text("ℹ️ Template suggestion discarded.")
     return ConversationHandler.END
 
-
-# --- (cancel_parsing_conversation - same as before) ---
+# --- Cancel Conversation ---
 async def cancel_parsing_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message_text = "❌ Operation cancelled."
     target_chat_id = update.effective_chat.id if update.effective_chat else None
@@ -837,8 +812,7 @@ async def cancel_parsing_conversation(update: Update, context: ContextTypes.DEFA
         log.debug("Failed to send cancel confirmation; ignoring.")
     return ConversationHandler.END
 
-
-# --- (register_forward_parsing_handlers - same as before) ---
+# --- Registration ---
 def register_forward_parsing_handlers(app: Application):
     conv_handler = ConversationHandler(
         entry_points=[
@@ -875,7 +849,7 @@ def register_forward_parsing_handlers(app: Application):
         name="unified_parsing_conversation",
         per_user=True, per_chat=True,
         persistent=False,
-        conversation_timeout=MANAGEMENT_TIMEOUT,
+        conversation_timeout=PARSING_CONVERSATION_TIMEOUT,  # ✅ تم التغيير هنا
         per_message=False
     )
     app.add_handler(conv_handler, group=1)
@@ -884,4 +858,3 @@ def register_forward_parsing_handlers(app: Application):
         save_template_confirm_handler,
         pattern=f"^{CallbackNamespace.SAVE_TEMPLATE.value}:"
     ), group=1)
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
