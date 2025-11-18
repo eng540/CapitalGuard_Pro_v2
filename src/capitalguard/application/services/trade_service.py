@@ -1,12 +1,9 @@
 # File: src/capitalguard/application/services/trade_service.py
-# Version: v3.0.1-R2 (NameError Hotfix)
-# ✅ THE FIX: (R2 Architecture - Hotfix)
-#    - 1. (CRITICAL) إصلاح `NameError: name 'Recommendation' is not defined`
-#       الذي يحدث عند استدعاء `get_recent_assets_for_user`.
-#    - 2. (NEW) إضافة `from capitalguard.infrastructure.db.models import Recommendation, UserTrade`.
-#    - 3. (NEW) إضافة `from capitalguard.domain.entities import UserType as UserTypeEntity`.
-# 🎯 IMPACT: هذا الإصلاح يحل الـ `NameError` ويجعل دالة `get_recent_assets_for_user`
-#    (التي يستدعيها `/newrec`) قادرة على العمل.
+# Version: v3.0.2-R2 (Validation Hotfix)
+# ✅ THE FIX: (Priority 2)
+#    - 1. (CRITICAL) إضافة دالة `_validate_recommendation_data` المفقودة.
+#    - 2. (LOGIC) إضافة منطق التحقق من الاتساق بين الدخول ووقف الخسارة للاتجاهين (LONG/SHORT).
+# 🎯 IMPACT: تم استعادة نظام التحقق من البيانات، مما يوقف التحويل للوضع اليدوي.
 
 from __future__ import annotations
 import logging
@@ -19,7 +16,6 @@ from sqlalchemy.orm import Session
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository
 from capitalguard.domain.entities import Recommendation as RecommendationEntity
-# ✅ R2 Hotfix: Add missing imports needed by legacy read functions
 from capitalguard.infrastructure.db.models import Recommendation, UserTrade, UserTradeStatusEnum, RecommendationStatusEnum
 from capitalguard.domain.entities import UserType as UserTypeEntity, RecommendationStatus as RecommendationStatusEntity
 from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
@@ -49,15 +45,57 @@ def _parse_int_user_id(user_id: Any) -> Optional[int]:
     except (TypeError, ValueError, AttributeError):
         return None
         
-# --- (All other helpers like _to_decimal, _pct, _validate moved to services) ---
+# ✅ FIX 2: Added the missing validation function
+def _validate_recommendation_data(data: Dict[str, Any], is_rec: bool = True) -> Dict[str, str]:
+    """
+    Validates core recommendation data integrity (Entry vs SL consistency).
+    Returns a dictionary of errors. Empty dict means success.
+    """
+    errors: Dict[str, str] = {}
+    
+    # 1. Check required fields
+    required_fields = ['asset', 'side', 'entry', 'stop_loss']
+    for field in required_fields:
+        if data.get(field) is None:
+            errors[field] = f"Missing required field: {field}"
+            
+    # 2. Check for logical consistency (Entry vs SL)
+    try:
+        entry = data.get('entry')
+        sl = data.get('stop_loss')
+        side = data.get('side')
+        
+        if entry is None or sl is None or side is None:
+            # Errors already reported in step 1 if fields are missing
+            return errors
+        
+        if not isinstance(entry, Decimal) or not isinstance(sl, Decimal):
+             entry = Decimal(str(entry))
+             sl = Decimal(str(sl))
+             
+        if entry <= Decimal('0') or sl <= Decimal('0'):
+            errors['price_value'] = "Entry and Stop Loss prices must be positive."
+            return errors
+
+        if side.upper() == 'LONG':
+            # For LONG, Entry must be above SL (Entry > SL)
+            if entry <= sl:
+                errors['sl_consistency'] = "For LONG, Entry price must be higher than Stop Loss price."
+        elif side.upper() == 'SHORT':
+            # For SHORT, Entry must be below SL (Entry < SL)
+            if entry >= sl:
+                errors['sl_consistency'] = "For SHORT, Entry price must be lower than Stop Loss price."
+
+    except Exception as e:
+        errors['price_conversion'] = f"Error converting prices for validation: {e}"
+        
+    return errors
 
 
 class TradeService:
     """
     [R2 Facade]
     واجهة موحدة لخدمات التداول.
-    لا تحتوي على أي منطق أعمال؛ بل تقوم فقط بتوجيه الاستدعاءات
-    إلى الخدمات المتخصصة (CreationService و LifecycleService).
     """
     def __init__(
         self,
@@ -84,12 +122,20 @@ class TradeService:
         # Circular dependency injection
         self.alert_service: Optional["AlertService"] = None
 
+    # ✅ FIX 2: Expose the validation function as a legacy utility
+    # NOTE: The implementation is outside the class definition for cleaner Facade/Utility separation.
+    def _validate_recommendation_data(self, data: Dict[str, Any], is_rec: bool = True) -> Dict[str, str]:
+        """Proxy to the validation utility."""
+        return _validate_recommendation_data(data, is_rec)
+
     # --- CreationService Proxies ---
 
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         """[Proxy] توجيه إنشاء التوصية إلى CreationService."""
         logger.debug(f"TradeService (Facade) proxying 'create_and_publish' to CreationService for user {user_id}")
         return await self.creation_service.create_and_publish_recommendation_async(user_id, db_session, **kwargs)
+    # (Rest of the proxies remain unchanged)
+    # ...
 
     async def background_publish_and_index(self, rec_id: int, user_db_id: int, target_channel_ids: Optional[Set[int]] = None):
         """[Proxy] توجيه النشر الخلفي إلى CreationService."""
@@ -195,7 +241,6 @@ class TradeService:
         trader_trades = self.repo.get_open_trades_for_trader(db_session, user.id)
         for trade in trader_trades:
             # Convert UserTrade ORM to a RecommendationEntity-like object
-            # ✅ CRITICAL: This is the function that is missing in repository.py
             entity = self.repo._to_entity_from_user_trade(trade)
             if entity:
                 all_items.append(entity)
@@ -232,7 +277,6 @@ class TradeService:
         elif position_type == 'trade':
             trade_orm = self.repo.get_user_trade_by_id(db_session, position_id)
             if trade_orm and trade_orm.user_id == user.id:
-                # ✅ CRITICAL: This is the function that is missing in repository.py
                 return self.repo._to_entity_from_user_trade(trade_orm)
         
         return None
@@ -240,7 +284,6 @@ class TradeService:
     def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 5) -> List[str]:
         """
         Fetches most recent assets used by this user (Analyst Recs or User Trades).
-        ✅ R2 Hotfix: Added Recommendation import to fix NameError.
         """
         logger.debug(f"TradeService (Facade) executing legacy 'get_recent_assets_for_user'")
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_telegram_id))
