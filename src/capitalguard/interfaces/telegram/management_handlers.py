@@ -1,22 +1,15 @@
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v34.1.1-R2 (Hotfix)
-# ✅ THE FIX: (R2 Architecture - Hotfix)
-#    - 1. (CRITICAL) إصلاح `TypeError: ... got an unexpected keyword argument 'activated_items'`.
-#    - 2. (REMOVED) إزالة الاستدعاء الخاطئ لـ `build_open_recs_keyboard` من `management_entry_point_handler`.
-#    - 3. (NEW) تنفيذ "التصميم 1: المحور المدمج" (Integrated Hub) بالكامل.
-#    - 4. (NEW) استدعاء `PerformanceService` لجلب "بطاقة الإحصائيات".
-#    - 5. (NEW) إضافة `_render_list_view` و `_render_channels_list` للتعامل مع
-#       "التصميم 2" (البطاقات) و "التصميم 5" (القنوات).
-#    - 6. (HOTFIX) إضافة `import asyncio` و `import re` والإصلاحات الأخرى
-#       التي تم اكتشافها في `v34.1.1-R2`.
-# 🎯 IMPACT: هذا الملف الآن متوافق تمامًا مع `keyboards.py` (v25.0.0)
-#    ويحل الـ `TypeError` و `NameError` و `ValueError`.
+# Version: v34.1.2-R2 (PTB UI Hotfix)
+# ✅ THE FIX: (Priority 1)
+#    - 1. (CRITICAL) إصلاح 'InlineKeyboardMarkup' object has no attribute 'keyboard'
+#       عبر تحديث الوصول إلى .keyboard_rows = keyboard_markup.inline_keyboard.
+# 🎯 IMPACT: واجهات المستخدم الخاصة بلوحة التحكم (My Portfolio) تعمل الآن بشكل سليم.
 
 import logging
 import time
 import math 
-import asyncio # ✅ [FIX 6] Added missing import
-import re # ✅ [FIX 6] Added for markdown escaping
+import asyncio 
+import re 
 from decimal import Decimal
 from typing import Optional, Dict, Any, Union, List, Tuple
 
@@ -39,15 +32,13 @@ from telegram.ext import (
     ConversationHandler,
     CommandHandler,
 )
-# ✅ R2: Import helpers from keyboards
-from capitalguard.interfaces.telegram.keyboards import _format_price, _pct, _truncate_text, StatusDeterminer
 # Infrastructure & Application specific imports
 from capitalguard.infrastructure.db.uow import uow_transaction
 from capitalguard.interfaces.telegram.helpers import get_service, parse_cq_parts, _get_attr
 from capitalguard.interfaces.telegram.keyboards import (
     analyst_control_panel_keyboard,
-    build_open_recs_keyboard, # ✅ R2: The new card builder
-    build_channels_list_keyboard, # ✅ R2: New channel list builder
+    build_open_recs_keyboard, 
+    build_channels_list_keyboard, 
     build_user_trade_control_keyboard,
     build_close_options_keyboard,
     build_trade_data_edit_keyboard,
@@ -55,15 +46,13 @@ from capitalguard.interfaces.telegram.keyboards import (
     build_partial_close_keyboard,
     CallbackAction,
     CallbackNamespace,
-    build_confirmation_keyboard,
     CallbackBuilder,
     ButtonTexts,
-    NavigationBuilder,
-    StatusIcons # ✅ [FIX 6] Import StatusIcons
+    StatusIcons 
 )
 from capitalguard.interfaces.telegram.ui_texts import build_trade_card_text
 from capitalguard.interfaces.telegram.auth import require_active_user, require_analyst_user, get_db_user
-# ✅ R2: Import new services
+# Services
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.lifecycle_service import LifecycleService
@@ -75,22 +64,13 @@ from capitalguard.infrastructure.db.repository import RecommendationRepository
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors")
 
-# (All stateful logic is now in conversation_handlers.py)
-
 # --- Helper: Safe Message Editing & Markdown Escaping ---
-
 def _safe_escape_markdown(text: str) -> str:
-    """
-    ✅ [FIX 6]
-    Escapes text for Telegram's MarkdownV2 parse mode.
-    """
+    """Escapes text for Telegram's MarkdownV2 parse mode."""
     if not isinstance(text, str):
         text = str(text)
     
-    # قائمة الأحرف الخاصة بـ MarkdownV2
     escape_chars = r'\_*[]()~`>#+-=|{}.!'
-    
-    # الهروب من الأحرف
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 async def safe_edit_message(
@@ -182,10 +162,12 @@ async def _send_or_edit_position_panel(
             if is_trade:
                 status_val = _get_attr(position, 'orm_status_value', UserTradeStatusEnum.CLOSED.value)
                 keyboard_markup = build_user_trade_control_keyboard(position_id, orm_status_value=status_val)
-                keyboard_rows = keyboard_markup.keyboard if keyboard_markup else []
+                # ✅ FIX 1: Use .inline_keyboard
+                keyboard_rows = keyboard_markup.inline_keyboard if keyboard_markup else []
             else:
                 keyboard_markup = analyst_control_panel_keyboard(position)
-                keyboard_rows = keyboard_markup.keyboard
+                # ✅ FIX 1: Use .inline_keyboard
+                keyboard_rows = keyboard_markup.inline_keyboard
             keyboard_rows.append([back_to_list_button])
             
         else:
@@ -193,13 +175,13 @@ async def _send_or_edit_position_panel(
                 status_val = _get_attr(position, 'orm_status_value', UserTradeStatusEnum.CLOSED.value)
                 if status_val in (UserTradeStatusEnum.PENDING_ACTIVATION.value, UserTradeStatusEnum.WATCHLIST.value):
                     keyboard_markup = build_user_trade_control_keyboard(position_id, orm_status_value=status_val)
-                    keyboard_rows = keyboard_markup.keyboard if keyboard_markup else []
+                    # ✅ FIX 1: Use .inline_keyboard
+                    keyboard_rows = keyboard_markup.inline_keyboard if keyboard_markup else []
                     keyboard_rows.append([back_to_list_button])
             
             if keyboard_rows is None:
                 keyboard_rows = [[back_to_list_button]]
 
-        # ✅ [FIX 6] Apply markdown escape
         safe_text = _safe_escape_markdown(text)
         await safe_edit_message(context.bot, chat_id, message_id, text=safe_text, reply_markup=InlineKeyboardMarkup(keyboard_rows), parse_mode=ParseMode.MARKDOWN_V2)
 
@@ -216,7 +198,6 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
     [R2 - REFACTORED]
     Handles /myportfolio.
     Shows the new "Integrated Hub" (التصميم 1).
-    ✅ [FIX 1] This function no longer calls build_open_recs_keyboard directly.
     """
     try:
         # ✅ R2: Get the new PerformanceService
@@ -272,7 +253,6 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
 
         keyboard.append([InlineKeyboardButton("🔄 تحديث البيانات", callback_data=CallbackBuilder.create(ns, "hub"))])
 
-        # ✅ [FIX 6] Apply markdown escape
         safe_text = _safe_escape_markdown(main_message)
 
         await update.message.reply_markdown_v2(safe_text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -340,7 +320,6 @@ async def management_callback_hub_handler(update: Update, context: ContextTypes.
                 keyboard.append([InlineKeyboardButton("📈 لوحة المحلل*", callback_data=CallbackBuilder.create(ns, "show_list", "analyst", 1))])
             keyboard.append([InlineKeyboardButton("🔄 تحديث البيانات", callback_data=CallbackBuilder.create(ns, "hub"))])
 
-            # ✅ [FIX 6] Apply markdown escape
             safe_text = _safe_escape_markdown(main_message)
             
             await safe_edit_message(
@@ -380,7 +359,6 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     """
     [R2 - REFACTORED]
     Helper function to render the "Dynamic List" view (Design 2, 4, 6).
-    ✅ [FIX 1] This function correctly calls build_open_recs_keyboard.
     """
     query = update.callback_query
     price_service = get_service(context, "price_service", PriceService)
@@ -409,8 +387,8 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     elif watched_channel_id == channel_id_filter:
                         filtered_items.append(item)
                         RepoClass = context.bot_data["services"]["recommendation_repo_class"]
-                        repo = RepoClass()
-                        channel_obj = db_session.get(repo.get_watched_channel_model(), channel_id_filter)
+                        repo = RepoClass(db_session)
+                        channel_obj = repo.get_watched_channel_model().get(db_session.bind, channel_id_filter)
                         channel_title_filter = channel_obj.channel_title if channel_obj else f"Channel ID {channel_id_filter}"
                 else:
                     filtered_items.append(item)
@@ -431,8 +409,8 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     elif watched_channel_id == channel_id_filter:
                         filtered_items.append(item)
                         RepoClass = context.bot_data["services"]["recommendation_repo_class"]
-                        repo = RepoClass()
-                        channel_obj = db_session.get(repo.get_watched_channel_model(), channel_id_filter)
+                        repo = RepoClass(db_session)
+                        channel_obj = repo.get_watched_channel_model().get(db_session.bind, channel_id_filter)
                         channel_title_filter = channel_obj.channel_title if channel_obj else f"Channel ID {channel_id_filter}"
                 else:
                     filtered_items.append(item)
@@ -440,8 +418,7 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if channel_title_filter:
         header_text = f"📡 *{_safe_escape_markdown(channel_title_filter)}* | {header_text}"
 
-    # 2. Build Keyboard (using the correct signature)
-    # ✅ [FIX 1] The call now matches the definition:
+    # 2. Build Keyboard 
     keyboard = await build_open_recs_keyboard(
         items_list=filtered_items,
         current_page=page,
@@ -463,9 +440,8 @@ async def _render_channels_list(update: Update, context: ContextTypes.DEFAULT_TY
     """
     query = update.callback_query
     
-    # ✅ [FIX 6] Get RepoClass from context
     RepoClass = context.bot_data["services"]["recommendation_repo_class"]
-    repo = RepoClass() # Instantiate (no session needed for model)
+    repo = RepoClass(db_session)
     
     channels_summary = repo.get_watched_channels_summary(db_session, db_user.id)
     
@@ -567,7 +543,7 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             text = "✏️ *Edit Recommendation Data*\nSelect field to edit:"
             if position.status == RecommendationStatus.ACTIVE or position.status == RecommendationStatus.PENDING:
                 keyboard_markup = build_trade_data_edit_keyboard(rec_id)
-                keyboard_rows = keyboard_markup.keyboard
+                keyboard_rows = keyboard_markup.inline_keyboard
                 keyboard_rows.append([back_button])
             else:
                 keyboard_rows = [[back_button]]
@@ -577,7 +553,7 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             text = "❌ *Close Position Fully*\nSelect closing method:"
             if can_modify:
                 keyboard_markup = build_close_options_keyboard(rec_id)
-                keyboard_rows = keyboard_markup.keyboard
+                keyboard_rows = keyboard_markup.inline_keyboard
                 keyboard_rows.append([back_button])
             else:
                 keyboard_rows = [[back_button]]
@@ -587,7 +563,7 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             text = "💰 *Partial Close Position*\nSelect percentage:"
             if can_modify:
                 keyboard_markup = build_partial_close_keyboard(rec_id)
-                keyboard_rows = keyboard_markup.keyboard
+                keyboard_rows = keyboard_markup.inline_keyboard
                 keyboard_rows.append([back_button])
             else:
                 keyboard_rows = [[back_button]]
@@ -598,7 +574,7 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             text = "📈 *Manage Exit & Risk*\nSelect action:"
             if can_modify:
                 keyboard_markup = build_exit_management_keyboard(position)
-                keyboard_rows = keyboard_markup.keyboard
+                keyboard_rows = keyboard_markup.inline_keyboard
                 keyboard_rows.append([back_button])
             else:
                 keyboard_rows = [[back_button]]
