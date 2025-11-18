@@ -40,7 +40,7 @@ from capitalguard.interfaces.telegram.keyboards import (
     build_editable_review_card, ButtonTexts
 )
 from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets_list
-from capitalguard.interfaces.telegram.management_handlers import (
+#from capitalguard.interfaces.telegram.management_handlers import (
     handle_management_timeout, update_management_activity, MANAGEMENT_TIMEOUT
 )
 from capitalguard.infrastructure.db.models import ParsingAttempt, ParsingTemplate, User
