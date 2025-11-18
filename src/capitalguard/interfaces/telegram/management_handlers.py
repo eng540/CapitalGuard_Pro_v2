@@ -1,11 +1,10 @@
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v34.1.3-R2 (Critical Management Fixes)
-# ✅ THE FIX: (Priority 1 & 2)
-#    - 1. (CRITICAL) حل AttributeError: 'tuple' object has no attribute 'append' 
-#       عبر تهيئة keyboard_rows كقائمة فارغة [] دائماً.
-#    - 2. (CRITICAL) حل TypeError: RecommendationRepository() takes no arguments
-#       عبر تمرير db_session عند تهيئة Repository في _render_list_view و _render_channels_list.
-# 🎯 IMPACT: استقرار واجهة إدارة المحفظة والقنوات.
+# Version: v34.1.4-R2 (Analyst Panel Restoration)
+# ✅ THE FIX: (Critical Hotfix)
+#    - 1. (LOGIC) تعديل _render_list_view لإظهار توصيات المحلل (Recs) وعدم تصفيتها.
+#    - 2. (DISPLAY) دمج منطق ACTIVE/ACTIVATED و PENDING/WATCHLIST.
+#    - 3. (ROBUSTNESS) ضمان تهيئة القوائم والتعامل الآمن مع الأنواع المختلفة.
+# 🎯 IMPACT: استعادة لوحة تحكم المحلل وظهور التوصيات في القوائم.
 
 import logging
 import time
@@ -151,7 +150,6 @@ async def _send_or_edit_position_panel(
             setattr(position, "live_price", live_price)
 
         text = build_trade_card_text(position)
-        # ✅ FIX 1: Initialize as a mutable list of lists
         keyboard_rows = []
         
         is_trade = getattr(position, "is_user_trade", False)
@@ -163,16 +161,19 @@ async def _send_or_edit_position_panel(
             callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "show_list", source_list, source_page)
         )
 
-        if status_value == RecommendationStatus.ACTIVE.value:
+        # Logic to determine which panel to show
+        # Analyst Recs: ACTIVE
+        # User Trades: ACTIVATED, ACTIVE (if mapped)
+        if status_value in [RecommendationStatus.ACTIVE.value, UserTradeStatusEnum.ACTIVATED.value]:
             if is_trade:
                 status_val = _get_attr(position, 'orm_status_value', UserTradeStatusEnum.CLOSED.value)
                 keyboard_markup = build_user_trade_control_keyboard(position_id, orm_status_value=status_val)
                 keyboard_rows = keyboard_markup.inline_keyboard if keyboard_markup else []
             else:
+                # ✅ Analyst Panel Logic restored
                 keyboard_markup = analyst_control_panel_keyboard(position)
                 keyboard_rows = keyboard_markup.inline_keyboard
             
-            # Now safe to append because keyboard_rows is guaranteed to be a list
             keyboard_rows.append([back_to_list_button])
             
         else:
@@ -180,11 +181,9 @@ async def _send_or_edit_position_panel(
                 status_val = _get_attr(position, 'orm_status_value', UserTradeStatusEnum.CLOSED.value)
                 if status_val in (UserTradeStatusEnum.PENDING_ACTIVATION.value, UserTradeStatusEnum.WATCHLIST.value):
                     keyboard_markup = build_user_trade_control_keyboard(position_id, orm_status_value=status_val)
-                    # If keyboard_markup is None, we need to ensure keyboard_rows remains a list for subsequent append
                     keyboard_rows = keyboard_markup.inline_keyboard if keyboard_markup else []
                     keyboard_rows.append([back_to_list_button])
             
-            # Fallback for closed/unknown status where no other rows were added
             if not keyboard_rows:
                 keyboard_rows = [[back_to_list_button]]
 
@@ -196,18 +195,18 @@ async def _send_or_edit_position_panel(
         await safe_edit_message(context.bot, chat_id, message_id, text=f"❌ Error loading position data: {str(e)}", reply_markup=None)
 
 
-# --- Entry Point (REFACTORED for R2 Hub) ---
-# ... (management_entry_point_handler is unchanged, as are hub handler, etc.)
+# --- Entry Point ---
 @uow_transaction
 @require_active_user
 async def management_entry_point_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    # ... (code omitted for brevity, no changes needed here)
+    """
+    [R2 - REFACTORED]
+    Handles /myportfolio.
+    """
     try:
-        # 1. Fetch Performance Report (from Activated only)
         performance_service = get_service(context, "performance_service", PerformanceService)
         report = performance_service.get_trader_performance_report(db_session, db_user.id)
         
-        # 2. Fetch Counts
         trade_service = get_service(context, "trade_service", TradeService)
         items = trade_service.get_open_positions_for_user(db_session, str(db_user.telegram_user_id))
         
@@ -217,13 +216,15 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
         for item in items:
             is_trade = getattr(item, 'is_user_trade', False)
             status_value = _get_attr(item, 'orm_status_value') if is_trade else _get_attr(item, 'status')
+            
+            # Safe conversion to string for comparison
+            s_val = status_value.value if hasattr(status_value, 'value') else str(status_value)
 
-            if status_value in (UserTradeStatusEnum.ACTIVATED.value, RecommendationStatusEnum.ACTIVE.value):
+            if s_val in (UserTradeStatusEnum.ACTIVATED.value, RecommendationStatusEnum.ACTIVE.value):
                 activated_count += 1
-            elif status_value in (UserTradeStatusEnum.WATCHLIST.value, UserTradeStatusEnum.PENDING_ACTIVATION.value, RecommendationStatusEnum.PENDING.value):
+            elif s_val in (UserTradeStatusEnum.WATCHLIST.value, UserTradeStatusEnum.PENDING_ACTIVATION.value, RecommendationStatusEnum.PENDING.value):
                 watchlist_count += 1
 
-        # 3. Build the Hub Message (Design 1)
         header = "📊 *CapitalGuard — My Portfolio*\n" \
                  "منطقة التحكم الذكية لجميع صفقاتك."
         
@@ -240,7 +241,6 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
         
         main_message = f"{header}\n\n{stats_card}"
         
-        # 4. Build Keyboard (Design 1)
         ns = CallbackNamespace.MGMT
         keyboard = [
             [InlineKeyboardButton(f"🚀 الصفقات المفعّلة ({activated_count})", callback_data=CallbackBuilder.create(ns, "show_list", "activated", 1))],
@@ -266,7 +266,6 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
 @uow_transaction
 @require_active_user
 async def management_callback_hub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    # ... (code omitted for brevity)
     query = update.callback_query
     await query.answer()
     
@@ -276,56 +275,8 @@ async def management_callback_hub_handler(update: Update, context: ContextTypes.
     
     try:
         if action == "hub":
-            # --- User clicked "🔄 تحديث البيانات" or "🏠 الرئيسية" ---
-            
-            performance_service = get_service(context, "performance_service", PerformanceService)
-            report = performance_service.get_trader_performance_report(db_session, db_user.id)
-            
-            trade_service = get_service(context, "trade_service", TradeService)
-            items = trade_service.get_open_positions_for_user(db_session, str(db_user.telegram_user_id))
-            activated_count = 0
-            watchlist_count = 0
-            for item in items:
-                is_trade = getattr(item, 'is_user_trade', False)
-                status_value = _get_attr(item, 'orm_status_value') if is_trade else _get_attr(item, 'status')
-                if status_value in (UserTradeStatusEnum.ACTIVATED.value, RecommendationStatusEnum.ACTIVE.value):
-                    activated_count += 1
-                elif status_value in (UserTradeStatusEnum.WATCHLIST.value, UserTradeStatusEnum.PENDING_ACTIVATION.value, RecommendationStatusEnum.PENDING.value):
-                    watchlist_count += 1
-
-            header = "📊 *CapitalGuard — My Portfolio*\n" \
-                     "منطقة التحكم الذكية لجميع صفقاتك."
-            stats_card = (
-                "━━━━━━━━━━━━━━━━━━\n"
-                "📈 *الأداء العام (Activated)*\n"
-                f" • الصفقات المفعّلة: `{report.get('total_trades', '0')}`\n"
-                f" • صافي PnL: `{report.get('total_pnl_pct', 'N/A')}`\n"
-                f" • نسبة النجاح: `{report.get('win_rate_pct', 'N/A')}`\n"
-                f" • معامل الربح: `{report.get('profit_factor', 'N/A')}`\n"
-                "━━━━━━━━━━━━━━━━━━\n\n"
-                "*طرق العرض:*"
-            )
-            main_message = f"{header}\n\n{stats_card}"
-            
-            ns = CallbackNamespace.MGMT
-            keyboard = [
-                [InlineKeyboardButton(f"🚀 الصفقات المفعّلة ({activated_count})", callback_data=CallbackBuilder.create(ns, "show_list", "activated", 1))],
-                [InlineKeyboardButton(f"👁️ صفقات المتابعة ({watchlist_count})", callback_data=CallbackBuilder.create(ns, "show_list", "watchlist", 1))],
-                [InlineKeyboardButton("📡 حسب القناة", callback_data=CallbackBuilder.create(ns, "show_list", "channels", 1))],
-            ]
-            user_type_entity = UserTypeEntity(_get_attr(db_user, 'user_type', UserTypeEntity.TRADER.value))
-            if user_type_entity == UserTypeEntity.ANALYST:
-                keyboard.append([InlineKeyboardButton("📈 لوحة المحلل*", callback_data=CallbackBuilder.create(ns, "show_list", "analyst", 1))])
-            keyboard.append([InlineKeyboardButton("🔄 تحديث البيانات", callback_data=CallbackBuilder.create(ns, "hub"))])
-
-            safe_text = _safe_escape_markdown(main_message)
-            
-            await safe_edit_message(
-                context.bot, query.message.chat_id, query.message.message_id,
-                text=safe_text, 
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
+            # Re-use entry point logic (simplified for this snippet, ideally shared function)
+            await management_entry_point_handler(update, context, db_session=db_session, db_user=db_user)
             return
 
         elif action == "show_list":
@@ -351,12 +302,12 @@ async def management_callback_hub_handler(update: Update, context: ContextTypes.
 
     except Exception as e:
         loge.error(f"Error in hub navigation handler: {e}", exc_info=True)
-        await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Error loading view.")
+        await safe_edit_message(context.bot, query.message.chat.id, query.message.message_id, text="❌ Error loading view.")
 
 async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, list_type: str, page: int, channel_id_filter: Optional[Union[int, str]] = None):
     """
     [R2 - REFACTORED]
-    Helper function to render the "Dynamic List" view (Design 2, 4, 6).
+    Helper function to render the "Dynamic List" view.
     """
     query = update.callback_query
     price_service = get_service(context, "price_service", PriceService)
@@ -368,15 +319,28 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     filtered_items = []
     channel_title_filter = None
     
-    # 1. Filter items based on list_type AND channel_id_filter
+    # ✅ FIX: Logic to include BOTH User Trades AND Analyst Recs
+    
     if list_type == "activated":
-        header_text = "🚀 *Activated Trades*"
+        header_text = "🚀 *Activated Trades & Signals*"
         for item in items:
             is_trade = getattr(item, 'is_user_trade', False)
-            if not is_trade: continue
             
-            status_value = _get_attr(item, 'orm_status_value')
-            if status_value == UserTradeStatusEnum.ACTIVATED.value:
+            # Determine if item is "Active"
+            is_active = False
+            if is_trade:
+                status_val = _get_attr(item, 'orm_status_value')
+                if status_val == UserTradeStatusEnum.ACTIVATED.value:
+                    is_active = True
+            else:
+                # Analyst Rec
+                status_val = _get_attr(item, 'status')
+                s_val = status_val.value if hasattr(status_val, 'value') else str(status_val)
+                if s_val == RecommendationStatusEnum.ACTIVE.value:
+                    is_active = True
+            
+            if is_active:
+                # Apply Channel Filter if present
                 if channel_id_filter:
                     watched_channel_id = _get_attr(item, 'watched_channel_id')
                     if channel_id_filter == "direct" and watched_channel_id is None:
@@ -385,7 +349,6 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     elif watched_channel_id == channel_id_filter:
                         filtered_items.append(item)
                         RepoClass = context.bot_data["services"]["recommendation_repo_class"]
-                        # ✅ FIX 2: Instantiate Repository with db_session
                         repo = RepoClass(db_session) 
                         channel_obj = repo.get_watched_channel_model().get(db_session.bind, channel_id_filter)
                         channel_title_filter = channel_obj.channel_title if channel_obj else f"Channel ID {channel_id_filter}"
@@ -393,13 +356,25 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     filtered_items.append(item)
                 
     elif list_type == "watchlist":
-        header_text = "👁️ *Watchlist Trades*"
+        header_text = "👁️ *Watchlist & Pending Signals*"
         for item in items:
             is_trade = getattr(item, 'is_user_trade', False)
-            if not is_trade: continue
+            
+            # Determine if item is "Watchlist/Pending"
+            is_watchlist = False
+            if is_trade:
+                status_val = _get_attr(item, 'orm_status_value')
+                if status_val in (UserTradeStatusEnum.WATCHLIST.value, UserTradeStatusEnum.PENDING_ACTIVATION.value):
+                    is_watchlist = True
+            else:
+                # Analyst Rec
+                status_val = _get_attr(item, 'status')
+                s_val = status_val.value if hasattr(status_val, 'value') else str(status_val)
+                if s_val == RecommendationStatusEnum.PENDING.value:
+                    is_watchlist = True
 
-            status_value = _get_attr(item, 'orm_status_value')
-            if status_value in (UserTradeStatusEnum.WATCHLIST.value, UserTradeStatusEnum.PENDING_ACTIVATION.value):
+            if is_watchlist:
+                # Apply Channel Filter
                 if channel_id_filter:
                     watched_channel_id = _get_attr(item, 'watched_channel_id')
                     if channel_id_filter == "direct" and watched_channel_id is None:
@@ -408,7 +383,6 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     elif watched_channel_id == channel_id_filter:
                         filtered_items.append(item)
                         RepoClass = context.bot_data["services"]["recommendation_repo_class"]
-                        # ✅ FIX 2: Instantiate Repository with db_session
                         repo = RepoClass(db_session)
                         channel_obj = repo.get_watched_channel_model().get(db_session.bind, channel_id_filter)
                         channel_title_filter = channel_obj.channel_title if channel_obj else f"Channel ID {channel_id_filter}"
@@ -435,12 +409,11 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 async def _render_channels_list(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, page: int):
     """
-    Renders the list of watched channels (Design 5).
+    Renders the list of watched channels.
     """
     query = update.callback_query
     
     RepoClass = context.bot_data["services"]["recommendation_repo_class"]
-    # ✅ FIX 2: Instantiate Repository with db_session
     repo = RepoClass(db_session) 
     
     channels_summary = repo.get_watched_channels_summary(db_session, db_user.id)
@@ -463,7 +436,7 @@ async def _render_analyst_dashboard(update: Update, context: ContextTypes.DEFAUL
     Renders the analyst dashboard (Design 7).
     """
     query = update.callback_query
-    stub_text = "📈 *لوحة المحلل*\n\n(هذه الميزة قيد التطوير)"
+    stub_text = "📈 *لوحة المحلل*\n\n(هذه الميزة قيد التطوير - سيتم عرض إحصائيات التوصيات هنا)"
     safe_text_header = _safe_escape_markdown(stub_text)
     await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id,
                             text=safe_text_header,
@@ -477,7 +450,7 @@ async def _render_analyst_dashboard(update: Update, context: ContextTypes.DEFAUL
 @require_active_user
 async def show_position_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     """
-    Shows the detailed control panel for a selected position (Design 3).
+    Shows the detailed control panel for a selected position.
     """
     query = update.callback_query
     await query.answer()
@@ -527,7 +500,6 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Recommendation not found or closed.", reply_markup=None)
         return
 
-    # ✅ FIX 1: Initialize as a mutable list of lists
     keyboard_rows = [] 
     text = build_trade_card_text(position) 
 
@@ -582,14 +554,13 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if keyboard_rows:
         safe_text = _safe_escape_markdown(text)
-        await safe_edit_message(context.bot, query.message.chat.id, query.message.message_id, text=safe_text, reply_markup=InlineKeyboardMarkup(keyboard_rows), parse_mode=ParseMode.MARKDOWN_V2)
+        await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text=safe_text, reply_markup=InlineKeyboardMarkup(keyboard_rows), parse_mode=ParseMode.MARKDOWN_V2)
     else:
         log.warning(f"No valid submenu keyboard for action '{action}' on rec #{rec_id} with status {position.status}")
         await _send_or_edit_position_panel(update, context, db_session, "rec", rec_id)
 
 
 # --- Immediate Action Handlers (Stateless) ---
-# ... (immediate_action_handler and partial_close_fixed_handler are omitted for brevity, no changes needed)
 @uow_transaction
 @require_active_user
 async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
@@ -666,7 +637,7 @@ async def partial_close_fixed_handler(update: Update, context: ContextTypes.DEFA
     query = update.callback_query
     await query.answer("Processing...")
     
-    parsed_data = CallbackBuilder.parse(query.data) # rec:pt:<rec_id>:<percentage>
+    parsed_data = CallbackBuilder.parse(query.data)
     params = parsed_data.get("params", [])
     rec_id, close_percent_str = None, None
     item_type = "rec"
@@ -745,6 +716,3 @@ def register_management_handlers(app: Application):
         CallbackQueryHandler(partial_close_fixed_handler, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:{CallbackAction.PARTIAL.value}:\d+:(?:25|50)$"),
         group=1,
     )
-    
-    # (Note: All Conversation Handlers are assumed to be registered in conversation_handlers.py,
-    # ensuring the stateless handlers here do not conflict with ConversationHandler logic.)
