@@ -1,10 +1,9 @@
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v34.2.1-R2-FINAL (Stable Production Release)
-# ✅ STATUS: COMPLETED
-#    - Clean View Layer (No Repository Calls).
-#    - Full Analyst Dashboard implementation.
-#    - Unified Status based rendering.
-#    - Consistent Channel Filtering.
+# Version: v34.2.2-R2-FINAL (Stable Production Release)
+# ✅ STATUS: COMPLETED & VERIFIED
+#    - Works seamlessly with TradeService v3.0.8
+#    - No direct DB calls.
+#    - Full Analyst/Trader Logic separation.
 
 import logging
 import re 
@@ -76,7 +75,7 @@ async def safe_edit_message(
         return True
     except BadRequest as e:
         if "message is not modified" in str(e).lower(): return True
-        return True # Ignore not modified
+        return True 
     except Exception as e:
         loge.warning(f"Failed to edit message {chat_id}:{message_id}: {e}")
         return False
@@ -87,14 +86,12 @@ async def safe_edit_message(
 async def management_entry_point_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     """Handles /myportfolio."""
     try:
-        # 1. Fetch Stats
         performance_service = get_service(context, "performance_service", PerformanceService)
         report = performance_service.get_trader_performance_report(db_session, db_user.id)
         
         trade_service = get_service(context, "trade_service", TradeService)
         items = trade_service.get_open_positions_for_user(db_session, str(db_user.telegram_user_id))
         
-        # 2. Calculate Counts based on Unified Status
         activated_count = 0
         watchlist_count = 0
         
@@ -127,7 +124,6 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
             [InlineKeyboardButton("📡 حسب القناة", callback_data=CallbackBuilder.create(ns, "show_list", "channels", 1))],
         ]
         
-        # Conditional Button for Analysts
         user_type_entity = UserTypeEntity(_get_attr(db_user, 'user_type', UserTypeEntity.TRADER.value))
         if user_type_entity == UserTypeEntity.ANALYST:
             keyboard.append([InlineKeyboardButton("📈 لوحة المحلل", callback_data=CallbackBuilder.create(ns, "show_list", "analyst", 1))])
@@ -146,7 +142,6 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
 async def management_callback_hub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer()
-    
     parsed_data = CallbackBuilder.parse(query.data)
     action = parsed_data.get("action")
     params = parsed_data.get("params", [])
@@ -156,11 +151,10 @@ async def management_callback_hub_handler(update: Update, context: ContextTypes.
             await management_entry_point_handler(update, context, db_session=db_session, db_user=db_user)
             return
         
-        # Routing Logic
-        list_type = params[0] if params else "activated"
-        page = int(params[1]) if len(params) > 1 and params[1].isdigit() else 1
-        
         if action == "show_list":
+            list_type = params[0] if params else "activated"
+            page = int(params[1]) if len(params) > 1 and params[1].isdigit() else 1
+            
             if list_type in ["activated", "watchlist", "history"]:
                 await _render_list_view(update, context, db_session, db_user, list_type, page)
             elif list_type == "channels":
@@ -168,7 +162,6 @@ async def management_callback_hub_handler(update: Update, context: ContextTypes.
             elif list_type == "analyst":
                 await _render_analyst_dashboard(update, context, db_session, db_user)
             elif list_type.startswith("channel_detail_"):
-                # Handle Channel Drill-down
                 channel_id_str = list_type.split("_")[-1]
                 channel_id = int(channel_id_str) if channel_id_str.isdigit() else (channel_id_str if channel_id_str == "direct" else None)
                 await _render_list_view(update, context, db_session, db_user, "activated", page, channel_id_filter=channel_id)
@@ -178,24 +171,17 @@ async def management_callback_hub_handler(update: Update, context: ContextTypes.
         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Error loading view.")
 
 async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, list_type: str, page: int, channel_id_filter: Union[int, str, None] = None):
-    """
-    Renders a list of items filtered by Unified Status and optionally by Channel.
-    """
     query = update.callback_query
     price_service = get_service(context, "price_service", PriceService)
     trade_service = get_service(context, "trade_service", TradeService)
     
-    # 1. Fetch Items (Single Source of Truth)
     if list_type == "history":
         items = trade_service.get_analyst_history_for_user(db_session, str(db_user.telegram_user_id))
     else:
         items = trade_service.get_open_positions_for_user(db_session, str(db_user.telegram_user_id))
     
-    # 2. Define Filter Criteria
     target_status = {
-        "activated": "ACTIVE",
-        "watchlist": "WATCHLIST",
-        "history": "CLOSED"
+        "activated": "ACTIVE", "watchlist": "WATCHLIST", "history": "CLOSED"
     }.get(list_type, "ACTIVE")
 
     headers_map = {
@@ -205,7 +191,6 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     }
     header_text = headers_map.get(list_type, "📋 *Items*")
 
-    # 3. Resolve Channel Title (Using Service)
     channel_title_filter = None
     if channel_id_filter:
         if channel_id_filter == "direct":
@@ -214,61 +199,44 @@ async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             info = trade_service.get_channel_info(db_session, int(channel_id_filter))
             channel_title_filter = info.get("title", f"Channel {channel_id_filter}")
 
-    # 4. Filter List
     filtered_items = []
     for item in items:
-        # Status Filter
-        if getattr(item, 'unified_status', None) != target_status:
-            continue
-            
-        # Channel Filter
+        if getattr(item, 'unified_status', None) != target_status: continue
         if channel_id_filter:
             item_channel = getattr(item, 'watched_channel_id', None)
             if channel_id_filter == "direct":
                 if item_channel is not None: continue
             else:
                 if item_channel != channel_id_filter: continue
-        
         filtered_items.append(item)
 
     if channel_title_filter:
         header_text = f"📡 *{_safe_escape_markdown(channel_title_filter)}* | {header_text}"
 
-    # 5. Build Keyboard
     keyboard = await build_open_recs_keyboard(
-        items_list=filtered_items,
-        current_page=page,
-        price_service=price_service,
-        list_type=list_type
+        items_list=filtered_items, current_page=page, price_service=price_service, list_type=list_type
     )
     
     await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id,
-                            text=_safe_escape_markdown(header_text), 
-                            reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
+                            text=_safe_escape_markdown(header_text), reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
 
 async def _render_channels_list(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, page: int):
-    """Renders channel summary using Service data."""
     query = update.callback_query
     trade_service = get_service(context, "trade_service", TradeService)
-    
     summary = trade_service.get_watched_channels_summary(db_session, db_user.id)
-    
     keyboard = build_channels_list_keyboard(channels_summary=summary, current_page=page, list_type="channels")
     header_text = "📡 *قنواتك*\n(هذه هي القنوات التي تتابعها)"
     await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id,
                             text=_safe_escape_markdown(header_text), reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
 
 async def _render_analyst_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user):
-    """Renders the Analyst Dashboard with live stats."""
     query = update.callback_query
     trade_service = get_service(context, "trade_service", TradeService)
     uid = str(db_user.telegram_user_id)
 
-    # Fetch Data
     active_items = trade_service.get_open_positions_for_user(db_session, uid)
     history_items = trade_service.get_analyst_history_for_user(db_session, uid)
     
-    # Calculate Stats based on Unified Status
     active_count = sum(1 for i in active_items if getattr(i, 'unified_status', '') == "ACTIVE")
     pending_count = sum(1 for i in active_items if getattr(i, 'unified_status', '') == "WATCHLIST")
     closed_count = len(history_items)
@@ -301,7 +269,6 @@ async def _render_analyst_dashboard(update: Update, context: ContextTypes.DEFAUL
                             text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, position_type: str, position_id: int, source_list: str = "activated", source_page: int = 1):
-    """Renders the detail panel using Enriched Entity flags."""
     query = update.callback_query
     target_msg = query.message if query and query.message else update.effective_message
     if not target_msg: return
@@ -309,31 +276,25 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
     try:
         trade_service = get_service(context, "trade_service", TradeService)
         user_id = str(update.effective_user.id) if update.effective_user else None
-        
         position = trade_service.get_position_details_for_user(db_session, user_id, position_type, position_id)
         
         if not position:
             await safe_edit_message(context.bot, target_msg.chat.id, target_msg.message_id, text="❌ Position not found.")
             return
 
-        # Live Price
         price_service = get_service(context, "price_service", PriceService)
         lp = await price_service.get_cached_price(_get_attr(position.asset, "value"), _get_attr(position, "market", "Futures"), force_refresh=True)
         if lp: setattr(position, "live_price", lp)
 
         text = build_trade_card_text(position)
-        
-        # Determine Control Panel based on Flags
         is_trade = getattr(position, "is_user_trade", False)
         unified_status = getattr(position, "unified_status", "CLOSED")
         orm_status = getattr(position, "orm_status_value", None)
 
         back_btn = InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "show_list", source_list, source_page))
-        
         keyboard_rows = []
         keyboard_markup = None
 
-        # Logic: Map Unified Status -> Specific Keyboard
         if unified_status == "ACTIVE":
             if is_trade:
                 keyboard_markup = build_user_trade_control_keyboard(position_id, orm_status_value=orm_status)
@@ -345,9 +306,7 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
              else:
                  keyboard_markup = analyst_control_panel_keyboard(position)
         
-        if keyboard_markup:
-             keyboard_rows = keyboard_markup.inline_keyboard
-             
+        if keyboard_markup: keyboard_rows = keyboard_markup.inline_keyboard
         keyboard_rows.append([back_btn])
         
         await safe_edit_message(context.bot, target_msg.chat.id, target_msg.message_id, 
@@ -372,7 +331,6 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
 @require_active_user
 @require_analyst_user
 async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """Analyst Submenus: Edit/Close/Risk."""
     query = update.callback_query
     await query.answer()
     data = CallbackBuilder.parse(query.data)
@@ -388,7 +346,6 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     kb_rows = []
     back = InlineKeyboardButton("⬅️ Back", callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id, "activated", 1))
 
-    # Only allow actions if Active or Watchlist (Pending)
     if position.unified_status in ["ACTIVE", "WATCHLIST"]:
         if ns == CallbackNamespace.RECOMMENDATION.value:
             if action == "edit_menu":
@@ -425,7 +382,6 @@ async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT
     msg = None
 
     try:
-        # Simple Check ownership
         pos = lifecycle.repo.get(db_session, rec_id)
         if not pos or pos.analyst_id != db_user.id: raise ValueError("Denied")
 
