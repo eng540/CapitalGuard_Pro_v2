@@ -1,5 +1,5 @@
 # File: src/capitalguard/interfaces/telegram/forward_parsing_handler.py
-# Version: v6.0.2 (Fixed Validation Signature & Enhanced AI Integration)
+# Version: v6.0.3 (Fixed Validation Signature & Enhanced AI Integration)
 # ✅ THE FIX: (Critical Validation Fix & AI Service Restoration)
 #    - 1. (CRITICAL) إصلاح تعارض تواقيع دالة التحقق `_validate_recommendation_data`
 #    - 2. (RESTORED) إعادة تفعيل خدمة تحليل الصور مع AI الحقيقي
@@ -218,7 +218,7 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
                     
                     # ✅ الإصلاح: استخدام التوقيع الجديد لدالة التحقق
                     trade_service._validate_recommendation_data(
-                        trade_data=hydrated_data
+                        data=hydrated_data
                     )
                     
                 except (ValueError, TypeError) as e:
@@ -378,7 +378,7 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
                 
                 # ✅ الإصلاح: استخدام التوقيع الجديد لدالة التحقق
                 trade_service._validate_recommendation_data(
-                    trade_data=hydrated_data
+                    data=hydrated_data
                 )
                 
             except (ValueError, TypeError) as e:
@@ -562,7 +562,7 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         try:
             # ✅ الإصلاح: استخدام التوقيع الجديد لدالة التحقق
             trade_service._validate_recommendation_data(
-                trade_data=current_data
+                data=current_data
             )
         except ValueError as e:
             error_text = f"❌ **Error saving trade:** {html.escape(str(e))}"
