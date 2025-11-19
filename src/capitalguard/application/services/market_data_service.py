@@ -1,4 +1,4 @@
-# --- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 1.2.0) ---
+#--- START OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 1.2.1) ---
 # src/capitalguard/application/services/market_data_service.py
 import logging
 import asyncio
@@ -97,6 +97,8 @@ class MarketDataService:
             if self.binance_blocked:
                 log.warning("All Binance endpoints failed or are geo-blocked. Falling back to CoinGecko for symbol data.")
                 self.provider = "coingecko"
+                # ✅ THE FIX: Update environment variable so other services know
+                os.environ["MARKET_DATA_PROVIDER"] = "coingecko"
                 os.environ["ENABLE_WATCHER"] = "0"
                 await self._refresh_coingecko_cache()
         else:
@@ -110,7 +112,6 @@ class MarketDataService:
             log.warning("Symbol cache is not populated. Validation may be unreliable, allowing symbol through.")
             return True
 
-        # ✅ BUG FIX (#2): Standardize symbol format before checking.
         symbol_upper = (symbol or "").strip().upper()
         
         if symbol_upper not in self._symbols_cache:
@@ -127,4 +128,4 @@ class MarketDataService:
 
         return False
 
-# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 1.2.0) ---
+# --- END OF FINAL, HARDENED, AND PRODUCTION-READY FILE (Version 1.2.1) ---
