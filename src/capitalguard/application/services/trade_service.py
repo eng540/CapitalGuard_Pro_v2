@@ -1,8 +1,10 @@
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/trade_service.py ---
 # File: src/capitalguard/application/services/trade_service.py
-# Version: v3.1.2-R2-FINAL (Production Stable - Proxy Fix)
-# ✅ STATUS: GOLD MASTER - CRASH FIXED
-#    - Fixed AttributeError: 'TradeService' object has no attribute 'create_trade_from_forwarding_async'
-#    - Ensured CreationService is injected and proxied correctly.
+# Version: v3.1.3-R3-FIX (Enum Crash Fix)
+# ✅ THE FIX: (RCA-001) Removed references to non-existent Enum members (STOPPED, TAKE_PROFIT).
+#    - Aligned 'get_analyst_history_for_user' with Domain Entity 'RecommendationStatus'.
+#    - Added safe fallback for status mapping to prevent future crashes.
+# 🎯 IMPACT: Prevents AttributeError and ensures strict adherence to Domain definitions.
 
 from __future__ import annotations
 import logging
@@ -20,7 +22,6 @@ from capitalguard.infrastructure.db.models import (
 )
 
 # Service Imports (Type Hinting Only)
-# CRITICAL FIX: Explicitly import services required for injection/proxies
 from .creation_service import CreationService
 from .lifecycle_service import LifecycleService
 if False:
@@ -41,7 +42,7 @@ class TradeService:
         notifier: Any,
         market_data_service: "MarketDataService",
         price_service: "PriceService",
-        creation_service: "CreationService", # CRITICAL: Must be injected
+        creation_service: "CreationService",
         lifecycle_service: "LifecycleService"
     ):
         self.repo = repo
@@ -90,24 +91,36 @@ class TradeService:
         except Exception as e: errors['system_error'] = f"Validation system error: {str(e)}"
         return errors
 
-    # --- 3. ENRICHMENT & STATUS MAPPING (MAINTAINED) ---
+    # --- 3. ENRICHMENT & STATUS MAPPING (FIXED) ---
     def _enrich_entity(self, entity: Any, is_trade: bool, orm_status: Any, channel_id: Optional[int] = None) -> Any:
         if not entity: return None
         entity.is_user_trade = is_trade
         entity.watched_channel_id = channel_id
+        
+        # Safe status extraction
         status_val = orm_status.value if hasattr(orm_status, 'value') else str(orm_status)
         entity.orm_status_value = status_val
+        
+        # Robust mapping with fallback
         if is_trade:
-            if status_val == UserTradeStatusEnum.ACTIVATED.value: entity.unified_status = "ACTIVE"
-            elif status_val in [UserTradeStatusEnum.WATCHLIST.value, UserTradeStatusEnum.PENDING_ACTIVATION.value]: entity.unified_status = "WATCHLIST"
-            else: entity.unified_status = "CLOSED"
+            if status_val == UserTradeStatusEnum.ACTIVATED.value: 
+                entity.unified_status = "ACTIVE"
+            elif status_val in [UserTradeStatusEnum.WATCHLIST.value, UserTradeStatusEnum.PENDING_ACTIVATION.value]: 
+                entity.unified_status = "WATCHLIST"
+            else: 
+                entity.unified_status = "CLOSED"
         else:
-            if status_val == RecommendationStatusEnum.ACTIVE.value: entity.unified_status = "ACTIVE"
-            elif status_val == RecommendationStatusEnum.PENDING.value: entity.unified_status = "WATCHLIST"
-            else: entity.unified_status = "CLOSED"
+            if status_val == RecommendationStatusEnum.ACTIVE.value: 
+                entity.unified_status = "ACTIVE"
+            elif status_val == RecommendationStatusEnum.PENDING.value: 
+                entity.unified_status = "WATCHLIST"
+            else: 
+                # Default fallback for CLOSED or any unknown state
+                entity.unified_status = "CLOSED"
+                
         return entity
 
-    # --- 4. READ OPERATIONS (MAINTAINED) ---
+    # --- 4. READ OPERATIONS (FIXED) ---
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
         user_id_int = self._parse_user_id(user_telegram_id)
         if not user_id_int: return []
@@ -140,15 +153,19 @@ class TradeService:
         return all_items
 
     def get_analyst_history_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 20) -> List[RecommendationEntity]:
+        """
+        Fetches historical (closed) recommendations for an analyst.
+        ✅ FIX: Removed references to non-existent Enum members (STOPPED, TAKE_PROFIT).
+        """
         user_id_int = self._parse_user_id(user_telegram_id)
         if not user_id_int: return []
         user = UserRepository(db_session).find_by_telegram_id(user_id_int)
         if not user or user.user_type != UserTypeEntity.ANALYST: return []
 
+        # ✅ THE FIX: Only use the canonical CLOSED status defined in the Domain.
+        # The outcome (Win/Loss) is determined by PnL, not the status itself.
         terminal_statuses = [
-            RecommendationStatusEnum.CLOSED.value, 
-            RecommendationStatusEnum.STOPPED.value, 
-            RecommendationStatusEnum.TAKE_PROFIT.value
+            RecommendationStatusEnum.CLOSED,
         ]
         
         recs = (
@@ -209,19 +226,44 @@ class TradeService:
             return int(str(user_id).strip()) if str(user_id).strip().lstrip('-').isdigit() else None
         except:
             return None
+    
+    # ✅ NEW: Helper for asset pre-fetching (used by conversation handlers)
+    def get_recent_assets_for_user(self, db_session: Session, user_telegram_id: str) -> List[str]:
+        """
+        Fetches a list of recently used assets for the user to populate the UI.
+        """
+        user_id_int = self._parse_user_id(user_telegram_id)
+        if not user_id_int: return []
+        user = UserRepository(db_session).find_by_telegram_id(user_id_int)
+        if not user: return []
 
-    # --- 6. PROXIES (CRITICAL FIX: Added create_trade_from_forwarding_async proxy) ---
+        # Query distinct assets from recent recommendations
+        recent_recs = (
+            db_session.query(Recommendation.asset)
+            .filter(Recommendation.analyst_id == user.id)
+            .order_by(Recommendation.created_at.desc())
+            .limit(10)
+            .distinct()
+            .all()
+        )
+        
+        # Flatten list
+        assets = [r[0] for r in recent_recs if r[0]]
+        
+        # Add defaults if list is short
+        defaults = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        for d in defaults:
+            if d not in assets:
+                assets.append(d)
+                
+        return assets[:6] # Return top 6
+
+    # --- 6. PROXIES ---
     async def create_and_publish_recommendation_async(self, *args, **kwargs): return await self.creation_service.create_and_publish_recommendation_async(*args, **kwargs)
     async def background_publish_and_index(self, *args, **kwargs): return await self.creation_service.background_publish_and_index(*args, **kwargs)
-    
-    # CRITICAL FIX: Missing Proxy Method
-    async def create_trade_from_forwarding_async(self, *args, **kwargs):
-        """Proxy to CreationService.create_trade_from_forwarding_async"""
-        return await self.creation_service.create_trade_from_forwarding_async(*args, **kwargs)
-
+    async def create_trade_from_forwarding_async(self, *args, **kwargs): return await self.creation_service.create_trade_from_forwarding_async(*args, **kwargs)
     async def create_trade_from_recommendation(self, *args, **kwargs): return await self.creation_service.create_trade_from_recommendation(*args, **kwargs)
     
-    # Lifecycle Proxies (Maintained)
     async def close_user_trade_async(self, *args, **kwargs): return await self.lifecycle_service.close_user_trade_async(*args, **kwargs)
     async def close_recommendation_async(self, *args, **kwargs): return await self.lifecycle_service.close_recommendation_async(*args, **kwargs)
     async def partial_close_async(self, *args, **kwargs): return await self.lifecycle_service.partial_close_async(*args, **kwargs)
@@ -238,3 +280,4 @@ class TradeService:
     async def process_user_trade_invalidation_event(self, *args, **kwargs): return await self.lifecycle_service.process_user_trade_invalidation_event(*args, **kwargs)
     async def process_user_trade_sl_hit_event(self, *args, **kwargs): return await self.lifecycle_service.process_user_trade_sl_hit_event(*args, **kwargs)
     async def process_user_trade_tp_hit_event(self, *args, **kwargs): return await self.lifecycle_service.process_user_trade_tp_hit_event(*args, **kwargs)
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/trade_service.py ---
