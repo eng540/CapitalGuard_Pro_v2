@@ -1,13 +1,13 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v34.3.2-R2-FINAL (Production Stable - NameError Fix)
+# Version: v34.3.3-R2-FINAL (Production Stable - Tuple Crash & Safe Import Fix)
 # ✅ STATUS: GOLD MASTER - CRASH FIXED
-#    - Fixed NameError for PerformanceService by adding explicit import.
-#    - Full Compatibility with TradeService v3.1.1 maintained.
+#    - Fixed AttributeError: 'tuple' object has no attribute 'append' (Ensured list initialization).
+#    - Fixed NameError: PerformanceService (Explicit Import added).
+#    - Pure View Logic maintained.
 
 import logging
 import re 
-from typing import Optional, Any, Union
+from typing import Optional, Any, Union, List
 
 from telegram import (
     Update,
@@ -16,7 +16,7 @@ from telegram import (
     Bot,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -46,11 +46,11 @@ from capitalguard.interfaces.telegram.ui_texts import build_trade_card_text
 from capitalguard.interfaces.telegram.auth import require_active_user, require_analyst_user
 from capitalguard.domain.entities import UserType as UserTypeEntity
 
-# Services (CRITICAL FIX: Added PerformanceService import)
+# Services (All required services must be imported)
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.lifecycle_service import LifecycleService
-from capitalguard.application.services.performance_service import PerformanceService # <-- NEW IMPORT
+from capitalguard.application.services.performance_service import PerformanceService # Explicitly imported
 
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors")
@@ -78,7 +78,7 @@ async def safe_edit_message(
         if "message is not modified" in str(e).lower(): return True
         return True 
     except Exception as e:
-        loge.warning(f"Failed to edit message {chat_id}:{message_id}: {e}")
+        loge.warning(f"Failed to edit message {chat_id}:{message_id}: {e}", exc_info=True)
         return False
 
 # --- Entry Point ---
@@ -87,7 +87,6 @@ async def safe_edit_message(
 async def management_entry_point_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     """Handles /myportfolio."""
     try:
-        # Accessing the imported PerformanceService class
         performance_service = get_service(context, "performance_service", PerformanceService)
         report = performance_service.get_trader_performance_report(db_session, db_user.id)
         
@@ -126,11 +125,13 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
         keyboard.append([InlineKeyboardButton("🔄 تحديث البيانات", callback_data=CallbackBuilder.create(ns, "hub"))])
 
         safe_text = _safe_escape_markdown(main_message)
-        await update.message.reply_markdown_v2(safe_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        # CRITICAL FIX: Ensure to use update.effective_message for robust reply handling in case of command
+        await update.effective_message.reply_markdown_v2(safe_text, reply_markup=InlineKeyboardMarkup(keyboard))
         
     except Exception as e:
         loge.error(f"Error in management entry point: {e}", exc_info=True)
-        await update.message.reply_text("❌ Error loading portfolio hub.")
+        # CRITICAL FIX: Use update.effective_message for safe error response
+        await update.effective_message.reply_text("❌ Error loading portfolio hub.")
 
 @uow_transaction
 @require_active_user
@@ -163,6 +164,7 @@ async def management_callback_hub_handler(update: Update, context: ContextTypes.
 
     except Exception as e:
         loge.error(f"Error in hub navigation handler: {e}", exc_info=True)
+        # CRITICAL FIX: Use query.message for safe editing
         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Error loading view.")
 
 async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, list_type: str, page: int, channel_id_filter: Union[int, str, None] = None):
@@ -287,7 +289,9 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
         orm_status = getattr(position, "orm_status_value", None)
 
         back_btn = InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "show_list", source_list, source_page))
-        keyboard_rows = []
+        
+        # CRITICAL FIX: Ensure keyboard_rows is always initialized as a list
+        keyboard_rows: List[List[InlineKeyboardButton]] = []
         keyboard_markup = None
 
         if unified_status == "ACTIVE":
@@ -301,7 +305,10 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
              else:
                  keyboard_markup = analyst_control_panel_keyboard(position)
         
-        if keyboard_markup: keyboard_rows = keyboard_markup.inline_keyboard
+        if keyboard_markup: 
+             # Ensure inline_keyboard is appended as individual lists
+             keyboard_rows.extend(keyboard_markup.inline_keyboard)
+             
         keyboard_rows.append([back_btn])
         
         await safe_edit_message(context.bot, target_msg.chat.id, target_msg.message_id, 
@@ -320,6 +327,7 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
     data = CallbackBuilder.parse(query.data)
     p = data.get("params", [])
     if len(p) >= 2:
+        # CRITICAL FIX: The target message for safe_edit_message is resolved internally in _send_or_edit_position_panel
         await _send_or_edit_position_panel(update, context, db_session, p[0], int(p[1]), p[2] if len(p)>2 else "activated", int(p[3]) if len(p)>3 else 1)
 
 @uow_transaction
@@ -338,7 +346,7 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not position: return
 
     text = build_trade_card_text(position)
-    kb_rows = []
+    kb_rows: List[List[InlineKeyboardButton]] = [] # CRITICAL FIX: Initialize as list
     back = InlineKeyboardButton("⬅️ Back", callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id, "activated", 1))
 
     if position.unified_status in ["ACTIVE", "WATCHLIST"]:
@@ -427,4 +435,3 @@ def register_management_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(show_submenu_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_menu|close_menu|partial_close_menu|show_menu):"), group=1)
     app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market)"), group=1)
     app.add_handler(CallbackQueryHandler(partial_close_fixed_handler, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:{CallbackAction.PARTIAL.value}:\d+:(?:25|50)$"), group=1)
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
