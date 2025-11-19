@@ -1,43 +1,47 @@
 # File: src/capitalguard/application/services/trade_service.py
-# Version: v3.1.1-R2-FINAL (Stable - Enum Crash Fix)
+# Version: v3.1.2-R2-FINAL (Production Stable - Proxy Fix)
 # ✅ STATUS: GOLD MASTER - CRASH FIXED
-#    - Fixed AttributeError: STOPPED by ensuring all required ORM imports are available for querying.
-#    - All R2 Logic (Resolvers, Validation, Enrichment) is maintained.
+#    - Fixed AttributeError: 'TradeService' object has no attribute 'create_trade_from_forwarding_async'
+#    - Ensured CreationService is injected and proxied correctly.
 
 from __future__ import annotations
 import logging
 from typing import List, Optional, Tuple, Dict, Any, Set, Union
 from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session
-from sqlalchemy import or_ # Added or_ for advanced query safety
+from sqlalchemy import or_
 
 # Infrastructure Imports
 from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository
 from capitalguard.domain.entities import Recommendation as RecommendationEntity
-# CRITICAL FIX: Ensure all required models/enums are imported explicitly
 from capitalguard.infrastructure.db.models import (
     UserTrade, Recommendation, UserTradeStatusEnum, 
     RecommendationStatusEnum, UserType as UserTypeEntity
 )
 
 # Service Imports (Type Hinting Only)
+# CRITICAL FIX: Explicitly import services required for injection/proxies
+from .creation_service import CreationService
+from .lifecycle_service import LifecycleService
 if False:
-    from .creation_service import CreationService
-    from .lifecycle_service import LifecycleService
     from .price_service import PriceService
     from .market_data_service import MarketDataService
 
 logger = logging.getLogger(__name__)
 
 class TradeService:
-    # ... (Initialization and other methods remain the same) ...
+    """
+    [R2-FINAL Facade]
+    The central read/write coordinator for trading operations.
+    Includes Proxies to CreationService and LifecycleService.
+    """
     def __init__(
         self,
         repo: RecommendationRepository,
         notifier: Any,
         market_data_service: "MarketDataService",
         price_service: "PriceService",
-        creation_service: "CreationService",
+        creation_service: "CreationService", # CRITICAL: Must be injected
         lifecycle_service: "LifecycleService"
     ):
         self.repo = repo
@@ -103,7 +107,7 @@ class TradeService:
             else: entity.unified_status = "CLOSED"
         return entity
 
-    # --- 4. READ OPERATIONS (CRASH FIX APPLIED) ---
+    # --- 4. READ OPERATIONS (MAINTAINED) ---
     def get_open_positions_for_user(self, db_session: Session, user_telegram_id: str) -> List[RecommendationEntity]:
         user_id_int = self._parse_user_id(user_telegram_id)
         if not user_id_int: return []
@@ -136,14 +140,11 @@ class TradeService:
         return all_items
 
     def get_analyst_history_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 20) -> List[RecommendationEntity]:
-        """Retrieves 'CLOSED' items for Analyst Dashboard."""
         user_id_int = self._parse_user_id(user_telegram_id)
         if not user_id_int: return []
-        
         user = UserRepository(db_session).find_by_telegram_id(user_id_int)
         if not user or user.user_type != UserTypeEntity.ANALYST: return []
 
-        # ✅ FIX: Use RecommendationStatusEnum.value explicitly for safer querying
         terminal_statuses = [
             RecommendationStatusEnum.CLOSED.value, 
             RecommendationStatusEnum.STOPPED.value, 
@@ -153,7 +154,7 @@ class TradeService:
         recs = (
             db_session.query(Recommendation)
             .filter(Recommendation.analyst_id == user.id)
-            .filter(Recommendation.status.in_(terminal_statuses)) # Filter by value
+            .filter(Recommendation.status.in_(terminal_statuses))
             .order_by(Recommendation.created_at.desc())
             .limit(limit)
             .all()
@@ -169,7 +170,6 @@ class TradeService:
         
         return entities
 
-    # ... (get_position_details_for_user and all proxies remain the same as R2-FINAL) ...
     def get_position_details_for_user(self, db_session: Session, user_telegram_id: str, position_type: str, position_id: int) -> Optional[RecommendationEntity]:
         user_id_int = self._parse_user_id(user_telegram_id)
         if not user_id_int: return None
@@ -192,25 +192,49 @@ class TradeService:
         
         return None
 
+    # --- 5. UTILITIES ---
     def get_channel_info(self, db_session: Session, channel_id: int) -> Dict[str, Any]:
         try:
             ChannelModel = self.repo.get_watched_channel_model() 
             channel = db_session.query(ChannelModel).filter(ChannelModel.channel_id == channel_id).first()
             return {"id": channel_id, "title": channel.channel_title if channel else "Unknown Channel"}
-        except Exception: return {"id": channel_id, "title": "Unknown"}
+        except Exception:
+            return {"id": channel_id, "title": "Unknown"}
 
     def get_watched_channels_summary(self, db_session: Session, user_db_id: int) -> List[Dict]:
         return self.repo.get_watched_channels_summary(db_session, user_db_id)
 
     def _parse_user_id(self, user_id: Any) -> Optional[int]:
-        try: return int(str(user_id).strip()) if str(user_id).strip().lstrip('-').isdigit() else None
-        except: return None
-    
-    # --- PROXIES (UNCHANGED) ---
+        try:
+            return int(str(user_id).strip()) if str(user_id).strip().lstrip('-').isdigit() else None
+        except:
+            return None
+
+    # --- 6. PROXIES (CRITICAL FIX: Added create_trade_from_forwarding_async proxy) ---
     async def create_and_publish_recommendation_async(self, *args, **kwargs): return await self.creation_service.create_and_publish_recommendation_async(*args, **kwargs)
     async def background_publish_and_index(self, *args, **kwargs): return await self.creation_service.background_publish_and_index(*args, **kwargs)
+    
+    # CRITICAL FIX: Missing Proxy Method
+    async def create_trade_from_forwarding_async(self, *args, **kwargs):
+        """Proxy to CreationService.create_trade_from_forwarding_async"""
+        return await self.creation_service.create_trade_from_forwarding_async(*args, **kwargs)
+
+    async def create_trade_from_recommendation(self, *args, **kwargs): return await self.creation_service.create_trade_from_recommendation(*args, **kwargs)
+    
+    # Lifecycle Proxies (Maintained)
     async def close_user_trade_async(self, *args, **kwargs): return await self.lifecycle_service.close_user_trade_async(*args, **kwargs)
     async def close_recommendation_async(self, *args, **kwargs): return await self.lifecycle_service.close_recommendation_async(*args, **kwargs)
     async def partial_close_async(self, *args, **kwargs): return await self.lifecycle_service.partial_close_async(*args, **kwargs)
+    async def update_sl_for_user_async(self, *args, **kwargs): return await self.lifecycle_service.update_sl_for_user_async(*args, **kwargs)
+    async def update_targets_for_user_async(self, *args, **kwargs): return await self.lifecycle_service.update_targets_for_user_async(*args, **kwargs)
+    async def update_entry_and_notes_async(self, *args, **kwargs): return await self.lifecycle_service.update_entry_and_notes_async(*args, **kwargs)
+    async def set_exit_strategy_async(self, *args, **kwargs): return await self.lifecycle_service.set_exit_strategy_async(*args, **kwargs)
     async def move_sl_to_breakeven_async(self, *args, **kwargs): return await self.lifecycle_service.move_sl_to_breakeven_async(*args, **kwargs)
     async def process_invalidation_event(self, *args, **kwargs): return await self.lifecycle_service.process_invalidation_event(*args, **kwargs)
+    async def process_activation_event(self, *args, **kwargs): return await self.lifecycle_service.process_activation_event(*args, **kwargs)
+    async def process_sl_hit_event(self, *args, **kwargs): return await self.lifecycle_service.process_sl_hit_event(*args, **kwargs)
+    async def process_tp_hit_event(self, *args, **kwargs): return await self.lifecycle_service.process_tp_hit_event(*args, **kwargs)
+    async def process_user_trade_activation_event(self, *args, **kwargs): return await self.lifecycle_service.process_user_trade_activation_event(*args, **kwargs)
+    async def process_user_trade_invalidation_event(self, *args, **kwargs): return await self.lifecycle_service.process_user_trade_invalidation_event(*args, **kwargs)
+    async def process_user_trade_sl_hit_event(self, *args, **kwargs): return await self.lifecycle_service.process_user_trade_sl_hit_event(*args, **kwargs)
+    async def process_user_trade_tp_hit_event(self, *args, **kwargs): return await self.lifecycle_service.process_user_trade_tp_hit_event(*args, **kwargs)
