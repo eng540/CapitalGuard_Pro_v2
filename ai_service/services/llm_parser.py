@@ -1,19 +1,17 @@
 # File: ai_service/services/llm_parser.py
-# Version: 5.1.1 (v5.1 Engine Refactor + JSON Repair)
-# ✅ THE FIX: إضافة آلية إصلاح JSON يدوية عند فشل التحليل
-#    - 1. محاولة إصلاح JSON يدوياً إذا فشل json.loads
-#    - 2. تحسين التعامل مع الأخطاء
+# Version: 5.2.0 (Comprehensive Data Quality Fix)
+# ✅ THE FIX: إضافة التحقق الشامل من جودة البيانات وإصلاح JSON
 
 import os
 import re
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from decimal import Decimal
 
 import httpx
 
-# --- ✅ استيراد مصدر الحقيقة الوحيد (v5.1) ---
+# ✅ استيراد الأدوات المحسنة
 from services.parsing_utils import (
     parse_decimal_token, 
     normalize_targets,
@@ -24,11 +22,11 @@ from services.parsing_utils import (
     _safe_outer_json_extract,
     _extract_claude_response,
     _extract_qwen_response,
-    # (الاستيرادات التي كانت مفقودة في utils)
     _extract_google_response,
     _extract_openai_response,
     _build_google_headers,
-    _build_openai_headers
+    _build_openai_headers,
+    DataQualityMonitor  # ✅ NEW
 )
 
 log = logging.getLogger(__name__)
@@ -43,34 +41,40 @@ LLM_MODEL = os.getenv("LLM_MODEL", "")
 if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
     log.warning("LLM environment variables incomplete. LLM parsing may be skipped.")
 
-# --- (v5.0) Prompt موحد للنصوص ---
+# --- IMPROVED SYSTEM PROMPT ---
 SYSTEM_PROMPT_TEXT = os.getenv("LLM_SYSTEM_PROMPT_TEXT") or """
 You are an expert financial analyst. Your task is to extract structured data from a forwarded trade signal (text).
-Return ONLY a valid JSON object with fields: asset, side, entry, stop_loss, targets, notes (optional).
 
---- 
-### CRITICAL VALIDATION RULES ###
-1.  **Asset/Side/Entry/SL/Targets:** You *must* find all five fields. If any are missing, respond with `{"error": "Missing required fields."}`.
-2.  **LONG Validation:** If "side" is "LONG", "stop_loss" *must* be less than "entry".
-3.  **SHORT Validation:** If "side" is "SHORT", "stop_loss" *must* be greater than "entry".
-4.  **If validation fails, DO NOT return the data.** Instead, respond with `{"error": "Financial validation failed (e.g., SL vs Entry)."}`.
----
+🚨 **CRITICAL REQUIREMENTS - READ CAREFULLY:** 🚨
 
-### EXTRACTION RULES (FROM TEXT) ###
-1.  Asset: Find the asset (e.g., "#ETH" -> "ETHUSDT", "#TURTLE" -> "TURTLEUSDT").
-2.  Side: "LONG" or "SHORT".
-3.  Entry: Find "Entry", "مناطق الدخول". If it's a range, use *ONLY THE FIRST* price.
-4.  Stop Loss: Find "SL", "ايقاف خسارة".
-5.  Targets: Find "Targets", "TPs", "الاهداف". Extract *all* numbers.
-6.  **Percentages (CRITICAL):**
-    * If a *global* percentage is mentioned (e.g., "(20% each)", "Close 30% each TP", "كل هدف 25%"), apply it to *ALL* targets.
-    * If no percentages are found, default to 0.0 (normalizer will handle 100% rule).
+You MUST return a COMPLETE JSON object with ALL these fields filled:
+{
+  "asset": "SYMBOLUSDT",    # REQUIRED: Convert #ETH → ETHUSDT, #BTC → BTCUSDT
+  "side": "LONG|SHORT",     # REQUIRED: ONLY "LONG" or "SHORT" 
+  "entry": 12345.67,        # REQUIRED: Number > 0
+  "stop_loss": 12000.50,    # REQUIRED: Number > 0  
+  "targets": [              # REQUIRED: Array of targets
+    {"price": 13000.0, "close_percent": 25.0},
+    {"price": 13500.0, "close_percent": 25.0},
+    {"price": 14000.0, "close_percent": 50.0}
+  ]
+}
 
-Respond ONLY with the JSON object.
+🔒 **VALIDATION RULES (NON-NEGOTIABLE):**
+1. ALL 5 fields above MUST be present and non-null
+2. If ANY field is missing, return: {"error": "Missing required field: X"}
+3. LONG: stop_loss MUST be < entry
+4. SHORT: stop_loss MUST be > entry  
+5. ALL numbers MUST be positive
+6. targets MUST have at least one entry
+
+❌ FAILURE TO FOLLOW THESE RULES WILL RESULT IN AUTOMATIC REJECTION.
+
+Respond ONLY with the valid JSON object. No other text.
 """
 
 # ------------------------
-# Payload builders (provider-aware)
+# Payload builders
 # ------------------------
 
 def _build_google_text_payload(text: str) -> Dict[str, Any]:
@@ -109,13 +113,70 @@ def _build_claude_text_payload(text: str) -> Dict[str, Any]:
     }
 
 # ------------------------
-# Main function: parse_with_llm (v5.0) مع إصلاح JSON
+# Enhanced Data Processor
+# ------------------------
+
+class EnhancedDataProcessor:
+    """✅ NEW: Comprehensive data processing and validation"""
+    
+    @staticmethod
+    def enforce_data_types(data: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+        """
+        Enforces correct data types and returns (enforced_data, error_message)
+        """
+        try:
+            enforced = data.copy()
+            
+            # Asset validation
+            asset = str(data.get("asset", "")).strip().upper()
+            if not asset:
+                return {}, "Asset is empty"
+            if not re.match(r'^[A-Z0-9]{2,20}$', asset):
+                # Try to append USDT if short symbol
+                if len(asset) <= 6 and not asset.endswith(('USDT', 'USD', 'BUSD')):
+                    asset = f"{asset}USDT"
+            enforced["asset"] = asset
+            
+            # Side validation
+            side = str(data.get("side", "")).upper().strip()
+            if side not in ["LONG", "SHORT"]:
+                return {}, f"Invalid side: {side}. Must be LONG or SHORT"
+            enforced["side"] = side
+            
+            # Entry validation
+            entry = parse_decimal_token(str(data.get("entry", "")))
+            if entry is None or entry <= 0:
+                return {}, f"Invalid entry: {data.get('entry')}"
+            enforced["entry"] = entry
+            
+            # Stop loss validation
+            sl = parse_decimal_token(str(data.get("stop_loss", "")))
+            if sl is None or sl <= 0:
+                return {}, f"Invalid stop_loss: {data.get('stop_loss')}"
+            enforced["stop_loss"] = sl
+            
+            # Targets validation and normalization
+            targets_raw = data.get("targets", [])
+            if not isinstance(targets_raw, list) or len(targets_raw) == 0:
+                return {}, "Targets must be a non-empty list"
+                
+            normalized_targets = normalize_targets(targets_raw, source_text="")
+            if not normalized_targets:
+                return {}, "No valid targets found after normalization"
+            enforced["targets"] = normalized_targets
+            
+            return enforced, ""
+            
+        except Exception as e:
+            return {}, f"Data type enforcement failed: {str(e)}"
+
+# ------------------------
+# Main function: parse_with_llm (ENHANCED)
 # ------------------------
 
 async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
     """
-    Calls LLM provider using the v5.0 engine (retries, factory, safe extract).
-    Returns normalized dict or None on failure.
+    Enhanced LLM parser with comprehensive data validation
     """
     if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
         log.debug("LLM config incomplete; skipping LLM parse.")
@@ -125,7 +186,7 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
     provider = (LLM_PROVIDER or "").lower()
     log_meta = {"event": "llm_parse", "provider": provider, "model": LLM_MODEL, "family": family, "snippet": text[:120]}
     
-    # 1. Build Payload (Factory Logic)
+    # 1. Build Payload
     headers = {}
     payload = {}
     
@@ -133,21 +194,17 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
         if provider == "google":
             headers = _headers_for_call("google_direct", LLM_API_KEY)
             payload = _build_google_text_payload(text)
-        
         elif provider == "anthropic":
             headers = _headers_for_call("anthropic_direct", LLM_API_KEY)
             payload = _build_claude_text_payload(text)
-        
-        else: # Default to OpenAI format (covers "openai" and "openrouter")
+        else:
             headers = _headers_for_call("openrouter_bearer" if provider == "openrouter" else "openai_direct", LLM_API_KEY)
             payload = _build_openai_text_payload(text)
-            
     except Exception as e:
         log.error(f"Failed to build LLM text payload: {e}", exc_info=True)
         return None
 
-    # 2. Call API (with Retries)
-    # ✅ REFACTORED: Use unified retry mechanism
+    # 2. Call API
     success, resp_json, status, resp_text = await _post_with_retries(LLM_API_URL, headers, payload)
     log_meta["status_code"] = status
     
@@ -164,64 +221,44 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
             raw_text = _extract_claude_response(resp_json)
         elif family == "qwen":
             raw_text = _extract_qwen_response(resp_json)
-        else: # Default to OpenAI
+        else:
             raw_text = _extract_openai_response(resp_json)
     except Exception as e:
         log.exception(f"Extractor error: {e}")
         telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "extractor_exception"}))
         return None
 
-    # 4. Safe JSON Extract
-    # ✅ REFACTORED: Use unified safe extractor
+    # 4. Safe JSON Extract with Enhanced Repair
     json_block = _safe_outer_json_extract(raw_text)
     if not json_block:
         log.warning(f"No JSON block found in LLM response. Snippet: {raw_text[:150]}", extra=log_meta)
         telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "no_json"}))
         return None
 
-    # 5. Parse & Validate مع إصلاح JSON يدوي
+    # 5. Parse & Validate with Comprehensive Checks
     try:
-        # ✅ الإصلاح الجديد: محاولة إصلاح JSON يدوياً
-        try:
-            parsed = json.loads(json_block)
-        except json.JSONDecodeError as e:
-            log.warning(f"JSON decode failed, attempting manual repair: {e}")
-            
-            # محاولات إصلاح يدوية
-            json_block_repaired = json_block.strip()
-            
-            # الحالة 1: ينتهي بـ '}]' لكن ينقص '}'
-            if json_block_repaired.endswith('}]'):
-                json_block_repaired += '}'
-            
-            # الحالة 2: ينتهي بقيمة بدون أقواس إغلاق
-            elif not json_block_repaired.endswith('}') and not json_block_repaired.endswith(']'):
-                # عد الأقواس لمعرفة الناقص
-                open_count = json_block_repaired.count('{') + json_block_repaired.count('[')
-                close_count = json_block_repaired.count('}') + json_block_repaired.count(']')
-                
-                if open_count > close_count:
-                    # أضف الأقواس الناقصة
-                    missing = open_count - close_count
-                    json_block_repaired += '}' * missing
-            
-            # الحالة 3: JSON يبدأ بـ { لكن ينتهي بشكل غير متوقع
-            elif json_block_repaired.startswith('{') and not json_block_repaired.endswith('}'):
-                # حاول إيجاد آخر قوس مفتوح وأضف الإغلاق
-                last_open = json_block_repaired.rfind('{')
-                if last_open != -1:
-                    # أضف الإغلاق بعد آخر قوس مفتوح
-                    json_block_repaired += '}'
-            
+        # ✅ Enhanced JSON parsing with multiple repair attempts
+        parsed = None
+        repair_attempts = [
+            json_block,  # Original
+            json_block.strip(),  # Stripped
+            json_block + '}' if not json_block.endswith('}') else json_block,  # Add missing brace
+        ]
+        
+        for attempt, json_attempt in enumerate(repair_attempts):
             try:
-                parsed = json.loads(json_block_repaired)
-                log.info("✅ JSON manual repair successful")
-            except json.JSONDecodeError as e2:
-                log.error(f"❌ JSON repair also failed: {e2}. Original: {json_block[:200]}")
-                telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "json_decode_after_repair"}))
-                return None
+                parsed = json.loads(json_attempt)
+                if attempt > 0:
+                    log.info(f"✅ JSON repair successful on attempt {attempt + 1}")
+                break
+            except json.JSONDecodeError as e:
+                if attempt == len(repair_attempts) - 1:
+                    log.error(f"❌ All JSON repair attempts failed: {e}")
+                    telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "json_decode_after_repair"}))
+                    return None
+                continue
 
-        # معالجة حالة الـ JSON كـ string
+        # Handle string-wrapped JSON
         if isinstance(parsed, str) and parsed.strip().startswith('{'):
             try:
                 parsed = json.loads(parsed)
@@ -229,50 +266,55 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
                 log.error("Nested JSON string also failed to parse")
                 return None
 
+        # Check for LLM-reported errors
         if isinstance(parsed, dict) and parsed.get("error"):
             reason = parsed.get("error")
             log.warning("LLM-side reported error", extra={**log_meta, "reason": reason})
             telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "llm_reported", "detail": reason}))
             return None
 
-        required = ["asset", "side", "entry", "stop_loss", "targets"]
-        if not all(k in parsed for k in required):
-            log.warning("Missing required keys in LLM output.", extra={**log_meta, "missing": [k for k in required if k not in parsed]})
-            telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "missing_keys"}))
+        # ✅ STEP 1: Data Quality Validation
+        is_valid, validation_reason = DataQualityMonitor.validate_llm_output(parsed)
+        if not is_valid:
+            log.warning(f"Data quality validation failed: {validation_reason}")
+            telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "data_quality", "detail": validation_reason}))
             return None
 
-        # --- ✅ REFACTORED: Use unified normalizers (v5.0) ---
-        # (Returns Decimals)
-        parsed_targets_raw = parsed.get("targets")
-        normalized_targets = normalize_targets(parsed_targets_raw, source_text=text)
-        parsed["targets"] = normalized_targets 
-
-        entry_val = parse_decimal_token(str(parsed["entry"]))
-        sl_val = parse_decimal_token(str(parsed["stop_loss"]))
-        
-        if entry_val is None or sl_val is None:
-            log.warning(f"Entry/SL normalization failed.", extra=log_meta)
-            telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "entry_sl_parse"}))
+        # ✅ STEP 2: Data Type Enforcement
+        processor = EnhancedDataProcessor()
+        enforced_data, enforcement_error = processor.enforce_data_types(parsed)
+        if enforcement_error:
+            log.warning(f"Data type enforcement failed: {enforcement_error}")
+            telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "data_enforcement", "detail": enforcement_error}))
             return None
-        
-        parsed["entry"] = entry_val
-        parsed["stop_loss"] = sl_val
-        # --- End Refactor ---
 
-        # ✅ REFACTORED: Use unified financial check
-        if not _financial_consistency_check(parsed):
+        # ✅ STEP 3: Financial Consistency Check
+        if not _financial_consistency_check(enforced_data):
             log.warning("Financial consistency check failed.", extra=log_meta)
             telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "financial_check"}))
             return None
 
-        parsed.setdefault("market", parsed.get("market", "Futures"))
-        parsed.setdefault("order_type", parsed.get("order_type", "LIMIT"))
-        parsed.setdefault("notes", parsed.get("notes", ""))
+        # ✅ STEP 4: Final Data Preparation
+        enforced_data.setdefault("market", enforced_data.get("market", "Futures"))
+        enforced_data.setdefault("order_type", enforced_data.get("order_type", "LIMIT"))
+        enforced_data.setdefault("notes", enforced_data.get("notes", ""))
 
-        telemetry_log.info(json.dumps({**log_meta, "success": True, "asset": parsed.get("asset"), "side": parsed.get("side"), "num_targets": len(parsed.get("targets", []))}))
+        # ✅ SUCCESS
+        telemetry_log.info(json.dumps({
+            **log_meta, 
+            "success": True, 
+            "asset": enforced_data.get("asset"), 
+            "side": enforced_data.get("side"), 
+            "num_targets": len(enforced_data.get("targets", [])),
+            "entry": str(enforced_data.get("entry")),
+            "stop_loss": str(enforced_data.get("stop_loss"))
+        }))
         
-        # ✅ SUCCESS: Return dict with Decimals
-        return parsed
+        log.info(f"✅ LLM parse successful: {enforced_data.get('asset')} {enforced_data.get('side')} "
+                f"Entry:{enforced_data.get('entry')} SL:{enforced_data.get('stop_loss')} "
+                f"Targets:{len(enforced_data.get('targets', []))}")
+        
+        return enforced_data
 
     except (json.JSONDecodeError, ValueError, TypeError) as e:
         log.error(f"Failed parsing LLM response: {e}. Snippet: {json_block[:200]}", exc_info=True)
