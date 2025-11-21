@@ -1,10 +1,9 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v45.0.0-FIXED (Risk Menu Fix)
+# Version: v46.0.0-FIXED (Full Close Menu Fix)
 # ✅ THE FIX:
-#    1. Updated 'show_submenu' to correctly handle 'ManagementAction.SHOW_MENU'.
-#    2. Updated 'ActionRouter' to route 'SHOW_MENU' correctly.
-#    3. This restores the Risk Management buttons.
+#    1. Updated 'show_submenu' to check for 'ManagementAction.CLOSE_MENU'.
+#    2. Updated 'ActionRouter' to route 'CLOSE_MENU' correctly.
 
 import logging
 import asyncio
@@ -319,13 +318,13 @@ class PortfolioController:
         back = InlineKeyboardButton("⬅️ Back", callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id, "activated", 1))
 
         if position.unified_status in ["ACTIVE", "WATCHLIST"]:
-            # ✅ FIX: Check for SHOW_MENU as well
             if callback.namespace == CallbackNamespace.RECOMMENDATION.value:
                 if callback.action == ManagementAction.EDIT_MENU.value:
                     text = "✏️ *Edit Recommendation*"
                     kb = build_trade_data_edit_keyboard(rec_id)
                     kb_rows.extend(kb.inline_keyboard)
-                elif callback.action == ManagementAction.CLOSE.value and position.unified_status == "ACTIVE":
+                # ✅ FIX: Check for CLOSE_MENU
+                elif callback.action == ManagementAction.CLOSE_MENU.value and position.unified_status == "ACTIVE":
                     text = "❌ *Close Position*"
                     kb = build_close_options_keyboard(rec_id)
                     kb_rows.extend(kb.inline_keyboard)
@@ -447,7 +446,8 @@ class ActionRouter:
     _SUBMENU_ROUTES = {
         ManagementAction.EDIT_MENU.value: PortfolioController.show_submenu,
         ManagementAction.PARTIAL_CLOSE_MENU.value: PortfolioController.show_submenu,
-        ManagementAction.SHOW_MENU.value: PortfolioController.show_submenu, # ✅ ADDED
+        ManagementAction.SHOW_MENU.value: PortfolioController.show_submenu,
+        ManagementAction.CLOSE_MENU.value: PortfolioController.show_submenu, # ✅ ADDED
         "close_menu": PortfolioController.show_submenu, 
         "show_menu": PortfolioController.show_submenu,
     }
