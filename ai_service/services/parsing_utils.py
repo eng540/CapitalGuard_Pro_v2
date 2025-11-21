@@ -1,8 +1,6 @@
 # File: ai_service/services/parsing_utils.py
-# Version: 2.2.2 (v5.2 Engine - JSON Comma & Brace Hotfix)
-# ✅ THE FIX: إصلاح مزدوج - الفواصل داخل الأرقام + الأقواس الناقصة
-#    - 1. إصلاح الفواصل داخل الأرقام (107,787.79 → 107787.79)
-#    - 2. إصلاح الأقواس الناقصة في JSON ({... → {...}})
+# Version: 2.3.0 (Financial-Grade Stability Hotfix)
+# ✅ THE FIX: معالجة شاملة للبيانات الناقصة والتحقق المالي
 
 import os
 import re
@@ -25,7 +23,6 @@ try:
     IMAGE_PARSE_BACKOFF_BASE = float(os.getenv("IMAGE_PARSE_BACKOFF_BASE", "1.0"))
 except Exception:
     IMAGE_PARSE_BACKOFF_BASE = 1.0
-
 
 # --- 1. Core Parsers (Original) ---
 _AR_TO_EN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
@@ -125,7 +122,7 @@ def normalize_targets(
                 elif close_pct is None:
                     close_pct = Decimal("0")
 
-                normalized.append({"price": price_val, "close_percent": float(close_pct)}) # Store Decimal
+                normalized.append({"price": price_val, "close_percent": float(close_pct)})
             except Exception as e:
                 log.debug(f"Skipping malformed target dict entry: {t} ({e})")
 
@@ -150,7 +147,7 @@ def normalize_targets(
                 elif pct is None:
                     pct = Decimal("0")
 
-                normalized.append({"price": price, "close_percent": float(pct)}) # Store Decimal
+                normalized.append({"price": price, "close_percent": float(pct)})
             except Exception as e:
                 log.debug(f"Skipped token while normalizing targets: '{tok}' ({e})")
     
@@ -171,7 +168,7 @@ def normalize_targets(
                     pct = each_pct
                 elif pct is None:
                     pct = Decimal("0")
-                normalized.append({"price": price, "close_percent": float(pct)}) # Store Decimal
+                normalized.append({"price": price, "close_percent": float(pct)})
             except Exception:
                 continue
 
@@ -181,67 +178,146 @@ def normalize_targets(
         
     return normalized
 
-
-# --- 2. Validation (Moved from llm_parser) ---
+# --- 2. Validation (FIXED VERSION) ---
 def _financial_consistency_check(data: Dict[str, Any]) -> bool:
-    """Strict numeric checks (v5.0). Expects Decimals."""
+    """
+    ✅ FIXED: Strict numeric checks with None protection
+    Expects Decimals but handles None gracefully
+    """
     try:
+        # ✅ FIRST: Check for missing required fields
+        required_fields = ["entry", "stop_loss", "side", "targets"]
+        missing_fields = [field for field in required_fields if data.get(field) is None]
+        
+        if missing_fields:
+            log.warning(f"Financial check failed: Missing required fields {missing_fields}")
+            return False
+
         entry = data["entry"]
         sl = data["stop_loss"]
         side = str(data["side"]).strip().upper()
         targets_raw = data.get("targets", [])
         
-        if not (isinstance(entry, Decimal) and isinstance(sl, Decimal)):
-             entry = parse_decimal_token(str(entry))
-             sl = parse_decimal_token(str(sl))
+        # ✅ SECOND: Safe type conversion
+        if not isinstance(entry, Decimal):
+            entry = parse_decimal_token(str(entry))
+        if not isinstance(sl, Decimal):
+            sl = parse_decimal_token(str(sl))
 
+        if entry is None or sl is None:
+            log.warning("Financial check failed: Entry or SL could not be parsed to Decimal")
+            return False
+
+        # ✅ THIRD: Validate targets structure
         if not isinstance(targets_raw, list) or len(targets_raw) == 0:
-            log.warning("Targets missing or empty in financial check.")
+            log.warning("Financial check failed: Targets missing or empty")
             return False
 
         prices: List[Decimal] = []
         for t in targets_raw:
+            if not isinstance(t, dict):
+                continue
             price_val = t["price"] if isinstance(t.get("price"), Decimal) else parse_decimal_token(str(t.get("price")))
-            if price_val:
+            if price_val and price_val > 0:
                 prices.append(price_val)
 
         if not prices:
-             log.warning("No valid target prices found in financial check.")
-             return False
-        if entry <= 0 or sl <= 0:
-            log.warning("Entry or SL non-positive.")
+            log.warning("Financial check failed: No valid target prices found")
             return False
+            
+        if entry <= 0 or sl <= 0:
+            log.warning("Financial check failed: Entry or SL non-positive")
+            return False
+            
         if len(set(prices)) != len(prices):
-            log.warning("Duplicate targets detected.")
+            log.warning("Financial check failed: Duplicate targets detected")
             return False
 
+        # ✅ FOURTH: Business logic validation
         if side == "LONG":
             if not (sl < entry):
                 log.warning(f"LONG check failed: SL {sl} >= Entry {entry}")
                 return False
             if any(p <= entry for p in prices):
-                log.warning("At least one LONG target <= entry")
+                log.warning("Financial check failed: At least one LONG target <= entry")
                 return False
+                
         elif side == "SHORT":
             if not (sl > entry):
                 log.warning(f"SHORT check failed: SL {sl} <= Entry {entry}")
                 return False
             if any(p >= entry for p in prices):
-                log.warning("At least one SHORT target >= entry")
+                log.warning("Financial check failed: At least one SHORT target >= entry")
                 return False
         else:
-            log.warning(f"Invalid side value: {side}")
+            log.warning(f"Financial check failed: Invalid side value: {side}")
             return False
 
+        log.debug(f"✅ Financial check passed: {data.get('asset')} {side} Entry:{entry} SL:{sl}")
         return True
+        
     except (InvalidOperation, TypeError, KeyError, AttributeError) as e:
         log.warning(f"Financial check exception: {e}. Data: {data}")
         return False
+    except Exception as e:
+        log.error(f"Unexpected error in financial check: {e}. Data: {data}")
+        return False
 
+# --- 3. Data Quality Monitor (NEW) ---
+class DataQualityMonitor:
+    """✅ NEW: Comprehensive data validation before processing"""
+    
+    @staticmethod
+    def validate_llm_output(data: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Validates LLM output comprehensively
+        Returns (is_valid, reason)
+        """
+        try:
+            # Check 1: Required fields existence
+            required_fields = ["asset", "side", "entry", "stop_loss", "targets"]
+            missing_fields = [field for field in required_fields if field not in data or data[field] is None]
+            if missing_fields:
+                return False, f"Missing fields: {missing_fields}"
 
-# --- 3. v5.0 Engine Helpers (NEW/MOVED) ---
+            # Check 2: Data types
+            if not isinstance(data["asset"], str) or not data["asset"].strip():
+                return False, "Invalid asset format"
+                
+            if data["side"] not in ["LONG", "SHORT"]:
+                return False, f"Invalid side: {data['side']}"
+                
+            if not isinstance(data["targets"], list) or len(data["targets"]) == 0:
+                return False, "Invalid or empty targets"
 
-# ✅ (v2.2.0): Add the missing extractors
+            # Check 3: Numeric values
+            try:
+                entry = Decimal(str(data["entry"]))
+                sl = Decimal(str(data["stop_loss"]))
+                if entry <= 0 or sl <= 0:
+                    return False, "Non-positive entry or stop_loss"
+            except (InvalidOperation, TypeError):
+                return False, "Invalid numeric format in entry/stop_loss"
+
+            # Check 4: Targets structure
+            for i, target in enumerate(data["targets"]):
+                if not isinstance(target, dict):
+                    return False, f"Target {i} is not a dictionary"
+                if "price" not in target:
+                    return False, f"Target {i} missing price"
+                try:
+                    price = Decimal(str(target["price"]))
+                    if price <= 0:
+                        return False, f"Target {i} has non-positive price"
+                except (InvalidOperation, TypeError):
+                    return False, f"Target {i} has invalid price format"
+
+            return True, "All checks passed"
+            
+        except Exception as e:
+            return False, f"Validation error: {str(e)}"
+
+# --- 4. v5.0 Engine Helpers (Existing) ---
 def _extract_google_response(response_json: Dict[str, Any]) -> str:
     """Extracts text content from a Google Gemini response."""
     try:
@@ -258,13 +334,11 @@ def _extract_openai_response(response_json: Dict[str, Any]) -> str:
         log.warning(f"Failed to extract OpenAI response: {e}")
         return json.dumps(response_json)
 
-# ✅ (v2.2.0): Add the missing header builders
 def _build_google_headers(api_key: str) -> Dict[str, str]:
     return {"Content-Type": "application/json", "X-goog-api-key": api_key}
 
 def _build_openai_headers(api_key: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
 
 def _model_family(model_name: str) -> str:
     """Detects the model family from its name."""
@@ -274,7 +348,7 @@ def _model_family(model_name: str) -> str:
     if mn.startswith("gpt-") or mn.startswith("openai/") or "gpt-4o" in mn: return "openai"
     if "claude" in mn or mn.startswith("anthropic/"): return "anthropic"
     if "qwen" in mn or "alibaba" in mn: return "qwen"
-    return "other" # Default to OpenAI compatible
+    return "other"
 
 def _headers_for_call(call_style: str, api_key: str) -> Dict[str, str]:
     """Builds the correct headers based on the provider type."""
@@ -283,8 +357,8 @@ def _headers_for_call(call_style: str, api_key: str) -> Dict[str, str]:
     if call_style == "openai_direct":
         return _build_openai_headers(api_key)
     if call_style == "openrouter_bearer":
-        headers = _build_openai_headers(api_key) # Start with OpenAI headers
-        headers["HTTP-Referer"] = "http://localhost" # Required by OpenRouter
+        headers = _build_openai_headers(api_key)
+        headers["HTTP-Referer"] = "http://localhost"
         headers["X-Title"] = "CapitalGuard"
         return headers
     if call_style == "anthropic_direct":
@@ -293,7 +367,7 @@ def _headers_for_call(call_style: str, api_key: str) -> Dict[str, str]:
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01"
         }
-    return _build_openai_headers(api_key) # Default
+    return _build_openai_headers(api_key)
 
 async def _post_with_retries(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]], int, str]:
     """(Source of Truth) POSTs data with exponential backoff on transient errors."""
@@ -314,7 +388,7 @@ async def _post_with_retries(url: str, headers: Dict[str, str], payload: Dict[st
                         log.error(f"HTTP 200 OK, but JSON decode failed: {json_e}", exc_info=True)
                         return False, None, status, text_snip
                 
-                if status in (429, 500, 502, 503, 504): # Transient errors
+                if status in (429, 500, 502, 503, 504):
                     backoff = IMAGE_PARSE_BACKOFF_BASE * (2 ** attempt)
                     log.warning(f"Transient HTTP {status}. Backing off {backoff}s (attempt {attempt+1}/{IMAGE_PARSE_MAX_RETRIES}).", extra={"status": status})
                     await asyncio.sleep(backoff)
@@ -324,7 +398,7 @@ async def _post_with_retries(url: str, headers: Dict[str, str], payload: Dict[st
                 log.warning(f"Fatal HTTP status {status}. No retry.", extra={"status": status, "resp_snip": text_snip[:400]})
                 return False, None, status, text_snip
                 
-        except httpx.RequestError as e: # Network errors
+        except httpx.RequestError as e:
             backoff = IMAGE_PARSE_BACKOFF_BASE * (2 ** attempt)
             log.warning(f"HTTP request error: {e}. Backoff {backoff}s (attempt {attempt+1}/{IMAGE_PARSE_MAX_RETRIES}).")
             await asyncio.sleep(backoff)
@@ -339,7 +413,7 @@ async def _post_with_retries(url: str, headers: Dict[str, str], payload: Dict[st
     return False, None, 0, last_text
 
 def _safe_outer_json_extract(text: str) -> Optional[str]:
-    """ Extract outermost JSON object using fenced blocks or non-greedy regex. """
+    """Extract outermost JSON object using fenced blocks or non-greedy regex."""
     if not text:
         return None
     
@@ -358,43 +432,38 @@ def _safe_outer_json_extract(text: str) -> Optional[str]:
     if not json_block:
         return None
 
-    # ✅ THE FIX (v2.2.2): إصلاح مزدوج - الفواصل + الأقواس
+    # ✅ FIXED: Comprehensive JSON sanitization
     try:
-        # 1. إزالة الفواصل من داخل الأرقام (107,787.79 → 107787.79)
+        # 1. Remove commas from numbers (107,787.79 → 107787.79)
         sanitized_block = json_block
         sanitized_block = re.sub(r'(\d),(\d{3})', r'\1\2', sanitized_block)
-        sanitized_block = re.sub(r'(\d),(\d{3})', r'\1\2', sanitized_block) # للملايين
+        sanitized_block = re.sub(r'(\d),(\d{3})', r'\1\2', sanitized_block)
         
-        # 2. إصلاح الأقواس الناقصة
+        # 2. Fix missing braces
         sanitized_block = sanitized_block.strip()
         
-        # عد الأقواس لمعرفة ما إذا كانت متوازنة
         open_braces = sanitized_block.count('{')
         close_braces = sanitized_block.count('}')
         open_brackets = sanitized_block.count('[')
         close_brackets = sanitized_block.count(']')
         
-        # إضافة الأقواس الناقصة
+        # Add missing closing braces
         if open_braces > close_braces:
-            # ناقص أقواس إغلاق }
             missing_braces = open_braces - close_braces
             sanitized_block += '}' * missing_braces
         
+        # Add missing closing brackets
         if open_brackets > close_brackets:
-            # ناقص أقواس إغلاق ]
             missing_brackets = open_brackets - close_brackets
             sanitized_block += ']' * missing_brackets
         
-        # الحالات الخاصة الشائعة
+        # Common pattern fixes
         if sanitized_block.endswith('}]'):
             sanitized_block += '}'
         elif sanitized_block.endswith('"}'):
-            # يبدو مكتملاً
-            pass
+            pass  # Complete
         elif not sanitized_block.endswith('}') and not sanitized_block.endswith(']'):
-            # ينتهي بقيمة بدون أقواس إغلاق
             if 'targets' in sanitized_block and '[' in sanitized_block:
-                # حالة targets غير مكتملة
                 if sanitized_block.count('[') > sanitized_block.count(']'):
                     sanitized_block += ']'
                 if sanitized_block.count('{') > sanitized_block.count('}'):
@@ -406,17 +475,14 @@ def _safe_outer_json_extract(text: str) -> Optional[str]:
         return json_block
 
 def _extract_claude_response(response_json: Dict[str, Any]) -> str:
-    """ Handle multiple Claude response shapes. """
+    """Handle multiple Claude response shapes."""
     try:
-        # Standard Claude response
         if "content" in response_json and isinstance(response_json["content"], list):
             for block in response_json["content"]:
                 if block.get("type") == "text":
                     return block.get("text", "")
-        # Fallback for completion-style
         if "completion" in response_json:
             return response_json["completion"]
-        # Fallback for OpenRouter-proxied Claude
         if "choices" in response_json:
             return response_json["choices"][0].get("message", {}).get("content", "")
         return json.dumps(response_json)
@@ -424,7 +490,7 @@ def _extract_claude_response(response_json: Dict[str, Any]) -> str:
         return json.dumps(response_json)
 
 def _extract_qwen_response(response_json: Dict[str, Any]) -> str:
-    """ Handle multiple Qwen response shapes. """
+    """Handle multiple Qwen response shapes."""
     try:
         if "output" in response_json and "text" in response_json["output"]:
             return response_json["output"]["text"]
@@ -441,7 +507,7 @@ def _has_obvious_errors(signal: Dict) -> bool:
     try:  
         entry = float(signal.get("entry", 0))  
         sl = float(signal.get("stop_loss", 0)) if signal.get("stop_loss") else 0  
-        if sl > 0 and entry > 0 and abs(sl - entry) / entry > 5:  # 500% difference
+        if sl > 0 and entry > 0 and abs(sl - entry) / entry > 5:
             log.warning(f"Signal {signal.get('asset')} has obvious error: Entry {entry}, SL {sl}")
             return True  
         return False  
