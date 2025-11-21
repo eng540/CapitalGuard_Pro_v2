@@ -1,12 +1,8 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_utils.py ---
 # File: ai_service/services/parsing_utils.py
-# Version: 2.2.1 (v5.2 Engine - JSON Comma Hotfix)
-# ✅ THE FIX: (Protocol 1) إصلاح خطأ `JSONDecodeError: Extra data` (بسبب 107,787.79).
-#    - 1. (NEW) تحديث `_safe_outer_json_extract` ليتضمن "تنظيف مسبق" (Pre-Sanitization)
-#       لإزالة الفواصل (commas) من داخل الأرقام قبل محاولة `json.loads`.
-#    - 2. (MAINTAIN) الحفاظ على جميع إصلاحات v2.2.0 (إضافة `_extract_google_response`
-#       و `_build_google_headers` والمساعدين الآخرين) لحل `ImportError`.
-# 🎯 IMPACT: هذا الملف الآن موثوق، ومرن ضد أخطاء تنسيق JSON الشائعة.
+# Version: 2.2.2 (v5.2 Engine - JSON Comma & Brace Hotfix)
+# ✅ THE FIX: إصلاح مزدوج - الفواصل داخل الأرقام + الأقواس الناقصة
+#    - 1. إصلاح الفواصل داخل الأرقام (107,787.79 → 107787.79)
+#    - 2. إصلاح الأقواس الناقصة في JSON ({... → {...}})
 
 import os
 import re
@@ -362,17 +358,52 @@ def _safe_outer_json_extract(text: str) -> Optional[str]:
     if not json_block:
         return None
 
-    # ✅ THE FIX (v2.2.1 / v5.2 Engine): Pre-sanitize the JSON block
-    # Remove commas inside numbers (e.g., "entry": 107,787.79 -> "entry": 107787.79)
-    # This regex targets commas that are between two digits.
+    # ✅ THE FIX (v2.2.2): إصلاح مزدوج - الفواصل + الأقواس
     try:
-        # Iteratively remove commas between digits
+        # 1. إزالة الفواصل من داخل الأرقام (107,787.79 → 107787.79)
         sanitized_block = json_block
         sanitized_block = re.sub(r'(\d),(\d{3})', r'\1\2', sanitized_block)
-        sanitized_block = re.sub(r'(\d),(\d{3})', r'\1\2', sanitized_block) # Run again for millions
+        sanitized_block = re.sub(r'(\d),(\d{3})', r'\1\2', sanitized_block) # للملايين
+        
+        # 2. إصلاح الأقواس الناقصة
+        sanitized_block = sanitized_block.strip()
+        
+        # عد الأقواس لمعرفة ما إذا كانت متوازنة
+        open_braces = sanitized_block.count('{')
+        close_braces = sanitized_block.count('}')
+        open_brackets = sanitized_block.count('[')
+        close_brackets = sanitized_block.count(']')
+        
+        # إضافة الأقواس الناقصة
+        if open_braces > close_braces:
+            # ناقص أقواس إغلاق }
+            missing_braces = open_braces - close_braces
+            sanitized_block += '}' * missing_braces
+        
+        if open_brackets > close_brackets:
+            # ناقص أقواس إغلاق ]
+            missing_brackets = open_brackets - close_brackets
+            sanitized_block += ']' * missing_brackets
+        
+        # الحالات الخاصة الشائعة
+        if sanitized_block.endswith('}]'):
+            sanitized_block += '}'
+        elif sanitized_block.endswith('"}'):
+            # يبدو مكتملاً
+            pass
+        elif not sanitized_block.endswith('}') and not sanitized_block.endswith(']'):
+            # ينتهي بقيمة بدون أقواس إغلاق
+            if 'targets' in sanitized_block and '[' in sanitized_block:
+                # حالة targets غير مكتملة
+                if sanitized_block.count('[') > sanitized_block.count(']'):
+                    sanitized_block += ']'
+                if sanitized_block.count('{') > sanitized_block.count('}'):
+                    sanitized_block += '}'
+        
         return sanitized_block
-    except Exception:
-        return json_block # Return original if regex fails
+    except Exception as e:
+        log.warning(f"JSON sanitization failed: {e}, returning original")
+        return json_block
 
 def _extract_claude_response(response_json: Dict[str, Any]) -> str:
     """ Handle multiple Claude response shapes. """
@@ -437,5 +468,4 @@ def _smart_signal_selector(signals: List[Dict]) -> Optional[Dict]:
         if _has_obvious_errors(signal):  
             score -= 15  
         scored.append((score, signal))  
-    return max(scored, key=lambda x: x[0])[1] if scored else None  
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_utils.py ---
+    return max(scored, key=lambda x: x[0])[1] if scored else None
