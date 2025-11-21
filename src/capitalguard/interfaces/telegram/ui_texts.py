@@ -1,18 +1,16 @@
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 # File: src/capitalguard/interfaces/telegram/ui_texts.py
-# Version: v29.1.0-R2 (Design 3 - Trade View)
-# ✅ THE FIX: (R2 Feature - Design 3)
-#    - 1. (REFACTORED) إعادة كتابة `build_trade_card_text` بالكامل.
-#    - 2. (NEW) تنفذ "التصميم 3" (تصميم TradingView/Binance)
-#       مع كتل نظيفة لـ "الأداء"، "السعر الحي"، و "خطة الخروج".
-#    - 3. (CLEAN) استخدام `_get_attr` و `_format_price` المستوردة
-#       لضمان الاتساق والنظافة.
-# 🎯 IMPACT: هذه هي واجهة عرض التفاصيل النهائية والاحترافية للنظام.
+# Version: v30.0.0-PLATINUM (Added PortfolioViews)
+# ✅ THE FIX: Added 'PortfolioViews' class to support the new management_handlers.
 
 from __future__ import annotations
 import logging
 from typing import List, Optional, Dict, Any
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
+
+from telegram import Update, InlineKeyboardMarkup
+from telegram.constants import ParseMode
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.domain.value_objects import Target
@@ -27,9 +25,6 @@ _STATUS_MAP = {
     RecommendationStatus.CLOSED: "🏁 CLOSED",
 }
 _SIDE_ICONS = {'LONG': '🟢', 'SHORT': '🔴'}
-
-# --- (Helpers _to_decimal, _pct, _format_price, _get_attr
-#      are now imported from helpers.py or keyboards.py) ---
 
 def _format_pnl(pnl: float) -> str:
     return f"{pnl:+.2f}%"
@@ -253,3 +248,48 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
     
     base_text += "\n\nReady to publish?"
     return base_text
+
+# --- ✅ NEW CLASS: PortfolioViews (The Missing Piece) ---
+class PortfolioViews:
+    """
+    Handles rendering of the main portfolio hub.
+    """
+    @staticmethod
+    async def render_hub(update: Update, user_name: str, report: Dict[str, Any], active_count: int, watchlist_count: int, is_analyst: bool):
+        from capitalguard.interfaces.telegram.keyboards import CallbackBuilder, CallbackNamespace, CallbackAction
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        header = "📊 *CapitalGuard — My Portfolio*\nمنطقة التحكم الذكية لجميع صفقاتك."
+        stats_card = (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "📈 *الأداء العام (Activated)*\n"
+            f" • الصفقات المفعّلة: `{report.get('total_trades', '0')}`\n"
+            f" • صافي PnL: `{report.get('total_pnl_pct', 'N/A')}`\n"
+            f" • نسبة النجاح: `{report.get('win_rate_pct', 'N/A')}`\n" 
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "*طرق العرض:*"
+        )
+        
+        ns = CallbackNamespace.MGMT
+        keyboard = [
+            [InlineKeyboardButton(f"🚀 الصفقات المفعّلة ({active_count})", callback_data=CallbackBuilder.create(ns, "show_list", "activated", 1))],
+            [InlineKeyboardButton(f"👁️ صفقات المتابعة ({watchlist_count})", callback_data=CallbackBuilder.create(ns, "show_list", "watchlist", 1))],
+            [InlineKeyboardButton("📡 حسب القناة", callback_data=CallbackBuilder.create(ns, "show_list", "channels", 1))],
+        ]
+        
+        if is_analyst:
+            keyboard.append([InlineKeyboardButton("📈 لوحة المحلل", callback_data=CallbackBuilder.create(ns, "show_list", "analyst", 1))])
+
+        keyboard.append([InlineKeyboardButton("🔄 تحديث البيانات", callback_data=CallbackBuilder.create(ns, "hub"))])
+
+        text = f"{header}\n\n{stats_card}"
+        
+        # Safe edit logic
+        try:
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.effective_message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            log.warning(f"Failed to render hub: {e}")
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
