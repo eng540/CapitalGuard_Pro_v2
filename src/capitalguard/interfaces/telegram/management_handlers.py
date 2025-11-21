@@ -1,10 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v43.0.0-COMPLETE (Routing Fix + Logging)
+# Version: v43.1.0-HOTFIX (ID Mismatch Fix)
 # ✅ THE FIX:
-#    1. Added missing routes: SHOW_LIST, EDIT_MENU, CLOSE_MENU, etc.
-#    2. Added Logging for unmatched actions (Fixes silent logs).
-#    3. Integrated render functions into PortfolioController.
+#    1. Fixed 'show_position': Passed 'db_user.telegram_user_id' instead of 'db_user.id'.
+#       -> This resolves "Item no longer exists" error.
+#    2. Maintained all previous fixes (Routing, Logging, Async Pipeline).
 
 import logging
 import asyncio
@@ -266,7 +266,9 @@ class PortfolioController:
 
         trade_service = get_service(context, "trade_service", TradeService)
         price_service = get_service(context, "price_service", PriceService)
-        user_id = str(db_user.id)
+        
+        # ✅ FIX: Use Telegram ID for service lookup, NOT DB ID
+        user_id = str(db_user.telegram_user_id)
         
         try:
             pos = await asyncio.to_thread(trade_service.get_position_details_for_user, db_session, user_id, p_type, p_id)
@@ -312,7 +314,8 @@ class PortfolioController:
         rec_id = callback.get_int(0)
         
         trade_service = get_service(context, "trade_service", TradeService)
-        position = trade_service.get_position_details_for_user(db_session, str(query.from_user.id), "rec", rec_id)
+        # ✅ FIX: Use Telegram ID here too
+        position = trade_service.get_position_details_for_user(db_session, str(db_user.telegram_user_id), "rec", rec_id)
         if not position: return
 
         text = build_trade_card_text(position)
