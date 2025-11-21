@@ -1,7 +1,9 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 # File: src/capitalguard/interfaces/telegram/ui_texts.py
-# Version: v30.0.0-PLATINUM (Added PortfolioViews)
-# ✅ THE FIX: Added 'PortfolioViews' class to support the new management_handlers.
+# Version: v43.0.0-PLATINUM (UI Fixes)
+# ✅ THE FIX:
+#    1. Handled 'MessageNotModified' error gracefully in render_hub.
+#    2. Added user feedback via callback answer if data hasn't changed.
 
 from __future__ import annotations
 import logging
@@ -11,6 +13,7 @@ from datetime import datetime
 
 from telegram import Update, InlineKeyboardMarkup
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.domain.value_objects import Target
@@ -284,12 +287,19 @@ class PortfolioViews:
 
         text = f"{header}\n\n{stats_card}"
         
-        # Safe edit logic
+        # Safe edit logic with MessageNotModified handling
         try:
             if update.callback_query:
                 await update.callback_query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
             else:
                 await update.effective_message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        except BadRequest as e:
+            if "message is not modified" in str(e).lower():
+                # If message is not modified, just answer the callback to stop the loading animation
+                if update.callback_query:
+                    await update.callback_query.answer("✅ البيانات محدثة بالفعل")
+            else:
+                log.warning(f"Failed to render hub: {e}")
         except Exception as e:
             log.warning(f"Failed to render hub: {e}")
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
