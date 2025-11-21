@@ -1,11 +1,11 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v35.0.0-STABLE (Fixes: Buttons, Cancel, Validation)
+# Version: v36.0.0-GOLD (Session Timeout Fix)
 # ✅ THE FIX:
-#    1. Fixed Regex patterns in register_management_handlers to correctly match button callbacks.
-#    2. Added Business Logic: Prevent 'edit_entry' if status is ACTIVE.
-#    3. Fixed Cancel button functionality.
-#    4. Ensured all imports are correct and safe.
+#    1. Imported 'update_management_activity' from conversation_handlers.
+#    2. Called 'update_management_activity(context)' in ALL button handlers.
+#       -> This prevents the immediate "Session Timeout" error when replying.
+#    3. Verified Regex patterns for all buttons including 'edit_tp'.
 
 import logging
 import re 
@@ -54,11 +54,12 @@ from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.lifecycle_service import LifecycleService
 from capitalguard.application.services.performance_service import PerformanceService
 
-# Import State Keys from conversation handlers to ensure compatibility
+# Import State Keys AND Activity Updater from conversation handlers
 from capitalguard.interfaces.telegram.conversation_handlers import (
     AWAITING_INPUT_KEY,
     ORIGINAL_MESSAGE_CHAT_ID_KEY,
-    ORIGINAL_MESSAGE_MESSAGE_ID_KEY
+    ORIGINAL_MESSAGE_MESSAGE_ID_KEY,
+    update_management_activity  # ✅ CRITICAL IMPORT
 )
 
 log = logging.getLogger(__name__)
@@ -95,6 +96,9 @@ async def safe_edit_message(
 @require_active_user
 async def management_entry_point_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     """Handles /myportfolio."""
+    # ✅ Update activity on command start
+    update_management_activity(context)
+    
     try:
         performance_service = get_service(context, "performance_service", PerformanceService)
         report = performance_service.get_trader_performance_report(db_session, db_user.id)
@@ -145,6 +149,10 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
 async def management_callback_hub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer()
+    
+    # ✅ Update activity on any hub interaction
+    update_management_activity(context)
+    
     parsed_data = CallbackBuilder.parse(query.data)
     action = parsed_data.get("action")
     params = parsed_data.get("params", [])
@@ -328,6 +336,10 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
 async def show_position_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer()
+    
+    # ✅ Update activity
+    update_management_activity(context)
+    
     data = CallbackBuilder.parse(query.data)
     p = data.get("params", [])
     if len(p) >= 2:
@@ -339,6 +351,10 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
 async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer()
+    
+    # ✅ Update activity
+    update_management_activity(context)
+    
     data = CallbackBuilder.parse(query.data)
     ns = data.get("namespace")
     action = data.get("action")
@@ -386,6 +402,9 @@ async def handle_edit_field_selection(update: Update, context: ContextTypes.DEFA
     """
     query = update.callback_query
     await query.answer()
+    
+    # ✅ CRITICAL FIX: Update activity timestamp to prevent immediate timeout
+    update_management_activity(context)
     
     data = CallbackBuilder.parse(query.data)
     namespace = data.get("namespace")
@@ -438,6 +457,10 @@ async def handle_edit_field_selection(update: Update, context: ContextTypes.DEFA
 async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer("Processing...")
+    
+    # ✅ Update activity
+    update_management_activity(context)
+    
     data = CallbackBuilder.parse(query.data)
     ns = data.get("namespace")
     action = data.get("action")
@@ -473,6 +496,10 @@ async def immediate_action_handler(update: Update, context: ContextTypes.DEFAULT
 async def partial_close_fixed_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     query = update.callback_query
     await query.answer("Processing...")
+    
+    # ✅ Update activity
+    update_management_activity(context)
+    
     data = CallbackBuilder.parse(query.data)
     rec_id = int(data.get("params")[0])
     pct = data.get("params")[1]
@@ -496,6 +523,9 @@ async def cancel_input_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     """Cancels the input state and returns to the main card."""
     query = update.callback_query
     await query.answer("Cancelled")
+    
+    # ✅ Update activity
+    update_management_activity(context)
     
     # Clear input state
     context.user_data.pop(AWAITING_INPUT_KEY, None)
