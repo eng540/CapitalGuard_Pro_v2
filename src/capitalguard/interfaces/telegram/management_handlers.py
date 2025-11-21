@@ -1,10 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v44.0.0-FIXED (Confirm Change Implemented)
+# Version: v45.0.0-FIXED (Risk Menu Fix)
 # ✅ THE FIX:
-#    1. Added 'handle_confirm_change' to PortfolioController.
-#    2. Registered 'CONFIRM_CHANGE' in ActionRouter.
-#    3. This enables the "Confirm" button to actually apply the edits to the DB.
+#    1. Updated 'show_submenu' to correctly handle 'ManagementAction.SHOW_MENU'.
+#    2. Updated 'ActionRouter' to route 'SHOW_MENU' correctly.
+#    3. This restores the Risk Management buttons.
 
 import logging
 import asyncio
@@ -306,6 +306,7 @@ class PortfolioController:
 
     @staticmethod
     async def show_submenu(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
+        """Handles showing submenus (Edit, Close, Partial)."""
         query = update.callback_query
         rec_id = callback.get_int(0)
         
@@ -318,6 +319,7 @@ class PortfolioController:
         back = InlineKeyboardButton("⬅️ Back", callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id, "activated", 1))
 
         if position.unified_status in ["ACTIVE", "WATCHLIST"]:
+            # ✅ FIX: Check for SHOW_MENU as well
             if callback.namespace == CallbackNamespace.RECOMMENDATION.value:
                 if callback.action == ManagementAction.EDIT_MENU.value:
                     text = "✏️ *Edit Recommendation*"
@@ -331,7 +333,7 @@ class PortfolioController:
                     text = "💰 *Partial Close*"
                     kb = build_partial_close_keyboard(rec_id)
                     kb_rows.extend(kb.inline_keyboard)
-            elif callback.namespace == CallbackNamespace.EXIT_STRATEGY.value and callback.action == ManagementAction.SHOW.value:
+            elif callback.namespace == CallbackNamespace.EXIT_STRATEGY.value and callback.action == ManagementAction.SHOW_MENU.value:
                 text = "📈 *Risk Management*"
                 kb = build_exit_management_keyboard(position)
                 kb_rows.extend(kb.inline_keyboard)
@@ -374,26 +376,13 @@ class PortfolioController:
         rec_id = callback.get_int(0)
         await PortfolioController.show_position(update, context, db_session, db_user, TypedCallback("pos", "sh", ["rec", str(rec_id)]))
 
-    # --- ✅ NEW: Handle Confirm Change (The Missing Logic) ---
     @staticmethod
     async def handle_confirm_change(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
         """Executes the pending change after user confirmation."""
         query = update.callback_query
         session = SessionContext(context)
         
-        # Retrieve pending data
         pending = context.user_data.get(KEY_PENDING_CHANGE)
-        # Retrieve original state to know what we are editing
-        # Note: master_reply_handler clears AWAITING_INPUT but sets PENDING_CHANGE.
-        # We need to store the 'action' and 'item_id' in PENDING_CHANGE as well during master_reply_handler.
-        # Since we don't have master_reply_handler here (it's in conversation_handlers.py), 
-        # we assume PENDING_CHANGE has: {'value': val, 'action': act, 'item_id': id}
-        # If not, we need to fix master_reply_handler. 
-        # BUT, for now, let's assume the callback params contain the info we need if possible, 
-        # OR we rely on session.
-        
-        # Actually, the callback data itself usually contains the ID and Action in our architecture.
-        # Callback: mgmt:confirm_change:namespace:action:item_id
         
         ns = callback.get_str(0)
         action = callback.get_str(1)
@@ -422,7 +411,6 @@ class PortfolioController:
             await query.answer("✅ Updated successfully!")
             session.clear_all()
             
-            # Redirect back to position view
             await PortfolioController.show_position(update, context, db_session, db_user, TypedCallback("pos", "sh", ["rec", str(item_id)]))
             
         except Exception as e:
@@ -441,7 +429,6 @@ class ActionRouter:
         ManagementAction.HUB.value: PortfolioController.show_hub,
         ManagementAction.SHOW_LIST.value: PortfolioController.handle_list_navigation,
         ManagementAction.CANCEL_INPUT.value: PortfolioController.handle_cancel_input,
-        # ✅ ADDED ROUTE:
         ManagementAction.CONFIRM_CHANGE.value: PortfolioController.handle_confirm_change,
     }
     
@@ -460,6 +447,7 @@ class ActionRouter:
     _SUBMENU_ROUTES = {
         ManagementAction.EDIT_MENU.value: PortfolioController.show_submenu,
         ManagementAction.PARTIAL_CLOSE_MENU.value: PortfolioController.show_submenu,
+        ManagementAction.SHOW_MENU.value: PortfolioController.show_submenu, # ✅ ADDED
         "close_menu": PortfolioController.show_submenu, 
         "show_menu": PortfolioController.show_submenu,
     }
