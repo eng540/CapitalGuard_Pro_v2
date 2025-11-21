@@ -1,7 +1,7 @@
-# --- START OF NEW FILE: src/capitalguard/interfaces/telegram/schemas.py ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/schemas.py ---
 from enum import Enum
-from typing import Optional, List, Dict
-from dataclasses import dataclass, field
+from typing import Optional, List
+from dataclasses import dataclass
 
 class ManagementNamespace(Enum):
     MGMT = "mgmt"
@@ -28,6 +28,8 @@ class ManagementAction(Enum):
     CANCEL_INPUT = "cancel_input"
     MOVE_TO_BE = "move_to_be"
     CANCEL_STRATEGY = "cancel"
+    # ✅ ADDED:
+    CONFIRM_CHANGE = "confirm_change"
 
 @dataclass
 class TypedCallback:
@@ -37,10 +39,6 @@ class TypedCallback:
 
     @classmethod
     def parse(cls, data: str) -> 'TypedCallback':
-        """
-        Parses a raw callback string safely.
-        Format: namespace:action:param1:param2...
-        """
         parts = data.split(':')
         if len(parts) < 2:
             return cls("unknown", "unknown", [])
@@ -61,4 +59,4 @@ class TypedCallback:
             return self.params[index]
         except IndexError:
             return None
-# --- END OF NEW FILE ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/schemas.py ---
