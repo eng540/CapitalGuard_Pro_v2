@@ -218,7 +218,10 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
                     
                     # ✅ الإصلاح: استخدام التوقيع الجديد لدالة التحقق
                     trade_service._validate_recommendation_data(
-                        data=hydrated_data
+                        side=hydrated_data['side'],
+                        entry=hydrated_data['entry'],
+                        stop_loss=hydrated_data['stop_loss'],
+                        targets=hydrated_data['targets']
                     )
                     
                 except (ValueError, TypeError) as e:
@@ -378,7 +381,10 @@ async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_
                 
                 # ✅ الإصلاح: استخدام التوقيع الجديد لدالة التحقق
                 trade_service._validate_recommendation_data(
-                    data=hydrated_data
+                    side=hydrated_data['side'],
+                    entry=hydrated_data['entry'],
+                    stop_loss=hydrated_data['stop_loss'],
+                    targets=hydrated_data['targets']
                 )
                 
             except (ValueError, TypeError) as e:
@@ -562,7 +568,10 @@ async def review_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         try:
             # ✅ الإصلاح: استخدام التوقيع الجديد لدالة التحقق
             trade_service._validate_recommendation_data(
-                data=current_data
+                side=current_data['side'],
+                entry=current_data['entry'],
+                stop_loss=current_data['stop_loss'],
+                targets=current_data['targets']
             )
         except ValueError as e:
             error_text = f"❌ **Error saving trade:** {html.escape(str(e))}"
