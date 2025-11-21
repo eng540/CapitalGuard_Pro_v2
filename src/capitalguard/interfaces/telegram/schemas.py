@@ -19,7 +19,8 @@ class ManagementAction(Enum):
     # Menus
     EDIT_MENU = "edit_menu"
     PARTIAL_CLOSE_MENU = "partial_close_menu"
-    SHOW_MENU = "show_menu"  # ✅ ADDED THIS MISSING ACTION
+    SHOW_MENU = "show_menu"
+    CLOSE_MENU = "close_menu" # ✅ ADDED THIS MISSING ACTION
     
     # Edit Actions
     EDIT_ENTRY = "edit_entry"
