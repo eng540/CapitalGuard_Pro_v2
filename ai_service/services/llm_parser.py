@@ -1,10 +1,8 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/llm_parser.py ---
 # File: ai_service/services/llm_parser.py
-# Version: 5.1.0 (v5.1 Engine Refactor)
-# ✅ THE FIX: (Protocol 1) تم إصلاح التبعيات الدائرية (Circular Dependencies).
-#    - 1. (DRY) تم حذف جميع الدوال المساعدة (مثل _build_google_headers, _extract_google_response).
-#    - 2. (NEW) أصبح الآن يستدعي *فقط* الأدوات الموحدة من `parsing_utils`.
-# 🎯 IMPACT: هذا الملف الآن "نظيف" (Clean) ومتوافق مع v5.1 Engine.
+# Version: 5.1.1 (v5.1 Engine Refactor + JSON Repair)
+# ✅ THE FIX: إضافة آلية إصلاح JSON يدوية عند فشل التحليل
+#    - 1. محاولة إصلاح JSON يدوياً إذا فشل json.loads
+#    - 2. تحسين التعامل مع الأخطاء
 
 import os
 import re
@@ -111,7 +109,7 @@ def _build_claude_text_payload(text: str) -> Dict[str, Any]:
     }
 
 # ------------------------
-# Main function: parse_with_llm (v5.0)
+# Main function: parse_with_llm (v5.0) مع إصلاح JSON
 # ------------------------
 
 async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
@@ -181,11 +179,55 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
         telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "no_json"}))
         return None
 
-    # 5. Parse & Validate
+    # 5. Parse & Validate مع إصلاح JSON يدوي
     try:
-        parsed = json.loads(json_block)
+        # ✅ الإصلاح الجديد: محاولة إصلاح JSON يدوياً
+        try:
+            parsed = json.loads(json_block)
+        except json.JSONDecodeError as e:
+            log.warning(f"JSON decode failed, attempting manual repair: {e}")
+            
+            # محاولات إصلاح يدوية
+            json_block_repaired = json_block.strip()
+            
+            # الحالة 1: ينتهي بـ '}]' لكن ينقص '}'
+            if json_block_repaired.endswith('}]'):
+                json_block_repaired += '}'
+            
+            # الحالة 2: ينتهي بقيمة بدون أقواس إغلاق
+            elif not json_block_repaired.endswith('}') and not json_block_repaired.endswith(']'):
+                # عد الأقواس لمعرفة الناقص
+                open_count = json_block_repaired.count('{') + json_block_repaired.count('[')
+                close_count = json_block_repaired.count('}') + json_block_repaired.count(']')
+                
+                if open_count > close_count:
+                    # أضف الأقواس الناقصة
+                    missing = open_count - close_count
+                    json_block_repaired += '}' * missing
+            
+            # الحالة 3: JSON يبدأ بـ { لكن ينتهي بشكل غير متوقع
+            elif json_block_repaired.startswith('{') and not json_block_repaired.endswith('}'):
+                # حاول إيجاد آخر قوس مفتوح وأضف الإغلاق
+                last_open = json_block_repaired.rfind('{')
+                if last_open != -1:
+                    # أضف الإغلاق بعد آخر قوس مفتوح
+                    json_block_repaired += '}'
+            
+            try:
+                parsed = json.loads(json_block_repaired)
+                log.info("✅ JSON manual repair successful")
+            except json.JSONDecodeError as e2:
+                log.error(f"❌ JSON repair also failed: {e2}. Original: {json_block[:200]}")
+                telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "json_decode_after_repair"}))
+                return None
+
+        # معالجة حالة الـ JSON كـ string
         if isinstance(parsed, str) and parsed.strip().startswith('{'):
-            parsed = json.loads(parsed)
+            try:
+                parsed = json.loads(parsed)
+            except json.JSONDecodeError:
+                log.error("Nested JSON string also failed to parse")
+                return None
 
         if isinstance(parsed, dict) and parsed.get("error"):
             reason = parsed.get("error")
@@ -240,4 +282,3 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
         log.exception(f"Unexpected error in parse_with_llm: {e}")
         telemetry_log.info(json.dumps({**log_meta, "success": False, "error": "unexpected"}))
         return None
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/llm_parser.py ---
