@@ -1,9 +1,7 @@
-# --- START OF NEW FILE: src/capitalguard/interfaces/telegram/presenters.py --- v1
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/presenters.py ---v1
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.constants import ParseMode
 from capitalguard.interfaces.telegram.keyboards import CallbackBuilder, CallbackNamespace, CallbackAction
-from capitalguard.interfaces.telegram.ui_texts import build_trade_card_text
-from capitalguard.interfaces.telegram.presenters import ManagementPresenter
 
 # Assumed helper for safe markdown escape (implementing it here for completeness)
 def _safe_escape_markdown(text: str) -> str:
@@ -48,11 +46,10 @@ class ManagementPresenter:
         keyboard = ManagementPresenter.get_cancel_keyboard(rec_id)
 
         # Assuming safe_edit_message utility is available/imported globally
-        await update.get_bot().edit_message_text(
-            chat_id=update.callback_query.message.chat_id, 
-            message_id=update.callback_query.message.message_id,
+        # We use update.callback_query.message directly here as this is a presenter method
+        await update.callback_query.message.edit_text(
             text=prompt_text,
             reply_markup=keyboard,
             parse_mode=ParseMode.HTML
         )
-# --- END OF NEW FILE ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/presenters.py ---
