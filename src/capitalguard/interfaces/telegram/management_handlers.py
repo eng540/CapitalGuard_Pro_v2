@@ -1,9 +1,9 @@
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v34.3.3-R2-FINAL (Production Stable - Tuple Crash & Safe Import Fix)
-# ✅ STATUS: GOLD MASTER - CRASH FIXED
-#    - Fixed AttributeError: 'tuple' object has no attribute 'append' (Ensured list initialization).
-#    - Fixed NameError: PerformanceService (Explicit Import added).
-#    - Pure View Logic maintained.
+# Version: v34.4.0-HOTFIX (Edit Buttons Fix)
+# ✅ THE FIX: Added 'handle_edit_field_selection' and registered it.
+#    - Solves the "Frozen Buttons" issue by handling 'edit_entry', 'edit_sl', etc.
+#    - Sets the correct state for 'master_reply_handler' to pick up the user's input.
 
 import logging
 import re 
@@ -46,11 +46,18 @@ from capitalguard.interfaces.telegram.ui_texts import build_trade_card_text
 from capitalguard.interfaces.telegram.auth import require_active_user, require_analyst_user
 from capitalguard.domain.entities import UserType as UserTypeEntity
 
-# Services (All required services must be imported)
+# Services
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.lifecycle_service import LifecycleService
-from capitalguard.application.services.performance_service import PerformanceService # Explicitly imported
+from capitalguard.application.services.performance_service import PerformanceService
+
+# Import State Keys from conversation handlers to ensure compatibility
+from capitalguard.interfaces.telegram.conversation_handlers import (
+    AWAITING_INPUT_KEY,
+    ORIGINAL_MESSAGE_CHAT_ID_KEY,
+    ORIGINAL_MESSAGE_MESSAGE_ID_KEY
+)
 
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors")
@@ -125,12 +132,10 @@ async def management_entry_point_handler(update: Update, context: ContextTypes.D
         keyboard.append([InlineKeyboardButton("🔄 تحديث البيانات", callback_data=CallbackBuilder.create(ns, "hub"))])
 
         safe_text = _safe_escape_markdown(main_message)
-        # CRITICAL FIX: Ensure to use update.effective_message for robust reply handling in case of command
         await update.effective_message.reply_markdown_v2(safe_text, reply_markup=InlineKeyboardMarkup(keyboard))
         
     except Exception as e:
         loge.error(f"Error in management entry point: {e}", exc_info=True)
-        # CRITICAL FIX: Use update.effective_message for safe error response
         await update.effective_message.reply_text("❌ Error loading portfolio hub.")
 
 @uow_transaction
@@ -164,7 +169,6 @@ async def management_callback_hub_handler(update: Update, context: ContextTypes.
 
     except Exception as e:
         loge.error(f"Error in hub navigation handler: {e}", exc_info=True)
-        # CRITICAL FIX: Use query.message for safe editing
         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="❌ Error loading view.")
 
 async def _render_list_view(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, list_type: str, page: int, channel_id_filter: Union[int, str, None] = None):
@@ -290,7 +294,6 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
 
         back_btn = InlineKeyboardButton(ButtonTexts.BACK_TO_LIST, callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "show_list", source_list, source_page))
         
-        # CRITICAL FIX: Ensure keyboard_rows is always initialized as a list
         keyboard_rows: List[List[InlineKeyboardButton]] = []
         keyboard_markup = None
 
@@ -306,7 +309,6 @@ async def _send_or_edit_position_panel(update: Update, context: ContextTypes.DEF
                  keyboard_markup = analyst_control_panel_keyboard(position)
         
         if keyboard_markup: 
-             # Ensure inline_keyboard is appended as individual lists
              keyboard_rows.extend(keyboard_markup.inline_keyboard)
              
         keyboard_rows.append([back_btn])
@@ -327,7 +329,6 @@ async def show_position_panel_handler(update: Update, context: ContextTypes.DEFA
     data = CallbackBuilder.parse(query.data)
     p = data.get("params", [])
     if len(p) >= 2:
-        # CRITICAL FIX: The target message for safe_edit_message is resolved internally in _send_or_edit_position_panel
         await _send_or_edit_position_panel(update, context, db_session, p[0], int(p[1]), p[2] if len(p)>2 else "activated", int(p[3]) if len(p)>3 else 1)
 
 @uow_transaction
@@ -346,7 +347,7 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not position: return
 
     text = build_trade_card_text(position)
-    kb_rows: List[List[InlineKeyboardButton]] = [] # CRITICAL FIX: Initialize as list
+    kb_rows: List[List[InlineKeyboardButton]] = []
     back = InlineKeyboardButton("⬅️ Back", callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id, "activated", 1))
 
     if position.unified_status in ["ACTIVE", "WATCHLIST"]:
@@ -370,6 +371,55 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     kb_rows.append([back])
     await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text=_safe_escape_markdown(text), reply_markup=InlineKeyboardMarkup(kb_rows), parse_mode=ParseMode.MARKDOWN_V2)
+
+# --- ✅ NEW HANDLER: Handle Edit Field Selection (The Fix) ---
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def handle_edit_field_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """
+    Handles clicks on 'Edit Entry', 'Edit Stop Loss', 'Edit Targets', 'Edit Notes'.
+    Sets the state for master_reply_handler to capture the input.
+    """
+    query = update.callback_query
+    await query.answer()
+    
+    data = CallbackBuilder.parse(query.data)
+    namespace = data.get("namespace")
+    action = data.get("action")
+    rec_id = int(data.get("params")[0])
+    
+    # Map action to user-friendly prompt
+    prompts = {
+        "edit_entry": "💰 Please enter the new **Entry Price**:",
+        "edit_sl": "🛑 Please enter the new **Stop Loss**:",
+        "edit_tp": "🎯 Please enter the new **Targets** (e.g., `61000 62000@50`):",
+        "edit_notes": "📝 Please enter the new **Notes** (or 'clear' to remove):",
+        "close_manual": "✍️ Please enter the **Exit Price** to close at:"
+    }
+    
+    prompt_text = prompts.get(action, "Please enter the new value:")
+    
+    # Set state for master_reply_handler
+    context.user_data[AWAITING_INPUT_KEY] = {
+        "namespace": namespace,
+        "action": action,
+        "item_id": rec_id,
+        "item_type": "rec",
+        "original_message_chat_id": query.message.chat_id,
+        "original_message_message_id": query.message.message_id,
+        "previous_callback": query.data # To allow "Back" or "Re-enter"
+    }
+    
+    # Show cancel button
+    cancel_btn = InlineKeyboardButton("❌ Cancel", callback_data=CallbackBuilder.create(CallbackNamespace.MGMT, "cancel_input", rec_id))
+    
+    await safe_edit_message(
+        context.bot, query.message.chat_id, query.message.message_id,
+        text=f"{prompt_text}",
+        reply_markup=InlineKeyboardMarkup([[cancel_btn]]),
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
 
 @uow_transaction
 @require_active_user
@@ -428,10 +478,39 @@ async def partial_close_fixed_handler(update: Update, context: ContextTypes.DEFA
     except Exception as e:
         await query.answer(f"❌ Error: {str(e)[:50]}", show_alert=True)
 
+@uow_transaction
+@require_active_user
+async def cancel_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Cancels the input state and returns to the main card."""
+    query = update.callback_query
+    await query.answer("Cancelled")
+    
+    # Clear input state
+    context.user_data.pop(AWAITING_INPUT_KEY, None)
+    
+    data = CallbackBuilder.parse(query.data)
+    rec_id = int(data.get("params")[0])
+    
+    # Return to the main position panel
+    await _send_or_edit_position_panel(update, context, db_session, "rec", rec_id)
+
+
 def register_management_handlers(app: Application):
     app.add_handler(CommandHandler(["myportfolio", "open"], management_entry_point_handler))
     app.add_handler(CallbackQueryHandler(management_callback_hub_handler, pattern=rf"^{CallbackNamespace.MGMT.value}:"), group=1)
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.SHOW.value}:"), group=1)
     app.add_handler(CallbackQueryHandler(show_submenu_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_menu|close_menu|partial_close_menu|show_menu):"), group=1)
+    
+    # ✅ REGISTER THE NEW HANDLER FOR EDIT BUTTONS
+    app.add_handler(CallbackQueryHandler(
+        handle_edit_field_selection, 
+        pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:(?:edit_entry|edit_sl|edit_tp|edit_notes|close_manual):"
+    ), group=1)
+    
     app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market)"), group=1)
     app.add_handler(CallbackQueryHandler(partial_close_fixed_handler, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:{CallbackAction.PARTIAL.value}:\d+:(?:25|50)$"), group=1)
+    
+    # Register cancel handler
+    app.add_handler(CallbackQueryHandler(cancel_input_handler, pattern=rf"^{CallbackNamespace.MGMT.value}:cancel_input:"), group=1)
+
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
