@@ -1,9 +1,11 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v34.4.0-HOTFIX (Edit Buttons Fix)
-# ✅ THE FIX: Added 'handle_edit_field_selection' and registered it.
-#    - Solves the "Frozen Buttons" issue by handling 'edit_entry', 'edit_sl', etc.
-#    - Sets the correct state for 'master_reply_handler' to pick up the user's input.
+# Version: v35.0.0-STABLE (Fixes: Buttons, Cancel, Validation)
+# ✅ THE FIX:
+#    1. Fixed Regex patterns in register_management_handlers to correctly match button callbacks.
+#    2. Added Business Logic: Prevent 'edit_entry' if status is ACTIVE.
+#    3. Fixed Cancel button functionality.
+#    4. Ensured all imports are correct and safe.
 
 import logging
 import re 
@@ -44,7 +46,7 @@ from capitalguard.interfaces.telegram.keyboards import (
 )
 from capitalguard.interfaces.telegram.ui_texts import build_trade_card_text
 from capitalguard.interfaces.telegram.auth import require_active_user, require_analyst_user
-from capitalguard.domain.entities import UserType as UserTypeEntity
+from capitalguard.domain.entities import UserType as UserTypeEntity, RecommendationStatus
 
 # Services
 from capitalguard.application.services.trade_service import TradeService
@@ -372,7 +374,7 @@ async def show_submenu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     kb_rows.append([back])
     await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text=_safe_escape_markdown(text), reply_markup=InlineKeyboardMarkup(kb_rows), parse_mode=ParseMode.MARKDOWN_V2)
 
-# --- ✅ NEW HANDLER: Handle Edit Field Selection (The Fix) ---
+# --- ✅ FIXED HANDLER: Handle Edit Field Selection ---
 @uow_transaction
 @require_active_user
 @require_analyst_user
@@ -380,6 +382,7 @@ async def handle_edit_field_selection(update: Update, context: ContextTypes.DEFA
     """
     Handles clicks on 'Edit Entry', 'Edit Stop Loss', 'Edit Targets', 'Edit Notes'.
     Sets the state for master_reply_handler to capture the input.
+    Includes validation to prevent editing entry price for active trades.
     """
     query = update.callback_query
     await query.answer()
@@ -389,6 +392,15 @@ async def handle_edit_field_selection(update: Update, context: ContextTypes.DEFA
     action = data.get("action")
     rec_id = int(data.get("params")[0])
     
+    # --- ✅ VALIDATION: Check if trade is ACTIVE before allowing Entry Edit ---
+    if action == "edit_entry":
+        lifecycle_service = get_service(context, "lifecycle_service", LifecycleService)
+        rec = lifecycle_service.repo.get(db_session, rec_id)
+        if rec and rec.status == RecommendationStatus.ACTIVE:
+            await query.answer("⚠️ لا يمكن تعديل سعر الدخول للصفقات النشطة (Active).", show_alert=True)
+            return
+    # -----------------------------------------------------------------------
+
     # Map action to user-friendly prompt
     prompts = {
         "edit_entry": "💰 Please enter the new **Entry Price**:",
@@ -501,16 +513,17 @@ def register_management_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(show_position_panel_handler, pattern=rf"^{CallbackNamespace.POSITION.value}:{CallbackAction.SHOW.value}:"), group=1)
     app.add_handler(CallbackQueryHandler(show_submenu_handler, pattern=rf"^(?:{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):(?:edit_menu|close_menu|partial_close_menu|show_menu):"), group=1)
     
-    # ✅ REGISTER THE NEW HANDLER FOR EDIT BUTTONS
+    # ✅ REGISTER THE NEW HANDLER FOR EDIT BUTTONS (Regex Fixed)
+    # Removed trailing colon to match both with and without params if needed, though params are expected.
     app.add_handler(CallbackQueryHandler(
         handle_edit_field_selection, 
-        pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:(?:edit_entry|edit_sl|edit_tp|edit_notes|close_manual):"
+        pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:(?:edit_entry|edit_sl|edit_tp|edit_notes|close_manual)"
     ), group=1)
     
     app.add_handler(CallbackQueryHandler(immediate_action_handler, pattern=rf"^(?:{CallbackNamespace.EXIT_STRATEGY.value}:(?:move_to_be|cancel):|{CallbackNamespace.RECOMMENDATION.value}:close_market)"), group=1)
     app.add_handler(CallbackQueryHandler(partial_close_fixed_handler, pattern=rf"^{CallbackNamespace.RECOMMENDATION.value}:{CallbackAction.PARTIAL.value}:\d+:(?:25|50)$"), group=1)
     
-    # Register cancel handler
-    app.add_handler(CallbackQueryHandler(cancel_input_handler, pattern=rf"^{CallbackNamespace.MGMT.value}:cancel_input:"), group=1)
+    # Register cancel handler (Regex Fixed)
+    app.add_handler(CallbackQueryHandler(cancel_input_handler, pattern=rf"^{CallbackNamespace.MGMT.value}:cancel_input"), group=1)
 
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
