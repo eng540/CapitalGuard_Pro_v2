@@ -1,11 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
-# src/capitalguard/interfaces/api/main.py (v26.8 - Cache Init Fix)
+# src/capitalguard/interfaces/api/main.py (v27.0 - Complete with WebApp Support)
 """
 The definitive, stable, and production-ready main entry point.
 ✅ FIX: Added call to `market_data_service.refresh_symbols_cache()` during startup
        to populate the symbol cache *before* the AlertService or API handlers need it.
-       This resolves the "Symbol cache is not populated" warning and ensures the
-       Geo-Blocking fallback to CoinGecko can function correctly.
+✅ ADDED: WebApp support with static files mounting and router inclusion.
 """
 
 import logging
@@ -19,6 +18,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 import redis
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from telegram import Update, BotCommand
 from telegram.ext import Application, ContextTypes, BasePersistence
 
@@ -26,6 +26,7 @@ from capitalguard.config import settings
 from capitalguard.boot import bootstrap_app, build_services
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
 from capitalguard.interfaces.api.routers import auth as auth_router
+from capitalguard.interfaces.api.routers import webapp as webapp_router
 from capitalguard.interfaces.api.metrics import router as metrics_router
 from capitalguard.application.services.alert_service import AlertService
 from capitalguard.application.services.market_data_service import MarketDataService
@@ -114,9 +115,12 @@ class RedisPersistence(BasePersistence):
 
 # --- FastAPI Application ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="26.8.0-persistent")
+app = FastAPI(title="CapitalGuard Pro API", version="27.0.0-webapp")
 app.state.ptb_app = None
 app.state.services = None
+
+# ✅ WEBAPP SUPPORT: Mount static files for WebApp
+app.mount("/static", StaticFiles(directory="src/capitalguard/interfaces/api/static"), name="static")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Exception while handling an update:", exc_info=context.error)
@@ -226,6 +230,9 @@ def root():
 def health_check():
     return {"status": "ok"}
 
+# ✅ WEBAPP SUPPORT: Include WebApp router
 app.include_router(auth_router.router)
+app.include_router(webapp_router.router)
 app.include_router(metrics_router)
+
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
