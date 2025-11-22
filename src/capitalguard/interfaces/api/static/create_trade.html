@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>CapitalGuard Terminal v5.1 (Smart Logic)</title>
+    <title>CapitalGuard Terminal v5.2 (Smart Logic Enhanced)</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
@@ -13,8 +13,9 @@
             --hint-color: var(--tg-theme-hint-color, #8e8e93);
             --button-color: var(--tg-theme-button-color, #0a84ff);
             --button-text: var(--tg-theme-button-text-color, #ffffff);
-            --green: #32d74b; --red: #ff453a; --orange: #ff9f0a;
+            --green: #32d74b; --red: #ff453a; --orange: #ff9f0a; --blue: #0a84ff;
             --border: rgba(128, 128, 128, 0.2); --switcher-bg: #000000;
+            --input-bg: rgba(0, 0, 0, 0.2);
         }
         body {
             background-color: var(--bg-color); color: var(--text-color);
@@ -22,7 +23,6 @@
             margin: 0; padding: 16px; padding-bottom: 120px;
             -webkit-tap-highlight-color: transparent;
         }
-        /* ... (نفس الستايلات السابقة) ... */
         .market-switch { display: flex; background: var(--switcher-bg); padding: 4px; border-radius: 12px; margin-bottom: 20px; }
         .market-opt { flex: 1; text-align: center; padding: 10px; border-radius: 10px; font-weight: 800; font-size: 0.9rem; color: var(--hint-color); cursor: pointer; transition: all 0.3s ease; }
         .market-opt.active { background: var(--card-bg); color: var(--text-color); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
@@ -39,7 +39,7 @@
         .btn-select.active-short { background: rgba(255, 69, 58, 0.15); border-color: var(--red); color: var(--red); }
         .btn-select.active-type { background: rgba(10, 132, 255, 0.15); border-color: var(--button-color); color: var(--button-color); }
         .input-wrapper { position: relative; margin-bottom: 12px; }
-        input[type="number"], textarea, input[type="text"] { width: 100%; background: var(--bg-color); border: 1px solid var(--border); color: var(--text-color); padding: 14px; border-radius: 12px; font-size: 1.1rem; box-sizing: border-box; font-family: monospace; transition: border 0.2s; }
+        input[type="number"], textarea, input[type="text"] { width: 100%; background: var(--input-bg); border: 1px solid var(--border); color: var(--text-color); padding: 14px; border-radius: 12px; font-size: 1.1rem; box-sizing: border-box; font-family: monospace; transition: border 0.2s; }
         input:focus, textarea:focus { outline: none; border-color: var(--button-color); }
         input:disabled { opacity: 0.5; font-style: italic; }
         textarea { font-family: sans-serif; resize: none; }
@@ -70,9 +70,9 @@
         .channel-chip { background: var(--bg-color); border: 1px solid var(--border); padding: 8px 12px; border-radius: 20px; font-size: 0.85rem; color: var(--hint-color); cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s; }
         .channel-chip.selected { background: var(--button-color); border-color: var(--button-color); color: white; }
         
-        .publish-btn { width: 92%; background: var(--button-color); color: var(--button-text); border: none; padding: 16px; border-radius: 16px; font-size: 1.1rem; font-weight: 700; position: fixed; bottom: 16px; left: 4%; box-shadow: 0 8px 24px rgba(0,0,0,0.3); cursor: pointer; z-index: 100; transition: transform 0.1s; }
+        .publish-btn { width: 92%; background: var(--button-color); color: var(--button-text); border: none; padding: 16px; border-radius: 16px; font-size: 1.1rem; font-weight: 700; position: fixed; bottom: 16px; left: 4%; box-shadow: 0 8px 24px rgba(0,0,0,0.3); cursor: pointer; z-index: 100; transition: all 0.3s; }
         .publish-btn:active { transform: scale(0.98); }
-        .publish-btn:disabled { opacity: 0.7; cursor: not-allowed; background: #555; }
+        .publish-btn:disabled { opacity: 0.5; cursor: not-allowed; background: #555; }
         
         .progress-container { height: 6px; background: #444; border-radius: 3px; margin-top: 8px; overflow: hidden; }
         .progress-fill { height: 100%; width: 0%; transition: width 0.3s, background-color 0.3s; background-color: var(--green); }
@@ -124,14 +124,14 @@
     <div class="section">
         <div class="input-wrapper">
             <label class="input-label" id="entryLabel">ENTRY PRICE</label>
-            <input type="number" id="entry" placeholder="0.00" oninput="updateCalc()">
+            <input type="number" id="entry" placeholder="0.00" oninput="runFullValidation()">
         </div>
         <div class="input-wrapper" style="margin-bottom: 0;">
             <div style="display: flex; justify-content: space-between;">
                 <label class="input-label">STOP LOSS</label>
                 <label class="input-label" id="riskLabel" style="color: var(--red);">0.00% Risk</label>
             </div>
-            <input type="number" id="sl" placeholder="0.00" style="border-color: rgba(255, 69, 58, 0.5);" oninput="updateCalc()">
+            <input type="number" id="sl" placeholder="0.00" style="border-color: rgba(255, 69, 58, 0.5);" oninput="runFullValidation()">
         </div>
     </div>
 
@@ -181,6 +181,7 @@
         tg.expand();
         tg.ready();
 
+        // --- State ---
         let currentMarket = 'FUTURES';
         let currentSide = 'LONG';
         let currentType = 'LIMIT';
@@ -189,7 +190,6 @@
         let fetchTimeout;
 
         // --- Init ---
-        // Start with 1 target at 100%
         addTargetRow('', 100); 
         fetchPrice();
         fetchChannels();
@@ -226,7 +226,7 @@
                 const data = await res.json();
                 livePriceVal = data.price;
                 document.getElementById('livePrice').innerText = livePriceVal > 0 ? livePriceVal : "N/A";
-                if(currentType === 'MARKET') updateCalc();
+                if(currentType === 'MARKET') runFullValidation();
             } catch(e) {
                 document.getElementById('livePrice').innerText = "Error";
             }
@@ -237,7 +237,7 @@
             fetchTimeout = setTimeout(fetchPrice, 800);
         }
 
-        // --- Logic ---
+        // --- UI Logic ---
         function setMarket(market) {
             currentMarket = market;
             document.getElementById('optFutures').className = market === 'FUTURES' ? 'market-opt active futures' : 'market-opt';
@@ -251,8 +251,7 @@
             document.getElementById('btnLong').className = side === 'LONG' ? 'btn-select active-long' : 'btn-select';
             document.getElementById('btnShort').className = side === 'SHORT' ? 'btn-select active-short' : 'btn-select';
             tg.HapticFeedback.selectionChanged();
-            updateCalc();
-            validateTargets(); // Re-validate on side change
+            runFullValidation();
         }
 
         function setType(type) {
@@ -272,7 +271,7 @@
                 entryLabel.innerText = type === 'STOP' ? "TRIGGER PRICE" : "ENTRY PRICE";
             }
             tg.HapticFeedback.selectionChanged();
-            updateCalc();
+            runFullValidation();
         }
 
         function getBasePrice() {
@@ -280,9 +279,84 @@
             return parseFloat(document.getElementById('entry').value) || 0;
         }
 
+        // --- 🧠 THE BRAIN: Full Logic Validation ---
+        
+        function runFullValidation() {
+            updateCalc();
+            const isValid = validateLogic();
+            
+            const btn = document.getElementById('submitBtn');
+            if (isValid) {
+                btn.disabled = false;
+                btn.style.opacity = "1";
+                btn.innerText = "🚀 Publish Signal";
+            } else {
+                btn.disabled = true;
+                btn.style.opacity = "0.5";
+                btn.innerText = "⚠️ Invalid Logic";
+            }
+        }
+
+        function validateLogic() {
+            let isValid = true;
+            const entry = getBasePrice();
+            const slInput = document.getElementById('sl');
+            const sl = parseFloat(slInput.value);
+
+            // 1. Validate Entry vs SL
+            if (entry > 0 && sl > 0) {
+                let slError = false;
+                if (currentSide === 'LONG' && sl >= entry) slError = true;
+                if (currentSide === 'SHORT' && sl <= entry) slError = true;
+
+                if (slError) {
+                    slInput.style.borderColor = 'var(--red)';
+                    slInput.style.backgroundColor = 'rgba(255, 69, 58, 0.1)';
+                    isValid = false;
+                } else {
+                    slInput.style.borderColor = 'rgba(255, 69, 58, 0.5)';
+                    slInput.style.backgroundColor = 'var(--input-bg)';
+                }
+            }
+
+            // 2. Validate Targets Sequence
+            const rows = document.querySelectorAll('.target-row');
+            let previousPrice = entry;
+
+            rows.forEach(row => {
+                const priceInput = row.querySelector('.tp-price');
+                const price = parseFloat(priceInput.value);
+
+                if (!price) return;
+
+                let rowError = false;
+                if (currentSide === 'LONG') {
+                    if (price <= previousPrice) rowError = true;
+                } else {
+                    if (price >= previousPrice && previousPrice > 0) rowError = true;
+                }
+
+                if (rowError) {
+                    row.classList.add('error');
+                    isValid = false;
+                } else {
+                    row.classList.remove('error');
+                }
+                previousPrice = price;
+            });
+            
+            // 3. Validate Total %
+            let total = 0;
+            document.querySelectorAll('.tp-pct').forEach(input => total += parseFloat(input.value) || 0);
+            if (Math.abs(total - 100) > 0.1) isValid = false;
+
+            return isValid;
+        }
+
         function updateCalc() {
             const entry = getBasePrice();
             const sl = parseFloat(document.getElementById('sl').value) || 0;
+            
             if (entry > 0 && sl > 0) {
                 const diff = Math.abs(entry - sl);
                 const pct = ((diff / entry) * 100).toFixed(2);
@@ -303,69 +377,29 @@
             bar.style.width = Math.min(total, 100) + '%';
             text.innerText = `Total: ${total}%`;
             
-            if (total === 100) {
+            if (Math.abs(total - 100) < 0.1) {
                 bar.style.backgroundColor = 'var(--green)';
                 text.style.color = 'var(--green)';
-            } else if (total > 100) {
-                bar.style.backgroundColor = 'var(--red)';
-                text.style.color = 'var(--red)';
             } else {
                 bar.style.backgroundColor = 'var(--orange)';
                 text.style.color = 'var(--orange)';
             }
-            
-            const btn = document.getElementById('submitBtn');
-            if (total !== 100) {
-                btn.innerText = total > 100 ? "⚠️ Total > 100%" : "⚠️ Total < 100%";
-                btn.style.backgroundColor = '#555';
-            } else {
-                btn.innerText = "🚀 Publish Signal";
-                btn.style.backgroundColor = 'var(--button-color)';
-            }
         }
 
-        // --- Smart Logic ---
-
-        function addManualTarget() {
-            // 1. Check if last target is empty
-            const rows = document.querySelectorAll('.target-row');
-            if (rows.length > 0) {
-                const lastRow = rows[rows.length - 1];
-                const lastPrice = lastRow.querySelector('.tp-price').value;
-                if (!lastPrice) {
-                    tg.HapticFeedback.notificationOccurred('error');
-                    tg.showAlert("Please fill the previous target price first!");
-                    return;
-                }
-            }
-
-            // 2. Calculate remaining percent
-            let currentTotal = 0;
-            document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
-            let remaining = Math.max(0, 100 - currentTotal);
-
-            addTargetRow("", remaining);
-            tg.HapticFeedback.impactOccurred('light');
-        }
+        // --- Smart Calculation Helpers ---
 
         function smartCalc(percent) {
             const base = getBasePrice();
             if (!base) return tg.showAlert("Set Entry Price first!");
-
-            let targetPrice;
-            if (currentSide === 'LONG') {
-                targetPrice = base * (1 + (percent / 100));
-            } else {
-                targetPrice = base * (1 - (percent / 100));
-            }
+            let targetPrice = currentSide === 'LONG' ? base * (1 + (percent / 100)) : base * (1 - (percent / 100));
             
-            // Smart Distribution
             let currentTotal = 0;
             document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
             let remaining = Math.max(0, 100 - currentTotal);
             
             addTargetRow(targetPrice.toFixed(2), remaining);
             tg.HapticFeedback.impactOccurred('light');
+            runFullValidation();
         }
         
         function promptCustomCalc() {
@@ -377,11 +411,8 @@
             const base = getBasePrice();
             const sl = parseFloat(document.getElementById('sl').value);
             if (!base || !sl) return tg.showAlert("Set Entry & SL first!");
-            
             const risk = Math.abs(base - sl);
-            let targetPrice;
-            if (currentSide === 'LONG') targetPrice = base + (risk * ratio);
-            else targetPrice = base - (risk * ratio);
+            let targetPrice = currentSide === 'LONG' ? base + (risk * ratio) : base - (risk * ratio);
             
             let currentTotal = 0;
             document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
@@ -389,6 +420,7 @@
             
             addTargetRow(targetPrice.toFixed(2), remaining);
             tg.HapticFeedback.impactOccurred('light');
+            runFullValidation();
         }
 
         function addTargetRow(price = "", percent = "") {
@@ -398,51 +430,20 @@
             div.className = 'target-row';
             div.innerHTML = `
                 <div class="tp-badge">${targetCount}</div>
-                <input type="number" class="tp-price" value="${price}" placeholder="Price" style="flex:2; background:transparent; border:none; color:white; font-family:monospace; font-size:1rem;" oninput="validateTargets()">
-                <input type="number" class="tp-pct" value="${percent}" placeholder="%" oninput="updateTotalPercent()" style="width:50px; background:transparent; border:1px solid #444; border-radius:4px; color:white; text-align:center;">
+                <input type="number" class="tp-price" value="${price}" placeholder="Price" style="flex:2; background:transparent; border:none; color:white; font-family:monospace; font-size:1rem;" oninput="runFullValidation()">
+                <input type="number" class="tp-pct" value="${percent}" placeholder="%" oninput="runFullValidation()" style="width:50px; background:transparent; border:1px solid #444; border-radius:4px; color:white; text-align:center;">
                 <div class="tp-remove" onclick="removeTarget(this)">×</div>
             `;
             container.appendChild(div);
-            updateTotalPercent();
-            validateTargets();
+            runFullValidation();
         }
 
         function removeTarget(el) {
             el.parentElement.remove();
             targetCount--;
             document.querySelectorAll('.tp-badge').forEach((b, i) => b.innerText = i + 1);
-            updateTotalPercent();
-            validateTargets();
+            runFullValidation();
             tg.HapticFeedback.selectionChanged();
-        }
-
-        function validateTargets() {
-            const rows = document.querySelectorAll('.target-row');
-            let lastPrice = getBasePrice();
-            
-            rows.forEach(row => {
-                const priceInput = row.querySelector('.tp-price');
-                const price = parseFloat(priceInput.value);
-                
-                if (!price) {
-                    row.classList.remove('error');
-                    return;
-                }
-
-                let isValid = true;
-                if (currentSide === 'LONG') {
-                    if (price <= lastPrice) isValid = false;
-                } else {
-                    if (price >= lastPrice && lastPrice > 0) isValid = false;
-                }
-
-                if (!isValid) {
-                    row.classList.add('error');
-                } else {
-                    row.classList.remove('error');
-                }
-                lastPrice = price;
-            });
         }
 
         function toggleChip(el) { el.classList.toggle('selected'); tg.HapticFeedback.selectionChanged(); }
@@ -452,25 +453,10 @@
         }
 
         async function publish() {
-            // 1. Validate Total %
-            let total = 0;
-            document.querySelectorAll('.tp-pct').forEach(input => total += parseFloat(input.value) || 0);
-            if (Math.abs(total - 100) > 0.1) {
-                tg.showAlert(`Total closing percentage must be 100%. Current: ${total}%`);
+            if (!validateLogic()) {
+                tg.HapticFeedback.notificationOccurred('error');
+                tg.showAlert("Please fix the errors highlighted in red.");
                 return;
-            }
-
-            // 2. Validate Price Sequence
-            const rows = document.querySelectorAll('.target-row');
-            for (let row of rows) {
-                if (row.classList.contains('error')) {
-                    tg.showAlert("Invalid target price sequence detected (Red targets).");
-                    return;
-                }
-                if (!row.querySelector('.tp-price').value) {
-                    tg.showAlert("Please fill all target prices.");
-                    return;
-                }
             }
 
             const btn = document.getElementById('submitBtn');
