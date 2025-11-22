@@ -1,10 +1,9 @@
-<!-- src/capitalguard/interfaces/api/static/create_trade.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>CapitalGuard Terminal v5.0</title>
+    <title>CapitalGuard Terminal v5.1 (Smart Logic)</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
@@ -23,6 +22,7 @@
             margin: 0; padding: 16px; padding-bottom: 120px;
             -webkit-tap-highlight-color: transparent;
         }
+        /* ... (نفس الستايلات السابقة) ... */
         .market-switch { display: flex; background: var(--switcher-bg); padding: 4px; border-radius: 12px; margin-bottom: 20px; }
         .market-opt { flex: 1; text-align: center; padding: 10px; border-radius: 10px; font-weight: 800; font-size: 0.9rem; color: var(--hint-color); cursor: pointer; transition: all 0.3s ease; }
         .market-opt.active { background: var(--card-bg); color: var(--text-color); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
@@ -47,22 +47,33 @@
         .leverage-container { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
         .leverage-val { font-weight: bold; color: var(--orange); width: 40px; }
         input[type=range] { width: 100%; accent-color: var(--orange); }
-        .target-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; background: rgba(128,128,128,0.05); padding: 6px; border-radius: 10px; animation: fadeIn 0.3s ease; }
+        
+        /* Targets */
+        .target-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; background: rgba(128,128,128,0.05); padding: 6px; border-radius: 10px; animation: fadeIn 0.3s ease; transition: background 0.3s; }
+        .target-row.error { background: rgba(255, 69, 58, 0.15); border: 1px solid var(--red); }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
         .tp-badge { background: var(--button-color); color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold; flex-shrink: 0; }
         .tp-remove { color: var(--red); padding: 8px; cursor: pointer; font-size: 1.2rem; }
+        
         .smart-chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 5px; margin-top: 12px; scrollbar-width: none; }
         .smart-chips::-webkit-scrollbar { display: none; }
         .chip { background: var(--bg-color); border: 1px solid var(--border); color: var(--hint-color); padding: 8px 14px; border-radius: 20px; font-size: 0.85rem; white-space: nowrap; cursor: pointer; transition: all 0.2s; font-weight: 500; }
         .chip:active { transform: scale(0.95); }
         .chip-blue { border-color: var(--button-color); color: var(--button-color); background: rgba(10, 132, 255, 0.1); }
+        
+        .rr-bar-container { height: 6px; background: #444; border-radius: 3px; margin-top: 8px; overflow: hidden; display: flex; }
+        .rr-risk { background: var(--red); height: 100%; width: 50%; transition: width 0.3s; }
+        .rr-reward { background: var(--green); height: 100%; width: 50%; transition: width 0.3s; }
+        .rr-text { font-size: 0.75rem; text-align: right; margin-top: 4px; font-weight: bold; }
+        
         .channel-grid { display: flex; flex-wrap: wrap; gap: 8px; }
         .channel-chip { background: var(--bg-color); border: 1px solid var(--border); padding: 8px 12px; border-radius: 20px; font-size: 0.85rem; color: var(--hint-color); cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s; }
         .channel-chip.selected { background: var(--button-color); border-color: var(--button-color); color: white; }
+        
         .publish-btn { width: 92%; background: var(--button-color); color: var(--button-text); border: none; padding: 16px; border-radius: 16px; font-size: 1.1rem; font-weight: 700; position: fixed; bottom: 16px; left: 4%; box-shadow: 0 8px 24px rgba(0,0,0,0.3); cursor: pointer; z-index: 100; transition: transform 0.1s; }
         .publish-btn:active { transform: scale(0.98); }
         .publish-btn:disabled { opacity: 0.7; cursor: not-allowed; background: #555; }
         
-        /* Progress Bar */
         .progress-container { height: 6px; background: #444; border-radius: 3px; margin-top: 8px; overflow: hidden; }
         .progress-fill { height: 100%; width: 0%; transition: width 0.3s, background-color 0.3s; background-color: var(--green); }
         .progress-text { font-size: 0.75rem; text-align: right; margin-top: 4px; font-weight: bold; color: var(--hint-color); }
@@ -137,7 +148,7 @@
         <div id="targetsContainer" class="target-container"></div>
         
         <div class="smart-chips">
-            <div class="chip chip-blue" onclick="addTargetRow()">+ Add</div>
+            <div class="chip chip-blue" onclick="addManualTarget()">+ Add</div>
             <div class="chip" onclick="smartCalc(1)">+1%</div>
             <div class="chip" onclick="smartCalc(2)">+2%</div>
             <div class="chip" onclick="smartCalc(5)">+5%</div>
@@ -178,7 +189,8 @@
         let fetchTimeout;
 
         // --- Init ---
-        addTargetRow('', 100); // Start with 1 target at 100%
+        // Start with 1 target at 100%
+        addTargetRow('', 100); 
         fetchPrice();
         fetchChannels();
 
@@ -193,7 +205,7 @@
                 if(data.ok && data.channels.length > 0) {
                     data.channels.forEach(ch => {
                         const div = document.createElement('div');
-                        div.className = 'channel-chip selected'; // Default selected
+                        div.className = 'channel-chip selected';
                         div.dataset.id = ch.id;
                         div.onclick = function() { toggleChip(this); };
                         div.innerHTML = `📢 ${ch.title}`;
@@ -202,9 +214,7 @@
                 } else {
                     grid.innerHTML = '<div class="channel-chip">No active channels found</div>';
                 }
-            } catch(e) {
-                console.error(e);
-            }
+            } catch(e) { console.error(e); }
         }
 
         async function fetchPrice() {
@@ -242,6 +252,7 @@
             document.getElementById('btnShort').className = side === 'SHORT' ? 'btn-select active-short' : 'btn-select';
             tg.HapticFeedback.selectionChanged();
             updateCalc();
+            validateTargets(); // Re-validate on side change
         }
 
         function setType(type) {
@@ -313,12 +324,42 @@
             }
         }
 
+        // --- Smart Logic ---
+
+        function addManualTarget() {
+            // 1. Check if last target is empty
+            const rows = document.querySelectorAll('.target-row');
+            if (rows.length > 0) {
+                const lastRow = rows[rows.length - 1];
+                const lastPrice = lastRow.querySelector('.tp-price').value;
+                if (!lastPrice) {
+                    tg.HapticFeedback.notificationOccurred('error');
+                    tg.showAlert("Please fill the previous target price first!");
+                    return;
+                }
+            }
+
+            // 2. Calculate remaining percent
+            let currentTotal = 0;
+            document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
+            let remaining = Math.max(0, 100 - currentTotal);
+
+            addTargetRow("", remaining);
+            tg.HapticFeedback.impactOccurred('light');
+        }
+
         function smartCalc(percent) {
             const base = getBasePrice();
             if (!base) return tg.showAlert("Set Entry Price first!");
-            let targetPrice = currentSide === 'LONG' ? base * (1 + (percent / 100)) : base * (1 - (percent / 100));
+
+            let targetPrice;
+            if (currentSide === 'LONG') {
+                targetPrice = base * (1 + (percent / 100));
+            } else {
+                targetPrice = base * (1 - (percent / 100));
+            }
             
-            // Smart Distribution Logic
+            // Smart Distribution
             let currentTotal = 0;
             document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
             let remaining = Math.max(0, 100 - currentTotal);
@@ -336,8 +377,11 @@
             const base = getBasePrice();
             const sl = parseFloat(document.getElementById('sl').value);
             if (!base || !sl) return tg.showAlert("Set Entry & SL first!");
+            
             const risk = Math.abs(base - sl);
-            let targetPrice = currentSide === 'LONG' ? base + (risk * ratio) : base - (risk * ratio);
+            let targetPrice;
+            if (currentSide === 'LONG') targetPrice = base + (risk * ratio);
+            else targetPrice = base - (risk * ratio);
             
             let currentTotal = 0;
             document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
@@ -354,12 +398,13 @@
             div.className = 'target-row';
             div.innerHTML = `
                 <div class="tp-badge">${targetCount}</div>
-                <input type="number" class="tp-price" value="${price}" placeholder="Price" style="flex:2; background:transparent; border:none; color:white; font-family:monospace; font-size:1rem;">
+                <input type="number" class="tp-price" value="${price}" placeholder="Price" style="flex:2; background:transparent; border:none; color:white; font-family:monospace; font-size:1rem;" oninput="validateTargets()">
                 <input type="number" class="tp-pct" value="${percent}" placeholder="%" oninput="updateTotalPercent()" style="width:50px; background:transparent; border:1px solid #444; border-radius:4px; color:white; text-align:center;">
                 <div class="tp-remove" onclick="removeTarget(this)">×</div>
             `;
             container.appendChild(div);
             updateTotalPercent();
+            validateTargets();
         }
 
         function removeTarget(el) {
@@ -367,7 +412,37 @@
             targetCount--;
             document.querySelectorAll('.tp-badge').forEach((b, i) => b.innerText = i + 1);
             updateTotalPercent();
+            validateTargets();
             tg.HapticFeedback.selectionChanged();
+        }
+
+        function validateTargets() {
+            const rows = document.querySelectorAll('.target-row');
+            let lastPrice = getBasePrice();
+            
+            rows.forEach(row => {
+                const priceInput = row.querySelector('.tp-price');
+                const price = parseFloat(priceInput.value);
+                
+                if (!price) {
+                    row.classList.remove('error');
+                    return;
+                }
+
+                let isValid = true;
+                if (currentSide === 'LONG') {
+                    if (price <= lastPrice) isValid = false;
+                } else {
+                    if (price >= lastPrice && lastPrice > 0) isValid = false;
+                }
+
+                if (!isValid) {
+                    row.classList.add('error');
+                } else {
+                    row.classList.remove('error');
+                }
+                lastPrice = price;
+            });
         }
 
         function toggleChip(el) { el.classList.toggle('selected'); tg.HapticFeedback.selectionChanged(); }
@@ -377,12 +452,25 @@
         }
 
         async function publish() {
-            // Validate Total %
+            // 1. Validate Total %
             let total = 0;
             document.querySelectorAll('.tp-pct').forEach(input => total += parseFloat(input.value) || 0);
             if (Math.abs(total - 100) > 0.1) {
                 tg.showAlert(`Total closing percentage must be 100%. Current: ${total}%`);
                 return;
+            }
+
+            // 2. Validate Price Sequence
+            const rows = document.querySelectorAll('.target-row');
+            for (let row of rows) {
+                if (row.classList.contains('error')) {
+                    tg.showAlert("Invalid target price sequence detected (Red targets).");
+                    return;
+                }
+                if (!row.querySelector('.tp-price').value) {
+                    tg.showAlert("Please fill all target prices.");
+                    return;
+                }
             }
 
             const btn = document.getElementById('submitBtn');
