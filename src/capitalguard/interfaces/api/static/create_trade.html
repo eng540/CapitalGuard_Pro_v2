@@ -1,0 +1,344 @@
+<!-- src/capitalguard/interfaces/api/static/create_trade.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>CapitalGuard Terminal v4.1</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg-color: var(--tg-theme-bg-color, #1c1c1e);
+            --card-bg: var(--tg-theme-secondary-bg-color, #2c2c2e);
+            --text-color: var(--tg-theme-text-color, #ffffff);
+            --hint-color: var(--tg-theme-hint-color, #8e8e93);
+            --button-color: var(--tg-theme-button-color, #0a84ff);
+            --button-text: var(--tg-theme-button-text-color, #ffffff);
+            --green: #32d74b; --red: #ff453a; --orange: #ff9f0a;
+            --border: rgba(128, 128, 128, 0.2); --switcher-bg: #000000;
+        }
+        body {
+            background-color: var(--bg-color); color: var(--text-color);
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            margin: 0; padding: 16px; padding-bottom: 120px;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .market-switch { display: flex; background: var(--switcher-bg); padding: 4px; border-radius: 12px; margin-bottom: 20px; }
+        .market-opt { flex: 1; text-align: center; padding: 10px; border-radius: 10px; font-weight: 800; font-size: 0.9rem; color: var(--hint-color); cursor: pointer; transition: all 0.3s ease; }
+        .market-opt.active { background: var(--card-bg); color: var(--text-color); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        .market-opt.active.futures { color: var(--orange); } .market-opt.active.spot { color: var(--blue); }
+        .section { background-color: var(--card-bg); border-radius: 16px; padding: 16px; margin-bottom: 16px; border: 1px solid var(--border); }
+        .input-label { font-size: 0.7rem; color: var(--hint-color); margin-bottom: 6px; display: block; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; }
+        .header-row { display: flex; justify-content: space-between; align-items: center; }
+        .asset-input { background: transparent; border: none; color: var(--text-color); font-size: 1.5rem; font-weight: 800; width: 100%; text-transform: uppercase; padding: 0; }
+        .asset-input:focus { outline: none; }
+        .live-price { color: var(--green); font-weight: bold; font-family: monospace; font-size: 1rem; }
+        .btn-group { display: flex; gap: 8px; margin-bottom: 12px; }
+        .btn-select { flex: 1; padding: 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-color); color: var(--hint-color); font-weight: 600; text-align: center; cursor: pointer; transition: all 0.2s; font-size: 0.9rem; }
+        .btn-select.active-long { background: rgba(50, 215, 75, 0.15); border-color: var(--green); color: var(--green); }
+        .btn-select.active-short { background: rgba(255, 69, 58, 0.15); border-color: var(--red); color: var(--red); }
+        .btn-select.active-type { background: rgba(10, 132, 255, 0.15); border-color: var(--button-color); color: var(--button-color); }
+        .input-wrapper { position: relative; margin-bottom: 12px; }
+        input[type="number"], textarea, input[type="text"] { width: 100%; background: var(--bg-color); border: 1px solid var(--border); color: var(--text-color); padding: 14px; border-radius: 12px; font-size: 1.1rem; box-sizing: border-box; font-family: monospace; transition: border 0.2s; }
+        input:focus, textarea:focus { outline: none; border-color: var(--button-color); }
+        input:disabled { opacity: 0.5; font-style: italic; }
+        textarea { font-family: sans-serif; resize: none; }
+        .leverage-section { transition: all 0.3s ease; overflow: hidden; }
+        .leverage-container { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .leverage-val { font-weight: bold; color: var(--orange); width: 40px; }
+        input[type=range] { width: 100%; accent-color: var(--orange); }
+        .target-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; background: rgba(128,128,128,0.05); padding: 6px; border-radius: 10px; animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+        .tp-badge { background: var(--button-color); color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold; flex-shrink: 0; }
+        .tp-remove { color: var(--red); padding: 8px; cursor: pointer; font-size: 1.2rem; }
+        .smart-chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 5px; margin-top: 12px; scrollbar-width: none; }
+        .smart-chips::-webkit-scrollbar { display: none; }
+        .chip { background: var(--bg-color); border: 1px solid var(--border); color: var(--hint-color); padding: 8px 14px; border-radius: 20px; font-size: 0.85rem; white-space: nowrap; cursor: pointer; transition: all 0.2s; font-weight: 500; }
+        .chip:active { transform: scale(0.95); }
+        .chip-blue { border-color: var(--button-color); color: var(--button-color); background: rgba(10, 132, 255, 0.1); }
+        .rr-bar-container { height: 6px; background: #444; border-radius: 3px; margin-top: 8px; overflow: hidden; display: flex; }
+        .rr-risk { background: var(--red); height: 100%; width: 50%; transition: width 0.3s; }
+        .rr-reward { background: var(--green); height: 100%; width: 50%; transition: width 0.3s; }
+        .rr-text { font-size: 0.75rem; text-align: right; margin-top: 4px; font-weight: bold; }
+        .channel-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+        .channel-chip { background: var(--bg-color); border: 1px solid var(--border); padding: 8px 12px; border-radius: 20px; font-size: 0.85rem; color: var(--hint-color); cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s; }
+        .channel-chip.selected { background: var(--button-color); border-color: var(--button-color); color: white; }
+        .publish-btn { width: 92%; background: var(--button-color); color: var(--button-text); border: none; padding: 16px; border-radius: 16px; font-size: 1.1rem; font-weight: 700; position: fixed; bottom: 16px; left: 4%; box-shadow: 0 8px 24px rgba(0,0,0,0.3); cursor: pointer; z-index: 100; transition: transform 0.1s; }
+        .publish-btn:active { transform: scale(0.98); }
+        .publish-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div class="market-switch">
+        <div class="market-opt active futures" id="optFutures" onclick="setMarket('FUTURES')">FUTURES ⚡</div>
+        <div class="market-opt" id="optSpot" onclick="setMarket('SPOT')">SPOT 💎</div>
+    </div>
+
+    <div class="section">
+        <div class="header-row">
+            <div style="flex: 1;">
+                <label class="input-label">ASSET PAIR</label>
+                <input type="text" class="asset-input" id="asset" value="BTCUSDT" placeholder="SYMBOL">
+            </div>
+            <div style="text-align: right;">
+                <div class="input-label">LIVE PRICE</div>
+                <div class="live-price" id="livePrice">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="btn-group">
+            <div class="btn-select active-long" id="btnLong" onclick="setSide('LONG')">🟢 LONG</div>
+            <div class="btn-select" id="btnShort" onclick="setSide('SHORT')">🔴 SHORT</div>
+        </div>
+        <div class="btn-group">
+            <div class="btn-select active-type" id="btnLimit" onclick="setType('LIMIT')">Limit</div>
+            <div class="btn-select" id="btnMarket" onclick="setType('MARKET')">Market</div>
+            <div class="btn-select" id="btnStop" onclick="setType('STOP')">Stop</div>
+        </div>
+        <div class="leverage-section" id="leverageSection">
+            <div style="margin-top: 15px;">
+                <div style="display: flex; justify-content: space-between;">
+                    <label class="input-label">LEVERAGE</label>
+                    <span class="leverage-val" id="levVal">20x</span>
+                </div>
+                <div class="leverage-container">
+                    <input type="range" id="leverage" min="1" max="125" value="20" oninput="document.getElementById('levVal').innerText = this.value + 'x'">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="input-wrapper">
+            <label class="input-label" id="entryLabel">ENTRY PRICE</label>
+            <input type="number" id="entry" placeholder="0.00" oninput="updateCalc()">
+        </div>
+        <div class="input-wrapper" style="margin-bottom: 0;">
+            <div style="display: flex; justify-content: space-between;">
+                <label class="input-label">STOP LOSS</label>
+                <label class="input-label" id="riskLabel" style="color: var(--red);">0.00% Risk</label>
+            </div>
+            <input type="number" id="sl" placeholder="0.00" style="border-color: rgba(255, 69, 58, 0.5);" oninput="updateCalc()">
+        </div>
+    </div>
+
+    <div class="section">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <label class="input-label" style="margin:0;">TARGETS</label>
+            <div class="rr-text" id="rrText">R:R -</div>
+        </div>
+        <div class="rr-bar-container">
+            <div class="rr-risk" id="rrRiskBar" style="width: 50%"></div>
+            <div class="rr-reward" id="rrRewardBar" style="width: 50%"></div>
+        </div>
+        <div style="margin-bottom: 15px;"></div>
+        <div id="targetsContainer" class="target-container"></div>
+        <div class="smart-chips">
+            <div class="chip chip-blue" onclick="addTargetRow()">+ Add</div>
+            <div class="chip" onclick="smartCalc(1)">+1%</div>
+            <div class="chip" onclick="smartCalc(2)">+2%</div>
+            <div class="chip" onclick="smartCalc(5)">+5%</div>
+            <div class="chip" onclick="calcRR(1)">R:R 1:1</div>
+            <div class="chip" onclick="calcRR(2)">R:R 1:2</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="input-wrapper">
+            <label class="input-label">NOTES / STRATEGY</label>
+            <textarea id="notes" rows="2" placeholder="Add comments..."></textarea>
+        </div>
+        <div style="margin-top: 20px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                <label class="input-label">PUBLISH TO</label>
+                <label class="input-label" style="color: var(--button-color); cursor: pointer;" onclick="toggleAllChannels()">Select All</label>
+            </div>
+            <div class="channel-grid" id="channelGrid">
+                <!-- Channels will be loaded here -->
+                <div class="channel-chip" style="width:100%; text-align:center;">Loading channels...</div>
+            </div>
+        </div>
+    </div>
+
+    <button class="publish-btn" id="submitBtn" onclick="publish()">🚀 Publish Signal</button>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+        tg.ready();
+
+        let currentMarket = 'FUTURES';
+        let currentSide = 'LONG';
+        let currentType = 'LIMIT';
+        let targetCount = 0;
+        let livePriceVal = 0;
+
+        // --- Init ---
+        addTargetRow();
+        fetchChannels();
+        
+        // --- API Calls ---
+        async def fetchChannels() {
+            // In a real scenario, we would fetch from API. 
+            // For now, we will use a mock or pass via URL params if possible.
+            // Since we are static, we will render a default set or try to fetch.
+            // Let's assume the backend provides an endpoint.
+            try {
+                // Mocking for now as we don't have auth token in static context easily without initData
+                // We will rely on the user selecting "All" or just sending to all by default if none selected.
+                const grid = document.getElementById('channelGrid');
+                grid.innerHTML = `
+                    <div class="channel-chip selected" data-id="all" onclick="toggleChip(this)">📢 All Active Channels</div>
+                `;
+            } catch(e) { console.error(e); }
+        }
+
+        // --- Logic ---
+        function setMarket(market) {
+            currentMarket = market;
+            document.getElementById('optFutures').className = market === 'FUTURES' ? 'market-opt active futures' : 'market-opt';
+            document.getElementById('optSpot').className = market === 'SPOT' ? 'market-opt active spot' : 'market-opt';
+            document.getElementById('leverageSection').style.display = market === 'SPOT' ? 'none' : 'block';
+            tg.HapticFeedback.selectionChanged();
+        }
+
+        function setSide(side) {
+            currentSide = side;
+            document.getElementById('btnLong').className = side === 'LONG' ? 'btn-select active-long' : 'btn-select';
+            document.getElementById('btnShort').className = side === 'SHORT' ? 'btn-select active-short' : 'btn-select';
+            tg.HapticFeedback.selectionChanged();
+            updateCalc();
+        }
+
+        function setType(type) {
+            currentType = type;
+            ['Limit', 'Market', 'Stop'].forEach(t => {
+                document.getElementById('btn' + t).className = t.toUpperCase() === type ? 'btn-select active-type' : 'btn-select';
+            });
+            const entryInput = document.getElementById('entry');
+            const entryLabel = document.getElementById('entryLabel');
+            if(type === 'MARKET') {
+                entryInput.disabled = true;
+                entryInput.value = "";
+                entryInput.placeholder = "Current Market Price";
+                entryLabel.innerText = "ENTRY (MARKET)";
+            } else {
+                entryInput.disabled = false;
+                entryLabel.innerText = type === 'STOP' ? "TRIGGER PRICE" : "ENTRY PRICE";
+            }
+            tg.HapticFeedback.selectionChanged();
+            updateCalc();
+        }
+
+        function getBasePrice() {
+            // Mock live price for calculation if market
+            if (currentType === 'MARKET') return 98000; // Placeholder
+            return parseFloat(document.getElementById('entry').value) || 0;
+        }
+
+        function updateCalc() {
+            const entry = getBasePrice();
+            const sl = parseFloat(document.getElementById('sl').value) || 0;
+            if (entry > 0 && sl > 0) {
+                const diff = Math.abs(entry - sl);
+                const pct = ((diff / entry) * 100).toFixed(2);
+                document.getElementById('riskLabel').innerText = `-${pct}% Risk`;
+            }
+        }
+
+        function smartCalc(percent) {
+            const base = getBasePrice();
+            if (!base) return tg.showAlert("Set Entry Price first!");
+            let targetPrice = currentSide === 'LONG' ? base * (1 + (percent / 100)) : base * (1 - (percent / 100));
+            addTargetRow(targetPrice.toFixed(2), 50);
+            tg.HapticFeedback.impactOccurred('light');
+        }
+
+        function calcRR(ratio) {
+            const base = getBasePrice();
+            const sl = parseFloat(document.getElementById('sl').value);
+            if (!base || !sl) return tg.showAlert("Set Entry & SL first!");
+            const risk = Math.abs(base - sl);
+            let targetPrice = currentSide === 'LONG' ? base + (risk * ratio) : base - (risk * ratio);
+            addTargetRow(targetPrice.toFixed(2), 50);
+            tg.HapticFeedback.impactOccurred('light');
+        }
+
+        function addTargetRow(price = "", percent = "") {
+            targetCount++;
+            const container = document.getElementById('targetsContainer');
+            const div = document.createElement('div');
+            div.className = 'target-row';
+            div.innerHTML = `
+                <div class="tp-badge">${targetCount}</div>
+                <input type="number" class="tp-price" value="${price}" placeholder="Price" style="flex:2; background:transparent; border:none; color:white; font-family:monospace; font-size:1rem;">
+                <input type="number" class="tp-pct" value="${percent}" placeholder="%" style="width:50px; background:transparent; border:1px solid #444; border-radius:4px; color:white; text-align:center;">
+                <div class="tp-remove" onclick="removeTarget(this)">×</div>
+            `;
+            container.appendChild(div);
+        }
+
+        function removeTarget(el) {
+            el.parentElement.remove();
+            targetCount--;
+            document.querySelectorAll('.tp-badge').forEach((b, i) => b.innerText = i + 1);
+            tg.HapticFeedback.selectionChanged();
+        }
+
+        function toggleChip(el) { el.classList.toggle('selected'); tg.HapticFeedback.selectionChanged(); }
+        function toggleAllChannels() {
+            document.querySelectorAll('.channel-chip').forEach(c => c.classList.toggle('selected'));
+            tg.HapticFeedback.impactOccurred('medium');
+        }
+
+        async function publish() {
+            const btn = document.getElementById('submitBtn');
+            btn.disabled = true;
+            btn.innerText = "Publishing...";
+            tg.HapticFeedback.notificationOccurred('success');
+
+            const targets = [];
+            document.querySelectorAll('.target-row').forEach(row => {
+                const p = row.querySelector('.tp-price').value;
+                const c = row.querySelector('.tp-pct').value;
+                if(p) targets.push(c ? `${p}@${c}` : p);
+            });
+
+            const payload = {
+                initData: tg.initData,
+                asset: document.getElementById('asset').value.toUpperCase(),
+                side: currentSide,
+                market: currentMarket,
+                order_type: currentType,
+                entry: parseFloat(document.getElementById('entry').value) || 0,
+                stop_loss: parseFloat(document.getElementById('sl').value) || 0,
+                targets_raw: targets.join(' '),
+                notes: document.getElementById('notes').value,
+                leverage: document.getElementById('leverage').value
+            };
+
+            try {
+                const res = await fetch('/api/webapp/create', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if(data.ok) {
+                    tg.close();
+                } else {
+                    tg.showAlert("Error: " + data.error);
+                    btn.disabled = false;
+                    btn.innerText = "🚀 Publish Signal";
+                }
+            } catch(e) {
+                tg.showAlert("Network Error");
+                btn.disabled = false;
+                btn.innerText = "🚀 Publish Signal";
+            }
+        }
+    </script>
+</body>
+</html>
