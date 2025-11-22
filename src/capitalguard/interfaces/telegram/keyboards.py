@@ -1,5 +1,5 @@
 # File: src/capitalguard/interfaces/telegram/keyboards.py
-# Version: v25.0.0-R2 (Design 3 - Buttons Final)
+# Version: v26.0.0-WEBAPP (Complete with WebApp Support)
 # ✅ THE FIX: (R2 Feature - Design 3)
 #    - 1. (REFACTORED) `analyst_control_panel_keyboard` و
 #       `build_user_trade_control_keyboard` تم تحديثهما بالكامل
@@ -8,7 +8,8 @@
 #       مُدمج هنا لضمان الاكتمال.
 #    - 3. (NEW) `build_channels_list_keyboard` (الذي تم تسليمه سابقًا)
 #       مُدمج هنا لضمان الاكتمال.
-# 🎯 IMPACT: هذا الملف ينفذ واجهة المستخدم الاحترافية الجديدة بالكامل.
+#    - 4. (NEW) WebApp Support - Added WebAppInfo import and updated main_creation_keyboard
+# 🎯 IMPACT: هذا الملف ينفذ واجهة المستخدم الاحترافية الجديدة بالكامل مع دعم WebApp.
 
 import math
 import logging
@@ -17,7 +18,8 @@ from decimal import Decimal
 from typing import List, Iterable, Set, Optional, Any, Dict, Tuple, Union
 from enum import Enum
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from capitalguard.config import settings
 
 from capitalguard.domain.entities import Recommendation as RecommendationEntity, RecommendationStatus, ExitStrategy
 from capitalguard.domain.entities import UserTradeStatus
@@ -533,7 +535,12 @@ def build_confirmation_keyboard(
     ]])
 
 def main_creation_keyboard() -> InlineKeyboardMarkup:
+    """✅ WEBAPP SUPPORT: Updated with WebApp button as first option."""
+    base_url = settings.TELEGRAM_WEBHOOK_URL.rsplit('/', 2)[0] if settings.TELEGRAM_WEBHOOK_URL else "https://YOUR_DOMAIN"
+    web_app_url = f"{base_url}/static/create_trade.html"
+
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🖥️ Visual Creator (Web App)", web_app=WebAppInfo(url=web_app_url))],
         [InlineKeyboardButton("💬 Interactive Builder", callback_data="method_interactive")],
         [InlineKeyboardButton("⚡️ Quick Command", callback_data="method_quick")],
         [InlineKeyboardButton("📋 Text Editor Paste", callback_data="method_editor")],
