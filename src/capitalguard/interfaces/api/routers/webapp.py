@@ -10,9 +10,8 @@ from decimal import Decimal
 
 from capitalguard.config import settings
 from capitalguard.infrastructure.db.uow import session_scope
-from capitalguard.infrastructure.db.repository import UserRepository
+from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 from capitalguard.interfaces.telegram.parsers import parse_targets_list
-# Import PriceService
 from capitalguard.application.services.price_service import PriceService
 
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
@@ -28,6 +27,7 @@ class WebAppSignal(BaseModel):
     targets_raw: str
     notes: Optional[str] = None
     leverage: Optional[str] = "20"
+    channel_ids: List[int] = [] # ✅ ADDED: List of selected channel IDs
 
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
     try:
@@ -42,21 +42,39 @@ def validate_telegram_data(init_data: str, bot_token: str) -> dict:
     except Exception:
         raise HTTPException(status_code=403, detail="Invalid Data")
 
-# ✅ NEW ENDPOINT: Get Live Price
 @router.get("/price")
 async def get_price(symbol: str, request: Request):
     price_service = request.app.state.services.get("price_service")
-    if not price_service:
-        return {"price": 0.0}
-    
-    # Try fetching price (default to Futures as it's most common)
+    if not price_service: return {"price": 0.0}
     price = await price_service.get_cached_price(symbol.upper(), "Futures", force_refresh=False)
-    
-    # If not found in Futures, try Spot (fallback logic inside service usually handles this, but being explicit)
-    if not price:
-         price = await price_service.get_cached_price(symbol.upper(), "Spot", force_refresh=False)
-
+    if not price: price = await price_service.get_cached_price(symbol.upper(), "Spot", force_refresh=False)
     return {"price": price or 0.0}
+
+# ✅ NEW ENDPOINT: Get Analyst Channels
+@router.get("/channels")
+async def get_analyst_channels(initData: str):
+    user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
+    telegram_id = user_data['id']
+    
+    try:
+        with session_scope() as db_session:
+            user_repo = UserRepository(db_session)
+            user = user_repo.find_by_telegram_id(telegram_id)
+            if not user or user.user_type.value != "ANALYST":
+                return {"ok": False, "channels": []}
+            
+            channel_repo = ChannelRepository(db_session)
+            channels = channel_repo.list_by_analyst(user.id, only_active=True)
+            
+            return {
+                "ok": True,
+                "channels": [
+                    {"id": ch.telegram_channel_id, "title": ch.title or "Untitled"} 
+                    for ch in channels
+                ]
+            }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 @router.post("/create")
 async def create_trade_webapp(payload: WebAppSignal, request: Request):
@@ -76,9 +94,17 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
             targets_formatted = parse_targets_list(payload.targets_raw.split())
             if not targets_formatted: return {"ok": False, "error": "Invalid targets"}
 
+            # ✅ VALIDATION: Check Total Percentage
+            total_pct = sum(t['close_percent'] for t in targets_formatted)
+            if total_pct > 100:
+                return {"ok": False, "error": f"Total closing percentage is {total_pct}%. Must be <= 100%."}
+
             final_notes = payload.notes or ""
             if payload.market == "FUTURES":
                 final_notes = f"Lev: {payload.leverage}x | {final_notes}".strip()
+
+            # Use selected channels or None (for all)
+            target_channels = set(payload.channel_ids) if payload.channel_ids else None
 
             created_rec, _ = await creation_service.create_and_publish_recommendation_async(
                 user_id=str(telegram_id),
@@ -95,7 +121,7 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
             
             import asyncio
             asyncio.create_task(creation_service.background_publish_and_index(
-                rec_id=created_rec.id, user_db_id=user.id, target_channel_ids=None
+                rec_id=created_rec.id, user_db_id=user.id, target_channel_ids=target_channels
             ))
 
             return {"ok": True, "id": created_rec.id}
