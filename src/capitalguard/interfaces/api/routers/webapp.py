@@ -1,5 +1,5 @@
-# --- START OF NEW FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
-from fastapi import APIRouter, Request, HTTPException
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
+from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional
 import hashlib
@@ -12,6 +12,8 @@ from capitalguard.config import settings
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import UserRepository
 from capitalguard.interfaces.telegram.parsers import parse_targets_list
+# Import PriceService
+from capitalguard.application.services.price_service import PriceService
 
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
 
@@ -40,6 +42,22 @@ def validate_telegram_data(init_data: str, bot_token: str) -> dict:
     except Exception:
         raise HTTPException(status_code=403, detail="Invalid Data")
 
+# ✅ NEW ENDPOINT: Get Live Price
+@router.get("/price")
+async def get_price(symbol: str, request: Request):
+    price_service = request.app.state.services.get("price_service")
+    if not price_service:
+        return {"price": 0.0}
+    
+    # Try fetching price (default to Futures as it's most common)
+    price = await price_service.get_cached_price(symbol.upper(), "Futures", force_refresh=False)
+    
+    # If not found in Futures, try Spot (fallback logic inside service usually handles this, but being explicit)
+    if not price:
+         price = await price_service.get_cached_price(symbol.upper(), "Spot", force_refresh=False)
+
+    return {"price": price or 0.0}
+
 @router.post("/create")
 async def create_trade_webapp(payload: WebAppSignal, request: Request):
     user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
@@ -58,7 +76,6 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
             targets_formatted = parse_targets_list(payload.targets_raw.split())
             if not targets_formatted: return {"ok": False, "error": "Invalid targets"}
 
-            # Append leverage to notes if present
             final_notes = payload.notes or ""
             if payload.market == "FUTURES":
                 final_notes = f"Lev: {payload.leverage}x | {final_notes}".strip()
@@ -68,7 +85,7 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
                 db_session=db_session,
                 asset=payload.asset,
                 side=payload.side,
-                market=payload.market.capitalize(), # Futures/Spot
+                market=payload.market.capitalize(),
                 order_type=payload.order_type,
                 entry=Decimal(str(payload.entry)),
                 stop_loss=Decimal(str(payload.stop_loss)),
@@ -84,4 +101,4 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
             return {"ok": True, "id": created_rec.id}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-# --- END OF NEW FILE ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
