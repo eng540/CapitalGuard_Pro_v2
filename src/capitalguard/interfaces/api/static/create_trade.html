@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>CapitalGuard Terminal v4.1</title>
+    <title>CapitalGuard Terminal v4.2</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
@@ -48,7 +48,6 @@
         .leverage-val { font-weight: bold; color: var(--orange); width: 40px; }
         input[type=range] { width: 100%; accent-color: var(--orange); }
         .target-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; background: rgba(128,128,128,0.05); padding: 6px; border-radius: 10px; animation: fadeIn 0.3s ease; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
         .tp-badge { background: var(--button-color); color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold; flex-shrink: 0; }
         .tp-remove { color: var(--red); padding: 8px; cursor: pointer; font-size: 1.2rem; }
         .smart-chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 5px; margin-top: 12px; scrollbar-width: none; }
@@ -78,7 +77,7 @@
         <div class="header-row">
             <div style="flex: 1;">
                 <label class="input-label">ASSET PAIR</label>
-                <input type="text" class="asset-input" id="asset" value="BTCUSDT" placeholder="SYMBOL">
+                <input type="text" class="asset-input" id="asset" value="BTCUSDT" placeholder="SYMBOL" oninput="debounceFetchPrice()">
             </div>
             <div style="text-align: right;">
                 <div class="input-label">LIVE PRICE</div>
@@ -156,8 +155,7 @@
                 <label class="input-label" style="color: var(--button-color); cursor: pointer;" onclick="toggleAllChannels()">Select All</label>
             </div>
             <div class="channel-grid" id="channelGrid">
-                <!-- Channels will be loaded here -->
-                <div class="channel-chip" style="width:100%; text-align:center;">Loading channels...</div>
+                <div class="channel-chip selected" data-id="all" onclick="toggleChip(this)">📢 All Active Channels</div>
             </div>
         </div>
     </div>
@@ -174,25 +172,33 @@
         let currentType = 'LIMIT';
         let targetCount = 0;
         let livePriceVal = 0;
+        let fetchTimeout;
 
         // --- Init ---
         addTargetRow();
-        fetchChannels();
-        
+        fetchPrice(); // Initial fetch
+
         // --- API Calls ---
-        async def fetchChannels() {
-            // In a real scenario, we would fetch from API. 
-            // For now, we will use a mock or pass via URL params if possible.
-            // Since we are static, we will render a default set or try to fetch.
-            // Let's assume the backend provides an endpoint.
+        async function fetchPrice() {
+            const symbol = document.getElementById('asset').value;
+            if(!symbol) return;
+            
+            document.getElementById('livePrice').innerText = "Loading...";
             try {
-                // Mocking for now as we don't have auth token in static context easily without initData
-                // We will rely on the user selecting "All" or just sending to all by default if none selected.
-                const grid = document.getElementById('channelGrid');
-                grid.innerHTML = `
-                    <div class="channel-chip selected" data-id="all" onclick="toggleChip(this)">📢 All Active Channels</div>
-                `;
-            } catch(e) { console.error(e); }
+                const res = await fetch(`/api/webapp/price?symbol=${symbol}`);
+                const data = await res.json();
+                livePriceVal = data.price;
+                document.getElementById('livePrice').innerText = livePriceVal > 0 ? livePriceVal : "N/A";
+                
+                if(currentType === 'MARKET') updateCalc();
+            } catch(e) {
+                document.getElementById('livePrice').innerText = "Error";
+            }
+        }
+
+        function debounceFetchPrice() {
+            clearTimeout(fetchTimeout);
+            fetchTimeout = setTimeout(fetchPrice, 800);
         }
 
         // --- Logic ---
@@ -233,8 +239,7 @@
         }
 
         function getBasePrice() {
-            // Mock live price for calculation if market
-            if (currentType === 'MARKET') return 98000; // Placeholder
+            if (currentType === 'MARKET') return livePriceVal;
             return parseFloat(document.getElementById('entry').value) || 0;
         }
 
