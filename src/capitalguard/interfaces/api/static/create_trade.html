@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>CapitalGuard Terminal v4.2</title>
+    <title>CapitalGuard Terminal v5.0</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
@@ -55,16 +55,17 @@
         .chip { background: var(--bg-color); border: 1px solid var(--border); color: var(--hint-color); padding: 8px 14px; border-radius: 20px; font-size: 0.85rem; white-space: nowrap; cursor: pointer; transition: all 0.2s; font-weight: 500; }
         .chip:active { transform: scale(0.95); }
         .chip-blue { border-color: var(--button-color); color: var(--button-color); background: rgba(10, 132, 255, 0.1); }
-        .rr-bar-container { height: 6px; background: #444; border-radius: 3px; margin-top: 8px; overflow: hidden; display: flex; }
-        .rr-risk { background: var(--red); height: 100%; width: 50%; transition: width 0.3s; }
-        .rr-reward { background: var(--green); height: 100%; width: 50%; transition: width 0.3s; }
-        .rr-text { font-size: 0.75rem; text-align: right; margin-top: 4px; font-weight: bold; }
         .channel-grid { display: flex; flex-wrap: wrap; gap: 8px; }
         .channel-chip { background: var(--bg-color); border: 1px solid var(--border); padding: 8px 12px; border-radius: 20px; font-size: 0.85rem; color: var(--hint-color); cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s; }
         .channel-chip.selected { background: var(--button-color); border-color: var(--button-color); color: white; }
         .publish-btn { width: 92%; background: var(--button-color); color: var(--button-text); border: none; padding: 16px; border-radius: 16px; font-size: 1.1rem; font-weight: 700; position: fixed; bottom: 16px; left: 4%; box-shadow: 0 8px 24px rgba(0,0,0,0.3); cursor: pointer; z-index: 100; transition: transform 0.1s; }
         .publish-btn:active { transform: scale(0.98); }
-        .publish-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+        .publish-btn:disabled { opacity: 0.7; cursor: not-allowed; background: #555; }
+        
+        /* Progress Bar */
+        .progress-container { height: 6px; background: #444; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+        .progress-fill { height: 100%; width: 0%; transition: width 0.3s, background-color 0.3s; background-color: var(--green); }
+        .progress-text { font-size: 0.75rem; text-align: right; margin-top: 4px; font-weight: bold; color: var(--hint-color); }
     </style>
 </head>
 <body>
@@ -126,19 +127,21 @@
     <div class="section">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
             <label class="input-label" style="margin:0;">TARGETS</label>
-            <div class="rr-text" id="rrText">R:R -</div>
+            <div class="progress-text" id="totalPercentText">Total: 0%</div>
         </div>
-        <div class="rr-bar-container">
-            <div class="rr-risk" id="rrRiskBar" style="width: 50%"></div>
-            <div class="rr-reward" id="rrRewardBar" style="width: 50%"></div>
+        <div class="progress-container">
+            <div class="progress-fill" id="totalPercentBar"></div>
         </div>
         <div style="margin-bottom: 15px;"></div>
+        
         <div id="targetsContainer" class="target-container"></div>
+        
         <div class="smart-chips">
             <div class="chip chip-blue" onclick="addTargetRow()">+ Add</div>
             <div class="chip" onclick="smartCalc(1)">+1%</div>
             <div class="chip" onclick="smartCalc(2)">+2%</div>
             <div class="chip" onclick="smartCalc(5)">+5%</div>
+            <div class="chip" onclick="promptCustomCalc()">Custom %</div>
             <div class="chip" onclick="calcRR(1)">R:R 1:1</div>
             <div class="chip" onclick="calcRR(2)">R:R 1:2</div>
         </div>
@@ -155,7 +158,7 @@
                 <label class="input-label" style="color: var(--button-color); cursor: pointer;" onclick="toggleAllChannels()">Select All</label>
             </div>
             <div class="channel-grid" id="channelGrid">
-                <div class="channel-chip selected" data-id="all" onclick="toggleChip(this)">📢 All Active Channels</div>
+                <div class="channel-chip" style="width:100%; text-align:center;">Loading channels...</div>
             </div>
         </div>
     </div>
@@ -175,21 +178,44 @@
         let fetchTimeout;
 
         // --- Init ---
-        addTargetRow();
-        fetchPrice(); // Initial fetch
+        addTargetRow('', 100); // Start with 1 target at 100%
+        fetchPrice();
+        fetchChannels();
 
         // --- API Calls ---
+        async function fetchChannels() {
+            try {
+                const res = await fetch(`/api/webapp/channels?initData=${encodeURIComponent(tg.initData)}`);
+                const data = await res.json();
+                const grid = document.getElementById('channelGrid');
+                grid.innerHTML = '';
+                
+                if(data.ok && data.channels.length > 0) {
+                    data.channels.forEach(ch => {
+                        const div = document.createElement('div');
+                        div.className = 'channel-chip selected'; // Default selected
+                        div.dataset.id = ch.id;
+                        div.onclick = function() { toggleChip(this); };
+                        div.innerHTML = `📢 ${ch.title}`;
+                        grid.appendChild(div);
+                    });
+                } else {
+                    grid.innerHTML = '<div class="channel-chip">No active channels found</div>';
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
         async function fetchPrice() {
             const symbol = document.getElementById('asset').value;
             if(!symbol) return;
-            
             document.getElementById('livePrice').innerText = "Loading...";
             try {
                 const res = await fetch(`/api/webapp/price?symbol=${symbol}`);
                 const data = await res.json();
                 livePriceVal = data.price;
                 document.getElementById('livePrice').innerText = livePriceVal > 0 ? livePriceVal : "N/A";
-                
                 if(currentType === 'MARKET') updateCalc();
             } catch(e) {
                 document.getElementById('livePrice').innerText = "Error";
@@ -251,14 +277,59 @@
                 const pct = ((diff / entry) * 100).toFixed(2);
                 document.getElementById('riskLabel').innerText = `-${pct}% Risk`;
             }
+            updateTotalPercent();
+        }
+
+        function updateTotalPercent() {
+            let total = 0;
+            document.querySelectorAll('.tp-pct').forEach(input => {
+                total += parseFloat(input.value) || 0;
+            });
+            
+            const bar = document.getElementById('totalPercentBar');
+            const text = document.getElementById('totalPercentText');
+            
+            bar.style.width = Math.min(total, 100) + '%';
+            text.innerText = `Total: ${total}%`;
+            
+            if (total === 100) {
+                bar.style.backgroundColor = 'var(--green)';
+                text.style.color = 'var(--green)';
+            } else if (total > 100) {
+                bar.style.backgroundColor = 'var(--red)';
+                text.style.color = 'var(--red)';
+            } else {
+                bar.style.backgroundColor = 'var(--orange)';
+                text.style.color = 'var(--orange)';
+            }
+            
+            const btn = document.getElementById('submitBtn');
+            if (total !== 100) {
+                btn.innerText = total > 100 ? "⚠️ Total > 100%" : "⚠️ Total < 100%";
+                btn.style.backgroundColor = '#555';
+            } else {
+                btn.innerText = "🚀 Publish Signal";
+                btn.style.backgroundColor = 'var(--button-color)';
+            }
         }
 
         function smartCalc(percent) {
             const base = getBasePrice();
             if (!base) return tg.showAlert("Set Entry Price first!");
             let targetPrice = currentSide === 'LONG' ? base * (1 + (percent / 100)) : base * (1 - (percent / 100));
-            addTargetRow(targetPrice.toFixed(2), 50);
+            
+            // Smart Distribution Logic
+            let currentTotal = 0;
+            document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
+            let remaining = Math.max(0, 100 - currentTotal);
+            
+            addTargetRow(targetPrice.toFixed(2), remaining);
             tg.HapticFeedback.impactOccurred('light');
+        }
+        
+        function promptCustomCalc() {
+            const pct = prompt("Enter percentage (e.g. 3.5):");
+            if(pct) smartCalc(parseFloat(pct));
         }
 
         function calcRR(ratio) {
@@ -267,7 +338,12 @@
             if (!base || !sl) return tg.showAlert("Set Entry & SL first!");
             const risk = Math.abs(base - sl);
             let targetPrice = currentSide === 'LONG' ? base + (risk * ratio) : base - (risk * ratio);
-            addTargetRow(targetPrice.toFixed(2), 50);
+            
+            let currentTotal = 0;
+            document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
+            let remaining = Math.max(0, 100 - currentTotal);
+            
+            addTargetRow(targetPrice.toFixed(2), remaining);
             tg.HapticFeedback.impactOccurred('light');
         }
 
@@ -279,16 +355,18 @@
             div.innerHTML = `
                 <div class="tp-badge">${targetCount}</div>
                 <input type="number" class="tp-price" value="${price}" placeholder="Price" style="flex:2; background:transparent; border:none; color:white; font-family:monospace; font-size:1rem;">
-                <input type="number" class="tp-pct" value="${percent}" placeholder="%" style="width:50px; background:transparent; border:1px solid #444; border-radius:4px; color:white; text-align:center;">
+                <input type="number" class="tp-pct" value="${percent}" placeholder="%" oninput="updateTotalPercent()" style="width:50px; background:transparent; border:1px solid #444; border-radius:4px; color:white; text-align:center;">
                 <div class="tp-remove" onclick="removeTarget(this)">×</div>
             `;
             container.appendChild(div);
+            updateTotalPercent();
         }
 
         function removeTarget(el) {
             el.parentElement.remove();
             targetCount--;
             document.querySelectorAll('.tp-badge').forEach((b, i) => b.innerText = i + 1);
+            updateTotalPercent();
             tg.HapticFeedback.selectionChanged();
         }
 
@@ -299,6 +377,14 @@
         }
 
         async function publish() {
+            // Validate Total %
+            let total = 0;
+            document.querySelectorAll('.tp-pct').forEach(input => total += parseFloat(input.value) || 0);
+            if (Math.abs(total - 100) > 0.1) {
+                tg.showAlert(`Total closing percentage must be 100%. Current: ${total}%`);
+                return;
+            }
+
             const btn = document.getElementById('submitBtn');
             btn.disabled = true;
             btn.innerText = "Publishing...";
@@ -309,6 +395,11 @@
                 const p = row.querySelector('.tp-price').value;
                 const c = row.querySelector('.tp-pct').value;
                 if(p) targets.push(c ? `${p}@${c}` : p);
+            });
+            
+            const selectedChannels = [];
+            document.querySelectorAll('.channel-chip.selected').forEach(chip => {
+                if(chip.dataset.id) selectedChannels.push(parseInt(chip.dataset.id));
             });
 
             const payload = {
@@ -321,7 +412,8 @@
                 stop_loss: parseFloat(document.getElementById('sl').value) || 0,
                 targets_raw: targets.join(' '),
                 notes: document.getElementById('notes').value,
-                leverage: document.getElementById('leverage').value
+                leverage: document.getElementById('leverage').value,
+                channel_ids: selectedChannels
             };
 
             try {
