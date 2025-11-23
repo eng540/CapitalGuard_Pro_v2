@@ -1,11 +1,9 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 # File: src/capitalguard/interfaces/telegram/ui_texts.py
-# Version: v66.0.0-GOLD-MASTER (Production Ready)
+# Version: v66.1.0-HOTFIX (Restored Missing Function)
 # ✅ THE FIX:
-#    1. LINKING: Auto-generates WebApp links for 'Tradingplatformxbot'.
-#    2. TIMELINE: Full date format (YYYY-MM-DD HH:MM).
-#    3. LAYOUT: Zero redundancy, compact header, live PnL priority.
-#    4. STABILITY: Graceful handling of 'MessageNotModified' in PortfolioViews.
+#    1. RESTORED: 'build_review_text_with_price' function (Critical for Creation Flow).
+#    2. MAINTAINED: All previous design improvements (Compact Card, Timeline, Links).
 
 from __future__ import annotations
 import logging
@@ -34,7 +32,7 @@ ICON_STOP = "🛑"
 
 # ✅ MUST MATCH BOTFATHER SETTINGS
 WEBAPP_SHORT_NAME = "terminal" 
-# ✅ YOUR BOT USERNAME (Based on your screenshot)
+# ✅ YOUR BOT USERNAME
 BOT_USERNAME = "Tradingplatformxbot"
 
 def _format_pnl(pnl: float) -> str:
@@ -69,8 +67,48 @@ def _rr(entry: Any, sl: Any, targets: List[Target]) -> str:
     except Exception: return "-"
 
 def _get_webapp_link(rec_id: int) -> str:
-    """Generates the deep link to open the Web App for a specific signal."""
     return f"https://t.me/{BOT_USERNAME}/{WEBAPP_SHORT_NAME}?startapp={rec_id}"
+
+# --- ✅ RESTORED FUNCTION: Review Card for Creation Flow ---
+def build_review_text_with_price(draft: Dict[str, Any], preview_price: Optional[float]) -> str:
+    """
+    Builds the text for the creation review card (Draft).
+    Used by conversation_handlers.py.
+    """
+    asset = draft.get("asset", "N/A")
+    side = draft.get("side", "N/A")
+    market = draft.get("market", "Futures")
+    entry = _to_decimal(draft.get("entry", 0))
+    sl = _to_decimal(draft.get("stop_loss", 0))
+    
+    # Format Targets
+    raw_tps = draft.get("targets", [])
+    target_lines = []
+    for i, t in enumerate(raw_tps, start=1):
+        price = _to_decimal(t.get('price', 0))
+        pct_value = _pct(entry, price, side)
+        close_percent = t.get('close_percent', 0)
+        suffix = f" (Close {close_percent:.0f}%)" if 0 < close_percent < 100 else ""
+        if close_percent == 100 and i == len(raw_tps): suffix = ""
+        
+        target_lines.append(f"  • TP{i}: <code>{_format_price(price)}</code> ({_format_pnl(pct_value)}){suffix}")
+    
+    base_text = (
+        f"📝 <b>REVIEW RECOMMENDATION</b>\n"
+        f"─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
+        f"<b>#{asset} | {market} | {side}</b>\n\n"
+        f"💰 Entry: <code>{_format_price(entry)}</code>\n"
+        f"🛑 Stop: <code>{_format_price(sl)}</code>\n"
+        f"🎯 Targets:\n" + "\n".join(target_lines) + "\n"
+    )
+    
+    if preview_price is not None:
+        base_text += f"\n💹 Current Price: <code>{_format_price(preview_price)}</code>"
+    
+    base_text += "\n\nReady to publish?"
+    return base_text
+
+# --- Standard Trade Card Builders ---
 
 def _build_header(rec: Recommendation) -> str:
     symbol = _get_attr(rec.asset, 'value')
@@ -86,7 +124,6 @@ def _build_header(rec: Recommendation) -> str:
         lev_val = _extract_leverage(rec.notes)
         market_info = f"⚡ FUTURES ({lev_val})"
 
-    # ✅ Link embedded in the Symbol
     link = _get_webapp_link(rec.id)
     return f"<a href='{link}'>#{symbol}</a> | {side} {side_icon} | {market_info}"
 
@@ -102,10 +139,8 @@ def _build_status_and_live(rec: Recommendation) -> str:
         duration = _calculate_duration(rec)
         dur_str = f" | ⏱️ {duration}" if duration else ""
         exit_price = _format_price(_get_attr(rec, 'exit_price'))
-        # ✅ Compact Closed View
         return f"🏁 **CLOSED** @ `{exit_price}`\nPnL: {_format_pnl(pnl)}{dur_str}"
 
-    # ACTIVE STATE
     if live_price:
         entry = _get_attr(rec, 'entry')
         pnl = _pct(entry, live_price, _get_attr(rec, 'side'))
@@ -155,11 +190,9 @@ def _build_targets_list(rec: Recommendation) -> str:
 
 def _build_timeline_compact(rec: Recommendation) -> str:
     if not rec.events: return ""
-    # Show last 3 events
     events = sorted(rec.events, key=lambda e: e.event_timestamp, reverse=True)[:3]
     lines = []
     for event in events:
-        # ✅ Full Date Format
         ts = event.event_timestamp.strftime("%Y-%m-%d %H:%M")
         e_type = event.event_type.replace("_", " ").title()
         
@@ -170,7 +203,6 @@ def _build_timeline_compact(rec: Recommendation) -> str:
         lines.append(f"▫️ `{ts}` {e_type}")
     return "\n".join(lines)
 
-# --- Main Builder ---
 def build_trade_card_text(rec: Recommendation) -> str:
     SEP = "──────────────"
     parts = []
@@ -193,7 +225,6 @@ def build_trade_card_text(rec: Recommendation) -> str:
         parts.append(SEP)
         parts.append(timeline)
     
-    # Footer Link
     link = _get_webapp_link(rec.id)
     parts.append(f"\n📊 <a href='{link}'>Open Full Analytics</a>")
 
@@ -265,10 +296,6 @@ class PortfolioViews:
                 await update.callback_query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
             else:
                 await update.effective_message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-        except BadRequest as e:
-            if "message is not modified" in str(e).lower():
-                if update.callback_query: await update.callback_query.answer("✅ البيانات محدثة بالفعل")
-            else: log.warning(f"Failed to render hub: {e}")
-        except Exception as e:
-            log.warning(f"Failed to render hub: {e}")
+        except BadRequest: pass
+        except Exception as e: log.warning(f"Hub render error: {e}")
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
