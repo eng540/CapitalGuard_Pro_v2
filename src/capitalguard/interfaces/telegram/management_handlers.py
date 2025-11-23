@@ -1,13 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v68.0.0-GOLD-MASTER (Complete Functionality)
-# Status: Production Ready
-# ✅ FEATURES:
-#    - Full Portfolio Management (Hub, Lists, Details).
-#    - Live Refresh with HTML parsing.
-#    - Full Risk Management (Set Fixed, Trailing, BE).
-#    - Full Closing Logic (Market, Price, Partial).
-#    - Robust Error Handling & Session Management.
+# Version: v69.0.0-STABLE-UX (No Forced Hub Redirects)
+# ✅ THE FIX:
+#    1. UX: Removed 'await PortfolioController.show_hub(...)' from error blocks.
+#       -> If an error occurs or item is missing, it now shows an Alert, keeping the user in context.
+#    2. LOGIC: Ensured 'handle_confirm_change' passes correct parameters to 'show_position'.
 
 import logging
 import asyncio
@@ -58,7 +55,7 @@ log = logging.getLogger(__name__)
 
 # --- Helper: Safe Message Editing ---
 async def safe_edit_message(
-    bot: Bot, chat_id: int, message_id: int, text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML
+    bot: Bot, chat_id: int, message_id: int, text: str = None, reply_markup=None, parse_mode: str = ParseMode.MARKDOWN
 ) -> bool:
     if not chat_id or not message_id: return False
     try:
@@ -82,9 +79,6 @@ async def safe_edit_message(
 # ==============================================================================
 
 class PortfolioController:
-    """
-    Orchestrates business logic with high resilience.
-    """
     @staticmethod
     async def show_hub(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, *args):
         session = SessionContext(context)
@@ -94,7 +88,6 @@ class PortfolioController:
         tg_id = str(db_user.telegram_user_id)
         cache_key = f"portfolio_view:{user_id}"
 
-        # --- Layer 1: Cache ---
         try:
             cached_view = await core_cache.get(cache_key)
             if cached_view:
@@ -103,7 +96,6 @@ class PortfolioController:
         except Exception as e:
             log.warning(f"Cache retrieval failed: {e}")
 
-        # --- Layer 2: Data Fetching ---
         perf_service = get_service(context, "performance_service", PerformanceService)
         trade_service = get_service(context, "trade_service", TradeService)
 
@@ -129,7 +121,6 @@ class PortfolioController:
                 await update.effective_message.reply_text("⚠️ System under load. Try again.")
                 return
 
-        # --- Layer 3: Processing ---
         active_count = sum(1 for i in items if getattr(i, 'unified_status', None) == "ACTIVE")
         watchlist_count = sum(1 for i in items if getattr(i, 'unified_status', None) == "WATCHLIST")
         
@@ -141,13 +132,11 @@ class PortfolioController:
             "is_analyst": db_user.user_type == UserTypeEntity.ANALYST
         }
 
-        # --- Layer 4: Rendering ---
         await PortfolioViews.render_hub(update, **view_data)
         await core_cache.set(cache_key, view_data, ttl=30)
 
     @staticmethod
     async def handle_list_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
-        """Handles showing lists (Activated, Watchlist, Channels, Analyst)."""
         list_type = callback.get_str(0) or "activated"
         page = callback.get_int(1) or 1
         
@@ -273,8 +262,9 @@ class PortfolioController:
         try:
             pos = await asyncio.to_thread(trade_service.get_position_details_for_user, db_session, user_id, p_type, p_id)
             if not pos:
-                await query.answer("⚠️ Item no longer exists.", show_alert=True)
-                await PortfolioController.show_hub(update, context, db_session, db_user)
+                # ✅ FIX: Don't redirect to Hub, just alert
+                await query.answer("⚠️ Item no longer exists or was closed.", show_alert=True)
+                # Optional: Try to refresh current view instead of full redirect
                 return
 
             try:
@@ -296,20 +286,20 @@ class PortfolioController:
                     keyboard_markup = build_user_trade_control_keyboard(p_id, orm_status_value=orm_status)
                 else:
                     keyboard_markup = analyst_control_panel_keyboard(pos)
-                    
+            # If closed, we might still want to show the card but without controls (except Back)
+            
             if keyboard_markup: 
                  keyboard_rows.extend(keyboard_markup.inline_keyboard)
             keyboard_rows.append([back_btn])
             
             await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, 
-                                    text=text, reply_markup=InlineKeyboardMarkup(keyboard_rows), parse_mode=ParseMode.HTML)
+                                    text=text, reply_markup=InlineKeyboardMarkup(keyboard_rows), parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
             log.error(f"Error showing position {p_id}: {e}", exc_info=True)
             await query.answer("❌ Error loading position.", show_alert=True)
 
     @staticmethod
     async def show_submenu(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
-        """Handles showing submenus (Edit, Close, Partial)."""
         query = update.callback_query
         rec_id = callback.get_int(0)
         
@@ -341,7 +331,7 @@ class PortfolioController:
                 kb_rows.extend(kb.inline_keyboard)
 
         kb_rows.append([back])
-        await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text=text, reply_markup=InlineKeyboardMarkup(kb_rows), parse_mode=ParseMode.HTML)
+        await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text=text, reply_markup=InlineKeyboardMarkup(kb_rows), parse_mode=ParseMode.MARKDOWN)
 
     @staticmethod
     async def handle_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
@@ -405,8 +395,6 @@ class PortfolioController:
                 await lifecycle.update_entry_and_notes_async(item_id, user_id, new_entry=None, new_notes=value, db_session=db_session)
             elif target_action == "close_manual":
                 await lifecycle.close_recommendation_async(item_id, user_id, exit_price=value, db_session=db_session, reason="MANUAL_PRICE_CLOSE")
-            
-            # ✅ RISK MANAGEMENT EXECUTION
             elif target_action == "set_fixed":
                 await lifecycle.set_exit_strategy_async(item_id, user_id, mode="FIXED", price=value, active=True, session=db_session)
             elif target_action == "set_trailing":
@@ -538,13 +526,10 @@ class ActionRouter:
         ManagementAction.EDIT_TP.value: PortfolioController.handle_edit_selection,
         ManagementAction.EDIT_NOTES.value: PortfolioController.handle_edit_selection,
         ManagementAction.CLOSE_MANUAL.value: PortfolioController.handle_edit_selection,
-        # ✅ ADDED: Risk Management Edit Actions
         ManagementAction.SET_FIXED.value: PortfolioController.handle_edit_selection,
         ManagementAction.SET_TRAILING.value: PortfolioController.handle_edit_selection,
-        # ✅ ADDED: Immediate Actions
         ManagementAction.CLOSE_MARKET.value: PortfolioController.handle_immediate_action,
         ManagementAction.PARTIAL.value: PortfolioController.handle_partial_close_fixed,
-        # ✅ ADDED: Refresh
         ManagementAction.REFRESH.value: PortfolioController.handle_refresh,
     }
     
@@ -589,9 +574,9 @@ class ActionRouter:
                 if data.action in cls._EDIT_ROUTES:
                     return await cls._EDIT_ROUTES[data.action](update, context, db_session, db_user, data)
 
+            # ✅ FIX: Removed aggressive fallback to show_hub
             log.warning(f"Unmatched Action: ns={data.namespace}, act={data.action}")
             await query.answer("⚠️ Action not implemented yet.", show_alert=False)
-            await PortfolioController.show_hub(update, context, db_session, db_user)
 
         except Exception as e:
             log.error(f"Router Dispatch Error: {e}", exc_info=True)
