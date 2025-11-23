@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Signal Dashboard</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg: #1c1c1e; --card: #2c2c2e; --text: #fff; --hint: #8e8e93;
+            --green: #32d74b; --red: #ff453a; --blue: #0a84ff; --orange: #ff9f0a;
+            --border: #3a3a3c;
+        }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; }
+        
+        /* Header Card */
+        .header-card { background: var(--card); padding: 20px; border-radius: 16px; text-align: center; margin-bottom: 16px; border: 1px solid var(--border); box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+        .symbol { font-size: 2rem; font-weight: 900; margin: 0; letter-spacing: 1px; }
+        .side-badge { display: inline-block; padding: 4px 12px; border-radius: 8px; font-weight: bold; font-size: 0.8rem; margin-top: 8px; text-transform: uppercase; }
+        .long { background: rgba(50, 215, 75, 0.15); color: var(--green); border: 1px solid rgba(50, 215, 75, 0.3); }
+        .short { background: rgba(255, 69, 58, 0.15); color: var(--red); border: 1px solid rgba(255, 69, 58, 0.3); }
+        
+        /* Live Stats */
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+        .stat-box { background: var(--card); padding: 12px; border-radius: 12px; text-align: center; border: 1px solid var(--border); }
+        .stat-label { font-size: 0.7rem; color: var(--hint); text-transform: uppercase; font-weight: 600; }
+        .stat-val { font-size: 1.1rem; font-weight: bold; margin-top: 4px; font-family: monospace; }
+        .pnl-val { font-size: 1.6rem; font-weight: 900; margin-top: 5px; }
+        
+        /* Targets List */
+        .section-title { margin: 20px 0 10px 4px; font-size: 0.8rem; color: var(--hint); font-weight: 700; text-transform: uppercase; }
+        .list-group { background: var(--card); border-radius: 16px; overflow: hidden; margin-bottom: 16px; border: 1px solid var(--border); }
+        .list-item { padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+        .list-item:last-child { border-bottom: none; }
+        .item-left { display: flex; align-items: center; gap: 12px; }
+        .status-icon { font-size: 1.2rem; }
+        .price-text { font-family: monospace; font-size: 1rem; }
+        
+        /* Timeline */
+        .timeline { margin-top: 10px; padding-left: 10px; border-left: 2px solid var(--border); margin-left: 10px; }
+        .tl-item { position: relative; padding-left: 20px; margin-bottom: 20px; }
+        .tl-dot { position: absolute; left: -6px; top: 4px; width: 10px; height: 10px; background: var(--blue); border-radius: 50%; border: 2px solid var(--bg); }
+        .tl-time { font-size: 0.75rem; color: var(--hint); font-weight: 600; }
+        .tl-content { font-size: 0.95rem; margin-top: 4px; }
+        
+        /* Loading */
+        .loader { text-align: center; padding: 50px; color: var(--hint); }
+    </style>
+</head>
+<body>
+
+    <div id="loader" class="loader">Loading Signal Data...</div>
+
+    <div id="app" style="display: none;">
+        <!-- Header -->
+        <div class="header-card">
+            <h1 class="symbol" id="symbol">---</h1>
+            <div id="sideBadge" class="side-badge">---</div>
+            <div style="margin-top: 20px;">
+                <div class="stat-label">LIVE PNL</div>
+                <div class="pnl-val" id="pnl">0.00%</div>
+            </div>
+        </div>
+
+        <!-- Key Stats -->
+        <div class="stats-grid">
+            <div class="stat-box">
+                <div class="stat-label">Entry Avg</div>
+                <div class="stat-val" id="entry">0.00</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Current Price</div>
+                <div class="stat-val" id="price" style="color: var(--blue);">0.00</div>
+            </div>
+        </div>
+
+        <!-- Targets -->
+        <div class="section-title">Targets & Stop</div>
+        <div class="list-group" id="targetsList"></div>
+
+        <!-- Timeline -->
+        <div class="section-title">Event Log</div>
+        <div class="timeline" id="timeline"></div>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        // Get ID from URL parameters (passed by Telegram)
+        // Format: .../signal_dashboard.html?startapp=REC_ID
+        // Telegram passes start_param in initDataUnsafe usually, or we use URL params if opened directly
+        const urlParams = new URLSearchParams(window.location.search);
+        // Telegram WebApp passes the parameter in tg.initDataUnsafe.start_param
+        let recId = tg.initDataUnsafe?.start_param || urlParams.get('id');
+
+        async function loadData() {
+            if(!recId) {
+                document.getElementById('loader').innerText = "No Signal ID provided.";
+                return;
+            }
+            
+            try {
+                // Fetch full details from our API
+                const res = await fetch(`/api/webapp/signal/${recId}`);
+                const data = await res.json();
+                
+                if(data.ok) {
+                    render(data.signal);
+                    document.getElementById('loader').style.display = 'none';
+                    document.getElementById('app').style.display = 'block';
+                } else {
+                    document.getElementById('loader').innerText = "Error: " + data.error;
+                }
+            } catch(e) {
+                console.error(e);
+                document.getElementById('loader').innerText = "Network Error";
+            }
+        }
+
+        function render(sig) {
+            document.getElementById('symbol').innerText = sig.asset;
+            
+            const badge = document.getElementById('sideBadge');
+            badge.innerText = `${sig.side} ${sig.leverage || ''}`;
+            badge.className = `side-badge ${sig.side.toLowerCase()}`;
+            
+            document.getElementById('entry').innerText = sig.entry;
+            document.getElementById('price').innerText = sig.live_price;
+            
+            // PnL Color
+            const pnlEl = document.getElementById('pnl');
+            const pnlVal = parseFloat(sig.pnl);
+            pnlEl.innerText = (pnlVal > 0 ? "+" : "") + pnlVal.toFixed(2) + "%";
+            pnlEl.style.color = pnlVal > 0 ? "var(--green)" : (pnlVal < 0 ? "var(--red)" : "var(--text)");
+
+            // Render Targets
+            const list = document.getElementById('targetsList');
+            list.innerHTML = '';
+            
+            // Stop Loss
+            list.innerHTML += `
+                <div class="list-item">
+                    <div class="item-left">
+                        <span class="status-icon">🛑</span>
+                        <div>
+                            <div style="font-weight:bold;">Stop Loss</div>
+                            <div style="font-size:0.8rem; color:var(--hint);">${sig.stop_loss}</div>
+                        </div>
+                    </div>
+                    <div style="font-size:0.8rem; color:var(--red); font-weight:bold;">RISK</div>
+                </div>
+            `;
+
+            // Targets
+            sig.targets.forEach((t, i) => {
+                const icon = t.hit ? "✅" : "⏳";
+                const color = t.hit ? "var(--green)" : "var(--text)";
+                const opacity = t.hit ? "1" : "0.7";
+                
+                list.innerHTML += `
+                    <div class="list-item" style="opacity: ${opacity}">
+                        <div class="item-left">
+                            <span class="status-icon">${icon}</span>
+                            <div>
+                                <div style="font-weight:bold; color:${color}">Target ${i+1}</div>
+                                <div class="price-text" style="color:var(--hint);">${t.price}</div>
+                            </div>
+                        </div>
+                        <div style="font-size:0.8rem; font-weight:bold;">${t.roi}%</div>
+                    </div>
+                `;
+            });
+
+            // Render Timeline
+            const tl = document.getElementById('timeline');
+            tl.innerHTML = '';
+            sig.events.forEach(e => {
+                tl.innerHTML += `
+                    <div class="tl-item">
+                        <div class="tl-dot"></div>
+                        <div class="tl-time">${e.time}</div>
+                        <div class="tl-content">${e.description}</div>
+                    </div>
+                `;
+            });
+        }
+
+        // Initial Load
+        loadData();
+        // Auto-refresh every 3 seconds for live feel
+        setInterval(loadData, 3000);
+
+    </script>
+</body>
+</html>
