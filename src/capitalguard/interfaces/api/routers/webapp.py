@@ -13,6 +13,8 @@ from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 from capitalguard.interfaces.telegram.parsers import parse_targets_list
 from capitalguard.application.services.price_service import PriceService
+from capitalguard.application.services.trade_service import TradeService
+from capitalguard.interfaces.telegram.helpers import _pct
 
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
 
@@ -125,6 +127,73 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
             ))
 
             return {"ok": True, "id": created_rec.id}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+# ✅ NEW ENDPOINT: Get Signal Details for Dashboard
+@router.get("/signal/{rec_id}")
+async def get_signal_details(rec_id: int, request: Request):
+    try:
+        # 1. Get Services
+        # Note: We access services via app state for simplicity in this router
+        trade_service = request.app.state.services.get("trade_service")
+        price_service = request.app.state.services.get("price_service")
+        
+        # 2. Get Recommendation (Using a fresh session)
+        with session_scope() as session:
+            rec = trade_service.repo.get(session, rec_id)
+            if not rec:
+                return {"ok": False, "error": "Signal not found"}
+            
+            # 3. Get Live Price
+            live_price = await price_service.get_cached_price(rec.asset, rec.market, force_refresh=False) or 0.0
+            
+            # 4. Calculate PnL
+            pnl = 0.0
+            if live_price > 0:
+                pnl = _pct(rec.entry, live_price, rec.side)
+
+            # 5. Format Targets
+            targets_data = []
+            hit_targets = set()
+            for event in rec.events:
+                if "TP" in event.event_type and "HIT" in event.event_type:
+                    try: hit_targets.add(int(event.event_type[2:-4]))
+                    except: pass
+            
+            for i, t in enumerate(rec.targets, 1):
+                t_price = float(t['price'])
+                roi = _pct(rec.entry, t_price, rec.side)
+                targets_data.append({
+                    "price": t_price,
+                    "roi": f"{roi:+.2f}",
+                    "hit": i in hit_targets
+                })
+
+            # 6. Format Events
+            events_data = []
+            for e in sorted(rec.events, key=lambda x: x.event_timestamp, reverse=True):
+                events_data.append({
+                    "time": e.event_timestamp.strftime("%d/%m %H:%M"),
+                    "description": e.event_type.replace("_", " ").title()
+                })
+
+            # 7. Construct Response
+            signal_data = {
+                "asset": rec.asset,
+                "side": rec.side,
+                "leverage": "20x", # Placeholder or extract from notes
+                "entry": float(rec.entry),
+                "stop_loss": float(rec.stop_loss),
+                "risk_pct": f"{abs((float(rec.entry)-float(rec.stop_loss))/float(rec.entry)*100):.2f}",
+                "live_price": live_price,
+                "pnl": f"{pnl:.2f}",
+                "targets": targets_data,
+                "events": events_data
+            }
+            
+            return {"ok": True, "signal": signal_data}
+
     except Exception as e:
         return {"ok": False, "error": str(e)}
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
