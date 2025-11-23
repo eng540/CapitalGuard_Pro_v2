@@ -1,11 +1,11 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 # File: src/capitalguard/interfaces/telegram/ui_texts.py
-# Version: v65.0.0-FINAL-DESIGN (Compact, Smart, Linked)
+# Version: v66.0.0-GOLD-MASTER (Production Ready)
 # ✅ THE FIX:
-#    1. HEADER: Clickable Symbol (Web App Link) + Market Type (Spot/Futures).
-#    2. STATUS: Merged Live/Exit Price into Status block (No Redundancy).
-#    3. INFO: Compact Entry ➔ Stop line with Risk & R:R.
-#    4. TIMELINE: Full Date format (YYYY-MM-DD HH:MM).
+#    1. LINKING: Auto-generates WebApp links for 'Tradingplatformxbot'.
+#    2. TIMELINE: Full date format (YYYY-MM-DD HH:MM).
+#    3. LAYOUT: Zero redundancy, compact header, live PnL priority.
+#    4. STABILITY: Graceful handling of 'MessageNotModified' in PortfolioViews.
 
 from __future__ import annotations
 import logging
@@ -21,7 +21,6 @@ from telegram.error import BadRequest
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.domain.value_objects import Target
 from capitalguard.interfaces.telegram.helpers import _get_attr, _to_decimal, _pct, _format_price
-# Import settings for bot username
 from capitalguard.config import settings 
 
 log = logging.getLogger(__name__)
@@ -32,7 +31,11 @@ ICON_SHORT = "🔴"
 ICON_TP = "✅"
 ICON_WAIT = "⏳"
 ICON_STOP = "🛑"
-WEBAPP_SHORT_NAME = "terminal" # Must match BotFather setting
+
+# ✅ MUST MATCH BOTFATHER SETTINGS
+WEBAPP_SHORT_NAME = "terminal" 
+# ✅ YOUR BOT USERNAME (Based on your screenshot)
+BOT_USERNAME = "Tradingplatformxbot"
 
 def _format_pnl(pnl: float) -> str:
     emoji = "🚀" if pnl > 0 else "🔻"
@@ -66,9 +69,8 @@ def _rr(entry: Any, sl: Any, targets: List[Target]) -> str:
     except Exception: return "-"
 
 def _get_webapp_link(rec_id: int) -> str:
-    # Replace with your actual bot username or fetch dynamically if possible
-    bot_username = "CapitalGuardBot" 
-    return f"https://t.me/{bot_username}/{WEBAPP_SHORT_NAME}?startapp={rec_id}"
+    """Generates the deep link to open the Web App for a specific signal."""
+    return f"https://t.me/{BOT_USERNAME}/{WEBAPP_SHORT_NAME}?startapp={rec_id}"
 
 def _build_header(rec: Recommendation) -> str:
     symbol = _get_attr(rec.asset, 'value')
@@ -84,7 +86,7 @@ def _build_header(rec: Recommendation) -> str:
         lev_val = _extract_leverage(rec.notes)
         market_info = f"⚡ FUTURES ({lev_val})"
 
-    # Link embedded in Symbol
+    # ✅ Link embedded in the Symbol
     link = _get_webapp_link(rec.id)
     return f"<a href='{link}'>#{symbol}</a> | {side} {side_icon} | {market_info}"
 
@@ -100,10 +102,10 @@ def _build_status_and_live(rec: Recommendation) -> str:
         duration = _calculate_duration(rec)
         dur_str = f" | ⏱️ {duration}" if duration else ""
         exit_price = _format_price(_get_attr(rec, 'exit_price'))
-        # Merged Exit Price into Status
+        # ✅ Compact Closed View
         return f"🏁 **CLOSED** @ `{exit_price}`\nPnL: {_format_pnl(pnl)}{dur_str}"
 
-    # ACTIVE
+    # ACTIVE STATE
     if live_price:
         entry = _get_attr(rec, 'entry')
         pnl = _pct(entry, live_price, _get_attr(rec, 'side'))
@@ -157,7 +159,7 @@ def _build_timeline_compact(rec: Recommendation) -> str:
     events = sorted(rec.events, key=lambda e: e.event_timestamp, reverse=True)[:3]
     lines = []
     for event in events:
-        # Full Date Format
+        # ✅ Full Date Format
         ts = event.event_timestamp.strftime("%Y-%m-%d %H:%M")
         e_type = event.event_type.replace("_", " ").title()
         
@@ -190,10 +192,14 @@ def build_trade_card_text(rec: Recommendation) -> str:
     if timeline:
         parts.append(SEP)
         parts.append(timeline)
+    
+    # Footer Link
+    link = _get_webapp_link(rec.id)
+    parts.append(f"\n📊 <a href='{link}'>Open Full Analytics</a>")
 
     return "\n".join(parts)
 
-# --- Helpers for PnL Calculation (Preserved) ---
+# --- Helpers for PnL Calculation ---
 def _calculate_weighted_pnl(rec: Recommendation) -> float:
     total_pnl_contribution = 0.0
     total_percent_closed = 0.0
@@ -259,6 +265,10 @@ class PortfolioViews:
                 await update.callback_query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
             else:
                 await update.effective_message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-        except BadRequest: pass
-        except Exception as e: log.warning(f"Hub render error: {e}")
+        except BadRequest as e:
+            if "message is not modified" in str(e).lower():
+                if update.callback_query: await update.callback_query.answer("✅ البيانات محدثة بالفعل")
+            else: log.warning(f"Failed to render hub: {e}")
+        except Exception as e:
+            log.warning(f"Failed to render hub: {e}")
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
