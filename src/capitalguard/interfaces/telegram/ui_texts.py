@@ -1,9 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 # File: src/capitalguard/interfaces/telegram/ui_texts.py
-# Version: v43.0.0-PLATINUM (UI Fixes)
+# Version: v58.0.0-LIVE-CARD (Timeline & Live Price)
 # ✅ THE FIX:
-#    1. Handled 'MessageNotModified' error gracefully in render_hub.
-#    2. Added user feedback via callback answer if data hasn't changed.
+#    1. Enhanced Live Price section with better formatting
+#    2. Added Timeline section to show recent events
+#    3. Maintained ALL existing functionality
 
 from __future__ import annotations
 import logging
@@ -103,7 +104,7 @@ def _build_header(rec: Recommendation) -> str:
     
 
 def _build_live_price_section(rec: Recommendation) -> str:
-    """Builds the Live Price block (Design 3)."""
+    """Builds the Live Price block (Design 3) - ENHANCED."""
     live_price = getattr(rec, "live_price", None)
     if _get_attr(rec, 'status') != RecommendationStatus.ACTIVE or live_price is None:
         return ""
@@ -111,13 +112,11 @@ def _build_live_price_section(rec: Recommendation) -> str:
     pnl = _pct(_get_attr(rec, 'entry'), live_price, _get_attr(rec, 'side'))
     pnl_icon = '🟢' if pnl >= 0 else '🔴'
     
-    # Calculate price change (optional, stubbed)
-    price_change_pct = "+0.00%" # (This would require fetching 24h data)
-
+    # ✅ ENHANCED: Better formatting for live price
     return "\n".join([
         "━━━━━━━━━━━━━━━━━━",
-        "📈 *السعر الحيّ*",
-        f"`{_format_price(live_price)}`  `({price_change_pct})`",
+        "📈 *السعر الحيّ (Live)*",
+        f"Price: `{_format_price(live_price)}`",
         f"PnL: `{_format_pnl(pnl)}` {pnl_icon}"
     ])
 
@@ -194,9 +193,47 @@ def _build_summary_section(rec: Recommendation) -> str:
         f"{'📈' if pnl >= 0 else '📉'} *Final Result: {_format_pnl(pnl)}* ({_get_result_text(pnl)})",
     ])
 
+# ✅ NEW: Timeline Section
+def _build_timeline_section(rec: Recommendation) -> str:
+    """Builds the Timeline section showing recent events."""
+    if not rec.events:
+        return ""
+    
+    lines = ["━━━━━━━━━━━━━━━━━━", "📜 *سجل الأحداث (Timeline)*"]
+    
+    # Show last 5 events (most recent first)
+    recent_events = sorted(rec.events, key=lambda e: e.event_timestamp, reverse=True)[:5]
+    
+    for event in recent_events:
+        ts = event.event_timestamp.strftime("%H:%M")
+        e_type = event.event_type
+        
+        # Map event types to user-friendly descriptions
+        icon = "🔹"
+        desc = e_type
+        
+        if "CREATED" in e_type: 
+            icon, desc = "🆕", "Signal Created"
+        elif "ACTIVATED" in e_type: 
+            icon, desc = "🚀", "Entry Filled"
+        elif "TP" in e_type and "HIT" in e_type: 
+            icon, desc = "🎯", f"{e_type.replace('_HIT', '')} Hit"
+        elif "SL_HIT" in e_type: 
+            icon, desc = "🛑", "Stop Loss Hit"
+        elif "SL_UPDATED" in e_type: 
+            icon, desc = "🛡️", "Stop Loss Moved"
+        elif "PARTIAL" in e_type: 
+            icon, desc = "💰", "Partial Profit Taken"
+        elif "CLOSED" in e_type: 
+            icon, desc = "🏁", "Position Closed"
+        
+        lines.append(f"{icon} `{ts}` {desc}")
+        
+    return "\n".join(lines)
+
 def build_trade_card_text(rec: Recommendation) -> str:
     """
-    ✅ R2 (Design 3): Builds the full trade detail view.
+    ✅ R2 (Design 3): Builds the full trade detail view WITH TIMELINE.
     """
     header = _build_header(rec)
     parts = [header]
@@ -216,11 +253,14 @@ def build_trade_card_text(rec: Recommendation) -> str:
         parts.append(_build_exit_plan_section(rec))
         parts.append("━━━━━━━━━━━━━━━━━━")
     
+    # ✅ ADDED: Timeline section for all statuses
+    if timeline := _build_timeline_section(rec):
+        parts.append(timeline)
+        parts.append("━━━━━━━━━━━━━━━━━━")
+    
     if rec.notes:
         parts.append(f"📝 Notes: *{rec.notes}*")
         
-    # Escape for MarkdownV2
-    # (Note: The handler (management_handlers.py) is responsible for escaping)
     return "\n".join(filter(None, parts))
 
 def build_review_text_with_price(draft: dict, preview_price: Optional[float]) -> str:
@@ -252,7 +292,7 @@ def build_review_text_with_price(draft: dict, preview_price: Optional[float]) ->
     base_text += "\n\nReady to publish?"
     return base_text
 
-# --- ✅ NEW CLASS: PortfolioViews (The Missing Piece) ---
+# --- ✅ PortfolioViews (Maintained from Original) ---
 class PortfolioViews:
     """
     Handles rendering of the main portfolio hub.
