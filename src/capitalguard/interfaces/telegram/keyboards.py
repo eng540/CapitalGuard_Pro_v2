@@ -1,15 +1,8 @@
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
 # File: src/capitalguard/interfaces/telegram/keyboards.py
-# Version: v26.0.0-WEBAPP (Complete with WebApp Support)
-# ✅ THE FIX: (R2 Feature - Design 3)
-#    - 1. (REFACTORED) `analyst_control_panel_keyboard` و
-#       `build_user_trade_control_keyboard` تم تحديثهما بالكامل
-#       ليطابقا "التصميم 3" (مصفوفة الأزرار 2x3).
-#    - 2. (REFACTORED) `build_open_recs_keyboard` (الذي تم تسليمه سابقًا)
-#       مُدمج هنا لضمان الاكتمال.
-#    - 3. (NEW) `build_channels_list_keyboard` (الذي تم تسليمه سابقًا)
-#       مُدمج هنا لضمان الاكتمال.
-#    - 4. (NEW) WebApp Support - Added WebAppInfo import and updated main_creation_keyboard
-# 🎯 IMPACT: هذا الملف ينفذ واجهة المستخدم الاحترافية الجديدة بالكامل مع دعم WebApp.
+# Version: v58.0.0-LIVE-CARD (Refresh Button Added)
+# ✅ THE FIX: Added 'Refresh' button to public_channel_keyboard
+# 🎯 IMPACT: Maintains ALL existing functionality while adding the new refresh feature
 
 import math
 import logging
@@ -633,10 +626,21 @@ def build_channel_picker_keyboard(review_token: str, channels: Iterable[Any], se
         return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Error - Back to Review", callback_data=CallbackBuilder.create(CallbackNamespace.PUBLICATION, CallbackAction.BACK, review_token[:12]))]])
 
 def public_channel_keyboard(rec_id: int, bot_username: Optional[str]) -> Optional[InlineKeyboardMarkup]:
+    """
+    Creates the keyboard for public channel posts.
+    ✅ FIX: Added 'Refresh' button alongside 'Track Signal'.
+    """
     buttons = []
+    
+    # 1. Track Signal (Deep Link)
     if bot_username:
         track_url = f"https://t.me/{bot_username}?start=track_{rec_id}"
         buttons.append(InlineKeyboardButton("📊 Track Signal", url=track_url))
+    
+    # 2. Refresh Button (Callback) - ✅ THE ONLY ADDITION
+    refresh_cb = CallbackBuilder.create(CallbackNamespace.RECOMMENDATION, "refresh", rec_id)
+    buttons.append(InlineKeyboardButton("🔄 Refresh", callback_data=refresh_cb))
+    
     return InlineKeyboardMarkup([buttons]) if buttons else None
 
 def build_subscription_keyboard(channel_link: Optional[str]) -> Optional[InlineKeyboardMarkup]:
@@ -689,3 +693,4 @@ def build_partial_close_keyboard(rec_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✍️ Custom %", callback_data=CallbackBuilder.create(ns, "partial_close_custom", rec_id))],
         # (Back button added by caller)
     ])
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/keyboards.py ---
