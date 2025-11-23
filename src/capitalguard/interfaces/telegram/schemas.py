@@ -34,7 +34,7 @@ class ManagementAction(Enum):
     PARTIAL_CLOSE_CUSTOM = "partial_close_custom"
     PARTIAL = "pt"
     
-    # Risk Management Actions (✅ ADDED THESE)
+    # Risk Management
     SET_FIXED = "set_fixed"
     SET_TRAILING = "set_trailing"
     MOVE_TO_BE = "move_to_be"
@@ -43,6 +43,9 @@ class ManagementAction(Enum):
     # General
     CANCEL_INPUT = "cancel_input"
     CONFIRM_CHANGE = "confirm_change"
+    
+    # ✅ ADDED: Refresh Action
+    REFRESH = "refresh"
 
 @dataclass
 class TypedCallback:
@@ -72,4 +75,4 @@ class TypedCallback:
             return self.params[index]
         except IndexError:
             return None
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/schemas.py ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
