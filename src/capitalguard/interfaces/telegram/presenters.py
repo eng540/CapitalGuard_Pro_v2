@@ -1,14 +1,7 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/presenters.py ---v1
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/presenters.py ---
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.constants import ParseMode
 from capitalguard.interfaces.telegram.keyboards import CallbackBuilder, CallbackNamespace, CallbackAction
-
-# Assumed helper for safe markdown escape (implementing it here for completeness)
-def _safe_escape_markdown(text: str) -> str:
-    import re
-    if not isinstance(text, str): text = str(text)
-    escape_chars = r'\_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 class ManagementPresenter:
     """
@@ -23,7 +16,10 @@ class ManagementPresenter:
             "edit_tp": "🎯 <b>تعديل الأهداف</b>\nالرجاء إدخال الأهداف (مثال: `61000 62000@50`):",
             "edit_notes": "📝 <b>تعديل الملاحظات</b>\nأدخل الملاحظة الجديدة (أو 'clear' للمسح):",
             "close_manual": "✍️ <b>إغلاق يدوي</b>\nأدخل سعر الخروج:",
-            "partial_close_custom": "📉 <b>إغلاق جزئي مخصص</b>\nأدخل النسبة المئوية للإغلاق (مثال: 30):"
+            "partial_close_custom": "📉 <b>إغلاق جزئي مخصص</b>\nأدخل النسبة المئوية للإغلاق (مثال: 30):",
+            # ✅ ADDED PROMPTS FOR RISK MANAGEMENT
+            "set_fixed": "🔒 <b>تحديد هدف ربح ثابت (Fixed Stop)</b>\nأدخل السعر الذي تريد الخروج عنده بالكامل:",
+            "set_trailing": "📈 <b>تحديد وقف متحرك (Trailing Stop)</b>\nأدخل قيمة التحرك (مثال: `100` للنقاط أو `1.5%` للنسبة):"
         }
         return prompts.get(action, "✍️ الرجاء إدخال القيمة الجديدة:")
 
@@ -45,8 +41,6 @@ class ManagementPresenter:
         prompt_text = ManagementPresenter.get_edit_prompt(action)
         keyboard = ManagementPresenter.get_cancel_keyboard(rec_id)
 
-        # Assuming safe_edit_message utility is available/imported globally
-        # We use update.callback_query.message directly here as this is a presenter method
         await update.callback_query.message.edit_text(
             text=prompt_text,
             reply_markup=keyboard,
