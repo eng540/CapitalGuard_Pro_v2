@@ -20,7 +20,7 @@ class ManagementAction(Enum):
     EDIT_MENU = "edit_menu"
     PARTIAL_CLOSE_MENU = "partial_close_menu"
     SHOW_MENU = "show_menu"
-    CLOSE_MENU = "close_menu" # ✅ ADDED THIS MISSING ACTION
+    CLOSE_MENU = "close_menu"
     
     # Edit Actions
     EDIT_ENTRY = "edit_entry"
@@ -34,10 +34,14 @@ class ManagementAction(Enum):
     PARTIAL_CLOSE_CUSTOM = "partial_close_custom"
     PARTIAL = "pt"
     
-    # General
-    CANCEL_INPUT = "cancel_input"
+    # Risk Management Actions (✅ ADDED THESE)
+    SET_FIXED = "set_fixed"
+    SET_TRAILING = "set_trailing"
     MOVE_TO_BE = "move_to_be"
     CANCEL_STRATEGY = "cancel"
+    
+    # General
+    CANCEL_INPUT = "cancel_input"
     CONFIRM_CHANGE = "confirm_change"
 
 @dataclass
