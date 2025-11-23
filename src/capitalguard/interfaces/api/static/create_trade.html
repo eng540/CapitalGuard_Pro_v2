@@ -445,7 +445,15 @@
             runFullValidation();
             tg.HapticFeedback.selectionChanged();
         }
+       function addManualTarget() {
+         let currentTotal = 0;
+         document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
+         let remaining = Math.max(0, 100 - currentTotal);
 
+          addTargetRow("", remaining);
+         tg.HapticFeedback.impactOccurred('light');
+         runFullValidation();
+       }
         function toggleChip(el) { el.classList.toggle('selected'); tg.HapticFeedback.selectionChanged(); }
         function toggleAllChannels() {
             document.querySelectorAll('.channel-chip').forEach(c => c.classList.toggle('selected'));
