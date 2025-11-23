@@ -5,6 +5,7 @@ The definitive, stable, and production-ready main entry point.
 ✅ FIX: Added call to `market_data_service.refresh_symbols_cache()` during startup
        to populate the symbol cache *before* the AlertService or API handlers need it.
 ✅ ADDED: WebApp support with static files mounting and router inclusion.
+✅ ADDED: Dashboard shortcuts for easy WebApp access.
 """
 
 import logging
@@ -19,6 +20,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import redis
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from telegram import Update, BotCommand
 from telegram.ext import Application, ContextTypes, BasePersistence
 
@@ -234,5 +236,15 @@ def health_check():
 app.include_router(auth_router.router)
 app.include_router(webapp_router.router)
 app.include_router(metrics_router)
+
+# ✅ SHORTCUT: مسار مختصر لفتح لوحة القيادة
+@app.get("/dash")
+async def serve_dashboard():
+    return FileResponse("src/capitalguard/interfaces/api/static/signal_dashboard.html")
+
+# ✅ SHORTCUT: مسار مختصر لفتح صفحة الإنشاء (احتياط)
+@app.get("/new")
+async def serve_creator():
+    return FileResponse("src/capitalguard/interfaces/api/static/create_trade.html")
 
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
