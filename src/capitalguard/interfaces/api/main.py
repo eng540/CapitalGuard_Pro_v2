@@ -247,4 +247,11 @@ async def serve_dashboard():
 async def serve_creator():
     return FileResponse("src/capitalguard/interfaces/api/static/create_trade.html")
 
+# ... (Existing shortcuts)
+
+# ✅ NEW SHORTCUT: Portfolio
+@app.get("/portfolio")
+async def serve_portfolio():
+    return FileResponse("src/capitalguard/interfaces/api/static/portfolio.html")
+
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
