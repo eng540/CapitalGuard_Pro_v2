@@ -1,9 +1,9 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
 # File: src/capitalguard/interfaces/telegram/commands.py
-# Version: v71.0.0-PORTFOLIO-BUTTON (Added Live Portfolio Button)
+# Version: v70.0.0-WEB-PORTFOLIO (Added Live Portfolio Button)
 # ✅ THE FIX:
-#    1. Updated 'get_main_menu_keyboard' to include the new "Live Portfolio" Web App button.
-#    2. Maintained all existing command logic and deep linking.
+#    1. Added 'portfolio_url' pointing to static/portfolio.html.
+#    2. Added "📊 Live Portfolio (Web)" button to the persistent menu.
 
 import logging
 import io
@@ -44,8 +44,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     """
     Creates the persistent bottom keyboard with Web Apps.
     """
-    # Base URL from settings (Dynamic)
-    # Extracts 'https://domain.com' from 'https://domain.com/webhook/telegram'
+    # Base URL from settings
     base_url = settings.TELEGRAM_WEBHOOK_URL.rsplit('/', 2)[0] if settings.TELEGRAM_WEBHOOK_URL else "https://YOUR_DOMAIN"
     
     # Web App URLs
@@ -53,7 +52,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     portfolio_url = f"{base_url}/static/portfolio.html"
 
     keyboard = [
-        # Row 1: The Creation Terminal (Visual)
+        # Row 1: The Creation Terminal
         [KeyboardButton("🚀 New Signal (Visual)", web_app=WebAppInfo(url=create_url))],
         
         # Row 2: The New Live Portfolio + Channels
@@ -72,7 +71,6 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
 
 @uow_transaction
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """Handles /start and initializes the menu."""
     user = update.effective_user
     log.info(f"User {user.id} initiated /start.")
     
@@ -80,7 +78,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
         telegram_id=user.id, first_name=user.first_name, username=user.username
     )
 
-    # Handle Deep Linking (Track Signal)
     if context.args and context.args[0].startswith("track_"):
         try:
             rec_id = int(context.args[0].split('_')[1])
@@ -248,4 +245,4 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("channels", channels_cmd))
     app.add_handler(CommandHandler("events", events_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
