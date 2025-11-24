@@ -44,10 +44,11 @@
         .pos-actions { display: flex; gap: 10px; margin-top: 12px; }
         .btn-action { flex: 1; padding: 10px; border-radius: 10px; border: none; font-weight: bold; font-size: 0.9rem; cursor: pointer; }
         .btn-close { background: rgba(255, 69, 58, 0.15); color: var(--red); }
-        .btn-edit { background: rgba(10, 132, 255, 0.15); color: var(--blue); }
-
-        /* Loader */
+        
+        /* Loader & Error */
         .loader { text-align: center; padding: 40px; color: var(--hint); }
+        .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; margin-top: 20px; }
+        .retry-btn { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 8px; margin-top: 10px; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -73,7 +74,7 @@
     </div>
 
     <div id="container">
-        <div class="loader">Loading Portfolio...</div>
+        <div class="loader" id="loader">Loading Portfolio...</div>
     </div>
 
     <script>
@@ -84,26 +85,50 @@
         let portfolioData = null;
 
         async function loadData() {
+            const container = document.getElementById('container');
+            // Show loader only if we don't have data yet
+            if(!portfolioData) container.innerHTML = '<div class="loader">Loading Portfolio...</div>';
+            
             try {
+                // ✅ DEBUG: Check if initData exists
+                if (!tg.initData) {
+                    throw new Error("No Telegram InitData found. Please open from Telegram.");
+                }
+
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(tg.initData)}`);
+                
+                if (!res.ok) {
+                    throw new Error(`Server Error: ${res.status} ${res.statusText}`);
+                }
+
                 const data = await res.json();
+                
                 if(data.ok) {
                     portfolioData = data;
                     renderHeader(data.stats);
                     renderList();
+                } else {
+                    throw new Error(data.error || "Unknown API Error");
                 }
             } catch(e) {
                 console.error(e);
+                container.innerHTML = `
+                    <div class="error-msg">
+                        ⚠️ <b>Failed to load data</b><br>
+                        ${e.message}<br>
+                        <button class="retry-btn" onclick="loadData()">🔄 Retry</button>
+                    </div>
+                `;
             }
         }
 
         function renderHeader(stats) {
             const uPnl = document.getElementById('uPnl');
-            uPnl.innerText = stats.unrealized_pnl;
+            uPnl.innerText = stats.unrealized_pnl || "0%";
             uPnl.className = `stat-val ${parseFloat(stats.unrealized_pnl) >= 0 ? 'green' : ''}`;
             
-            document.getElementById('tPnl').innerText = stats.total_pnl;
-            document.getElementById('winRate').innerText = stats.win_rate;
+            document.getElementById('tPnl').innerText = stats.total_pnl || "0%";
+            document.getElementById('winRate').innerText = stats.win_rate || "0%";
         }
 
         function renderList() {
@@ -112,7 +137,7 @@
             
             const items = currentTab === 'active' ? portfolioData.active : portfolioData.watchlist;
             
-            if(items.length === 0) {
+            if(!items || items.length === 0) {
                 container.innerHTML = '<div class="loader">No positions found.</div>';
                 return;
             }
@@ -125,7 +150,7 @@
                 card.className = 'pos-card';
                 card.innerHTML = `
                     <div class="pos-header">
-                        <div class="pos-symbol">${item.asset} <span style="font-size:0.8rem; color:#666;">${item.leverage}</span></div>
+                        <div class="pos-symbol">${item.asset} <span style="font-size:0.8rem; color:#666;">${item.leverage || ''}</span></div>
                         <div class="pos-side ${item.side}">${item.side}</div>
                     </div>
                     <div class="pos-data">
@@ -156,7 +181,6 @@
 
         async function closeTrade(id, type) {
             if(!confirm("Close this position at market price?")) return;
-            
             tg.HapticFeedback.impactOccurred('heavy');
             
             try {
@@ -177,13 +201,17 @@
                     tg.showAlert("Error: " + data.error);
                 }
             } catch(e) {
-                tg.showAlert("Network Error");
+                tg.showAlert("Network Error: " + e.message);
             }
         }
 
-        // Auto Refresh
+        // Initial Load
         loadData();
-        setInterval(loadData, 5000);
+        
+        // Auto Refresh every 5s
+        setInterval(() => {
+            if(portfolioData) loadData(); // Only refresh if initial load succeeded
+        }, 5000);
 
     </script>
 </body>
