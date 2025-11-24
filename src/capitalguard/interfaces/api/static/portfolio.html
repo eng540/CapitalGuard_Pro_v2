@@ -13,19 +13,16 @@
         }
         body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; padding-bottom: 80px; }
         
-        /* Header Stats */
         .stats-header { display: flex; gap: 10px; margin-bottom: 20px; }
         .stat-card { flex: 1; background: var(--card); padding: 12px; border-radius: 12px; text-align: center; border: 1px solid var(--border); }
         .stat-label { font-size: 0.7rem; color: var(--hint); text-transform: uppercase; font-weight: 700; }
         .stat-val { font-size: 1.1rem; font-weight: 800; margin-top: 4px; }
         .stat-val.green { color: var(--green); }
         
-        /* Tabs */
         .tabs { display: flex; gap: 15px; margin-bottom: 15px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
         .tab { font-weight: bold; color: var(--hint); cursor: pointer; padding-bottom: 4px; }
         .tab.active { color: var(--text); border-bottom: 2px solid var(--blue); }
         
-        /* Position Card */
         .pos-card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid var(--border); position: relative; overflow: hidden; }
         .pos-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
         .pos-symbol { font-size: 1.1rem; font-weight: 900; }
@@ -45,7 +42,6 @@
         .btn-action { flex: 1; padding: 10px; border-radius: 10px; border: none; font-weight: bold; font-size: 0.9rem; cursor: pointer; }
         .btn-close { background: rgba(255, 69, 58, 0.15); color: var(--red); }
         
-        /* Loader & Error */
         .loader { text-align: center; padding: 40px; color: var(--hint); }
         .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; margin-top: 20px; word-break: break-word; }
         .retry-btn { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 8px; margin-top: 10px; cursor: pointer; }
@@ -81,23 +77,28 @@
     <script>
         const tg = window.Telegram.WebApp;
         tg.expand();
-        tg.ready(); // Signal readiness immediately
+        tg.ready();
 
         let currentTab = 'active';
         let portfolioData = null;
 
-        // ✅ FIX: Aggressive Data Retrieval
+        // ✅ FIX: Ultimate Data Extractor
         function getTelegramData() {
-            // 1. Try standard property
+            // 1. Standard API
             if (tg.initData) return tg.initData;
             
-            // 2. Try URL Hash (Android often puts it here)
-            const hash = window.location.hash.substring(1);
-            const params = new URLSearchParams(hash);
-            if (params.get('tgWebAppData')) return params.get('tgWebAppData');
-            
-            // 3. Try parsing raw hash string manually (last resort)
-            if (hash.includes('user=')) return hash;
+            // 2. Hash Extraction (Manual Parsing)
+            // Android sometimes puts data in location.hash like: #tgWebAppData=...&tgWebAppVersion=...
+            try {
+                const hash = window.location.hash;
+                if (hash.includes('tgWebAppData=')) {
+                    // Extract everything between tgWebAppData= and the next &
+                    const match = hash.match(/tgWebAppData=([^&]+)/);
+                    if (match && match[1]) {
+                        return decodeURIComponent(match[1]);
+                    }
+                }
+            } catch (e) { console.error("Hash parse error", e); }
 
             return null;
         }
@@ -106,16 +107,13 @@
             const container = document.getElementById('container');
             
             try {
-                // ✅ FIX: Retry loop for Android latency
-                let initData = null;
-                for (let i = 0; i < 10; i++) {
-                    initData = getTelegramData();
-                    if (initData) break;
-                    await new Promise(r => setTimeout(r, 200)); // Wait 200ms
-                }
+                // Wait for injection
+                await new Promise(r => setTimeout(r, 300));
+                
+                const initData = getTelegramData();
 
                 if (!initData) {
-                    throw new Error("Telegram Data missing. Please check BotFather URL settings.");
+                    throw new Error("Telegram Data missing. Please update BotFather URL to the short link.");
                 }
 
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
@@ -136,7 +134,6 @@
             } catch(e) {
                 console.error(e);
                 const debugInfo = `URL: ${window.location.href}`;
-                
                 container.innerHTML = `
                     <div class="error-msg">
                         ⚠️ <b>Failed to load</b><br>
@@ -224,7 +221,7 @@
                 const data = await res.json();
                 if(data.ok) {
                     tg.showAlert("Position Closed!");
-                    loadData(); // Refresh
+                    loadData(); 
                 } else {
                     tg.showAlert("Error: " + data.error);
                 }
@@ -233,14 +230,8 @@
             }
         }
 
-        // Initial Load
         loadData();
-        
-        // Auto Refresh every 5s
-        setInterval(() => {
-            if(portfolioData) loadData(); 
-        }, 5000);
-
+        setInterval(() => { if(portfolioData) loadData(); }, 5000);
     </script>
 </body>
 </html>
