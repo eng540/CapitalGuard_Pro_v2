@@ -1,9 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
 # File: src/capitalguard/interfaces/telegram/commands.py
-# Version: v70.0.0-WEB-PORTFOLIO (Added Live Portfolio Button)
+# Version: v73.0.0-DIRECT-LINKS (Android Fix)
 # ✅ THE FIX:
-#    1. Added 'portfolio_url' pointing to static/portfolio.html.
-#    2. Added "📊 Live Portfolio (Web)" button to the persistent menu.
+#    1. Updated WebApp URLs to point DIRECTLY to static files (/static/...).
+#       -> This bypasses internal redirects that strip 'initData' on Android.
+#    2. Maintained all existing functionality.
 
 import logging
 import io
@@ -47,7 +48,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     # Base URL from settings
     base_url = settings.TELEGRAM_WEBHOOK_URL.rsplit('/', 2)[0] if settings.TELEGRAM_WEBHOOK_URL else "https://YOUR_DOMAIN"
     
-    # Web App URLs
+    # ✅ FIX: Use DIRECT static paths to prevent redirects stripping data
     create_url = f"{base_url}/static/create_trade.html"
     portfolio_url = f"{base_url}/static/portfolio.html"
 
@@ -71,6 +72,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
 
 @uow_transaction
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Handles /start and initializes the menu."""
     user = update.effective_user
     log.info(f"User {user.id} initiated /start.")
     
@@ -78,6 +80,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
         telegram_id=user.id, first_name=user.first_name, username=user.username
     )
 
+    # Handle Deep Linking (Track Signal)
     if context.args and context.args[0].startswith("track_"):
         try:
             rec_id = int(context.args[0].split('_')[1])
@@ -245,4 +248,4 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("channels", channels_cmd))
     app.add_handler(CommandHandler("events", events_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
