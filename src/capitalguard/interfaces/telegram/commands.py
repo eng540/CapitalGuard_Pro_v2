@@ -1,10 +1,9 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
 # File: src/capitalguard/interfaces/telegram/commands.py
-# Version: v72.0.0-SHORT-LINK (Updated Web App URLs)
+# Version: v70.0.0-WEB-PORTFOLIO (Added Live Portfolio Button)
 # ✅ THE FIX:
-#    1. Updated 'portfolio_url' to use the new short route '/portfolio'.
-#    2. Updated 'create_url' to use the new short route '/new' (optional but recommended).
-#    3. This prevents URL redirection issues on Android.
+#    1. Added 'portfolio_url' pointing to static/portfolio.html.
+#    2. Added "📊 Live Portfolio (Web)" button to the persistent menu.
 
 import logging
 import io
@@ -48,16 +47,10 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     # Base URL from settings
     base_url = settings.TELEGRAM_WEBHOOK_URL.rsplit('/', 2)[0] if settings.TELEGRAM_WEBHOOK_URL else "https://YOUR_DOMAIN"
     
-    # ✅ FIX: Use Short URLs defined in main.py
-    # Old: .../static/create_trade.html -> New: .../new
-    # Old: .../static/portfolio.html   -> New: .../portfolio
-    create_url = f"{base_url}/new"       # Optional shortcut if you added it to main.py
-    portfolio_url = f"{base_url}/portfolio" # Critical shortcut
+    # Web App URLs
+    create_url = f"{base_url}/static/create_trade.html"
+    portfolio_url = f"{base_url}/static/portfolio.html"
 
-    # Fallback if /new shortcut isn't in main.py yet, keep old one for create
-    # But for portfolio, we MUST use the short one.
-    # Assuming you added both shortcuts to main.py as recommended.
-    
     keyboard = [
         # Row 1: The Creation Terminal
         [KeyboardButton("🚀 New Signal (Visual)", web_app=WebAppInfo(url=create_url))],
