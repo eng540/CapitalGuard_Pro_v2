@@ -13,11 +13,11 @@
         }
         body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; padding-bottom: 80px; }
         
-        /* Debug Console (New) */
+        /* Debug Console (Hidden by default) */
         #debug-console {
             background: #333; color: #0f0; font-family: monospace; font-size: 10px;
             padding: 10px; margin-bottom: 20px; border-radius: 8px; word-break: break-all;
-            display: none; /* Hidden by default, shown on error */
+            display: none;
         }
 
         .stats-header { display: flex; gap: 10px; margin-bottom: 20px; }
@@ -90,54 +90,44 @@
         let currentTab = 'active';
         let portfolioData = null;
 
-        // --- Debug Logger ---
         function logDebug(msg) {
             console.log(msg);
-            const consoleDiv = document.getElementById('debug-console');
-            consoleDiv.innerHTML += `> ${msg}<br>`;
+            // Uncomment to see debug on screen
+            // const d = document.getElementById('debug-console');
+            // d.style.display = 'block';
+            // d.innerHTML += `> ${msg}<br>`;
         }
 
         // --- Ultimate Data Extractor ---
         function getTelegramData() {
-            // 1. Try Standard
-            if (tg.initData) {
-                logDebug("Found initData in TG Object");
-                return tg.initData;
-            }
+            // 1. Standard
+            if (tg.initData) return tg.initData;
             
-            // 2. Try URL Hash (Android Fix)
-            const hash = window.location.hash.substring(1);
-            logDebug("Checking Hash: " + hash.substring(0, 20) + "...");
-            
-            const params = new URLSearchParams(hash);
-            if (params.get('tgWebAppData')) {
-                logDebug("Found tgWebAppData in Hash");
-                return params.get('tgWebAppData');
-            }
-            
-            // 3. Try Raw Hash Parsing
+            // 2. Hash Search (Aggressive)
+            const hash = window.location.hash;
             if (hash.includes('user=')) {
-                logDebug("Found raw user data in Hash");
-                return hash;
+                // Extract the part starting from user=... until end or &
+                // Actually, we can just send the whole hash content after #
+                return hash.substring(1); 
             }
-
+            
             return null;
         }
 
         async function loadData() {
             const container = document.getElementById('container');
-            const debugDiv = document.getElementById('debug-console');
             
             try {
-                // Wait for injection
-                await new Promise(r => setTimeout(r, 500));
-                
-                const initData = getTelegramData();
+                // Wait loop for Android injection
+                let initData = null;
+                for(let i=0; i<5; i++) {
+                    initData = getTelegramData();
+                    if(initData) break;
+                    await new Promise(r => setTimeout(r, 300));
+                }
 
                 if (!initData) {
-                    debugDiv.style.display = 'block';
-                    logDebug("URL: " + window.location.href);
-                    throw new Error("Telegram Data missing. See debug info above.");
+                    throw new Error("Telegram Data missing. Please check BotFather URL settings.");
                 }
 
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
@@ -152,14 +142,11 @@
                     portfolioData = data;
                     renderHeader(data.stats);
                     renderList();
-                    debugDiv.style.display = 'none'; // Hide debug if successful
                 } else {
                     throw new Error(data.error || "Unknown API Error");
                 }
             } catch(e) {
-                debugDiv.style.display = 'block';
-                logDebug("Error: " + e.message);
-                
+                logDebug(e.message);
                 container.innerHTML = `
                     <div class="error-msg">
                         ⚠️ <b>Failed to load</b><br>
