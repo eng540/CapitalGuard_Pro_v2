@@ -1,3 +1,4 @@
+<!-- src/capitalguard/interfaces/api/static/portfolio.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,46 +7,36 @@
     <title>Portfolio</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
+        /* ... (نفس الستايل السابق تماماً) ... */
         :root {
             --bg: #000000; --card: #1c1c1e; --text: #fff; --hint: #8e8e93;
             --green: #32d74b; --red: #ff453a; --blue: #0a84ff;
             --border: #2c2c2e;
         }
         body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; padding-bottom: 80px; }
-        
-        /* Header Stats */
         .stats-header { display: flex; gap: 10px; margin-bottom: 20px; }
         .stat-card { flex: 1; background: var(--card); padding: 12px; border-radius: 12px; text-align: center; border: 1px solid var(--border); }
         .stat-label { font-size: 0.7rem; color: var(--hint); text-transform: uppercase; font-weight: 700; }
         .stat-val { font-size: 1.1rem; font-weight: 800; margin-top: 4px; }
         .stat-val.green { color: var(--green); }
-        
-        /* Tabs */
         .tabs { display: flex; gap: 15px; margin-bottom: 15px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
         .tab { font-weight: bold; color: var(--hint); cursor: pointer; padding-bottom: 4px; }
         .tab.active { color: var(--text); border-bottom: 2px solid var(--blue); }
-        
-        /* Position Card */
         .pos-card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid var(--border); position: relative; overflow: hidden; }
         .pos-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
         .pos-symbol { font-size: 1.1rem; font-weight: 900; }
         .pos-side { font-size: 0.75rem; font-weight: bold; padding: 2px 8px; border-radius: 6px; }
         .pos-side.LONG { background: rgba(50, 215, 75, 0.15); color: var(--green); }
         .pos-side.SHORT { background: rgba(255, 69, 58, 0.15); color: var(--red); }
-        
         .pos-data { display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 12px; }
         .data-label { color: var(--hint); font-size: 0.75rem; }
         .data-val { font-family: monospace; font-weight: bold; }
-        
         .pos-pnl { font-size: 1.4rem; font-weight: 900; text-align: right; }
         .pos-pnl.profit { color: var(--green); }
         .pos-pnl.loss { color: var(--red); }
-        
         .pos-actions { display: flex; gap: 10px; margin-top: 12px; }
         .btn-action { flex: 1; padding: 10px; border-radius: 10px; border: none; font-weight: bold; font-size: 0.9rem; cursor: pointer; }
         .btn-close { background: rgba(255, 69, 58, 0.15); color: var(--red); }
-        
-        /* Loader & Error */
         .loader { text-align: center; padding: 40px; color: var(--hint); }
         .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; margin-top: 20px; }
         .retry-btn { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 8px; margin-top: 10px; cursor: pointer; }
@@ -86,19 +77,19 @@
 
         async function loadData() {
             const container = document.getElementById('container');
-            // Show loader only if we don't have data yet
-            if(!portfolioData) container.innerHTML = '<div class="loader">Loading Portfolio...</div>';
             
             try {
-                // ✅ DEBUG: Check if initData exists
+                // ✅ FIX: Ensure Telegram is ready
                 if (!tg.initData) {
-                    throw new Error("No Telegram InitData found. Please open from Telegram.");
+                    // Retry once after 500ms if initData is missing (sometimes happens on slow load)
+                    await new Promise(r => setTimeout(r, 500));
+                    if (!tg.initData) throw new Error("Please open this page from Telegram.");
                 }
 
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(tg.initData)}`);
                 
                 if (!res.ok) {
-                    throw new Error(`Server Error: ${res.status} ${res.statusText}`);
+                    throw new Error(`Server Error: ${res.status}`);
                 }
 
                 const data = await res.json();
@@ -206,11 +197,12 @@
         }
 
         // Initial Load
+        tg.ready();
         loadData();
         
         // Auto Refresh every 5s
         setInterval(() => {
-            if(portfolioData) loadData(); // Only refresh if initial load succeeded
+            if(portfolioData) loadData(); 
         }, 5000);
 
     </script>
