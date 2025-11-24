@@ -13,6 +13,13 @@
         }
         body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; padding-bottom: 80px; }
         
+        /* Debug Console (New) */
+        #debug-console {
+            background: #333; color: #0f0; font-family: monospace; font-size: 10px;
+            padding: 10px; margin-bottom: 20px; border-radius: 8px; word-break: break-all;
+            display: none; /* Hidden by default, shown on error */
+        }
+
         .stats-header { display: flex; gap: 10px; margin-bottom: 20px; }
         .stat-card { flex: 1; background: var(--card); padding: 12px; border-radius: 12px; text-align: center; border: 1px solid var(--border); }
         .stat-label { font-size: 0.7rem; color: var(--hint); text-transform: uppercase; font-weight: 700; }
@@ -45,10 +52,11 @@
         .loader { text-align: center; padding: 40px; color: var(--hint); }
         .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; margin-top: 20px; word-break: break-word; }
         .retry-btn { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 8px; margin-top: 10px; cursor: pointer; }
-        .debug-info { font-size: 0.7rem; color: #555; margin-top: 10px; user-select: all; }
     </style>
 </head>
 <body>
+
+    <div id="debug-console"></div>
 
     <div class="stats-header">
         <div class="stat-card">
@@ -82,38 +90,54 @@
         let currentTab = 'active';
         let portfolioData = null;
 
-        // ✅ FIX: Ultimate Data Extractor
+        // --- Debug Logger ---
+        function logDebug(msg) {
+            console.log(msg);
+            const consoleDiv = document.getElementById('debug-console');
+            consoleDiv.innerHTML += `> ${msg}<br>`;
+        }
+
+        // --- Ultimate Data Extractor ---
         function getTelegramData() {
-            // 1. Standard API
-            if (tg.initData) return tg.initData;
+            // 1. Try Standard
+            if (tg.initData) {
+                logDebug("Found initData in TG Object");
+                return tg.initData;
+            }
             
-            // 2. Hash Extraction (Manual Parsing)
-            // Android sometimes puts data in location.hash like: #tgWebAppData=...&tgWebAppVersion=...
-            try {
-                const hash = window.location.hash;
-                if (hash.includes('tgWebAppData=')) {
-                    // Extract everything between tgWebAppData= and the next &
-                    const match = hash.match(/tgWebAppData=([^&]+)/);
-                    if (match && match[1]) {
-                        return decodeURIComponent(match[1]);
-                    }
-                }
-            } catch (e) { console.error("Hash parse error", e); }
+            // 2. Try URL Hash (Android Fix)
+            const hash = window.location.hash.substring(1);
+            logDebug("Checking Hash: " + hash.substring(0, 20) + "...");
+            
+            const params = new URLSearchParams(hash);
+            if (params.get('tgWebAppData')) {
+                logDebug("Found tgWebAppData in Hash");
+                return params.get('tgWebAppData');
+            }
+            
+            // 3. Try Raw Hash Parsing
+            if (hash.includes('user=')) {
+                logDebug("Found raw user data in Hash");
+                return hash;
+            }
 
             return null;
         }
 
         async function loadData() {
             const container = document.getElementById('container');
+            const debugDiv = document.getElementById('debug-console');
             
             try {
                 // Wait for injection
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 500));
                 
                 const initData = getTelegramData();
 
                 if (!initData) {
-                    throw new Error("Telegram Data missing. Please update BotFather URL to the short link.");
+                    debugDiv.style.display = 'block';
+                    logDebug("URL: " + window.location.href);
+                    throw new Error("Telegram Data missing. See debug info above.");
                 }
 
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
@@ -128,17 +152,18 @@
                     portfolioData = data;
                     renderHeader(data.stats);
                     renderList();
+                    debugDiv.style.display = 'none'; // Hide debug if successful
                 } else {
                     throw new Error(data.error || "Unknown API Error");
                 }
             } catch(e) {
-                console.error(e);
-                const debugInfo = `URL: ${window.location.href}`;
+                debugDiv.style.display = 'block';
+                logDebug("Error: " + e.message);
+                
                 container.innerHTML = `
                     <div class="error-msg">
                         ⚠️ <b>Failed to load</b><br>
                         ${e.message}<br>
-                        <div class="debug-info">${debugInfo}</div>
                         <button class="retry-btn" onclick="loadData()">🔄 Retry</button>
                     </div>
                 `;
