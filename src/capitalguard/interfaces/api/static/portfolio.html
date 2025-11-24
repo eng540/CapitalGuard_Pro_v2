@@ -49,7 +49,7 @@
         .loader { text-align: center; padding: 40px; color: var(--hint); }
         .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; margin-top: 20px; word-break: break-word; }
         .retry-btn { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 8px; margin-top: 10px; cursor: pointer; }
-        .debug-info { font-size: 0.7rem; color: #555; margin-top: 10px; }
+        .debug-info { font-size: 0.7rem; color: #555; margin-top: 10px; user-select: all; }
     </style>
 </head>
 <body>
@@ -81,24 +81,24 @@
     <script>
         const tg = window.Telegram.WebApp;
         tg.expand();
+        tg.ready(); // Signal readiness immediately
 
         let currentTab = 'active';
         let portfolioData = null;
 
-        // ✅ FIX: Robust InitData Retrieval
+        // ✅ FIX: Aggressive Data Retrieval
         function getTelegramData() {
             // 1. Try standard property
-            if (tg.initData && tg.initData.length > 0) {
-                return tg.initData;
-            }
+            if (tg.initData) return tg.initData;
             
-            // 2. Try URL Hash (Fallback for some Android clients)
+            // 2. Try URL Hash (Android often puts it here)
             const hash = window.location.hash.substring(1);
             const params = new URLSearchParams(hash);
-            if (params.has('tgWebAppData')) {
-                return params.get('tgWebAppData');
-            }
+            if (params.get('tgWebAppData')) return params.get('tgWebAppData');
             
+            // 3. Try parsing raw hash string manually (last resort)
+            if (hash.includes('user=')) return hash;
+
             return null;
         }
 
@@ -106,13 +106,16 @@
             const container = document.getElementById('container');
             
             try {
-                // Wait a bit for Telegram to inject data
-                await new Promise(r => setTimeout(r, 300));
-                
-                const initData = getTelegramData();
+                // ✅ FIX: Retry loop for Android latency
+                let initData = null;
+                for (let i = 0; i < 10; i++) {
+                    initData = getTelegramData();
+                    if (initData) break;
+                    await new Promise(r => setTimeout(r, 200)); // Wait 200ms
+                }
 
                 if (!initData) {
-                    throw new Error("Telegram Data is missing. Are you opening this from a browser?");
+                    throw new Error("Telegram Data missing. Please check BotFather URL settings.");
                 }
 
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
@@ -132,8 +135,7 @@
                 }
             } catch(e) {
                 console.error(e);
-                // Debug Info for troubleshooting
-                const debugInfo = `Platform: ${tg.platform} | Version: ${tg.version}`;
+                const debugInfo = `URL: ${window.location.href}`;
                 
                 container.innerHTML = `
                     <div class="error-msg">
@@ -232,7 +234,6 @@
         }
 
         // Initial Load
-        tg.ready();
         loadData();
         
         // Auto Refresh every 5s
