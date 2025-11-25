@@ -51,7 +51,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton("/help"), KeyboardButton("/export")]
     ]
     
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # --- Command Handlers ---
 
