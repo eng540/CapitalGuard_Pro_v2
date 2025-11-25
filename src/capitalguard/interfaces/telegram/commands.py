@@ -1,6 +1,7 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
 # File: src/capitalguard/interfaces/telegram/commands.py
-# Version: v75.0.0-COMPLETE-FIXED
+# Version: v76.0.0-DEEP-LINK-FIX
+# ✅ FIX: Use Telegram Deep Links instead of direct URLs
 
 import logging
 import io
@@ -36,25 +37,27 @@ from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
 
 log = logging.getLogger(__name__)
 
-# --- Persistent Menu Helper (UPDATED WITH DEVELOPER'S FIX) ---
+# --- Persistent Menu Helper (FIXED WITH DEEP LINKS) ---
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     """
     Creates the persistent bottom keyboard with Web Apps.
     """
-    # Base URL from settings
-    base_url = settings.TELEGRAM_WEBHOOK_URL.rsplit('/', 2)[0] if settings.TELEGRAM_WEBHOOK_URL else "https://YOUR_DOMAIN"
+    # ✅ FIX: Use Telegram Deep Links (like /terminal)
+    bot_username = "Tradingplatformxbot"  # Replace with your actual bot username if different
     
-    # ✅ DEVELOPER'S FIX: Use Short URLs
-    create_url = f"{base_url}/new"
-    portfolio_url = f"{base_url}/portfolio"
+    portfolio_deep_link = f"https://t.me/{bot_username}/portfolio"
+    create_deep_link = f"https://t.me/{bot_username}/new"
+    
+    log.info(f"🔗 Portfolio Deep Link: {portfolio_deep_link}")
+    log.info(f"🔗 Create Signal Deep Link: {create_deep_link}")
 
     keyboard = [
         # Row 1: The Creation Terminal
-        [KeyboardButton("🚀 New Signal (Visual)", web_app=WebAppInfo(url=create_url))],
+        [KeyboardButton("🚀 New Signal (Visual)", web_app=WebAppInfo(url=create_deep_link))],
         
         # Row 2: The New Live Portfolio + Channels
         [
-            KeyboardButton("📊 Live Portfolio", web_app=WebAppInfo(url=portfolio_url)),
+            KeyboardButton("📊 Live Portfolio", web_app=WebAppInfo(url=portfolio_deep_link)),
             KeyboardButton("/channels")
         ],
         
@@ -64,7 +67,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
-# --- Command Handlers (KEEP ALL YOUR EXISTING HANDLERS) ---
+# --- Command Handlers (ALL REMAIN UNCHANGED) ---
 
 @uow_transaction
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
