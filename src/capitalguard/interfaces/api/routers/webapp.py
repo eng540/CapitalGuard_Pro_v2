@@ -1,15 +1,15 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
 # File: src/capitalguard/interfaces/api/routers/webapp.py
-# Version: 1.1.0 (Webapp Portfolio Integration)
-# ✅ THE FIX: Added /api/webapp/portfolio endpoint and related logic to fetch open positions.
-# 🎯 IMPACT: Enables the WebApp view for user portfolios, completing the /myportfolio WebApp feature.
-from fastapi import APIRouter, Request, HTTPException, Query
+# Version: 1.2.0 (Debug Auth)
+# ✅ THE FIX: Added detailed logging for Auth failures to debug 403 errors.
+from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import hashlib
 import hmac
 import json
-from urllib.parse import parse_qs
+import logging
+from urllib.parse import parse_qs, unquote
 from decimal import Decimal
 
 from capitalguard.config import settings
@@ -20,6 +20,7 @@ from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.interfaces.telegram.helpers import _pct
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
 
 class WebAppSignal(BaseModel):
@@ -33,20 +34,50 @@ class WebAppSignal(BaseModel):
     targets_raw: str
     notes: Optional[str] = None
     leverage: Optional[str] = "20"
-    channel_ids: List[int] = [] # ✅ ADDED: List of selected channel IDs
+    channel_ids: List[int] = []
 
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
+    """
+    Validates the initData string from Telegram WebApp.
+    """
+    if not bot_token:
+        log.error("TELEGRAM_BOT_TOKEN is missing in settings!")
+        raise HTTPException(status_code=500, detail="Server misconfiguration")
+
     try:
+        # Parse the query string
         parsed_data = parse_qs(init_data)
-        if 'hash' not in parsed_data: raise ValueError("No hash")
+        
+        if 'hash' not in parsed_data:
+            log.warning(f"Auth failed: No hash found in initData. Data: {init_data[:50]}...")
+            raise ValueError("No hash found")
+            
         hash_value = parsed_data.pop('hash')[0]
-        data_check_string = "\n".join(f"{k}={v[0]}" for k, v in sorted(parsed_data.items()))
+        
+        # Sort keys alphabetically and construct data-check-string
+        # Telegram requires: key=value\nkey2=value2
+        data_check_arr = []
+        for k, v in sorted(parsed_data.items()):
+            # parse_qs returns a list for values, we take the first one
+            data_check_arr.append(f"{k}={v[0]}")
+            
+        data_check_string = "\n".join(data_check_arr)
+        
+        # HMAC-SHA256 Signature Generation
         secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
         calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-        if calculated_hash != hash_value: raise ValueError("Invalid hash")
-        return json.loads(parsed_data['user'][0])
-    except Exception:
-        raise HTTPException(status_code=403, detail="Invalid Data")
+        
+        if calculated_hash != hash_value:
+            log.warning(f"Auth failed: Hash mismatch. Calculated: {calculated_hash}, Received: {hash_value}")
+            # NOTE: Check if your BOT_TOKEN in .env matches the bot running the WebApp!
+            raise ValueError("Invalid hash")
+            
+        user_json = parsed_data.get('user', ['{}'])[0]
+        return json.loads(user_json)
+        
+    except Exception as e:
+        log.error(f"WebApp validation exception: {e}")
+        raise HTTPException(status_code=403, detail="Invalid Authentication Data")
 
 @router.get("/price")
 async def get_price(symbol: str, request: Request):
@@ -56,7 +87,6 @@ async def get_price(symbol: str, request: Request):
     if not price: price = await price_service.get_cached_price(symbol.upper(), "Spot", force_refresh=False)
     return {"price": price or 0.0}
 
-# ✅ NEW ENDPOINT: Get Analyst Channels
 @router.get("/channels")
 async def get_analyst_channels(initData: str):
     user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
@@ -100,7 +130,6 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
             targets_formatted = parse_targets_list(payload.targets_raw.split())
             if not targets_formatted: return {"ok": False, "error": "Invalid targets"}
 
-            # ✅ VALIDATION: Check Total Percentage
             total_pct = sum(t['close_percent'] for t in targets_formatted)
             if total_pct > 100:
                 return {"ok": False, "error": f"Total closing percentage is {total_pct}%. Must be <= 100%."}
@@ -109,7 +138,6 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
             if payload.market == "FUTURES":
                 final_notes = f"Lev: {payload.leverage}x | {final_notes}".strip()
 
-            # Use selected channels or None (for all)
             target_channels = set(payload.channel_ids) if payload.channel_ids else None
 
             created_rec, _ = await creation_service.create_and_publish_recommendation_async(
@@ -134,7 +162,6 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-# ✅ NEW ENDPOINT: Get User Portfolio for WebApp
 @router.get("/portfolio")
 async def get_user_portfolio(initData: str, request: Request):
     user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
@@ -148,31 +175,27 @@ async def get_user_portfolio(initData: str, request: Request):
 
     try:
         with session_scope() as session:
-            # 1. Fetch all open/watchlist positions for the user
             items = await asyncio.to_thread(trade_service.get_open_positions_for_user, session, str(telegram_id))
-
-            # 2. Prepare assets list for parallel price fetching
-            assets_to_fetch = set(
-                (getattr(item.asset, 'value'), getattr(item, 'market', 'Futures'))
-                for item in items
-            )
             
-            # 3. Parallel fetching of live prices
+            # Optimize: Fetch prices in parallel for unique assets only
+            assets_to_fetch = set((getattr(item.asset, 'value'), getattr(item, 'market', 'Futures')) for item in items)
             price_tasks = [price_service.get_cached_price(asset, market) for asset, market in assets_to_fetch]
             price_results = await asyncio.gather(*price_tasks, return_exceptions=True)
-            prices_map = {asset_market[0]: price for asset_market, price in zip(assets_to_fetch, price_results) if not isinstance(price, Exception) and price is not None}
             
-            # 4. Format the final list
+            # Map results
+            prices_map = {}
+            for (asset, _), price in zip(assets_to_fetch, price_results):
+                if isinstance(price, (int, float)):
+                    prices_map[asset] = price
+
             formatted_items = []
             for item in items:
                 asset_val = getattr(item.asset, 'value')
                 live_price = prices_map.get(asset_val)
                 pnl_live = 0.0
                 
-                if live_price is not None and getattr(item, 'unified_status', '') == "ACTIVE":
-                    entry_val = getattr(item.entry, 'value')
-                    side_val = getattr(item.side, 'value')
-                    pnl_live = _pct(entry_val, live_price, side_val)
+                if live_price and getattr(item, 'unified_status', '') == "ACTIVE":
+                    pnl_live = _pct(getattr(item.entry, 'value'), live_price, getattr(item.side, 'value'))
 
                 formatted_items.append({
                     "id": item.id,
@@ -189,32 +212,22 @@ async def get_user_portfolio(initData: str, request: Request):
             return {"ok": True, "portfolio": {"items": formatted_items}}
 
     except Exception as e:
-        log.error(f"Error fetching user portfolio for {telegram_id}: {e}", exc_info=True)
+        log.error(f"Error fetching user portfolio: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
 
 @router.get("/signal/{rec_id}")
 async def get_signal_details(rec_id: int, request: Request):
     try:
-        # 1. Get Services
-        # Note: We access services via app state for simplicity in this router
         trade_service = request.app.state.services.get("trade_service")
         price_service = request.app.state.services.get("price_service")
         
-        # 2. Get Recommendation (Using a fresh session)
         with session_scope() as session:
             rec = trade_service.repo.get(session, rec_id)
-            if not rec:
-                return {"ok": False, "error": "Signal not found"}
+            if not rec: return {"ok": False, "error": "Signal not found"}
             
-            # 3. Get Live Price
             live_price = await price_service.get_cached_price(rec.asset, rec.market, force_refresh=False) or 0.0
-            
-            # 4. Calculate PnL
-            pnl = 0.0
-            if live_price > 0:
-                pnl = _pct(rec.entry, live_price, rec.side)
+            pnl = _pct(rec.entry, live_price, rec.side) if live_price else 0.0
 
-            # 5. Format Targets
             targets_data = []
             hit_targets = set()
             for event in rec.events:
@@ -223,27 +236,18 @@ async def get_signal_details(rec_id: int, request: Request):
                     except: pass
             
             for i, t in enumerate(rec.targets, 1):
-                t_price = float(t['price'])
-                roi = _pct(rec.entry, t_price, rec.side)
                 targets_data.append({
-                    "price": t_price,
-                    "roi": f"{roi:+.2f}",
+                    "price": float(t['price']),
+                    "roi": f"{_pct(rec.entry, float(t['price']), rec.side):+.2f}",
                     "hit": i in hit_targets
                 })
 
-            # 6. Format Events
-            events_data = []
-            for e in sorted(rec.events, key=lambda x: x.event_timestamp, reverse=True):
-                events_data.append({
-                    "time": e.event_timestamp.strftime("%d/%m %H:%M"),
-                    "description": e.event_type.replace("_", " ").title()
-                })
+            events_data = [{"time": e.event_timestamp.strftime("%d/%m %H:%M"), "description": e.event_type.replace("_", " ").title()} for e in sorted(rec.events, key=lambda x: x.event_timestamp, reverse=True)]
 
-            # 7. Construct Response
             signal_data = {
                 "asset": rec.asset,
                 "side": rec.side,
-                "leverage": "20x", # Placeholder or extract from notes
+                "leverage": "20x", 
                 "entry": float(rec.entry),
                 "stop_loss": float(rec.stop_loss),
                 "risk_pct": f"{abs((float(rec.entry)-float(rec.stop_loss))/float(rec.entry)*100):.2f}",
@@ -252,9 +256,7 @@ async def get_signal_details(rec_id: int, request: Request):
                 "targets": targets_data,
                 "events": events_data
             }
-            
             return {"ok": True, "signal": signal_data}
-
     except Exception as e:
         return {"ok": False, "error": str(e)}
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
