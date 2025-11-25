@@ -6,144 +6,124 @@
     <title>Portfolio</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        :root {
-            --bg: #000000; --card: #1c1c1e; --text: #fff; --hint: #8e8e93;
-            --green: #32d74b; --red: #ff453a; --blue: #0a84ff;
-            --border: #2c2c2e;
-        }
-        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; padding-bottom: 80px; }
-        
+        :root { --bg: #000000; --card: #1c1c1e; --text: #fff; --hint: #8e8e93; --green: #32d74b; --red: #ff453a; --blue: #0a84ff; --border: #2c2c2e; }
+        body { background: var(--bg); color: var(--text); font-family: sans-serif; margin: 0; padding: 16px; padding-bottom: 80px; }
         .stats-header { display: flex; gap: 10px; margin-bottom: 20px; }
         .stat-card { flex: 1; background: var(--card); padding: 12px; border-radius: 12px; text-align: center; border: 1px solid var(--border); }
-        .stat-label { font-size: 0.7rem; color: var(--hint); text-transform: uppercase; font-weight: 700; }
+        .stat-label { font-size: 0.7rem; color: var(--hint); font-weight: 700; }
         .stat-val { font-size: 1.1rem; font-weight: 800; margin-top: 4px; }
         .stat-val.green { color: var(--green); }
-        
         .tabs { display: flex; gap: 15px; margin-bottom: 15px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
         .tab { font-weight: bold; color: var(--hint); cursor: pointer; padding-bottom: 4px; }
         .tab.active { color: var(--text); border-bottom: 2px solid var(--blue); }
-        
-        .pos-card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid var(--border); position: relative; overflow: hidden; }
-        .pos-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .pos-card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid var(--border); }
+        .pos-header { display: flex; justify-content: space-between; margin-bottom: 8px; }
         .pos-symbol { font-size: 1.1rem; font-weight: 900; }
         .pos-side { font-size: 0.75rem; font-weight: bold; padding: 2px 8px; border-radius: 6px; }
         .pos-side.LONG { background: rgba(50, 215, 75, 0.15); color: var(--green); }
         .pos-side.SHORT { background: rgba(255, 69, 58, 0.15); color: var(--red); }
-        
         .pos-data { display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 12px; }
-        .data-label { color: var(--hint); font-size: 0.75rem; }
-        .data-val { font-family: monospace; font-weight: bold; }
-        
         .pos-pnl { font-size: 1.4rem; font-weight: 900; text-align: right; }
-        .pos-pnl.profit { color: var(--green); }
-        .pos-pnl.loss { color: var(--red); }
-        
-        .pos-actions { display: flex; gap: 10px; margin-top: 12px; }
-        .btn-action { flex: 1; padding: 10px; border-radius: 10px; border: none; font-weight: bold; font-size: 0.9rem; cursor: pointer; }
-        .btn-close { background: rgba(255, 69, 58, 0.15); color: var(--red); }
-        
+        .pos-pnl.profit { color: var(--green); } .pos-pnl.loss { color: var(--red); }
+        .btn-action { flex: 1; padding: 10px; border-radius: 10px; border: none; font-weight: bold; cursor: pointer; background: rgba(255, 69, 58, 0.15); color: var(--red); width: 100%; }
         .loader { text-align: center; padding: 40px; color: var(--hint); }
-        .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; margin-top: 20px; word-break: break-word; }
-        .retry-btn { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 8px; margin-top: 10px; cursor: pointer; }
-        .debug-info { font-size: 0.7rem; color: #555; margin-top: 10px; user-select: all; }
+        .error-box { background: #2c0b0e; border: 1px solid var(--red); color: #ff8a8a; padding: 15px; border-radius: 10px; font-size: 0.8rem; word-break: break-all; }
     </style>
 </head>
 <body>
-
-    <div class="stats-header">
-        <div class="stat-card">
-            <div class="stat-label">Unrealized PnL</div>
-            <div class="stat-val" id="uPnl">...</div>
+    <div id="mainUI" style="display:none;">
+        <div class="stats-header">
+            <div class="stat-card"><div class="stat-label">Unrealized</div><div class="stat-val" id="uPnl">...</div></div>
+            <div class="stat-card"><div class="stat-label">Total</div><div class="stat-val" id="tPnl">...</div></div>
+            <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-val" id="winRate">...</div></div>
         </div>
-        <div class="stat-card">
-            <div class="stat-label">Total PnL</div>
-            <div class="stat-val" id="tPnl">...</div>
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('active')">Active</div>
+            <div class="tab" onclick="switchTab('watchlist')">Watchlist</div>
         </div>
-        <div class="stat-card">
-            <div class="stat-label">Win Rate</div>
-            <div class="stat-val" id="winRate">...</div>
-        </div>
+        <div id="positionsList"></div>
     </div>
 
-    <div class="tabs">
-        <div class="tab active" onclick="switchTab('active')">Active Positions</div>
-        <div class="tab" onclick="switchTab('watchlist')">Watchlist</div>
-    </div>
-
-    <div id="container">
-        <div class="loader" id="loader">Loading Portfolio...</div>
-    </div>
+    <div id="loader" class="loader">Loading Portfolio...</div>
+    <div id="errorBox" class="error-box" style="display:none;"></div>
 
     <script>
         const tg = window.Telegram.WebApp;
         tg.expand();
-        tg.ready();
 
         let currentTab = 'active';
         let portfolioData = null;
 
-        // ✅ FIX: Ultimate Data Extractor
+        // 🔥 ROOT CAUSE FIX: Aggressive Data Extraction
         function getTelegramData() {
+            // 1. Standard API
             if (tg.initData) return tg.initData;
+            
+            // 2. Hash Extraction (Android Fix)
             try {
-                const hash = window.location.hash;
-                if (hash.includes('tgWebAppData=')) {
-                    const match = hash.match(/tgWebAppData=([^&]+)/);
-                    if (match && match[1]) return decodeURIComponent(match[1]);
+                const hash = window.location.hash.substring(1);
+                if (!hash) return null;
+                
+                // Split by & and look for tgWebAppData
+                const pairs = hash.split('&');
+                for (let pair of pairs) {
+                    const [key, value] = pair.split('=');
+                    if (key === 'tgWebAppData') {
+                        return decodeURIComponent(value);
+                    }
                 }
             } catch (e) { console.error("Hash parse error", e); }
             return null;
         }
 
         async function loadData() {
-            const container = document.getElementById('container');
             try {
-                await new Promise(r => setTimeout(r, 300));
-                const initData = getTelegramData();
+                // Retry loop (Wait up to 3 seconds)
+                let initData = null;
+                for(let i=0; i<15; i++) {
+                    initData = getTelegramData();
+                    if(initData) break;
+                    await new Promise(r => setTimeout(r, 200));
+                }
 
                 if (!initData) {
-                    throw new Error("Telegram Data missing. Please update BotFather URL to the short link.");
+                    // Debug Info
+                    throw new Error(`No Data. Hash: ${window.location.hash.substring(0, 50)}...`);
                 }
 
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
-                if (!res.ok) throw new Error(`Server Error: ${res.status}`);
-
+                if (!res.ok) throw new Error(`API Error: ${res.status}`);
+                
                 const data = await res.json();
-                if(data.ok) {
-                    portfolioData = data;
-                    renderHeader(data.stats);
-                    renderList();
-                } else {
-                    throw new Error(data.error || "Unknown API Error");
-                }
-            } catch(e) {
-                console.error(e);
-                const debugInfo = `URL: ${window.location.href}`;
-                container.innerHTML = `
-                    <div class="error-msg">
-                        ⚠️ <b>Failed to load</b><br>${e.message}<br>
-                        <div class="debug-info">${debugInfo}</div>
-                        <button class="retry-btn" onclick="loadData()">🔄 Retry</button>
-                    </div>
-                `;
+                if (!data.ok) throw new Error(data.error);
+
+                portfolioData = data;
+                render();
+            } catch (e) {
+                document.getElementById('loader').style.display = 'none';
+                const errBox = document.getElementById('errorBox');
+                errBox.style.display = 'block';
+                errBox.innerHTML = `⚠️ <b>Error:</b> ${e.message}<br><br><button onclick="location.reload()" style="padding:10px; border-radius:5px;">Retry</button>`;
             }
         }
 
-        function renderHeader(stats) {
-            const uPnl = document.getElementById('uPnl');
-            uPnl.innerText = stats.unrealized_pnl || "0%";
-            uPnl.className = `stat-val ${parseFloat(stats.unrealized_pnl) >= 0 ? 'green' : ''}`;
-            document.getElementById('tPnl').innerText = stats.total_pnl || "0%";
-            document.getElementById('winRate').innerText = stats.win_rate || "0%";
-        }
-
-        function renderList() {
-            const container = document.getElementById('container');
-            container.innerHTML = '';
-            const items = currentTab === 'active' ? portfolioData.active : portfolioData.watchlist;
+        function render() {
+            document.getElementById('loader').style.display = 'none';
+            document.getElementById('mainUI').style.display = 'block';
             
-            if(!items || items.length === 0) {
-                container.innerHTML = '<div class="loader">No positions found.</div>';
+            const stats = portfolioData.stats;
+            const uPnl = document.getElementById('uPnl');
+            uPnl.innerText = stats.unrealized_pnl;
+            uPnl.className = `stat-val ${parseFloat(stats.unrealized_pnl) >= 0 ? 'green' : ''}`;
+            document.getElementById('tPnl').innerText = stats.total_pnl;
+            document.getElementById('winRate').innerText = stats.win_rate;
+
+            const list = document.getElementById('positionsList');
+            list.innerHTML = '';
+            const items = currentTab === 'active' ? portfolioData.active : portfolioData.watchlist;
+
+            if (items.length === 0) {
+                list.innerHTML = '<div class="loader">No positions found.</div>';
                 return;
             }
 
@@ -163,10 +143,10 @@
                         <div class="pos-pnl ${pnlClass}">${pnlSign}${item.pnl}%</div>
                     </div>
                     <div class="pos-actions">
-                        <button class="btn-action btn-close" onclick="closeTrade(${item.id}, '${item.type}')">Close Market</button>
+                        <button class="btn-action" onclick="closeTrade(${item.id}, '${item.type}')">Close Market</button>
                     </div>
                 `;
-                container.appendChild(card);
+                list.appendChild(card);
             });
         }
 
@@ -174,23 +154,21 @@
             currentTab = tab;
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             event.target.classList.add('active');
-            renderList();
+            render();
         }
 
         async function closeTrade(id, type) {
-            if(!confirm("Close this position at market price?")) return;
-            tg.HapticFeedback.impactOccurred('heavy');
-            const initData = getTelegramData();
+            if(!confirm("Close position?")) return;
             try {
                 const res = await fetch('/api/webapp/close_trade', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ initData: initData, trade_id: id, trade_type: type })
+                    body: JSON.stringify({ initData: getTelegramData(), trade_id: id, trade_type: type })
                 });
                 const data = await res.json();
-                if(data.ok) { tg.showAlert("Position Closed!"); loadData(); }
+                if(data.ok) { tg.showAlert("Closed!"); loadData(); }
                 else { tg.showAlert("Error: " + data.error); }
-            } catch(e) { tg.showAlert("Network Error: " + e.message); }
+            } catch(e) { tg.showAlert("Network Error"); }
         }
 
         loadData();
