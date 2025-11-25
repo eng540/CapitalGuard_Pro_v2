@@ -1,21 +1,9 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
-# src/capitalguard/interfaces/api/main.py (v27.0 - Complete with WebApp Support)
-"""
-The definitive, stable, and production-ready main entry point.
-✅ FIX: Added call to `market_data_service.refresh_symbols_cache()` during startup
-       to populate the symbol cache *before* the AlertService or API handlers need it.
-✅ ADDED: WebApp support with static files mounting and router inclusion.
-✅ ADDED: Dashboard shortcuts for easy WebApp access.
-"""
-
 import logging
 import asyncio
 import os
 import pickle
-import html
-import json
-import traceback
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Dict, Any, Tuple, Optional
 
 import redis
 from fastapi import FastAPI, Request
@@ -35,11 +23,7 @@ from capitalguard.application.services.market_data_service import MarketDataServ
 
 log = logging.getLogger(__name__)
 
-# --- Redis Persistence Implementation (Complete & Correct) ---
-
 class RedisPersistence(BasePersistence):
-    """A complete and PTB v21+ compatible persistence class that stores bot data in Redis."""
-
     def __init__(self, redis_client: redis.Redis):
         super().__init__()
         self.redis_client = redis_client
@@ -104,25 +88,33 @@ class RedisPersistence(BasePersistence):
 
     async def refresh_chat_data(self, chat_id: int, chat_data: Dict) -> None:
         data = self.redis_client.hget(self.chat_data_key, str(chat_id))
-        if data:
-            chat_data.update(pickle.loads(data))
+        if data: chat_data.update(pickle.loads(data))
 
     async def refresh_user_data(self, user_id: int, user_data: Dict) -> None:
         data = self.redis_client.hget(self.user_data_key, str(user_id))
-        if data:
-            user_data.update(pickle.loads(data))
+        if data: user_data.update(pickle.loads(data))
 
-    async def flush(self) -> None:
-        pass
+    async def flush(self) -> None: pass
 
-# --- FastAPI Application ---
-
-app = FastAPI(title="CapitalGuard Pro API", version="27.0.0-webapp")
+app = FastAPI(title="CapitalGuard Pro API", version="75.0.0-WEBAPP-FIX")
 app.state.ptb_app = None
 app.state.services = None
 
-# ✅ WEBAPP SUPPORT: Mount static files for WebApp
+# ✅ 1. Mount Static Files
 app.mount("/static", StaticFiles(directory="src/capitalguard/interfaces/api/static"), name="static")
+
+# ✅ 2. CRITICAL SHORTCUTS (Prevents Redirect Data Loss)
+@app.get("/portfolio")
+async def serve_portfolio():
+    return FileResponse("src/capitalguard/interfaces/api/static/portfolio.html")
+
+@app.get("/new")
+async def serve_creator():
+    return FileResponse("src/capitalguard/interfaces/api/static/create_trade.html")
+
+@app.get("/dash")
+async def serve_dashboard():
+    return FileResponse("src/capitalguard/interfaces/api/static/signal_dashboard.html")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Exception while handling an update:", exc_info=context.error)
@@ -130,86 +122,63 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 @app.on_event("startup")
 async def on_startup():
     log.info("🚀 Application startup sequence initiated...")
-
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
-        log.critical("FATAL: REDIS_URL environment variable not found. Startup aborted.")
+        log.critical("FATAL: REDIS_URL environment variable not found.")
         return
 
     try:
         redis_client = redis.from_url(redis_url, decode_responses=False)
         redis_client.ping()
         persistence = RedisPersistence(redis_client=redis_client)
-        log.info("✅ Connected to Redis for persistence.")
+        log.info("✅ Connected to Redis.")
     except Exception as e:
-        log.critical(f"FATAL: Could not connect to Redis: {e}. Startup aborted.")
+        log.critical(f"FATAL: Redis connection failed: {e}")
         return
-
-    # CRITICAL FIX: Correctly clear all persisted conversation states.
-    log.warning("Clearing all persisted conversation states to ensure a clean start...")
-    redis_client.delete(persistence.conversations_key)
-    log.info("All conversation states have been cleared from persistence.")
 
     ptb_app = bootstrap_app(persistence=persistence)
     if not ptb_app:
-        log.critical("FATAL: Could not create Telegram Application. Startup aborted.")
+        log.critical("FATAL: Telegram App bootstrap failed.")
         return
 
     app.state.ptb_app = ptb_app
     await ptb_app.initialize()
-    log.info("Telegram app initialized and Redis data loaded.")
 
     app.state.services = build_services(ptb_app=ptb_app)
     ptb_app.bot_data["services"] = app.state.services
     register_all_handlers(ptb_app)
     ptb_app.add_error_handler(error_handler)
 
-    # --- ✅ GEO-BLOCK FIX: Populate symbol cache *before* starting alert service ---
     market_data_service: MarketDataService = app.state.services.get("market_data_service")
     if market_data_service:
-        log.info("Populating symbol cache (MarketDataService)...")
+        log.info("Populating symbol cache...")
         await market_data_service.refresh_symbols_cache()
-        log.info("Symbol cache population complete.")
-    else:
-        log.error("MarketDataService not found, cache will not be populated on startup.")
-    # --- End of Fix ---
 
     alert_service: AlertService = app.state.services.get("alert_service")
     if alert_service:
         await alert_service.build_triggers_index()
         alert_service.start()
-        log.info("AlertService background tasks started.")
 
-    private_commands = [
-        BotCommand("newrec", "📊 New Recommendation"),
-        BotCommand("myportfolio", "📂 View My Trades"),
-        BotCommand("help", "ℹ️ Show Help"),
-    ]
-    await ptb_app.bot.set_my_commands(private_commands)
-    log.info("Bot commands configured.")
+    await ptb_app.bot.set_my_commands([
+        BotCommand("start", "🚀 Start & Menu"),
+        BotCommand("newrec", "📊 New Signal"),
+        BotCommand("myportfolio", "📂 Portfolio"),
+        BotCommand("help", "ℹ️ Help"),
+    ])
 
     if settings.TELEGRAM_WEBHOOK_URL:
         await ptb_app.bot.set_webhook(url=settings.TELEGRAM_WEBHOOK_URL, allowed_updates=Update.ALL_TYPES)
-        log.info(f"Webhook set to {settings.TELEGRAM_WEBHOOK_URL}")
 
     await ptb_app.start()
-    log.info("Telegram bot started.")
-    if ptb_app.bot:
-        log.info(f"✅ Bot is running as @{ptb_app.bot.username}")
-
-    log.info("🚀 Application startup sequence complete.")
+    log.info("🚀 Application startup complete.")
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    log.info("🔌 Application shutdown sequence initiated...")
     alert_service: AlertService = app.state.services.get("alert_service")
-    if alert_service:
-        alert_service.stop()
-        log.info("AlertService stopped.")
+    if alert_service: alert_service.stop()
     if app.state.ptb_app:
         await app.state.ptb_app.stop()
         await app.state.ptb_app.shutdown()
-        log.info("Telegram app shut down.")
     log.info("🔌 Application shutdown complete.")
 
 @app.post("/webhook/telegram")
@@ -221,37 +190,18 @@ async def telegram_webhook(request: Request):
             update = Update.de_json(data, ptb_app.bot)
             await ptb_app.process_update(update)
         except Exception:
-            log.exception("Error processing Telegram update in webhook.")
+            log.exception("Error processing update.")
     return {"status": "ok"}
 
 @app.get("/")
 def root():
     return {"message": f"🚀 CapitalGuard API v{app.version} is running"}
 
-@app.get("/health", status_code=200, tags=["System"])
+@app.get("/health", status_code=200)
 def health_check():
     return {"status": "ok"}
 
-# ✅ WEBAPP SUPPORT: Include WebApp router
 app.include_router(auth_router.router)
-app.include_router(webapp_router.router)
 app.include_router(metrics_router)
-
-# ✅ SHORTCUT: مسار مختصر لفتح لوحة القيادة
-@app.get("/dash")
-async def serve_dashboard():
-    return FileResponse("src/capitalguard/interfaces/api/static/signal_dashboard.html")
-
-# ✅ SHORTCUT: مسار مختصر لفتح صفحة الإنشاء (احتياط)
-@app.get("/new")
-async def serve_creator():
-    return FileResponse("src/capitalguard/interfaces/api/static/create_trade.html")
-
-# ... (Existing shortcuts)
-
-# ✅ NEW SHORTCUT: Portfolio
-@app.get("/portfolio")
-async def serve_portfolio():
-    return FileResponse("src/capitalguard/interfaces/api/static/portfolio.html")
-
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
+app.include_router(webapp_router.router)
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
