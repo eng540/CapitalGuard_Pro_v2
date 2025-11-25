@@ -1,4 +1,4 @@
---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
 # File: src/capitalguard/interfaces/api/main.py
 # Version: v27.1 - Webapp Portfolio Shortcut
 # ✅ THE FIX: Added a shortcut endpoint /portfolio to serve the new WebApp file.
@@ -248,4 +248,4 @@ async def serve_creator():
 async def serve_portfolio():
     return FileResponse("src/capitalguard/interfaces/api/static/my_portfolio.html")
 
---- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
