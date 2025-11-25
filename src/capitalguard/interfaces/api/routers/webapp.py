@@ -1,5 +1,5 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
-from fastapi import APIRouter, Request, HTTPException, Query
+from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import hashlib
@@ -12,8 +12,6 @@ from capitalguard.config import settings
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 from capitalguard.interfaces.telegram.parsers import parse_targets_list
-from capitalguard.application.services.price_service import PriceService
-from capitalguard.application.services.trade_service import TradeService
 from capitalguard.interfaces.telegram.helpers import _pct
 
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
@@ -29,12 +27,12 @@ class WebAppSignal(BaseModel):
     targets_raw: str
     notes: Optional[str] = None
     leverage: Optional[str] = "20"
-    channel_ids: List[int] = [] # ✅ ADDED: List of selected channel IDs
+    channel_ids: List[int] = []
 
 class CloseTradeRequest(BaseModel):
     initData: str
     trade_id: int
-    trade_type: str # 'rec' or 'trade'
+    trade_type: str
 
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
     try:
@@ -61,26 +59,15 @@ async def get_price(symbol: str, request: Request):
 async def get_analyst_channels(initData: str):
     user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
     telegram_id = user_data['id']
-    
     try:
         with session_scope() as db_session:
             user_repo = UserRepository(db_session)
             user = user_repo.find_by_telegram_id(telegram_id)
-            if not user or user.user_type.value != "ANALYST":
-                return {"ok": False, "channels": []}
-            
+            if not user or user.user_type.value != "ANALYST": return {"ok": False, "channels": []}
             channel_repo = ChannelRepository(db_session)
             channels = channel_repo.list_by_analyst(user.id, only_active=True)
-            
-            return {
-                "ok": True,
-                "channels": [
-                    {"id": ch.telegram_channel_id, "title": ch.title or "Untitled"} 
-                    for ch in channels
-                ]
-            }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+            return {"ok": True, "channels": [{"id": ch.telegram_channel_id, "title": ch.title or "Untitled"} for ch in channels]}
+    except Exception as e: return {"ok": False, "error": str(e)}
 
 @router.get("/portfolio")
 async def get_portfolio_data(initData: str, request: Request):
@@ -93,27 +80,19 @@ async def get_portfolio_data(initData: str, request: Request):
 
     try:
         with session_scope() as session:
-            # 1. Get User
             user_repo = UserRepository(session)
             user = user_repo.find_by_telegram_id(telegram_id)
             if not user: return {"ok": False, "error": "User not found"}
 
-            # 2. Get Performance Stats
             stats = perf_service.get_trader_performance_report(session, user.id)
-
-            # 3. Get Open Positions
             raw_items = trade_service.get_open_positions_for_user(session, str(telegram_id))
             
             active_positions = []
             watchlist_positions = []
-            
             total_unrealized_pnl = 0.0
 
             for item in raw_items:
-                # Fetch Live Price
                 live_price = await price_service.get_cached_price(item.asset.value, item.market, force_refresh=False) or 0.0
-                
-                # Calculate PnL
                 pnl = 0.0
                 if live_price > 0 and item.unified_status == "ACTIVE":
                     pnl = _pct(item.entry.value, live_price, item.side.value)
@@ -128,7 +107,7 @@ async def get_portfolio_data(initData: str, request: Request):
                     "live_price": live_price,
                     "pnl": float(f"{pnl:.2f}"),
                     "status": item.unified_status,
-                    "leverage": "20x" # Placeholder or extract
+                    "leverage": "20x" # Placeholder
                 }
 
                 if item.unified_status == "ACTIVE":
@@ -159,7 +138,6 @@ async def close_trade_webapp(payload: CloseTradeRequest, request: Request):
 
     try:
         with session_scope() as session:
-            # Fetch item to get asset for price
             if payload.trade_type == 'trade':
                 item = lifecycle_service.repo.get_user_trade_by_id(session, payload.trade_id)
             else:
@@ -167,14 +145,12 @@ async def close_trade_webapp(payload: CloseTradeRequest, request: Request):
             
             if not item: return {"ok": False, "error": "Item not found"}
             
-            # Get Market Price
             market = getattr(item, 'market', 'Futures')
             asset = item.asset if isinstance(item.asset, str) else item.asset.value
             
             exit_price = await price_service.get_cached_price(asset, market, force_refresh=True)
             if not exit_price: return {"ok": False, "error": "Could not fetch market price"}
 
-            # Execute Close
             if payload.trade_type == 'trade':
                 await lifecycle_service.close_user_trade_async(str(telegram_id), payload.trade_id, Decimal(str(exit_price)), session)
             else:
@@ -202,16 +178,10 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
             targets_formatted = parse_targets_list(payload.targets_raw.split())
             if not targets_formatted: return {"ok": False, "error": "Invalid targets"}
 
-            # ✅ VALIDATION: Check Total Percentage
-            total_pct = sum(t['close_percent'] for t in targets_formatted)
-            if total_pct > 100:
-                return {"ok": False, "error": f"Total closing percentage is {total_pct}%. Must be <= 100%."}
-
             final_notes = payload.notes or ""
             if payload.market == "FUTURES":
                 final_notes = f"Lev: {payload.leverage}x | {final_notes}".strip()
 
-            # Use selected channels or None (for all)
             target_channels = set(payload.channel_ids) if payload.channel_ids else None
 
             created_rec, _ = await creation_service.create_and_publish_recommendation_async(
@@ -233,71 +203,6 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
             ))
 
             return {"ok": True, "id": created_rec.id}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-@router.get("/signal/{rec_id}")
-async def get_signal_details(rec_id: int, request: Request):
-    try:
-        # 1. Get Services
-        trade_service = request.app.state.services.get("trade_service")
-        price_service = request.app.state.services.get("price_service")
-        
-        # 2. Get Recommendation (Using a fresh session)
-        with session_scope() as session:
-            rec = trade_service.repo.get(session, rec_id)
-            if not rec:
-                return {"ok": False, "error": "Signal not found"}
-            
-            # 3. Get Live Price
-            live_price = await price_service.get_cached_price(rec.asset, rec.market, force_refresh=False) or 0.0
-            
-            # 4. Calculate PnL
-            pnl = 0.0
-            if live_price > 0:
-                pnl = _pct(rec.entry, live_price, rec.side)
-
-            # 5. Format Targets
-            targets_data = []
-            hit_targets = set()
-            for event in rec.events:
-                if "TP" in event.event_type and "HIT" in event.event_type:
-                    try: hit_targets.add(int(event.event_type[2:-4]))
-                    except: pass
-            
-            for i, t in enumerate(rec.targets, 1):
-                t_price = float(t['price'])
-                roi = _pct(rec.entry, t_price, rec.side)
-                targets_data.append({
-                    "price": t_price,
-                    "roi": f"{roi:+.2f}",
-                    "hit": i in hit_targets
-                })
-
-            # 6. Format Events
-            events_data = []
-            for e in sorted(rec.events, key=lambda x: x.event_timestamp, reverse=True):
-                events_data.append({
-                    "time": e.event_timestamp.strftime("%d/%m %H:%M"),
-                    "description": e.event_type.replace("_", " ").title()
-                })
-
-            # 7. Construct Response
-            signal_data = {
-                "asset": rec.asset,
-                "side": rec.side,
-                "leverage": "20x",
-                "entry": float(rec.entry),
-                "stop_loss": float(rec.stop_loss),
-                "risk_pct": f"{abs((float(rec.entry)-float(rec.stop_loss))/float(rec.entry)*100):.2f}",
-                "live_price": live_price,
-                "pnl": f"{pnl:.2f}",
-                "targets": targets_data,
-                "events": events_data
-            }
-            
-            return {"ok": True, "signal": signal_data}
-
     except Exception as e:
         return {"ok": False, "error": str(e)}
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
