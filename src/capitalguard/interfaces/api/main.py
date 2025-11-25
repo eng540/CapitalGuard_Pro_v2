@@ -1,6 +1,5 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
 import logging
-import asyncio
 import os
 import pickle
 from typing import Dict, Any, Tuple, Optional
@@ -23,6 +22,7 @@ from capitalguard.application.services.market_data_service import MarketDataServ
 
 log = logging.getLogger(__name__)
 
+# --- Redis Persistence ---
 class RedisPersistence(BasePersistence):
     def __init__(self, redis_client: redis.Redis):
         super().__init__()
@@ -88,22 +88,26 @@ class RedisPersistence(BasePersistence):
 
     async def refresh_chat_data(self, chat_id: int, chat_data: Dict) -> None:
         data = self.redis_client.hget(self.chat_data_key, str(chat_id))
-        if data: chat_data.update(pickle.loads(data))
+        if data:
+            chat_data.update(pickle.loads(data))
 
     async def refresh_user_data(self, user_id: int, user_data: Dict) -> None:
         data = self.redis_client.hget(self.user_data_key, str(user_id))
-        if data: user_data.update(pickle.loads(data))
+        if data:
+            user_data.update(pickle.loads(data))
 
-    async def flush(self) -> None: pass
+    async def flush(self) -> None:
+        pass
 
-app = FastAPI(title="CapitalGuard Pro API", version="75.0.0-WEBAPP-FIX")
+# --- FastAPI App ---
+app = FastAPI(title="CapitalGuard Pro API", version="70.0.0-WEB-READY")
 app.state.ptb_app = None
 app.state.services = None
 
-# ✅ 1. Mount Static Files
+# ✅ Mount Static Files
 app.mount("/static", StaticFiles(directory="src/capitalguard/interfaces/api/static"), name="static")
 
-# ✅ 2. CRITICAL SHORTCUTS (Prevents Redirect Data Loss)
+# ✅ SHORTCUT ROUTES (Critical for Android WebApp)
 @app.get("/portfolio")
 async def serve_portfolio():
     return FileResponse("src/capitalguard/interfaces/api/static/portfolio.html")
@@ -111,10 +115,6 @@ async def serve_portfolio():
 @app.get("/new")
 async def serve_creator():
     return FileResponse("src/capitalguard/interfaces/api/static/create_trade.html")
-
-@app.get("/dash")
-async def serve_dashboard():
-    return FileResponse("src/capitalguard/interfaces/api/static/signal_dashboard.html")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Exception while handling an update:", exc_info=context.error)
@@ -136,9 +136,12 @@ async def on_startup():
         log.critical(f"FATAL: Redis connection failed: {e}")
         return
 
+    # Clear conversations on startup to prevent stuck states
+    redis_client.delete(persistence.conversations_key)
+
     ptb_app = bootstrap_app(persistence=persistence)
     if not ptb_app:
-        log.critical("FATAL: Telegram App bootstrap failed.")
+        log.critical("FATAL: Could not create Telegram Application.")
         return
 
     app.state.ptb_app = ptb_app
@@ -149,9 +152,9 @@ async def on_startup():
     register_all_handlers(ptb_app)
     ptb_app.add_error_handler(error_handler)
 
+    # Populate Cache
     market_data_service: MarketDataService = app.state.services.get("market_data_service")
     if market_data_service:
-        log.info("Populating symbol cache...")
         await market_data_service.refresh_symbols_cache()
 
     alert_service: AlertService = app.state.services.get("alert_service")
@@ -159,10 +162,9 @@ async def on_startup():
         await alert_service.build_triggers_index()
         alert_service.start()
 
+    # Bot Commands
     await ptb_app.bot.set_my_commands([
-        BotCommand("start", "🚀 Start & Menu"),
-        BotCommand("newrec", "📊 New Signal"),
-        BotCommand("myportfolio", "📂 Portfolio"),
+        BotCommand("start", "🏠 Main Menu"),
         BotCommand("help", "ℹ️ Help"),
     ])
 
@@ -179,7 +181,6 @@ async def on_shutdown():
     if app.state.ptb_app:
         await app.state.ptb_app.stop()
         await app.state.ptb_app.shutdown()
-    log.info("🔌 Application shutdown complete.")
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
@@ -190,16 +191,14 @@ async def telegram_webhook(request: Request):
             update = Update.de_json(data, ptb_app.bot)
             await ptb_app.process_update(update)
         except Exception:
-            log.exception("Error processing update.")
+            log.exception("Error processing update")
     return {"status": "ok"}
 
 @app.get("/")
-def root():
-    return {"message": f"🚀 CapitalGuard API v{app.version} is running"}
+def root(): return {"message": "CapitalGuard API Running"}
 
-@app.get("/health", status_code=200)
-def health_check():
-    return {"status": "ok"}
+@app.get("/health")
+def health_check(): return {"status": "ok"}
 
 app.include_router(auth_router.router)
 app.include_router(metrics_router)
