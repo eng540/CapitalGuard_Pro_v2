@@ -1,9 +1,10 @@
-# src/capitalguard/interfaces/telegram/admin_commands.py (v25.8 - Enum Value Fix)
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/admin_commands.py ---
+# src/capitalguard/interfaces/telegram/admin_commands.py (v25.9 - Fix Keyword Arguments)
 """
 Implements and registers all admin-only commands for the bot.
-This version includes the definitive fix for the analyst promotion bug by
-assigning the enum's .value instead of the enum object itself, ensuring
-the change is always detected by SQLAlchemy.
+✅ THE FIX: Updated function signatures to accept 'db_user' and '**kwargs'.
+   - The @uow_transaction decorator injects 'db_user', so handlers must accept it.
+   - Added '**kwargs' to handle any future injected arguments gracefully.
 """
 
 import logging
@@ -23,7 +24,7 @@ ADMIN_USERNAMES = [username.strip() for username in (os.getenv("ADMIN_USERNAMES"
 admin_filter = filters.User(username=ADMIN_USERNAMES)
 
 @uow_transaction
-async def grant_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+async def grant_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user=None, **kwargs):
     """Admin Command: Grants a user access to the bot."""
     if not context.args:
         await update.message.reply_text("Usage: /grantaccess <user_id>")
@@ -52,7 +53,7 @@ async def grant_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         await update.message.reply_text("An error occurred.")
 
 @uow_transaction
-async def make_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+async def make_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user=None, **kwargs):
     """Admin Command: Promotes a user to the Analyst role."""
     if not context.args:
         await update.message.reply_text("Usage: /makeanalyst <user_id>")
@@ -70,9 +71,7 @@ async def make_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, d
             await update.message.reply_text(f"User {target_user_id} is already an analyst.")
             return
 
-        # ✅ THE DEFINITIVE FIX: Assign the enum's .value ('ANALYST') directly.
-        # This ensures SQLAlchemy's change detection mechanism always triggers correctly
-        # for the database transaction.
+        # ✅ FIX: Assign the enum's .value ('ANALYST') directly.
         target_user.user_type = UserType.ANALYST.value
         
         await update.message.reply_text(f"✅ User {target_user_id} has been promoted to Analyst.")
@@ -85,7 +84,7 @@ async def make_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         await update.message.reply_text("An error occurred.")
 
 @uow_transaction
-async def revoke_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session):
+async def revoke_access_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user=None, **kwargs):
     """Admin Command: Revokes a user's access to the bot."""
     if not context.args:
         await update.message.reply_text("Usage: /revokeaccess <user_id>")
@@ -123,3 +122,4 @@ def register_admin_commands(app: Application):
     app.add_handler(CommandHandler("makeanalyst", make_analyst_cmd, filters=admin_filter))
     app.add_handler(CommandHandler("revokeaccess", revoke_access_cmd, filters=admin_filter))
     log.info(f"Admin commands registered for users: {ADMIN_USERNAMES}")
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/admin_commands.py ---
