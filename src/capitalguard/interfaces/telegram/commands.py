@@ -1,7 +1,7 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
 # File: src/capitalguard/interfaces/telegram/commands.py
-# Version: v76.0.0-DEEP-LINK-FIX
-# ✅ FIX: Use Telegram Deep Links instead of direct URLs
+# Version: v76.1.0-FIXED-URLS
+# ✅ FIX: Use direct URLs with proper domain
 
 import logging
 import io
@@ -37,27 +37,27 @@ from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
 
 log = logging.getLogger(__name__)
 
-# --- Persistent Menu Helper (FIXED WITH DEEP LINKS) ---
+# --- Persistent Menu Helper (FIXED) ---
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     """
     Creates the persistent bottom keyboard with Web Apps.
     """
-    # ✅ FIX: Use Telegram Deep Links (like /terminal)
-    bot_username = "Tradingplatformxbot"  # Replace with your actual bot username if different
+    # ✅ FIX: Use direct domain URLs (NOT deep links)
+    domain = "capitalguardprov2-production-8d1c.up.railway.app"
     
-    portfolio_deep_link = f"https://t.me/{bot_username}/portfolio"
-    create_deep_link = f"https://t.me/{bot_username}/new"
+    create_url = f"https://{domain}/new"
+    portfolio_url = f"https://{domain}/portfolio"
     
-    log.info(f"🔗 Portfolio Deep Link: {portfolio_deep_link}")
-    log.info(f"🔗 Create Signal Deep Link: {create_deep_link}")
+    log.info(f"🔗 Create URL: {create_url}")
+    log.info(f"🔗 Portfolio URL: {portfolio_url}")
 
     keyboard = [
         # Row 1: The Creation Terminal
-        [KeyboardButton("🚀 New Signal (Visual)", web_app=WebAppInfo(url=create_deep_link))],
+        [KeyboardButton("🚀 New Signal (Visual)", web_app=WebAppInfo(url=create_url))],
         
         # Row 2: The New Live Portfolio + Channels
         [
-            KeyboardButton("📊 Live Portfolio", web_app=WebAppInfo(url=portfolio_deep_link)),
+            KeyboardButton("📊 Live Portfolio", web_app=WebAppInfo(url=portfolio_url)),
             KeyboardButton("/channels")
         ],
         
