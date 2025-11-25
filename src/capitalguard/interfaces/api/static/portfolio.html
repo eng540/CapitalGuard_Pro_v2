@@ -45,7 +45,7 @@
         .loader { text-align: center; padding: 40px; color: var(--hint); }
         .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; margin-top: 20px; word-break: break-word; }
         .retry-btn { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 8px; margin-top: 10px; cursor: pointer; }
-        .debug-info { font-size: 0.6rem; color: #555; margin-top: 10px; user-select: all; text-align: left; background: #111; padding: 5px; border-radius: 4px; }
+        .debug-info { font-size: 0.7rem; color: #555; margin-top: 10px; user-select: all; }
     </style>
 </head>
 <body>
@@ -82,17 +82,22 @@
         let currentTab = 'active';
         let portfolioData = null;
 
+        // ✅ FIX: Ultimate Data Extractor
         function getTelegramData() {
-            // 1. Standard
+            // 1. Standard API
             if (tg.initData) return tg.initData;
             
-            // 2. Hash Search (Aggressive)
-            const hash = window.location.hash;
-            if (hash.includes('tgWebAppData=')) {
-                const match = hash.match(/tgWebAppData=([^&]+)/);
-                if (match && match[1]) return decodeURIComponent(match[1]);
-            }
-            
+            // 2. Hash Extraction (Manual Parsing)
+            try {
+                const hash = window.location.hash;
+                if (hash.includes('tgWebAppData=')) {
+                    const match = hash.match(/tgWebAppData=([^&]+)/);
+                    if (match && match[1]) {
+                        return decodeURIComponent(match[1]);
+                    }
+                }
+            } catch (e) { console.error("Hash parse error", e); }
+
             return null;
         }
 
@@ -100,7 +105,7 @@
             const container = document.getElementById('container');
             
             try {
-                // Wait loop
+                // Wait loop for Android injection
                 let initData = null;
                 for(let i=0; i<10; i++) {
                     initData = getTelegramData();
@@ -109,8 +114,7 @@
                 }
 
                 if (!initData) {
-                    // Show current URL for debugging
-                    throw new Error("Data Missing. Current URL Hash: " + window.location.hash.substring(0, 50) + "...");
+                    throw new Error("Telegram Data missing. Please update BotFather URL to the short link.");
                 }
 
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
