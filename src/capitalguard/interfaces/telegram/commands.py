@@ -6,6 +6,7 @@
 import logging
 import io
 import csv
+import time
 from datetime import datetime
 
 from telegram import Update, InputFile, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup
@@ -45,9 +46,10 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     # Base URL from settings
     base_url = settings.TELEGRAM_WEBHOOK_URL.rsplit('/', 2)[0] if settings.TELEGRAM_WEBHOOK_URL else "https://YOUR_DOMAIN"
     
-    # Web App URLs
-    create_url = f"{base_url}/new"
-    portfolio_url = f"{base_url}/portfolio"
+    # ✅ FIX: Add timestamp to force reload (Cache Busting)
+    ts = int(time.time())
+    create_url = f"{base_url}/new?v={ts}"
+    portfolio_url = f"{base_url}/portfolio?v={ts}"
 
     keyboard = [
         # Row 1: The Creation Terminal
