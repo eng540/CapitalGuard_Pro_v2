@@ -1,0 +1,157 @@
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/static/my_portfolio.html ---
+# File: src/capitalguard/interfaces/api/static/my_portfolio.html
+# ✅ THE FIX: New HTML file for the User Portfolio WebApp.
+# 🎯 IMPACT: Provides the visual interface for users to access /myportfolio via the WebApp button.
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>My Portfolio</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg: var(--tg-theme-bg-color, #1c1c1e);
+            --card: var(--tg-theme-secondary-bg-color, #2c2c2e);
+            --text: var(--tg-theme-text-color, #ffffff);
+            --hint: var(--tg-theme-hint-color, #8e8e93);
+            --button-color: var(--tg-theme-button-color, #0a84ff);
+            --green: #32d74b; --red: #ff453a; --orange: #ff9f0a;
+            --border: rgba(128, 128, 128, 0.2);
+        }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; padding-bottom: 80px; }
+        
+        .section { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 16px; border: 1px solid var(--border); }
+        .list-header { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--hint); text-transform: uppercase; margin-bottom: 10px; }
+        .trade-item { 
+            display: grid; 
+            grid-template-columns: 2fr 1fr 1fr; 
+            gap: 10px; 
+            padding: 12px 0; 
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+        }
+        .trade-item:last-child { border-bottom: none; }
+
+        .asset { font-weight: 800; font-size: 1.1rem; }
+        .status-badge { font-size: 0.8rem; font-weight: bold; padding: 4px 8px; border-radius: 6px; text-align: center; }
+        .status-active { background: rgba(50, 215, 75, 0.15); color: var(--green); }
+        .status-watchlist { background: rgba(10, 132, 255, 0.15); color: var(--button-color); }
+        .status-pending { background: rgba(255, 159, 10, 0.15); color: var(--orange); }
+        .pnl-val { font-family: monospace; font-weight: bold; text-align: right; }
+        .side-info { font-size: 0.8rem; color: var(--hint); }
+        
+        .loader { text-align: center; padding: 50px; color: var(--hint); }
+        .header-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 16px; color: var(--text); }
+
+    </style>
+</head>
+<body>
+    <div class="header-title">My Open Trades</div>
+    
+    <div id="loader" class="loader">Loading your portfolio...</div>
+
+    <div id="app" style="display: none;">
+        <div class="section">
+            <div class="list-header">
+                <div>Asset / Side</div>
+                <div style="text-align: center;">Status</div>
+                <div style="text-align: right;">Live PnL</div>
+            </div>
+            <div id="tradeListContainer">
+                </div>
+            <div id="emptyState" style="text-align: center; color: var(--hint); padding: 20px; display: none;">
+                You have no open trades or items in your watchlist.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+        tg.ready();
+
+        async function fetchPortfolio() {
+            const container = document.getElementById('tradeListContainer');
+            const loader = document.getElementById('loader');
+            const app = document.getElementById('app');
+            const emptyState = document.getElementById('emptyState');
+            
+            container.innerHTML = '';
+            loader.style.display = 'block';
+            app.style.display = 'none';
+
+            try {
+                // We use the Telegram initData to authenticate the user
+                const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(tg.initData)}`);
+                const data = await res.json();
+
+                if (data.ok) {
+                    const trades = data.portfolio.items || [];
+                    if (trades.length === 0) {
+                        emptyState.style.display = 'block';
+                    } else {
+                        emptyState.style.display = 'none';
+                        trades.forEach(trade => renderTradeItem(trade, container));
+                    }
+                    loader.style.display = 'none';
+                    app.style.display = 'block';
+                } else {
+                    loader.innerText = "Error: " + data.error;
+                }
+            } catch (e) {
+                console.error(e);
+                loader.innerText = "Network Error";
+            }
+        }
+
+        function getStatusDetails(status) {
+            switch(status) {
+                case 'ACTIVE': return { text: 'Active', class: 'status-active' };
+                case 'WATCHLIST': return { text: 'Watchlist', class: 'status-watchlist' };
+                case 'PENDING_ACTIVATION': return { text: 'Pending', class: 'status-pending' };
+                default: return { text: status, class: 'status-watchlist' };
+            }
+        }
+
+        function renderTradeItem(trade, container) {
+            const statusDetails = getStatusDetails(trade.unified_status);
+            const sideClass = trade.side === 'LONG' ? 'color: var(--green);' : 'color: var(--red);';
+            const pnlVal = parseFloat(trade.pnl_live) || 0;
+            const pnlText = (pnlVal > 0 ? "+" : "") + pnlVal.toFixed(2) + "%";
+            const pnlColor = pnlVal > 0 ? 'var(--green)' : (pnlVal < 0 ? 'var(--red)' : 'var(--hint)');
+            
+            const div = document.createElement('div');
+            div.className = 'trade-item';
+            div.dataset.id = trade.id;
+            div.dataset.type = trade.is_user_trade ? 'trade' : 'rec';
+            // Note: We need a dedicated dashboard link for details
+            div.onclick = () => {
+                // Determine the correct bot username/context if needed, but for now, rely on standard deep linking format
+                // This link must point to the detail dashboard (signal_dashboard.html)
+                // We use the start_param placeholder from Telegram WebApp for the main bot context
+                const base = window.location.href.split('/static/')[0];
+                const detailUrl = `${base}/static/signal_dashboard.html?id=${trade.id}`;
+                tg.openLink(detailUrl);
+            };
+            
+            div.innerHTML = `
+                <div>
+                    <div class="asset" style="${sideClass}">#${trade.asset}</div>
+                    <div class="side-info">${trade.is_user_trade ? 'Trade' : 'Signal'} / ${trade.market}</div>
+                </div>
+                <div style="text-align: center;">
+                    <div class="status-badge ${statusDetails.class}">${statusDetails.text}</div>
+                    <div style="font-size: 0.75rem; color: var(--hint); margin-top: 4px;">Entry: ${trade.entry}</div>
+                </div>
+                <div class="pnl-val" style="color: ${pnlColor};">${pnlText}</div>
+            `;
+            container.appendChild(div);
+        }
+
+        // Initial Load
+        fetchPortfolio();
+    </script>
+</body>
+</html>
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/static/my_portfolio.html ---
