@@ -17,7 +17,6 @@ depends_on = None
 
 NEW_ENUM_NAME = "usertradestatus"
 NEW_ENUM_VALUES = ("WATCHLIST", "PENDING_ACTIVATION", "ACTIVATED", "CLOSED")
-OLD_ENUM_VALUES = ("OPEN", "CLOSED")
 
 
 def _enum_exists(bind, name: str) -> bool:
@@ -168,7 +167,7 @@ def downgrade():
             try:
                 op.drop_column(ut, col)
             except Exception:
-                pass
+                pass  # تم إضافة المسافة البادئة هنا
 
     # Drop indexes and FKs safely
     for ix in ["ix_user_trades_watched_channel_id"]:
@@ -176,12 +175,13 @@ def downgrade():
             try:
                 op.drop_index(ix, table_name=ut)
             except Exception:
-                pass
+                pass  # تم إضافة المسافة البادئة هنا
+
     if "fk_user_trades_watched_channel" in {f["name"] for f in insp.get_foreign_keys(ut)}:
         try:
             op.drop_constraint("fk_user_trades_watched_channel", ut, type_="foreignkey")
         except Exception:
-            pass
+            pass  # تم إضافة المسافة البادئة هنا
 
     # Drop watched_channels safely
     if wc in insp.get_table_names():
@@ -190,9 +190,9 @@ def downgrade():
                 try:
                     op.drop_index(ix, table_name=wc)
                 except Exception:
-                pass
+                    pass  # تم إضافة المسافة البادئة هنا
         try:
             op.drop_table(wc)
         except Exception:
-            pass
+            pass  # تم إضافة المسافة البادئة هنا
 # --- END OF FIXED FILE ---
