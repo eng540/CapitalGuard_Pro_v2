@@ -1,13 +1,8 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: alembic/versions/20251110_add_watchlist_layer.py ---
+# --- START OF FIXED FILE: alembic/versions/20251110_add_watchlist_layer.py ---
 """
 Add Watchlist/Activated portfolio layers and channel auditing schema.
 
-✅ SAFE VERSION (R1-S1): This migration is idempotent and safe to re-run.
- - Creates 'watched_channels' only if missing.
- - Verifies that all columns exist if table already exists.
- - Adds missing columns and constraints to 'user_trades' only if absent.
- - Ensures ENUM 'usertradestatus' exists and includes all required values.
- - Fully compatible with PostgreSQL.
+✅ FIXED VERSION: Handles enum transitions and default values safely.
 """
 
 from alembic import op
@@ -41,14 +36,24 @@ def _get_enum_labels(bind, name: str):
 
 def _add_enum_value_if_missing(bind, enum_name: str, value: str):
     try:
-        bind.execute(text(f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS :v").bindparams(v=value))
-    except Exception:
-        pass
+        bind.execute(text(f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS '{value}'"))
+    except Exception as e:
+        print(f"Note: Could not add enum value {value}: {e}")
+
+
+def _get_column_default(bind, table_name: str, column_name: str):
+    result = bind.execute(text("""
+        SELECT column_default 
+        FROM information_schema.columns 
+        WHERE table_name = :table AND column_name = :column
+    """), {"table": table_name, "column": column_name}).fetchone()
+    return result[0] if result else None
 
 
 def upgrade():
     bind = op.get_bind()
     insp = inspect(bind)
+    ut = "user_trades"
 
     # --- 1. Ensure watched_channels table exists and complete ---
     table = "watched_channels"
@@ -78,7 +83,6 @@ def upgrade():
                 op.add_column(table, col.copy())
 
     # --- 2. Ensure user_trades columns and FK exist ---
-    ut = "user_trades"
     cols = {c["name"] for c in insp.get_columns(ut)}
 
     if "watched_channel_id" not in cols:
@@ -103,24 +107,45 @@ def upgrade():
     if "ix_user_trades_watched_channel_id" not in indexes:
         op.create_index("ix_user_trades_watched_channel_id", ut, ["watched_channel_id"])
 
-    # --- 3. ENUM usertradestatus ---
-    enum_labels = _get_enum_labels(bind, NEW_ENUM_NAME) if _enum_exists(bind, NEW_ENUM_NAME) else []
-
-    if not enum_labels:
-        sa.Enum(*NEW_ENUM_VALUES, name=NEW_ENUM_NAME).create(bind, checkfirst=True)
+    # --- 3. HANDLE ENUM TRANSITION SAFELY ---
+    
+    # الخطوة 1: التحقق من العمود الحالي ونوعه
+    current_status_col = next((c for c in insp.get_columns(ut) if c["name"] == "status"), None)
+    if not current_status_col:
+        raise Exception("Column 'status' does not exist in user_trades table")
+    
+    current_default = _get_column_default(bind, ut, "status")
+    print(f"Current status default: {current_default}")
+    
+    # الخطوة 2: التعامل مع النوع ENUM
+    if _enum_exists(bind, NEW_ENUM_NAME):
+        # ENUM موجود - إضافة القيم المفقودة فقط
+        enum_labels = _get_enum_labels(bind, NEW_ENUM_NAME)
+        for value in NEW_ENUM_VALUES:
+            if value not in enum_labels:
+                _add_enum_value_if_missing(bind, NEW_ENUM_NAME, value)
+        
+        # تغيير القيمة الافتراضية إذا لم تكن صحيحة
+        if current_default != "'WATCHLIST'::usertradestatus":
+            print("Setting default value to 'WATCHLIST'")
+            bind.execute(text("COMMIT"))  # تأكيد أي معاملة سابقة
+            op.alter_column(ut, "status", server_default=text("'WATCHLIST'"))
+    else:
+        # ENUM غير موجود - إنشاؤه وتحويل العمود
+        print(f"Creating new enum type: {NEW_ENUM_NAME}")
+        bind.execute(text("COMMIT"))  # تأكيد أي معاملة سابقة
+        
+        # إنشاء النوع ENUM الجديد
+        sa.Enum(*NEW_ENUM_VALUES, name=NEW_ENUM_NAME).create(bind)
+        
+        # تحويل العمود إلى النوع الجديد
         op.alter_column(
             ut,
             "status",
             type_=sa.Enum(*NEW_ENUM_VALUES, name=NEW_ENUM_NAME),
-            postgresql_using="status::text::usertradestatus",
-            server_default="WATCHLIST",
-            nullable=False,
+            postgresql_using=f"status::text::{NEW_ENUM_NAME}",
+            server_default="WATCHLIST"
         )
-    else:
-        for v in NEW_ENUM_VALUES:
-            if v not in enum_labels:
-                _add_enum_value_if_missing(bind, NEW_ENUM_NAME, v)
-        op.execute(text(f"ALTER TABLE {ut} ALTER COLUMN status SET DEFAULT 'WATCHLIST'"))
 
 
 def downgrade():
@@ -128,6 +153,14 @@ def downgrade():
     insp = inspect(bind)
     ut = "user_trades"
     wc = "watched_channels"
+
+    # إعادة القيمة الافتراضية القديمة إذا كانت موجودة
+    try:
+        current_default = _get_column_default(bind, ut, "status")
+        if current_default == "'WATCHLIST'::usertradestatus":
+            op.alter_column(ut, "status", server_default=None)
+    except Exception as e:
+        print(f"Note: Could not reset default value: {e}")
 
     # Drop added columns safely
     for col in ["watched_channel_id", "original_published_at", "activated_at"]:
@@ -157,9 +190,9 @@ def downgrade():
                 try:
                     op.drop_index(ix, table_name=wc)
                 except Exception:
-                    pass
+                pass
         try:
             op.drop_table(wc)
         except Exception:
             pass
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: alembic/versions/20251110_add_watchlist_layer.py ---
+# --- END OF FIXED FILE ---
