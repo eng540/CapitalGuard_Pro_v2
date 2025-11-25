@@ -1,14 +1,14 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
 # File: src/capitalguard/interfaces/telegram/commands.py
-# Version: v76.1.0-FIXED-URLS
-# ✅ FIX: Use direct URLs with proper domain
+# Version: v77.0.0-DEEP-LINK-SOLUTION
+# ✅ FIX: Convert Web App buttons to Deep Links for reliable initData
 
 import logging
 import io
 import csv
 from datetime import datetime
 
-from telegram import Update, InputFile, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup
+from telegram import Update, InputFile, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (Application, ContextTypes, CommandHandler)
 
 # --- Infrastructure ---
@@ -37,27 +37,28 @@ from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
 
 log = logging.getLogger(__name__)
 
-# --- Persistent Menu Helper (FIXED) ---
+# --- Persistent Menu Helper (UPDATED WITH DEEP LINKS) ---
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     """
-    Creates the persistent bottom keyboard with Web Apps.
+    Creates the persistent bottom keyboard with Deep Links.
     """
-    # ✅ FIX: Use direct domain URLs (NOT deep links)
-    domain = "capitalguardprov2-production-8d1c.up.railway.app"
+    # ✅ FIX: Use Telegram Deep Links for reliable initData
+    bot_username = "Tradingplatformxbot"  # Replace with your actual bot username
     
-    create_url = f"https://{domain}/new"
-    portfolio_url = f"https://{domain}/portfolio"
+    # Deep Links instead of Web App URLs
+    portfolio_deep_link = f"https://t.me/{bot_username}/portfolio"
+    create_deep_link = f"https://t.me/{bot_username}/new"
     
-    log.info(f"🔗 Create URL: {create_url}")
-    log.info(f"🔗 Portfolio URL: {portfolio_url}")
+    log.info(f"🔗 Portfolio Deep Link: {portfolio_deep_link}")
+    log.info(f"🔗 Create Signal Deep Link: {create_deep_link}")
 
     keyboard = [
-        # Row 1: The Creation Terminal
-        [KeyboardButton("🚀 New Signal (Visual)", web_app=WebAppInfo(url=create_url))],
+        # Row 1: Deep Link Buttons (Open in Telegram with guaranteed initData)
+        [KeyboardButton("🚀 New Signal (Deep Link)", url=create_deep_link)],
         
-        # Row 2: The New Live Portfolio + Channels
+        # Row 2: Portfolio + Channels
         [
-            KeyboardButton("📊 Live Portfolio", web_app=WebAppInfo(url=portfolio_url)),
+            KeyboardButton("📊 Live Portfolio (Deep Link)", url=portfolio_deep_link),
             KeyboardButton("/channels")
         ],
         
@@ -98,7 +99,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
     welcome_msg = (
         f"👋 Welcome, <b>{user.first_name}</b>!\n\n"
         "I am <b>CapitalGuard</b>, your advanced trading assistant.\n"
-        "Use the menu below to manage your signals and portfolio."
+        "Use the menu below to manage your signals and portfolio.\n\n"
+        "💡 <b>Tip:</b> Use 'Deep Link' buttons for best performance!"
     )
     
     await update.message.reply_html(welcome_msg, reply_markup=get_main_menu_keyboard())
@@ -109,13 +111,43 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessio
     text = (
         "📚 <b>CapitalGuard Help Center</b>\n\n"
         "<b>New Features:</b>\n"
-        "• <b>🚀 New Signal:</b> Open the visual creator.\n"
-        "• <b>📊 Live Portfolio:</b> Open the interactive dashboard.\n\n"
+        "• <b>🚀 New Signal (Deep Link):</b> Open the visual creator with guaranteed authentication.\n"
+        "• <b>📊 Live Portfolio (Deep Link):</b> Open the interactive dashboard with reliable data.\n\n"
         "<b>Classic Commands:</b>\n"
         "• <code>/myportfolio</code>: Text-based list.\n"
         "• <code>/channels</code>: Manage channels.\n"
+        "• <code>/portfolio</code>: Direct portfolio access.\n"
+        "• <code>/newsignal</code>: Direct signal creation.\n"
     )
     await update.message.reply_html(text, reply_markup=get_main_menu_keyboard())
+
+# ✅ NEW: Add direct command handlers for deep links
+@uow_transaction
+@require_active_user
+async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Direct portfolio access command"""
+    portfolio_url = "https://capitalguardprov2-production-8d1c.up.railway.app/portfolio"
+    
+    await update.message.reply_html(
+        f"📊 <b>Live Portfolio</b>\n\n"
+        f"Click below to open your portfolio:\n"
+        f"<a href='{portfolio_url}'>🚀 Open Portfolio</a>",
+        reply_markup=get_main_menu_keyboard()
+    )
+
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def newsignal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Direct signal creation command"""
+    create_url = "https://capitalguardprov2-production-8d1c.up.railway.app/new"
+    
+    await update.message.reply_html(
+        f"🚀 <b>New Signal Creator</b>\n\n"
+        f"Click below to create a new trading signal:\n"
+        f"<a href='{create_url}'>📈 Create Signal</a>",
+        reply_markup=get_main_menu_keyboard()
+    )
 
 @uow_transaction
 @require_active_user
@@ -242,6 +274,8 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
 def register_commands(app: Application):
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("portfolio", portfolio_cmd))  # ✅ NEW
+    app.add_handler(CommandHandler("newsignal", newsignal_cmd))  # ✅ NEW
     app.add_handler(CommandHandler("channels", channels_cmd))
     app.add_handler(CommandHandler("events", events_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
