@@ -1,8 +1,10 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
 # File: src/capitalguard/interfaces/telegram/commands.py
-# Version: v26.9.2-WEBAPP-PORTFOLIO
-# ✅ THE FIX: Updated /myportfolio button to point to the new WebApp endpoint.
-# 🎯 IMPACT: Users now see a rich, interactive WebApp instead of a static Telegram list when viewing their portfolio.
+# Version: v28.0.0-SECURE-LINK
+# ✅ THE FIX: 
+#    1. Force HTTPS for WebApp URLs (Crucial for Android WebView security).
+#    2. Use the direct route '/portfolio' instead of static file path to prevent hash-stripping redirects.
+# 🎯 IMPACT: Ensures Telegram injects initData correctly on all devices.
 
 import logging
 import io
@@ -16,48 +18,46 @@ from .helpers import get_service
 from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.audit_service import AuditService
-# Import repositories needed for commands
 from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository, RecommendationRepository
 from capitalguard.infrastructure.db.models import UserType
-# (keyboards are imported by other handlers, not directly needed here)
-from .keyboards import build_subscription_keyboard # Import for subscription check
+from .keyboards import build_subscription_keyboard
 from capitalguard.config import settings
 
 log = logging.getLogger(__name__)
 
-# --- Persistent Menu Helper ---
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     """
-    Creates the persistent bottom keyboard.
-    ✅ THE FIX: Updated the button for /myportfolio to use the WebApp.
+    Creates the persistent bottom keyboard with SECURE WebApp Links.
     """
-    # Construct Web App URL for the creator
-    base_url = settings.TELEGRAM_WEBHOOK_URL.rsplit('/', 2)[0] if settings.TELEGRAM_WEBHOOK_URL else "https://YOUR_DOMAIN"
-    web_app_create_url = f"{base_url}/static/create_trade.html"
+    # 1. Get Base URL
+    raw_url = settings.TELEGRAM_WEBHOOK_URL or "https://YOUR_DOMAIN"
     
-    # ✅ NEW: WebApp URL for the portfolio list
-    web_app_portfolio_url = f"{base_url}/static/my_portfolio.html"
+    # 2. Radical Fix: Force HTTPS. Android WebViews often fail silently on HTTP.
+    if raw_url.startswith("http://"):
+        base_url = raw_url.replace("http://", "https://", 1)
+    else:
+        base_url = raw_url
+        
+    # Remove trailing slashes to ensure clean path construction
+    base_url = base_url.rstrip('/')
+
+    # 3. Use Direct Routes (Not /static/) to avoid redirect issues losing the Hash
+    web_app_create_url = f"{base_url}/new"       # Maps to /new -> serves create_trade.html
+    web_app_portfolio_url = f"{base_url}/portfolio" # Maps to /portfolio -> serves my_portfolio.html
+
+    log.info(f"Generating WebApp Keyboard with URL: {web_app_portfolio_url}")
 
     keyboard = [
-        # Row 1: The Big Action Button (Web App)
         [KeyboardButton("🚀 New Signal (Visual)", web_app=WebAppInfo(url=web_app_create_url))],
-        
-        # Row 2: Core Features
-        # ✅ FIX: Change the second button to open the new portfolio WebApp
         [KeyboardButton("📂 View Portfolio (Web App)", web_app=WebAppInfo(url=web_app_portfolio_url)), 
          KeyboardButton("/channels")],
-        
-        # Row 3: Help & Utils
         [KeyboardButton("/help"), KeyboardButton("/export")]
     ]
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# --- Command Handlers ---
-
 @uow_transaction
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
-    """Handles the /start command, including deep linking for tracking signals."""
     user = update.effective_user
     log.info(f"User {user.id} ({user.username or 'NoUsername'}) initiated /start command.")
     UserRepository(db_session).find_or_create(telegram_id=user.id, first_name=user.first_name, username=user.username)
@@ -66,8 +66,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
         try:
             rec_id = int(context.args[0].split('_')[1])
             trade_service = get_service(context, "trade_service", TradeService)
-            
-            # ✅ FIX: Call the correct, newly added service method 'create_trade_from_recommendation'
             result = await trade_service.create_trade_from_recommendation(str(user.id), rec_id, db_session=db_session)
             
             if result.get('success'):
@@ -88,7 +86,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
 @uow_transaction
 @require_active_user
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """Displays a dynamic help message based on the user's role."""
     trader_help = (
         "• <code>/myportfolio</code> — View and manage your open trades.\n"
         "• <code>/export</code> — Export your trade history to a CSV file.\n"
@@ -114,7 +111,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessio
 @require_active_user
 @require_analyst_user
 async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """Lists all channels linked by an analyst."""
     channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=False)
     if not channels:
         await update.message.reply_html("📭 You have no channels linked. Use <code>/link_channel</code> to add one.", reply_markup=get_main_menu_keyboard())
@@ -130,7 +126,6 @@ async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
 @require_active_user
 @require_analyst_user
 async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """Fetches and displays the event log for a specific recommendation."""
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_html("<b>Usage:</b> <code>/events &lt;recommendation_id&gt;</code>", reply_markup=get_main_menu_keyboard())
         return
@@ -140,7 +135,6 @@ async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
 
     try:
         events = audit_service.get_recommendation_events_for_user(rec_id, str(db_user.telegram_user_id))
-        
         if not events:
             await update.message.reply_html(f"No events found for Recommendation #{rec_id}.", reply_markup=get_main_menu_keyboard())
             return
@@ -168,18 +162,13 @@ async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
 @uow_transaction
 @require_active_user
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """Exports the user's trade history to a CSV file."""
     await update.message.reply_text("Preparing your export file...", reply_markup=get_main_menu_keyboard())
-    
     repo = RecommendationRepository()
-    
-    # Logic based on user type
     if db_user.user_type == UserType.ANALYST:
         items_orm = repo.get_open_recs_for_analyst(db_session, db_user.id)
         items = [repo._to_entity(rec) for rec in items_orm if repo._to_entity(rec)]
-    else: # TRADER
+    else: 
         trades_orm = repo.get_open_trades_for_trader(db_session, db_user.id)
-        # Convert UserTrade to RecommendationEntity-like structure for export
         items = []
         for trade in trades_orm:
             trade_entity = Recommendation(
@@ -216,10 +205,7 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
     csv_file = InputFile(bytes_buffer, filename="capitalguard_export.csv")
     await update.message.reply_document(document=csv_file, caption="Your trade history has been generated.", reply_markup=get_main_menu_keyboard())
 
-# --- Registration ---
-
 def register_commands(app: Application):
-    """Registers all simple command handlers defined in this file."""
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("channels", channels_cmd))
