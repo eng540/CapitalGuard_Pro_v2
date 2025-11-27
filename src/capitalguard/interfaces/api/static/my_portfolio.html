@@ -1,7 +1,6 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/static/my_portfolio.html ---
 # File: src/capitalguard/interfaces/api/static/my_portfolio.html
-# ✅ THE FIX: New HTML file for the User Portfolio WebApp.
-# 🎯 IMPACT: Provides the visual interface for users to access /myportfolio via the WebApp button.
+# ✅ THE FIX: Added check for Telegram WebApp environment and better error messages.
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -43,6 +42,7 @@
         
         .loader { text-align: center; padding: 50px; color: var(--hint); }
         .header-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 16px; color: var(--text); }
+        .error-msg { color: var(--red); text-align: center; padding: 20px; }
 
     </style>
 </head>
@@ -69,7 +69,6 @@
     <script>
         const tg = window.Telegram.WebApp;
         tg.expand();
-        tg.ready();
 
         async function fetchPortfolio() {
             const container = document.getElementById('tradeListContainer');
@@ -81,9 +80,20 @@
             loader.style.display = 'block';
             app.style.display = 'none';
 
+            // ✅ Check if initData is present
+            if (!tg.initData) {
+                loader.innerHTML = "<div class='error-msg'>⚠️ Authentication Failed.<br>Please open this page from inside Telegram.</div>";
+                return;
+            }
+
             try {
-                // We use the Telegram initData to authenticate the user
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(tg.initData)}`);
+                
+                if (res.status === 403) {
+                     loader.innerHTML = "<div class='error-msg'>🔒 Access Denied.<br>Invalid session signature.</div>";
+                     return;
+                }
+
                 const data = await res.json();
 
                 if (data.ok) {
@@ -123,16 +133,14 @@
             
             const div = document.createElement('div');
             div.className = 'trade-item';
-            div.dataset.id = trade.id;
-            div.dataset.type = trade.is_user_trade ? 'trade' : 'rec';
-            // Note: We need a dedicated dashboard link for details
+            
+            // Helper to safely construct URL
+            const startParam = tg.initDataUnsafe?.start_param || 'Tradingplatformxbot';
+            
             div.onclick = () => {
-                // Determine the correct bot username/context if needed, but for now, rely on standard deep linking format
-                // This link must point to the detail dashboard (signal_dashboard.html)
-                // We use the start_param placeholder from Telegram WebApp for the main bot context
-                const base = window.location.href.split('/static/')[0];
-                const detailUrl = `${base}/static/signal_dashboard.html?id=${trade.id}`;
-                tg.openLink(detailUrl);
+                // Use the shortcut URL structure if possible, or direct link
+                const dashboardUrl = `https://t.me/${startParam}/signal_dashboard.html?id=${trade.id}`;
+                tg.openLink(dashboardUrl);
             };
             
             div.innerHTML = `
@@ -150,6 +158,7 @@
         }
 
         // Initial Load
+        tg.ready();
         fetchPortfolio();
     </script>
 </body>
