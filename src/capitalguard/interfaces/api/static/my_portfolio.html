@@ -33,22 +33,11 @@
         .loader { text-align: center; padding: 50px; color: var(--hint); font-weight: bold; }
         .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; margin-bottom: 10px;}
         .header-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 16px; color: var(--text); }
-        
-        .retry-btn {
-            background-color: var(--button-color);
-            color: #fff; border: none; padding: 10px 20px;
-            border-radius: 8px; font-weight: bold; cursor: pointer;
-            margin-top: 10px;
-        }
-        
-        .debug-info { font-size: 0.65rem; color: var(--hint); background: #000; padding: 10px; border-radius: 8px; font-family: monospace; word-break: break-all; margin-top: 20px; display: none; text-align: left; }
     </style>
 </head>
 <body>
     <div class="header-title">My Open Trades</div>
-    
     <div id="loader" class="loader">Initializing...</div>
-
     <div id="app" style="display: none;">
         <div class="section">
             <div class="list-header">
@@ -62,51 +51,28 @@
             </div>
         </div>
     </div>
-    
-    <div id="debugInfo" class="debug-info"></div>
 
     <script>
         const tg = window.Telegram.WebApp;
         tg.ready();
         tg.expand();
 
-        function showDebug(msg, data) {
-            const el = document.getElementById('debugInfo');
-            el.style.display = 'block';
-            let content = `<strong>${msg}</strong><br>`;
-            if (typeof data === 'object') content += JSON.stringify(data, null, 2);
-            else content += String(data);
-            el.innerHTML += content + "<hr>";
-        }
-
         function getTelegramData() {
-            // A: Standard Property
             if (tg.initData) return tg.initData;
-            
-            // B: URL Hash (Backup 1)
-            let hash = window.location.hash.slice(1);
-            let params = new URLSearchParams(hash);
-            if (params.has('tgWebAppData')) return params.get('tgWebAppData');
-            
-            // C: Raw URL Inspection (Backup 2 - Deep Search)
-            // Sometimes Android injects it weirdly in the search params
-            const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.has('tgWebAppData')) return urlParams.get('tgWebAppData');
-            
-            return null;
+            const hash = window.location.hash.slice(1);
+            const params = new URLSearchParams(hash);
+            return params.get('tgWebAppData');
         }
 
-        // ✅ Aggressive Retry Logic (20 checks * 250ms = 5 seconds max wait)
-        function waitForInitData(maxRetries = 20) {
+        function waitForInitData(maxRetries = 10) {
             return new Promise((resolve) => {
                 let attempts = 0;
                 const check = () => {
                     const data = getTelegramData();
                     if (data) return resolve(data);
-                    
                     attempts++;
                     if (attempts >= maxRetries) return resolve(null);
-                    setTimeout(check, 250);
+                    setTimeout(check, 200);
                 };
                 check();
             });
@@ -119,40 +85,21 @@
             const emptyState = document.getElementById('emptyState');
             
             container.innerHTML = '';
-            
-            // Wait logic
+
             const initData = await waitForInitData();
-            const platform = tg.platform || 'unknown';
 
             if (!initData) {
-                loader.innerHTML = `
-                    <div class='error-msg'>⚠️ Connection Issue</div>
-                    <div style="font-size:0.8rem; color:#888; margin-bottom:15px;">
-                        Data injection timed out on ${platform}.<br>
-                        Please verify you are inside Telegram.
-                    </div>
-                    <button class="retry-btn" onclick="location.reload()">🔄 Reload Page</button>
-                `;
-                // showDebug("Debug: URL Dump", window.location.href);
+                loader.innerHTML = `<div class='error-msg'>⚠️ Auth Failed<br>Please verify you are using the latest Telegram App.</div>`;
                 return;
             }
 
             try {
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
-                
                 if (!res.ok) {
-                    let errorText = `Server Error (${res.status})`;
-                    if (res.status === 403) errorText = "🔒 Session Expired";
-                    
-                    loader.innerHTML = `
-                        <div class='error-msg'>${errorText}</div>
-                        <button class="retry-btn" onclick="location.reload()">🔄 Retry</button>
-                    `;
+                    loader.innerHTML = `<div class='error-msg'>Server Error (${res.status})</div>`;
                     return;
                 }
-
                 const data = await res.json();
-
                 if (data.ok) {
                     const trades = data.portfolio.items || [];
                     if (trades.length === 0) {
@@ -166,13 +113,8 @@
                 } else {
                     loader.innerHTML = `<div class='error-msg'>API Error: ${data.error}</div>`;
                 }
-
             } catch (e) {
-                console.error(e);
-                loader.innerHTML = `
-                    <div class='error-msg'>Network Error</div>
-                    <button class="retry-btn" onclick="location.reload()">🔄 Try Again</button>
-                `;
+                loader.innerHTML = `<div class='error-msg'>Connection Error</div>`;
             }
         }
 
@@ -196,7 +138,6 @@
             div.className = 'trade-item';
             
             const startParam = tg.initDataUnsafe?.start_param || 'Tradingplatformxbot';
-            
             div.onclick = () => {
                 const dashboardUrl = `https://t.me/${startParam}/signal_dashboard.html?id=${trade.id}`;
                 tg.openLink(dashboardUrl);
