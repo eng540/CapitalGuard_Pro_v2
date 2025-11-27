@@ -37,9 +37,10 @@
         .pnl-val { font-family: monospace; font-weight: bold; text-align: right; }
         .side-info { font-size: 0.8rem; color: var(--hint); }
         
-        .loader { text-align: center; padding: 50px; color: var(--hint); }
+        .loader { text-align: center; padding: 50px; color: var(--hint); font-weight: bold; }
+        .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; }
         .header-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 16px; color: var(--text); }
-        .error-msg { color: var(--red); text-align: center; padding: 20px; }
+        .debug-info { font-size: 0.7rem; color: var(--hint); margin-top: 20px; word-break: break-all; display: none; }
 
     </style>
 </head>
@@ -62,36 +63,56 @@
             </div>
         </div>
     </div>
+    
+    <div id="debugInfo" class="debug-info"></div>
 
     <script>
         const tg = window.Telegram.WebApp;
         tg.expand();
 
+        // Helper to show errors clearly
+        function showError(msg, debugData = null) {
+            const loader = document.getElementById('loader');
+            loader.innerHTML = `<div class='error-msg'>⚠️ ${msg}</div>`;
+            if (debugData) {
+                const debugEl = document.getElementById('debugInfo');
+                debugEl.style.display = 'block';
+                debugEl.innerText = "Debug: " + JSON.stringify(debugData);
+            }
+        }
+
         async function fetchPortfolio() {
             const container = document.getElementById('tradeListContainer');
-            const loader = document.getElementById('loader');
             const app = document.getElementById('app');
             const emptyState = document.getElementById('emptyState');
             
             container.innerHTML = '';
-            loader.style.display = 'block';
             app.style.display = 'none';
 
-            // ✅ Check if initData is present
+            // 1. Check if running inside Telegram
             if (!tg.initData) {
-                loader.innerHTML = "<div class='error-msg'>⚠️ Authentication Failed.<br>Please open this page from inside Telegram.</div>";
+                showError("Authentication Failed.<br>Please open from inside Telegram.");
                 return;
             }
 
             try {
-                const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(tg.initData)}`);
+                // 2. Call API
+                const response = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(tg.initData)}`);
                 
-                if (res.status === 403) {
-                     loader.innerHTML = "<div class='error-msg'>🔒 Access Denied.<br>Invalid session signature.</div>";
-                     return;
+                // 3. Handle HTTP Errors
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        showError("Access Denied (403).<br>Session invalid.");
+                    } else if (response.status === 404) {
+                        showError("API Not Found (404).<br>Check URL configuration.");
+                    } else {
+                        showError(`Server Error (${response.status})`);
+                    }
+                    return;
                 }
 
-                const data = await res.json();
+                // 4. Parse JSON
+                const data = await response.json();
 
                 if (data.ok) {
                     const trades = data.portfolio.items || [];
@@ -101,14 +122,16 @@
                         emptyState.style.display = 'none';
                         trades.forEach(trade => renderTradeItem(trade, container));
                     }
-                    loader.style.display = 'none';
+                    document.getElementById('loader').style.display = 'none';
                     app.style.display = 'block';
                 } else {
-                    loader.innerText = "Error: " + data.error;
+                    // Show specific API error or 'Unknown' if undefined
+                    showError("API Error: " + (data.error || "Unknown error occurred"), data);
                 }
+
             } catch (e) {
                 console.error(e);
-                loader.innerText = "Network Error";
+                showError("Connection Failed.<br>Check your internet or server status.", e.message);
             }
         }
 
@@ -131,11 +154,9 @@
             const div = document.createElement('div');
             div.className = 'trade-item';
             
-            // Helper to safely construct URL
             const startParam = tg.initDataUnsafe?.start_param || 'Tradingplatformxbot';
             
             div.onclick = () => {
-                // Use the shortcut URL structure if possible, or direct link
                 const dashboardUrl = `https://t.me/${startParam}/signal_dashboard.html?id=${trade.id}`;
                 tg.openLink(dashboardUrl);
             };
