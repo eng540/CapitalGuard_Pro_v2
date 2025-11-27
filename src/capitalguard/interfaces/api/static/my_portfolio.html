@@ -38,7 +38,7 @@
         .side-info { font-size: 0.8rem; color: var(--hint); }
         
         .loader { text-align: center; padding: 50px; color: var(--hint); font-weight: bold; }
-        .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; }
+        .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; font-size: 0.9rem; }
         .header-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 16px; color: var(--text); }
         .debug-info { font-size: 0.7rem; color: var(--hint); margin-top: 20px; word-break: break-all; display: none; }
 
@@ -47,7 +47,7 @@
 <body>
     <div class="header-title">My Open Trades</div>
     
-    <div id="loader" class="loader">Loading your portfolio...</div>
+    <div id="loader" class="loader">Loading...</div>
 
     <div id="app" style="display: none;">
         <div class="section">
@@ -59,7 +59,7 @@
             <div id="tradeListContainer">
                 </div>
             <div id="emptyState" style="text-align: center; color: var(--hint); padding: 20px; display: none;">
-                You have no open trades or items in your watchlist.
+                You have no open trades.
             </div>
         </div>
     </div>
@@ -70,10 +70,9 @@
         const tg = window.Telegram.WebApp;
         tg.expand();
 
-        // Helper to show errors clearly
         function showError(msg, debugData = null) {
             const loader = document.getElementById('loader');
-            loader.innerHTML = `<div class='error-msg'>⚠️ ${msg}</div>`;
+            loader.innerHTML = `<div class='error-msg'>${msg}</div>`;
             if (debugData) {
                 const debugEl = document.getElementById('debugInfo');
                 debugEl.style.display = 'block';
@@ -87,32 +86,31 @@
             const emptyState = document.getElementById('emptyState');
             
             container.innerHTML = '';
-            app.style.display = 'none';
-
-            // 1. Check if running inside Telegram
+            
+            // ✅ 1. Robust InitData Check
+            // Sometimes initData takes a moment to populate on some clients
             if (!tg.initData) {
-                showError("Authentication Failed.<br>Please open from inside Telegram.");
-                return;
+                 // Retry once after 500ms
+                 await new Promise(r => setTimeout(r, 500));
+                 if (!tg.initData) {
+                     showError("⚠️ Authentication Failed.<br>Please open from inside Telegram.");
+                     return;
+                 }
             }
 
             try {
-                // 2. Call API
-                const response = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(tg.initData)}`);
+                const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(tg.initData)}`);
                 
-                // 3. Handle HTTP Errors
-                if (!response.ok) {
-                    if (response.status === 403) {
-                        showError("Access Denied (403).<br>Session invalid.");
-                    } else if (response.status === 404) {
-                        showError("API Not Found (404).<br>Check URL configuration.");
+                if (!res.ok) {
+                    if (res.status === 403) {
+                        showError("🔒 Access Denied.<br>Session invalid or expired.");
                     } else {
-                        showError(`Server Error (${response.status})`);
+                        showError(`Server Error (${res.status})`);
                     }
                     return;
                 }
 
-                // 4. Parse JSON
-                const data = await response.json();
+                const data = await res.json();
 
                 if (data.ok) {
                     const trades = data.portfolio.items || [];
@@ -125,13 +123,12 @@
                     document.getElementById('loader').style.display = 'none';
                     app.style.display = 'block';
                 } else {
-                    // Show specific API error or 'Unknown' if undefined
-                    showError("API Error: " + (data.error || "Unknown error occurred"), data);
+                    showError("API Error: " + (data.error || "Unknown"), data);
                 }
 
             } catch (e) {
                 console.error(e);
-                showError("Connection Failed.<br>Check your internet or server status.", e.message);
+                showError("Connection Failed.", e.message);
             }
         }
 
@@ -175,7 +172,6 @@
             container.appendChild(div);
         }
 
-        // Initial Load
         tg.ready();
         fetchPortfolio();
     </script>
