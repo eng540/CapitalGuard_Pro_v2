@@ -1,15 +1,18 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
 # File: src/capitalguard/interfaces/api/routers/webapp.py
-# Version: 1.2.0 (Debug Auth)
-# ✅ THE FIX: Added detailed logging for Auth failures to debug 403 errors.
-from fastapi import APIRouter, Request, HTTPException
+# Version: 1.2.1 (Import Fix)
+# ✅ THE FIX: Added missing 'import asyncio'.
+# 🎯 IMPACT: Fixes "name 'asyncio' is not defined" error causing 500 crashes.
+
+from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional
 import hashlib
 import hmac
 import json
 import logging
-from urllib.parse import parse_qs, unquote
+import asyncio  # ✅ ADDED: Missing import fixed
+from urllib.parse import parse_qs
 from decimal import Decimal
 
 from capitalguard.config import settings
@@ -55,21 +58,17 @@ def validate_telegram_data(init_data: str, bot_token: str) -> dict:
         hash_value = parsed_data.pop('hash')[0]
         
         # Sort keys alphabetically and construct data-check-string
-        # Telegram requires: key=value\nkey2=value2
         data_check_arr = []
         for k, v in sorted(parsed_data.items()):
-            # parse_qs returns a list for values, we take the first one
             data_check_arr.append(f"{k}={v[0]}")
             
         data_check_string = "\n".join(data_check_arr)
         
-        # HMAC-SHA256 Signature Generation
         secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
         calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
         
         if calculated_hash != hash_value:
-            log.warning(f"Auth failed: Hash mismatch. Calculated: {calculated_hash}, Received: {hash_value}")
-            # NOTE: Check if your BOT_TOKEN in .env matches the bot running the WebApp!
+            log.warning(f"Auth failed: Hash mismatch.")
             raise ValueError("Invalid hash")
             
         user_json = parsed_data.get('user', ['{}'])[0]
@@ -89,10 +88,10 @@ async def get_price(symbol: str, request: Request):
 
 @router.get("/channels")
 async def get_analyst_channels(initData: str):
-    user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
-    telegram_id = user_data['id']
-    
     try:
+        user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
+        telegram_id = user_data['id']
+        
         with session_scope() as db_session:
             user_repo = UserRepository(db_session)
             user = user_repo.find_by_telegram_id(telegram_id)
@@ -114,13 +113,13 @@ async def get_analyst_channels(initData: str):
 
 @router.post("/create")
 async def create_trade_webapp(payload: WebAppSignal, request: Request):
-    user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
-    telegram_id = user_data['id']
-    
-    creation_service = request.app.state.services.get("creation_service")
-    if not creation_service: return {"ok": False, "error": "System initializing..."}
-
     try:
+        user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
+        telegram_id = user_data['id']
+        
+        creation_service = request.app.state.services.get("creation_service")
+        if not creation_service: return {"ok": False, "error": "System initializing..."}
+
         with session_scope() as db_session:
             user_repo = UserRepository(db_session)
             user = user_repo.find_by_telegram_id(telegram_id)
@@ -153,32 +152,44 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
                 notes=final_notes
             )
             
-            import asyncio
+            # Fire and forget background task
             asyncio.create_task(creation_service.background_publish_and_index(
                 rec_id=created_rec.id, user_db_id=user.id, target_channel_ids=target_channels
             ))
 
             return {"ok": True, "id": created_rec.id}
     except Exception as e:
+        log.error(f"Create trade error: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
 
 @router.get("/portfolio")
 async def get_user_portfolio(initData: str, request: Request):
-    user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
-    telegram_id = user_data['id']
-    
-    trade_service = request.app.state.services.get("trade_service")
-    price_service = request.app.state.services.get("price_service")
-
-    if not trade_service or not price_service:
-        return {"ok": False, "error": "System services unavailable"}
-
+    """
+    Fetches the user's portfolio items.
+    """
     try:
+        # 1. Validate Auth
+        user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
+        telegram_id = user_data['id']
+        
+        trade_service = request.app.state.services.get("trade_service")
+        price_service = request.app.state.services.get("price_service")
+
+        if not trade_service or not price_service:
+            return {"ok": False, "error": "System services unavailable"}
+
         with session_scope() as session:
+            # 2. Fetch DB Data (Run in thread to avoid blocking main loop)
+            # This ensures session is used correctly within the thread
             items = await asyncio.to_thread(trade_service.get_open_positions_for_user, session, str(telegram_id))
             
-            # Optimize: Fetch prices in parallel for unique assets only
-            assets_to_fetch = set((getattr(item.asset, 'value'), getattr(item, 'market', 'Futures')) for item in items)
+            # 3. Prepare for Price Fetching
+            assets_to_fetch = set(
+                (getattr(item.asset, 'value'), getattr(item, 'market', 'Futures'))
+                for item in items
+            )
+            
+            # 4. Fetch Prices Concurrently
             price_tasks = [price_service.get_cached_price(asset, market) for asset, market in assets_to_fetch]
             price_results = await asyncio.gather(*price_tasks, return_exceptions=True)
             
@@ -188,6 +199,7 @@ async def get_user_portfolio(initData: str, request: Request):
                 if isinstance(price, (int, float)):
                     prices_map[asset] = price
 
+            # 5. Format Response
             formatted_items = []
             for item in items:
                 asset_val = getattr(item.asset, 'value')
@@ -211,6 +223,8 @@ async def get_user_portfolio(initData: str, request: Request):
 
             return {"ok": True, "portfolio": {"items": formatted_items}}
 
+    except HTTPException as he:
+        raise he
     except Exception as e:
         log.error(f"Error fetching user portfolio: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
@@ -256,6 +270,7 @@ async def get_signal_details(rec_id: int, request: Request):
                 "targets": targets_data,
                 "events": events_data
             }
+            
             return {"ok": True, "signal": signal_data}
     except Exception as e:
         return {"ok": False, "error": str(e)}
