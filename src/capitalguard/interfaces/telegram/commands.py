@@ -1,14 +1,13 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/commands.py ---
 # File: src/capitalguard/interfaces/telegram/commands.py
-# Version: v28.0.0-SECURE-LINK
-# ✅ THE FIX: 
-#    1. Force HTTPS for WebApp URLs (Crucial for Android WebView security).
-#    2. Use the direct route '/portfolio' instead of static file path to prevent hash-stripping redirects.
-# 🎯 IMPACT: Ensures Telegram injects initData correctly on all devices.
+# Version: v28.1.0-URL-FIX
+# ✅ THE FIX: Robust base URL extraction using urllib.parse.
+# 🎯 IMPACT: Fixes 404 errors for WebApps by ensuring clean domain URLs (e.g., https://domain.com/new).
 
 import logging
 import io
 import csv
+from urllib.parse import urlparse
 
 from telegram import Update, InputFile, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (Application, ContextTypes, CommandHandler)
@@ -29,23 +28,25 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     """
     Creates the persistent bottom keyboard with SECURE WebApp Links.
     """
-    # 1. Get Base URL
-    raw_url = settings.TELEGRAM_WEBHOOK_URL or "https://YOUR_DOMAIN"
+    # 1. Robust Base URL Extraction
+    raw_url = settings.TELEGRAM_WEBHOOK_URL
     
-    # 2. Radical Fix: Force HTTPS. Android WebViews often fail silently on HTTP.
-    if raw_url.startswith("http://"):
-        base_url = raw_url.replace("http://", "https://", 1)
+    if raw_url:
+        # Parse URL to get scheme and netloc (e.g., https://example.com)
+        parsed = urlparse(raw_url)
+        # Ensure HTTPS scheme
+        scheme = "https" if parsed.scheme != "https" else parsed.scheme
+        # Reconstruct clean base URL (scheme://domain)
+        base_url = f"{scheme}://{parsed.netloc}"
     else:
-        base_url = raw_url
-        
-    # Remove trailing slashes to ensure clean path construction
-    base_url = base_url.rstrip('/')
+        # Fallback for local dev if variable missing
+        base_url = "https://127.0.0.1:8000"
 
-    # 3. Use Direct Routes (Not /static/) to avoid redirect issues losing the Hash
-    web_app_create_url = f"{base_url}/new"       # Maps to /new -> serves create_trade.html
-    web_app_portfolio_url = f"{base_url}/portfolio" # Maps to /portfolio -> serves my_portfolio.html
+    # 2. Construct WebApp Paths
+    web_app_create_url = f"{base_url}/new"
+    web_app_portfolio_url = f"{base_url}/portfolio"
 
-    log.info(f"Generating WebApp Keyboard with URL: {web_app_portfolio_url}")
+    log.info(f"Generated WebApp URLs -> Create: {web_app_create_url}, Portfolio: {web_app_portfolio_url}")
 
     keyboard = [
         [KeyboardButton("🚀 New Signal (Visual)", web_app=WebAppInfo(url=web_app_create_url))],
@@ -58,6 +59,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
 
 @uow_transaction
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
+    """Handles the /start command, including deep linking for tracking signals."""
     user = update.effective_user
     log.info(f"User {user.id} ({user.username or 'NoUsername'}) initiated /start command.")
     UserRepository(db_session).find_or_create(telegram_id=user.id, first_name=user.first_name, username=user.username)
@@ -86,6 +88,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
 @uow_transaction
 @require_active_user
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Displays a dynamic help message based on the user's role."""
     trader_help = (
         "• <code>/myportfolio</code> — View and manage your open trades.\n"
         "• <code>/export</code> — Export your trade history to a CSV file.\n"
@@ -111,6 +114,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessio
 @require_active_user
 @require_analyst_user
 async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Lists all channels linked by an analyst."""
     channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=False)
     if not channels:
         await update.message.reply_html("📭 You have no channels linked. Use <code>/link_channel</code> to add one.", reply_markup=get_main_menu_keyboard())
@@ -126,6 +130,7 @@ async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
 @require_active_user
 @require_analyst_user
 async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Fetches and displays the event log for a specific recommendation."""
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_html("<b>Usage:</b> <code>/events &lt;recommendation_id&gt;</code>", reply_markup=get_main_menu_keyboard())
         return
@@ -162,6 +167,7 @@ async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
 @uow_transaction
 @require_active_user
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Exports the user's trade history to a CSV file."""
     await update.message.reply_text("Preparing your export file...", reply_markup=get_main_menu_keyboard())
     repo = RecommendationRepository()
     if db_user.user_type == UserType.ANALYST:
@@ -205,7 +211,10 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
     csv_file = InputFile(bytes_buffer, filename="capitalguard_export.csv")
     await update.message.reply_document(document=csv_file, caption="Your trade history has been generated.", reply_markup=get_main_menu_keyboard())
 
+# --- Registration ---
+
 def register_commands(app: Application):
+    """Registers all simple command handlers defined in this file."""
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("channels", channels_cmd))
