@@ -3,52 +3,186 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>My Portfolio</title>
+    <title>CapitalGuard Portfolio</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+        
         :root {
-            --bg: var(--tg-theme-bg-color, #1c1c1e);
-            --card: var(--tg-theme-secondary-bg-color, #2c2c2e);
-            --text: var(--tg-theme-text-color, #ffffff);
-            --hint: var(--tg-theme-hint-color, #8e8e93);
-            --button-color: var(--tg-theme-button-color, #0a84ff);
-            --green: #32d74b; --red: #ff453a; --orange: #ff9f0a;
-            --border: rgba(128, 128, 128, 0.2);
+            --bg-app: #0b0e11;
+            --bg-card: #1e2329;
+            --bg-card-hover: #2a2e35;
+            --bg-surface: #161a20;
+            --bg-sheet: #20252b;
+            --text-primary: #eaecef;
+            --text-secondary: #848e9c;
+            --text-tertiary: #5e6673;
+            --brand-green: #0ecb81;
+            --brand-red: #f6465d;
+            --brand-yellow: #f0b90b;
+            --brand-blue: #3e7bfa;
+            --bg-green-dim: rgba(14, 203, 129, 0.15);
+            --bg-red-dim: rgba(246, 70, 93, 0.15);
+            --bg-yellow-dim: rgba(240, 185, 11, 0.15);
+            --bg-blue-dim: rgba(62, 123, 250, 0.15);
+            --border: rgba(255,255,255,0.05);
         }
-        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; padding-bottom: 80px; }
-        
-        .section { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 16px; border: 1px solid var(--border); }
-        .list-header { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--hint); text-transform: uppercase; margin-bottom: 10px; }
-        .trade-item { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
-        .trade-item:last-child { border-bottom: none; }
 
-        .asset { font-weight: 800; font-size: 1.1rem; }
-        .status-badge { font-size: 0.8rem; font-weight: bold; padding: 4px 8px; border-radius: 6px; text-align: center; }
-        .status-active { background: rgba(50, 215, 75, 0.15); color: var(--green); }
-        .status-watchlist { background: rgba(10, 132, 255, 0.15); color: var(--button-color); }
-        .status-pending { background: rgba(255, 159, 10, 0.15); color: var(--orange); }
-        .pnl-val { font-family: monospace; font-weight: bold; text-align: right; }
-        .side-info { font-size: 0.8rem; color: var(--hint); }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { background-color: var(--bg-app); color: var(--text-primary); font-family: 'Inter', sans-serif; margin: 0; padding: 0; padding-bottom: 100px; overflow-x: hidden; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+
+        /* --- Header --- */
+        .dashboard-header { padding: 20px 16px; background: linear-gradient(180deg, rgba(30,35,41,0.95) 0%, rgba(11,14,17,0) 100%); position: sticky; top: 0; z-index: 100; backdrop-filter: blur(20px); border-bottom: 1px solid var(--border); }
+        .header-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .app-title { font-size: 18px; font-weight: 700; background: linear-gradient(135deg, var(--brand-yellow), #ffd166); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         
-        .loader { text-align: center; padding: 50px; color: var(--hint); font-weight: bold; }
-        .error-msg { color: var(--red); text-align: center; padding: 20px; background: rgba(255, 69, 58, 0.1); border-radius: 12px; margin-bottom: 10px;}
-        .header-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 16px; color: var(--text); }
+        .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .summary-card { background: linear-gradient(135deg, #2b3139 0%, #1e2329 100%); border-radius: 16px; padding: 16px; border: 1px solid var(--border); box-shadow: 0 4px 16px rgba(0,0,0,0.2); }
+        .summary-main { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; }
+        .summary-label { font-size: 11px; color: var(--text-secondary); font-weight: 600; text-transform: uppercase; display: block; margin-bottom: 4px; }
+        .summary-value { font-size: 24px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+        .pos { color: var(--brand-green); } .neg { color: var(--brand-red); }
+        .performance-ring { width: 50px; height: 50px; border-radius: 50%; border: 4px solid var(--bg-surface); border-top-color: var(--brand-green); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+
+        /* --- Tabs --- */
+        .tabs-container { position: sticky; top: 130px; background: var(--bg-app); z-index: 90; padding: 0 16px; border-bottom: 1px solid var(--border); }
+        .tabs { display: flex; gap: 20px; }
+        .tab { padding: 14px 0; font-size: 14px; font-weight: 600; color: var(--text-secondary); cursor: pointer; position: relative; transition: color 0.3s; }
+        .tab.active { color: var(--text-primary); }
+        .tab.active::after { content: ''; position: absolute; bottom: -1px; left: 0; width: 100%; height: 3px; background: var(--brand-yellow); border-radius: 3px 3px 0 0; }
+        .tab-badge { background: var(--bg-surface); color: var(--text-primary); font-size: 10px; padding: 2px 6px; border-radius: 8px; margin-left: 4px; border: 1px solid var(--border); }
+
+        /* --- Cards --- */
+        .container { padding: 16px; min-height: 300px; }
+        .trade-card { background: var(--bg-card); border-radius: 16px; padding: 18px; margin-bottom: 12px; position: relative; overflow: hidden; border: 1px solid transparent; transition: transform 0.1s; cursor: pointer; }
+        .trade-card:active { transform: scale(0.98); background: var(--bg-card-hover); }
+        .trade-card::before { content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%; background: var(--text-secondary); opacity: 0.5; }
+        .trade-card.long::before { background: var(--brand-green); opacity: 1; }
+        .trade-card.short::before { background: var(--brand-red); opacity: 1; }
+
+        .card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+        .pair-info { display: flex; align-items: center; gap: 12px; }
+        .pair-icon { width: 36px; height: 36px; background: var(--bg-surface); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; color: var(--text-primary); border: 1px solid var(--border); }
+        .pair-name { font-weight: 700; font-size: 16px; display: block; }
+        .leverage { background: var(--bg-surface); color: var(--text-secondary); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-left: 6px; }
+        .market-type { font-size: 11px; color: var(--text-tertiary); font-weight: 500; margin-top: 2px; }
+        
+        .side-badge { font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 6px; text-transform: uppercase; }
+        .bg-long { color: var(--brand-green); background: var(--bg-green-dim); }
+        .bg-short { color: var(--brand-red); background: var(--bg-red-dim); }
+
+        .price-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+        .stat-group label { display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; }
+        .stat-group span { font-size: 14px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+        .pnl-val { font-size: 18px; font-weight: 700; display: block; font-family: 'JetBrains Mono', monospace; text-align: right; }
+        
+        /* Risk Bar */
+        .price-range { margin-top: 16px; }
+        .price-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-tertiary); margin-bottom: 6px; font-family: 'JetBrains Mono', monospace; }
+        .progress-track { height: 6px; background: var(--bg-surface); border-radius: 3px; position: relative; overflow: visible; }
+        .progress-fill { height: 100%; border-radius: 3px; position: absolute; top: 0; opacity: 0.3; transition: width 0.5s; }
+        .marker { position: absolute; top: -2px; width: 2px; height: 10px; border-radius: 1px; z-index: 2; }
+        .marker.sl { background: var(--brand-red); left: 0%; }
+        .marker.entry { background: var(--text-secondary); left: 30%; }
+        .marker.tp { background: var(--brand-green); right: 0%; }
+        .dot-current { position: absolute; top: -3px; width: 12px; height: 12px; background: #fff; border-radius: 50%; box-shadow: 0 0 8px rgba(255,255,255,0.5); z-index: 3; transition: left 0.5s cubic-bezier(0.4, 0, 0.2, 1); border: 2px solid var(--bg-card); }
+
+        /* --- Bottom Sheet --- */
+        .sheet-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 100; opacity: 0; visibility: hidden; transition: all 0.3s; backdrop-filter: blur(5px); }
+        .sheet-overlay.open { opacity: 1; visibility: visible; }
+        .bottom-sheet { position: fixed; bottom: -100%; left: 0; width: 100%; background: var(--bg-sheet); border-radius: 24px 24px 0 0; padding: 24px; z-index: 101; transition: bottom 0.3s cubic-bezier(0.1, 0.9, 0.2, 1); box-shadow: 0 -10px 40px rgba(0,0,0,0.5); max-height: 85vh; overflow-y: auto; }
+        .sheet-overlay.open .bottom-sheet { bottom: 0; }
+        
+        .sheet-header { display: flex; justify-content: space-between; margin-bottom: 24px; align-items: center; }
+        .sheet-title { font-size: 20px; font-weight: 700; }
+        .sheet-close { background: var(--bg-surface); border: none; color: var(--text-secondary); width: 32px; height: 32px; border-radius: 50%; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; }
+
+        .action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px; }
+        .action-btn { background: var(--bg-surface); border: none; padding: 16px; border-radius: 12px; color: var(--text-primary); font-size: 13px; font-weight: 600; display: flex; flex-direction: column; align-items: center; gap: 8px; cursor: pointer; transition: background 0.2s; }
+        .action-btn:active { background: var(--border); }
+        .action-icon { font-size: 22px; }
+        .btn-danger { background: rgba(246, 70, 93, 0.1); color: var(--brand-red); }
+        .btn-primary { background: var(--brand-yellow); color: #000; grid-column: span 2; font-size: 15px; font-weight: 700; }
+        
+        .trade-details { background: var(--bg-card); border-radius: 12px; padding: 16px; }
+        .detail-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+        .detail-row:last-child { border-bottom: none; }
+        .detail-val { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+
+        /* Utils */
+        .loader { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 14px; color: var(--text-secondary); text-align: center; }
+        .empty-state { text-align: center; padding: 40px; color: var(--text-secondary); font-size: 14px; margin-top: 40px; }
+        .fab { position: fixed; bottom: 24px; right: 24px; width: 56px; height: 56px; background: var(--brand-yellow); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; color: #000; cursor: pointer; box-shadow: 0 8px 24px rgba(240, 185, 11, 0.3); z-index: 90; }
     </style>
 </head>
 <body>
-    <div class="header-title">My Open Trades</div>
-    <div id="loader" class="loader">Initializing...</div>
-    <div id="app" style="display: none;">
-        <div class="section">
-            <div class="list-header">
-                <div>Asset / Side</div>
-                <div style="text-align: center;">Status</div>
-                <div style="text-align: right;">Live PnL</div>
+
+    <div class="dashboard-header">
+        <div class="header-top">
+            <div class="app-title">CapitalGuard Pro</div>
+        </div>
+        
+        <div class="summary-grid">
+            <div class="summary-card summary-main">
+                <div>
+                    <span class="summary-label">Active PnL</span>
+                    <div class="summary-value" id="totalPnL">--</div>
+                </div>
+                <div class="performance-ring" id="activeCount">0</div>
             </div>
-            <div id="tradeListContainer"></div>
-            <div id="emptyState" style="text-align: center; color: var(--hint); padding: 20px; display: none;">
-                You have no open trades.
+            <div class="summary-card">
+                <span class="summary-label">Watchlist</span>
+                <div class="summary-value" id="watchCount">0</div>
             </div>
+        </div>
+    </div>
+
+    <div class="tabs-container">
+        <div class="tabs">
+            <div class="tab active" onclick="filterTrades('active')">Active</div>
+            <div class="tab" onclick="filterTrades('watchlist')">Watchlist</div>
+            <div class="tab" onclick="filterTrades('history')">History</div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div id="loader" class="loader">Loading Portfolio...</div>
+        <div id="tradeList"></div>
+        <div id="emptyState" class="empty-state" style="display: none;">
+            No positions found in this category.
+        </div>
+    </div>
+
+    <div class="fab" onclick="createNewSignal()">+</div>
+
+    <div class="sheet-overlay" id="sheetOverlay" onclick="closeSheet()">
+        <div class="bottom-sheet" onclick="event.stopPropagation()">
+            <div class="sheet-header">
+                <div>
+                    <div class="sheet-title" id="sheetTitle">BTC/USDT</div>
+                    <div style="font-size:13px; color:var(--text-secondary);" id="sheetSubtitle">LONG • Futures</div>
+                </div>
+                <button class="sheet-close" onclick="closeSheet()">×</button>
+            </div>
+
+            <div class="trade-details">
+                <div class="detail-row">
+                    <span style="color:var(--text-secondary)">Entry</span>
+                    <span class="detail-val" id="detailEntry">0.00</span>
+                </div>
+                <div class="detail-row">
+                    <span style="color:var(--text-secondary)">Current</span>
+                    <span class="detail-val" id="detailCurrent">0.00</span>
+                </div>
+                <div class="detail-row">
+                    <span style="color:var(--text-secondary)">PnL</span>
+                    <span class="detail-val" id="detailPnL">0.00%</span>
+                </div>
+            </div>
+
+            <div class="action-grid" id="sheetActions">
+                </div>
         </div>
     </div>
 
@@ -57,6 +191,11 @@
         tg.ready();
         tg.expand();
 
+        let allTrades = [];
+        let currentFilter = 'active';
+        let selectedTradeId = null;
+
+        // --- Data Fetching ---
         function getTelegramData() {
             if (tg.initData) return tg.initData;
             const hash = window.location.hash.slice(1);
@@ -72,92 +211,237 @@
                     if (data) return resolve(data);
                     attempts++;
                     if (attempts >= maxRetries) return resolve(null);
-                    setTimeout(check, 200);
+                    setTimeout(check, 250);
                 };
                 check();
             });
         }
 
         async function fetchPortfolio() {
-            const loader = document.getElementById('loader');
-            const app = document.getElementById('app');
-            const container = document.getElementById('tradeListContainer');
-            const emptyState = document.getElementById('emptyState');
-            
-            container.innerHTML = '';
-
             const initData = await waitForInitData();
-
             if (!initData) {
-                loader.innerHTML = `<div class='error-msg'>⚠️ Auth Failed<br>Please verify you are using the latest Telegram App.</div>`;
+                document.getElementById('loader').innerText = "Auth Failed. Open from Telegram.";
                 return;
             }
 
             try {
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
-                if (!res.ok) {
-                    loader.innerHTML = `<div class='error-msg'>Server Error (${res.status})</div>`;
-                    return;
-                }
+                if (!res.ok) throw new Error("Server Error");
                 const data = await res.json();
                 if (data.ok) {
-                    const trades = data.portfolio.items || [];
-                    if (trades.length === 0) {
-                        emptyState.style.display = 'block';
-                    } else {
-                        emptyState.style.display = 'none';
-                        trades.forEach(trade => renderTradeItem(trade, container));
-                    }
-                    loader.style.display = 'none';
-                    app.style.display = 'block';
+                    allTrades = data.portfolio.items || [];
+                    updateSummary();
+                    renderList();
+                    document.getElementById('loader').style.display = 'none';
                 } else {
-                    loader.innerHTML = `<div class='error-msg'>API Error: ${data.error}</div>`;
+                    document.getElementById('loader').innerText = "API Error: " + data.error;
                 }
             } catch (e) {
-                loader.innerHTML = `<div class='error-msg'>Connection Error</div>`;
+                document.getElementById('loader').innerText = "Connection Error";
             }
         }
 
-        function getStatusDetails(status) {
-            switch(status) {
-                case 'ACTIVE': return { text: 'Active', class: 'status-active' };
-                case 'WATCHLIST': return { text: 'Watchlist', class: 'status-watchlist' };
-                case 'PENDING_ACTIVATION': return { text: 'Pending', class: 'status-pending' };
-                default: return { text: status, class: 'status-watchlist' };
+        // --- Rendering ---
+        function updateSummary() {
+            const active = allTrades.filter(t => t.unified_status === 'ACTIVE');
+            const watchlist = allTrades.filter(t => t.unified_status === 'WATCHLIST' || t.unified_status === 'PENDING_ACTIVATION');
+            
+            // Calculate approx total PnL (simple sum of percentages for MVP)
+            let totalPnL = 0;
+            active.forEach(t => totalPnL += parseFloat(t.pnl_live || 0));
+            
+            const pnlEl = document.getElementById('totalPnL');
+            pnlEl.innerText = (totalPnL > 0 ? "+" : "") + totalPnL.toFixed(2) + "%";
+            pnlEl.className = `summary-value ${totalPnL >= 0 ? 'pos' : 'neg'}`;
+            
+            document.getElementById('activeCount').innerText = active.length;
+            document.getElementById('watchCount').innerText = watchlist.length;
+        }
+
+        function renderList() {
+            const container = document.getElementById('tradeList');
+            container.innerHTML = '';
+            
+            let filtered = [];
+            if (currentFilter === 'active') {
+                filtered = allTrades.filter(t => t.unified_status === 'ACTIVE');
+            } else if (currentFilter === 'watchlist') {
+                filtered = allTrades.filter(t => t.unified_status === 'WATCHLIST' || t.unified_status === 'PENDING_ACTIVATION');
+            } else {
+                filtered = allTrades.filter(t => t.unified_status === 'CLOSED');
             }
+
+            if (filtered.length === 0) {
+                document.getElementById('emptyState').style.display = 'block';
+                return;
+            }
+            document.getElementById('emptyState').style.display = 'none';
+
+            filtered.forEach(t => {
+                const isLong = t.side === 'LONG';
+                const pnl = parseFloat(t.pnl_live || 0);
+                const isProfitable = pnl >= 0;
+                
+                // Risk Calculation (Simplified Visualization)
+                // Assuming Entry is 30% mark. 
+                // If Long: SL is 0%, TP is 100%. 
+                // This is visual approximation.
+                let progress = 30; // Default at entry
+                if (t.live_price && t.entry) {
+                    const entry = parseFloat(t.entry);
+                    const current = parseFloat(t.live_price);
+                    const diffPct = ((current - entry) / entry) * 100;
+                    // Visual scale: 1% move = 10% visual shift (example)
+                    const visualShift = (isLong ? diffPct : -diffPct) * 5; 
+                    progress = Math.min(Math.max(30 + visualShift, 0), 100);
+                }
+
+                const html = `
+                <div class="trade-card ${isLong ? 'long' : 'short'}" onclick="openSheet(${t.id})">
+                    <div class="card-top">
+                        <div class="pair-info">
+                            <div class="pair-icon">${t.asset.substring(0,1)}</div>
+                            <div>
+                                <span class="pair-name">${t.asset}</span>
+                                <div class="market-type">${t.market} • ${t.is_user_trade ? 'Trade' : 'Signal'}</div>
+                            </div>
+                        </div>
+                        <span class="side-badge ${isLong ? 'bg-long' : 'bg-short'}">${t.side}</span>
+                    </div>
+                    
+                    <div class="price-stats">
+                        <div class="stat-group">
+                            <label>Entry</label>
+                            <span>${formatPrice(t.entry)}</span>
+                        </div>
+                        <div class="stat-group" style="text-align:right;">
+                            <label>Current</label>
+                            <span style="color:${isProfitable ? 'var(--brand-green)' : 'var(--brand-red)'}">
+                                ${formatPrice(t.live_price || 0)}
+                            </span>
+                        </div>
+                    </div>
+
+                    ${t.unified_status === 'ACTIVE' ? `
+                    <span class="pnl-val ${isProfitable ? 'pos' : 'neg'}">${(pnl>0?'+':'')}${pnl.toFixed(2)}%</span>
+                    
+                    <div class="price-range">
+                        <div class="progress-track">
+                            <div class="marker sl"></div>
+                            <div class="marker entry"></div>
+                            <div class="marker tp"></div>
+                            <div class="progress-fill" style="width: ${isLong ? '100%' : '100%'}; background: ${isLong ? 'var(--brand-green)' : 'var(--brand-red)'}; opacity: 0.1; left:0;"></div>
+                            <div class="dot-current" style="left: ${progress}%;"></div>
+                        </div>
+                    </div>
+                    ` : ''}
+                </div>
+                `;
+                container.innerHTML += html;
+            });
         }
 
-        function renderTradeItem(trade, container) {
-            const statusDetails = getStatusDetails(trade.unified_status);
-            const sideClass = trade.side === 'LONG' ? 'color: var(--green);' : 'color: var(--red);';
-            const pnlVal = parseFloat(trade.pnl_live) || 0;
-            const pnlText = (pnlVal > 0 ? "+" : "") + pnlVal.toFixed(2) + "%";
-            const pnlColor = pnlVal > 0 ? 'var(--green)' : (pnlVal < 0 ? 'var(--red)' : 'var(--hint)');
-            
-            const div = document.createElement('div');
-            div.className = 'trade-item';
-            
-            const startParam = tg.initDataUnsafe?.start_param || 'Tradingplatformxbot';
-            div.onclick = () => {
-                const dashboardUrl = `https://t.me/${startParam}/signal_dashboard.html?id=${trade.id}`;
-                tg.openLink(dashboardUrl);
-            };
-            
-            div.innerHTML = `
-                <div>
-                    <div class="asset" style="${sideClass}">#${trade.asset}</div>
-                    <div class="side-info">${trade.is_user_trade ? 'Trade' : 'Signal'} / ${trade.market}</div>
-                </div>
-                <div style="text-align: center;">
-                    <div class="status-badge ${statusDetails.class}">${statusDetails.text}</div>
-                    <div style="font-size: 0.75rem; color: var(--hint); margin-top: 4px;">Entry: ${trade.entry}</div>
-                </div>
-                <div class="pnl-val" style="color: ${pnlColor};">${pnlText}</div>
-            `;
-            container.appendChild(div);
+        // --- Interactions ---
+        function filterTrades(type) {
+            currentFilter = type;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            renderList();
+            tg.HapticFeedback.selectionChanged();
         }
 
+        function formatPrice(p) {
+            const val = parseFloat(p);
+            if (val > 1000) return val.toFixed(2);
+            if (val > 1) return val.toFixed(4);
+            return val.toFixed(6);
+        }
+
+        function openSheet(id) {
+            selectedTradeId = id;
+            const t = allTrades.find(x => x.id === id);
+            if(!t) return;
+
+            document.getElementById('sheetTitle').innerText = t.asset;
+            document.getElementById('sheetSubtitle').innerText = `${t.side} • ${t.market}`;
+            
+            document.getElementById('detailEntry').innerText = formatPrice(t.entry);
+            document.getElementById('detailCurrent').innerText = formatPrice(t.live_price || 0);
+            
+            const pnl = parseFloat(t.pnl_live || 0);
+            const pnlEl = document.getElementById('detailPnL');
+            pnlEl.innerText = `${(pnl>0?'+':'')}${pnl.toFixed(2)}%`;
+            pnlEl.className = `detail-val ${pnl>=0 ? 'pos' : 'neg'}`;
+
+            // Dynamic Actions
+            const actionsDiv = document.getElementById('sheetActions');
+            let buttonsHtml = '';
+
+            if (t.unified_status === 'WATCHLIST' || t.unified_status === 'PENDING_ACTIVATION') {
+                buttonsHtml = `
+                    <button class="action-btn btn-primary" onclick="triggerBotAction('activate_trade', ${t.id})">
+                        🚀 Activate Trade
+                    </button>
+                    <button class="action-btn btn-danger" onclick="triggerBotAction('close_manual', ${t.id})">
+                        🗑️ Remove
+                    </button>
+                `;
+            } else if (t.unified_status === 'ACTIVE') {
+                buttonsHtml = `
+                    <button class="action-btn" onclick="triggerBotAction('edit_menu', ${t.id})">
+                        <span class="action-icon">✏️</span> Edit
+                    </button>
+                    <button class="action-btn" onclick="triggerBotAction('move_to_be', ${t.id})">
+                        <span class="action-icon">🛡️</span> Break Even
+                    </button>
+                    <button class="action-btn btn-danger" onclick="triggerBotAction('close_menu', ${t.id})">
+                        <span class="action-icon">❌</span> Close
+                    </button>
+                    <button class="action-btn" onclick="triggerBotAction('share', ${t.id})">
+                        <span class="action-icon">📸</span> Share
+                    </button>
+                `;
+            }
+
+            actionsDiv.innerHTML = buttonsHtml;
+            document.getElementById('sheetOverlay').classList.add('open');
+            tg.HapticFeedback.impactOccurred('light');
+        }
+
+        function closeSheet() {
+            document.getElementById('sheetOverlay').classList.remove('open');
+        }
+
+        function createNewSignal() {
+            tg.close(); // Or navigate to create page if hosted on same domain
+        }
+
+        // Sending data back to Bot via Telegram.WebApp.sendData is the most reliable way for actions
+        function triggerBotAction(action, id) {
+            // Format: action:id
+            // The bot must have a MessageHandler to catch this data!
+            // Or better, use switchInlineQuery or just close and send text
+            // For this advanced UI, we might need to use fetch to backend endpoints for actions
+            // BUT, keeping it simple and consistent with existing bot logic:
+            
+            // We will simply close the WebApp and send a text command or use specific API if available
+            // Since we don't have Write Access by default, we rely on closing.
+            
+            // However, the BEST way is to call our API endpoints if we build them.
+            // Currently we only have GET endpoints. 
+            // Assuming we want to use the existing Bot Commands structure:
+            
+            // Workaround: Deep link back to bot with start param? No.
+            // Best for now: Alert user "Go to bot for action" or implement POST endpoints later.
+            
+            alert("Action triggered: " + action + " on ID " + id + "\n(Backend integration pending)");
+            // Future improvement: Add POST /api/webapp/action
+        }
+
+        // Auto Refresh every 10s
+        setInterval(fetchPortfolio, 10000);
         fetchPortfolio();
+
     </script>
 </body>
 </html>
