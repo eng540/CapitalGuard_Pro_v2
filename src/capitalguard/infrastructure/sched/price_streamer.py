@@ -1,13 +1,15 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/sched/price_streamer.py ---
 # src/capitalguard/infrastructure/sched/price_streamer.py
-# Version: v3.0.0 - Multi-Head Aggregator
-# ✅ THE FIX: Runs Binance and Bybit simultaneously.
-# 🎯 IMPACT: High Availability. If Binance is blocked, Bybit continues feeding prices.
+# Version: v3.1.0 - Enriched Data Stream
+# ✅ THE FIX: Inject Source & Timestamp into the payload.
+# 🎯 IMPACT: Enables Arbitration & Data Quality checks in AlertService v30.
+#    Payload format: (symbol, market, low, high, source, timestamp)
 
 import asyncio
 import logging
 import os
-from typing import List, Set, Dict, Optional
+import time
+from typing import List, Set, Dict, Optional, Callable, Awaitable
 
 # Import both clients
 from capitalguard.infrastructure.market.ws_client import BinanceWS, BybitWS
@@ -42,11 +44,24 @@ class PriceStreamer:
             log.error(f"Error fetching symbols: {e}")
         return list(symbols)
 
+    def _create_source_handler(self, source_name: str) -> Callable[[str, float, float], Awaitable[None]]:
+        """
+        Creates a specialized handler for a specific exchange source.
+        Injects 'source' and 'timestamp' into the queue payload.
+        """
+        async def wrapped_handler(symbol: str, low: float, high: float):
+            try:
+                # 6-Element Tuple for AlertService v30
+                # (symbol, market, low, high, source, timestamp)
+                ts = int(time.time())
+                await self._queue.put((symbol, "Futures", low, high, source_name, ts))
+            except Exception:
+                pass
+        
+        return wrapped_handler
+
     async def _run_single_stream(self, name: str, stream_coro):
-        """
-        Helper to run a single exchange stream with infinite retry loop.
-        This ensures one failing exchange doesn't kill the whole streamer.
-        """
+        """Helper to run a single exchange stream with infinite retry loop."""
         while True:
             try:
                 await stream_coro
@@ -61,7 +76,7 @@ class PriceStreamer:
         """
         The main aggregator loop.
         1. Monitors DB for new symbols.
-        2. Spawns connection tasks for Binance and Bybit.
+        2. Spawns connection tasks for Binance and Bybit with ENRICHED handlers.
         3. Restarts connections if symbol list changes.
         """
         current_tasks = []
@@ -93,27 +108,31 @@ class PriceStreamer:
                     
                     current_tasks = []
 
-                    # --- 🚀 LAUNCH MULTI-HEAD STREAMS ---
+                    # --- 🚀 LAUNCH MULTI-HEAD STREAMS WITH ENRICHED HANDLERS ---
                     
                     # 1. Binance Task
+                    # Create a specific handler labeled "BINANCE"
+                    binance_handler = self._create_source_handler("BINANCE")
                     task_binance = asyncio.create_task(
                         self._run_single_stream(
                             "Binance", 
-                            self._binance.combined_stream(symbols_to_watch, self._price_handler)
+                            self._binance.combined_stream(symbols_to_watch, binance_handler)
                         )
                     )
                     current_tasks.append(task_binance)
 
                     # 2. Bybit Task
+                    # Create a specific handler labeled "BYBIT"
+                    bybit_handler = self._create_source_handler("BYBIT")
                     task_bybit = asyncio.create_task(
                         self._run_single_stream(
                             "Bybit",
-                            self._bybit.stream(symbols_to_watch, self._price_handler)
+                            self._bybit.stream(symbols_to_watch, bybit_handler)
                         )
                     )
                     current_tasks.append(task_bybit)
                     
-                    log.info("✅ Aggregator running: [Binance] + [Bybit] active.")
+                    log.info("✅ Aggregator running: [Binance] + [Bybit] active (Enriched Data Mode).")
 
                 await asyncio.sleep(60) # Check for new symbols every minute
 
@@ -125,24 +144,12 @@ class PriceStreamer:
                 log.exception("Aggregator main loop error.")
                 await asyncio.sleep(30)
 
-    async def _price_handler(self, symbol: str, low_price: float, high_price: float):
-        """
-        Unified callback. Puts data into the queue.
-        AlertService consumes this queue.
-        """
-        try:
-            # We default market to 'Futures' for simplicity in this aggregator model
-            # AlertService will match based on Symbol regardless of market string in most logic
-            await self._queue.put((symbol, "Futures", low_price, high_price))
-        except Exception:
-            pass
-
     def start(self, loop: Optional[asyncio.AbstractEventLoop] = None):
         if self._task and not self._task.done():
             return
         
         _loop = loop or asyncio.get_running_loop()
-        log.info("🚀 Starting Multi-Exchange Price Streamer.")
+        log.info("🚀 Starting Multi-Exchange Price Streamer (v3.1).")
         self._task = _loop.create_task(self._run_aggregator())
 
     def stop(self):
