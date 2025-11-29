@@ -1,4 +1,4 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
 # Version: v70.0.0-DB-FIX (Synchronous DB Calls)
 # ✅ THE FIX: Removed 'asyncio.to_thread' for DB calls sharing the same session.
@@ -26,7 +26,7 @@ from capitalguard.infrastructure.db.uow import uow_transaction
 from capitalguard.infrastructure.core_engine import core_cache
 
 # --- ARCHITECTURE COMPONENTS ---
-from capitalguard.interfaces.telegram.schemas import TypedCallback, ManagementAction
+from capitalguard.interfaces.telegram.schemas import TypedCallback, ManagementAction, ManagementNamespace
 from capitalguard.interfaces.telegram.session import SessionContext, KEY_AWAITING_INPUT, KEY_PENDING_CHANGE
 from capitalguard.interfaces.telegram.presenters import ManagementPresenter
 
