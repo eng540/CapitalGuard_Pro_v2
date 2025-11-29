@@ -1,10 +1,11 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
 # File: src/capitalguard/interfaces/api/routers/webapp.py
-# Version: v1.5.0 (Channel Visibility & Stability Fix)
+# Version: v2.1.0-ULTIMATE-FUSION (Complete Merge)
 # ✅ THE FIX: 
-#    1. Changed list_by_analyst(..., only_active=False) to show ALL channels.
-#    2. Added explicit logging for channel count to debug visibility.
-# 🎯 IMPACT: Ensures channels appear in the UI even if marked inactive in DB.
+#    1. MERGED v1.5.0 stability & logging WITH v2.0.0 rich data
+#    2. Enhanced /portfolio with FULL trade details + maintained security
+#    3. Preserved ALL channel visibility fixes and error handling
+# 🎯 IMPACT: Ultimate WebApp with complete data + maximum stability
 
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
@@ -16,13 +17,15 @@ import logging
 import asyncio
 from urllib.parse import parse_qs
 from decimal import Decimal
+from datetime import datetime
 
 from capitalguard.config import settings
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
 from capitalguard.interfaces.telegram.parsers import parse_targets_list
 from capitalguard.application.services.price_service import PriceService
-from capitalguard.interfaces.telegram.helpers import _pct
+from capitalguard.application.services.trade_service import TradeService
+from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
@@ -64,8 +67,13 @@ def validate_telegram_data(init_data: str, bot_token: str) -> dict:
 
 @router.get("/price")
 async def get_price(symbol: str, request: Request):
+    """
+    Get live price for symbol (Futures first, then Spot fallback)
+    """
     price_service = request.app.state.services.get("price_service")
-    if not price_service: return {"price": 0.0}
+    if not price_service: 
+        return {"price": 0.0}
+    
     # Try futures first, then spot
     price = await price_service.get_cached_price(symbol.upper(), "Futures", force_refresh=False)
     if not price: 
@@ -75,7 +83,7 @@ async def get_price(symbol: str, request: Request):
 @router.get("/channels")
 async def get_analyst_channels(initData: str):
     """
-    Fetches ALL linked channels for the analyst.
+    Fetches ALL linked channels for the analyst (Active & Inactive)
     """
     try:
         user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
@@ -115,12 +123,16 @@ async def get_analyst_channels(initData: str):
 
 @router.post("/create")
 async def create_trade_webapp(payload: WebAppSignal, request: Request):
+    """
+    Create and publish new trading signal
+    """
     try:
         user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
         telegram_id = user_data['id']
         
         creation_service = request.app.state.services.get("creation_service")
-        if not creation_service: return {"ok": False, "error": "System initializing..."}
+        if not creation_service: 
+            return {"ok": False, "error": "System initializing..."}
 
         with session_scope() as db_session:
             user_repo = UserRepository(db_session)
@@ -130,11 +142,10 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
                 return {"ok": False, "error": "Permission Denied"}
 
             targets_formatted = parse_targets_list(payload.targets_raw.split())
-            if not targets_formatted: return {"ok": False, "error": "Invalid targets format"}
+            if not targets_formatted: 
+                return {"ok": False, "error": "Invalid targets format"}
 
-            # Optional: Validate total percent (soft check)
-            # total_pct = sum(t['close_percent'] for t in targets_formatted)
-            
+            # Build notes with leverage info
             final_notes = payload.notes or ""
             if payload.market == "FUTURES":
                 final_notes = f"Lev: {payload.leverage}x | {final_notes}".strip()
@@ -164,10 +175,11 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
         log.error(f"API /create Error: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
 
-# (Note: get_user_portfolio and get_signal_details endpoints remain unchanged in logic
-# but included here for file completeness if you overwrite the whole file)
 @router.get("/portfolio")
 async def get_user_portfolio(initData: str, request: Request):
+    """
+    Enhanced portfolio with FULL trade details for Ultimate UI
+    """
     try:
         user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
         telegram_id = user_data['id']
@@ -175,11 +187,10 @@ async def get_user_portfolio(initData: str, request: Request):
         price_service = request.app.state.services.get("price_service")
 
         with session_scope() as session:
-            # Calling synchronous method directly (safe here as we are in a route)
-            # For high load, use run_in_executor, but here direct call is okay for read-only
-            # Better: use run_in_executor to avoid blocking main loop
+            # Fetch Items using thread-safe execution
             items = await asyncio.to_thread(trade_service.get_open_positions_for_user, session, str(telegram_id))
             
+            # Fetch live prices for all assets
             assets_to_fetch = set((getattr(item.asset, 'value'), getattr(item, 'market', 'Futures')) for item in items)
             price_tasks = [price_service.get_cached_price(asset, market) for asset, market in assets_to_fetch]
             price_results = await asyncio.gather(*price_tasks, return_exceptions=True)
@@ -189,40 +200,115 @@ async def get_user_portfolio(initData: str, request: Request):
             for item in items:
                 asset_val = getattr(item.asset, 'value')
                 live = prices_map.get(asset_val)
-                pnl = _pct(getattr(item.entry, 'value'), live, getattr(item.side, 'value')) if live else 0.0
+                
+                # Calculate PnL
+                entry_val = _to_decimal(getattr(item.entry, 'value'))
+                side_val = getattr(item.side, 'value')
+                pnl = _pct(entry_val, live, side_val) if live else 0.0
+                
+                # Extract Targets for UI with hit status
+                targets_raw = getattr(item.targets, 'values', [])
+                targets_ui = []
+                
+                for t in targets_raw:
+                    t_price = _to_decimal(getattr(t, 'price'))
+                    is_hit = (side_val == "LONG" and live and live >= t_price) or \
+                             (side_val == "SHORT" and live and live <= t_price)
+                    targets_ui.append({
+                        "price": float(t_price),
+                        "percent": getattr(t, 'close_percent', 0),
+                        "hit": bool(is_hit)
+                    })
+
+                # Format Time ago
+                created = getattr(item, 'created_at', datetime.now())
+                time_diff = datetime.now(created.tzinfo) - created
+                hours, remainder = divmod(time_diff.seconds, 3600)
+                minutes = remainder // 60
+                
+                if time_diff.days > 0:
+                    time_ago = f"{time_diff.days}d {hours}h ago"
+                elif hours > 0:
+                    time_ago = f"{hours}h {minutes}m ago"
+                else:
+                    time_ago = f"{minutes}m ago"
+
+                # Extract Leverage from notes
+                notes = getattr(item, 'notes', '') or ''
+                lev_match = "20x"  # Default
+                if "Lev:" in notes:
+                    try: 
+                        lev_match = notes.split("Lev:")[1].split()[0]
+                    except Exception:
+                        pass
+
+                # Build complete item data
                 formatted_items.append({
-                    "id": item.id, "asset": asset_val, "side": getattr(item.side, 'value'),
-                    "entry": getattr(item.entry, 'value'), "market": getattr(item, 'market', 'Futures'),
+                    "id": item.id,
+                    "asset": asset_val,
+                    "side": side_val,
+                    "entry": float(entry_val),
+                    "stop_loss": float(_to_decimal(getattr(item.stop_loss, 'value'))),
+                    "market": getattr(item, 'market', 'Futures'),
                     "is_user_trade": getattr(item, 'is_user_trade', False),
                     "unified_status": getattr(item, 'unified_status', 'WATCHLIST'),
-                    "pnl_live": pnl, "live_price": live
+                    "pnl_live": pnl,
+                    "live_price": live,
+                    "targets": targets_ui,
+                    "time_ago": time_ago,
+                    "leverage": lev_match
                 })
+
             return {"ok": True, "portfolio": {"items": formatted_items}}
+
     except Exception as e:
+        log.error(f"Portfolio API Error: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
 
 @router.get("/signal/{rec_id}")
 async def get_signal_details(rec_id: int, request: Request):
+    """
+    Get detailed signal information with events and targets
+    """
     try:
         trade_service = request.app.state.services.get("trade_service")
         price_service = request.app.state.services.get("price_service")
+        
         with session_scope() as session:
             rec = trade_service.repo.get(session, rec_id)
-            if not rec: return {"ok": False, "error": "Not found"}
+            if not rec: 
+                return {"ok": False, "error": "Signal not found"}
+            
             live = await price_service.get_cached_price(rec.asset, rec.market) or 0.0
             pnl = _pct(rec.entry, live, rec.side) if live else 0.0
             
+            # Process targets with hit status
             targets = []
             hit_set = {int(e.event_type[2:-4]) for e in rec.events if "TP" in e.event_type and "HIT" in e.event_type}
             for i, t in enumerate(rec.targets, 1):
-                targets.append({"price": float(t['price']), "roi": f"{_pct(rec.entry, float(t['price']), rec.side):+.2f}", "hit": i in hit_set})
+                targets.append({
+                    "price": float(t['price']), 
+                    "roi": f"{_pct(rec.entry, float(t['price']), rec.side):+.2f}", 
+                    "hit": i in hit_set
+                })
             
-            events = [{"time": e.event_timestamp.strftime("%d/%m %H:%M"), "description": e.event_type} for e in rec.events]
+            # Format events timeline
+            events = [{
+                "time": e.event_timestamp.strftime("%d/%m %H:%M"), 
+                "description": e.event_type
+            } for e in rec.events]
             
             return {"ok": True, "signal": {
-                "asset": rec.asset, "side": rec.side, "entry": float(rec.entry), "stop_loss": float(rec.stop_loss),
-                "live_price": live, "pnl": f"{pnl:.2f}", "targets": targets, "events": events
+                "asset": rec.asset, 
+                "side": rec.side, 
+                "entry": float(rec.entry), 
+                "stop_loss": float(rec.stop_loss),
+                "live_price": live, 
+                "pnl": f"{pnl:.2f}", 
+                "targets": targets, 
+                "events": events
             }}
     except Exception as e:
+        log.error(f"Signal Details API Error: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
