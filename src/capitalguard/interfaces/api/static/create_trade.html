@@ -3,62 +3,109 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Create Signal</title>
+    <title>CapitalGuard Terminal</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        :root { --bg: #1c1c1e; --text: #fff; --input-bg: #2c2c2e; --accent: #f0b90b; --red: #ff453a; --green: #32d74b; }
-        body { background: var(--bg); color: var(--text); font-family: sans-serif; padding: 16px; padding-bottom: 100px; margin: 0; }
-        input, textarea { width: 100%; padding: 12px; margin-bottom: 12px; background: var(--input-bg); border: 1px solid #444; color: white; border-radius: 8px; box-sizing: border-box;}
-        .btn { width: 100%; padding: 14px; background: var(--accent); border: none; border-radius: 8px; font-weight: bold; font-size: 16px; color: #000; cursor: pointer; }
-        .channel-chip { display: inline-block; padding: 8px 12px; background: #333; border-radius: 20px; margin: 4px; border: 1px solid #555; cursor: pointer; font-size: 12px; transition: all 0.2s; }
-        .channel-chip.selected { background: var(--accent); color: #000; border-color: var(--accent); }
-        .label { font-size: 12px; color: #888; margin-bottom: 4px; display: block; text-transform: uppercase; }
-        .loader { text-align: center; color: #888; margin: 20px 0; }
-        .error-msg { color: var(--red); font-size: 14px; text-align: center; margin-bottom: 10px; }
+        :root {
+            --bg-app: #0b0e11; --bg-card: #1e2329;
+            --text-main: #eaecef; --text-sub: #848e9c;
+            --brand-yellow: #f0b90b; --brand-green: #0ecb81; --brand-red: #f6465d;
+            --border: rgba(255,255,255,0.1);
+            --input-bg: #2b3139;
+        }
+        body { background-color: var(--bg-app); color: var(--text-main); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; padding-bottom: 100px; }
+        
+        /* --- UI Components --- */
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .title { font-size: 20px; font-weight: 800; color: var(--brand-yellow); }
+        
+        .section { background: var(--bg-card); padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid var(--border); }
+        .label { font-size: 11px; color: var(--text-sub); text-transform: uppercase; margin-bottom: 6px; display: block; font-weight: 600; }
+        
+        /* Inputs */
+        input, textarea { width: 100%; background: var(--input-bg); border: 1px solid var(--border); color: var(--text-main); padding: 12px; border-radius: 8px; font-size: 14px; box-sizing: border-box; font-family: monospace; }
+        input:focus, textarea:focus { border-color: var(--brand-yellow); outline: none; }
+
+        /* Switches */
+        .switch-row { display: flex; background: #000; border-radius: 8px; padding: 2px; margin-bottom: 15px; }
+        .switch-opt { flex: 1; text-align: center; padding: 10px; font-size: 13px; color: var(--text-sub); border-radius: 6px; cursor: pointer; font-weight: 600; }
+        .switch-opt.active { background: var(--bg-card); color: var(--text-main); box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+        .long.active { color: var(--brand-green); }
+        .short.active { color: var(--brand-red); }
+
+        /* Channels Grid */
+        .channel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+        .channel-chip { background: var(--bg-app); border: 1px solid var(--border); padding: 10px; border-radius: 8px; font-size: 11px; color: var(--text-sub); cursor: pointer; transition: all 0.2s; text-align: center; display: flex; align-items: center; justify-content: center; gap: 5px;}
+        .channel-chip.selected { background: rgba(240, 185, 11, 0.15); border-color: var(--brand-yellow); color: var(--brand-yellow); }
+
+        /* Button */
+        .main-btn { position: fixed; bottom: 20px; left: 16px; right: 16px; background: var(--brand-yellow); color: #000; border: none; padding: 16px; border-radius: 12px; font-size: 16px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 20px rgba(240, 185, 11, 0.2); z-index: 100; transition: transform 0.1s; }
+        .main-btn:active { transform: scale(0.98); }
+        .main-btn:disabled { opacity: 0.5; cursor: not-allowed; background: #444; color: #888; }
+
+        /* States */
+        .loader { text-align: center; padding: 20px; color: var(--text-sub); font-size: 12px; }
+        .error-box { background: rgba(246, 70, 93, 0.15); color: var(--brand-red); padding: 12px; border-radius: 8px; font-size: 12px; margin-bottom: 15px; display: none; }
     </style>
 </head>
 <body>
-    <h2 style="margin-top:0;">New Signal</h2>
-    
-    <label class="label">Asset Pair</label>
-    <input type="text" id="asset" placeholder="BTCUSDT" oninput="this.value = this.value.toUpperCase()">
-    
-    <div style="display:flex; gap:10px; margin-bottom:12px;">
-        <button type="button" id="btnLong" onclick="setSide('LONG')" style="flex:1; padding:10px; background:#333; color:#fff; border:1px solid #555; border-radius:8px;">LONG 🟢</button>
-        <button type="button" id="btnShort" onclick="setSide('SHORT')" style="flex:1; padding:10px; background:#333; color:#fff; border:1px solid #555; border-radius:8px;">SHORT 🔴</button>
+
+    <div class="header">
+        <div class="title">New Signal</div>
+        <div style="font-size:12px; color:var(--text-sub);">v3.5 Pro</div>
     </div>
 
-    <label class="label">Entry</label>
-    <input type="number" id="entry" placeholder="0.00">
+    <div id="errorDisplay" class="error-box"></div>
 
-    <label class="label">Stop Loss</label>
-    <input type="number" id="sl" placeholder="0.00">
-
-    <label class="label">Targets (space separated)</label>
-    <input type="text" id="targets" placeholder="61000 62000@50">
-
-    <label class="label">Publish To:</label>
-    <div id="channelGrid" style="margin-bottom:20px; min-height: 40px;">
-        <div class="loader">Loading channels...</div>
+    <div class="section">
+        <label class="label">Configuration</label>
+        <div class="switch-row">
+            <div class="switch-opt active" id="mkt_futures" onclick="setMarket('FUTURES')">FUTURES</div>
+            <div class="switch-opt" id="mkt_spot" onclick="setMarket('SPOT')">SPOT</div>
+        </div>
+        <div class="switch-row">
+            <div class="switch-opt long active" id="side_long" onclick="setSide('LONG')">LONG 🟢</div>
+            <div class="switch-opt short" id="side_short" onclick="setSide('SHORT')">SHORT 🔴</div>
+        </div>
+        <input type="text" id="asset" placeholder="Asset (e.g. BTCUSDT)" oninput="this.value = this.value.toUpperCase()">
     </div>
 
-    <button class="btn" id="submitBtn" onclick="publish()">🚀 Publish Signal</button>
-    
+    <div class="section">
+        <label class="label">Strategy Levels</label>
+        <input type="number" id="entry" placeholder="Entry Price (0 for Market)" style="margin-bottom:8px;">
+        <input type="number" id="sl" placeholder="Stop Loss" style="border-color:rgba(246, 70, 93, 0.3);">
+    </div>
+
+    <div class="section">
+        <label class="label">Targets</label>
+        <textarea id="targets" rows="2" placeholder="e.g. 92000 93000@50 94000"></textarea>
+        <div style="font-size:10px; color:var(--text-sub); margin-top:4px;">Format: Price OR Price@Percent</div>
+    </div>
+
+    <div class="section">
+        <div style="display:flex; justify-content:space-between;">
+            <label class="label">Publish To</label>
+            <label class="label" style="color:var(--brand-yellow); cursor:pointer;" onclick="toggleAllChannels()">Toggle All</label>
+        </div>
+        <div id="channelsContainer" class="channel-grid">
+            <div class="loader">Connecting to CapitalGuard Core...</div>
+        </div>
+    </div>
+
+    <div style="height: 60px;"></div>
+    <button class="main-btn" id="pubBtn" onclick="publish()">🚀 PUBLISH SIGNAL</button>
+
     <script>
         const tg = window.Telegram.WebApp;
         tg.ready();
         tg.expand();
-        
-        let currentSide = '';
+
+        // --- State ---
+        let currentMarket = 'FUTURES';
+        let currentSide = 'LONG';
         let selectedChannels = new Set();
 
-        function setSide(side) {
-            currentSide = side;
-            document.getElementById('btnLong').style.borderColor = side === 'LONG' ? '#32d74b' : '#555';
-            document.getElementById('btnShort').style.borderColor = side === 'SHORT' ? '#ff453a' : '#555';
-        }
-
-        // ✅ ROBUST INIT DATA FETCHER (Fixed for Android)
+        // --- Secure Auth Logic (Android Fix) ---
         function getTelegramData() {
             if (tg.initData) return tg.initData;
             const hash = window.location.hash.slice(1);
@@ -81,74 +128,116 @@
             });
         }
 
-        async function fetchChannels() {
-            const grid = document.getElementById('channelGrid');
-            
+        // --- Core Logic ---
+        function setMarket(m) {
+            currentMarket = m;
+            document.getElementById('mkt_futures').classList.toggle('active', m === 'FUTURES');
+            document.getElementById('mkt_spot').classList.toggle('active', m === 'SPOT');
+            tg.HapticFeedback.selectionChanged();
+        }
+
+        function setSide(s) {
+            currentSide = s;
+            document.getElementById('side_long').classList.toggle('active', s === 'LONG');
+            document.getElementById('side_short').classList.toggle('active', s === 'SHORT');
+            tg.HapticFeedback.selectionChanged();
+        }
+
+        // --- API Integration (Restored) ---
+        async function loadChannels() {
+            const container = document.getElementById('channelsContainer');
             const initData = await waitForInitData();
+            
             if (!initData) {
-                grid.innerHTML = '<div class="error-msg">⚠️ Auth Error: Open from Telegram</div>';
+                container.innerHTML = '<div style="color:var(--brand-red); font-size:11px; grid-column:1/-1; text-align:center;">⚠️ Auth Failed. Open from Telegram.</div>';
                 return;
             }
 
             try {
-                // Call API using the robust initData
+                // Call real API
                 const res = await fetch(`/api/webapp/channels?initData=${encodeURIComponent(initData)}`);
                 const data = await res.json();
-                
+
                 if (data.ok) {
+                    container.innerHTML = '';
                     if (data.channels.length === 0) {
-                        grid.innerHTML = '<div style="color:#888; text-align:center">No linked channels found.<br>Use /link_channel in bot.</div>';
-                    } else {
-                        grid.innerHTML = '';
-                        data.channels.forEach(ch => {
-                            const chip = document.createElement('div');
-                            chip.className = 'channel-chip selected';
-                            // Add visual indicator if channel is inactive in DB
-                            const statusIcon = ch.is_active ? '' : ' (Inactive)';
-                            chip.innerText = ch.title + statusIcon;
-                            chip.dataset.id = ch.id;
-                            
-                            chip.onclick = () => {
-                                if (selectedChannels.has(ch.id)) {
-                                    selectedChannels.delete(ch.id);
-                                    chip.classList.remove('selected');
-                                } else {
-                                    selectedChannels.add(ch.id);
-                                    chip.classList.add('selected');
-                                }
-                            };
-                            selectedChannels.add(ch.id);
-                            grid.appendChild(chip);
-                        });
+                        container.innerHTML = '<div style="color:var(--text-sub); grid-column:1/-1; text-align:center;">No linked channels.<br>Use /link_channel</div>';
                     }
+                    data.channels.forEach(ch => {
+                        const div = document.createElement('div');
+                        div.className = 'channel-chip selected'; // Default select all
+                        div.innerHTML = `📢 ${ch.title}`;
+                        div.dataset.id = ch.id;
+                        div.onclick = () => {
+                            if (selectedChannels.has(ch.id)) {
+                                selectedChannels.delete(ch.id);
+                                div.classList.remove('selected');
+                            } else {
+                                selectedChannels.add(ch.id);
+                                div.classList.add('selected');
+                            }
+                            tg.HapticFeedback.selectionChanged();
+                        };
+                        selectedChannels.add(ch.id);
+                        container.appendChild(div);
+                    });
                 } else {
-                    grid.innerHTML = `<div class="error-msg">Server Error: ${data.error}</div>`;
+                    container.innerHTML = `<div style="color:var(--brand-red); grid-column:1/-1;">API Error: ${data.error}</div>`;
                 }
             } catch (e) {
-                grid.innerHTML = `<div class="error-msg">Network Error: ${e.message}</div>`;
+                container.innerHTML = `<div style="color:var(--brand-red); grid-column:1/-1;">Network Error: ${e.message}</div>`;
             }
         }
 
+        function toggleAllChannels() {
+            const chips = document.querySelectorAll('.channel-chip');
+            const allSelected = Array.from(chips).every(c => c.classList.contains('selected'));
+            
+            chips.forEach(c => {
+                const id = parseInt(c.dataset.id);
+                if (allSelected) {
+                    c.classList.remove('selected');
+                    selectedChannels.delete(id);
+                } else {
+                    c.classList.add('selected');
+                    selectedChannels.add(id);
+                }
+            });
+            tg.HapticFeedback.impactOccurred('medium');
+        }
+
         async function publish() {
-            if (!currentSide) return tg.showAlert("Select Side!");
-            const asset = document.getElementById('asset').value;
-            if (!asset) return tg.showAlert("Enter Asset!");
+            const btn = document.getElementById('pubBtn');
+            const errBox = document.getElementById('errorDisplay');
+            errBox.style.display = 'none';
+            
+            // Validation
+            const asset = document.getElementById('asset').value.trim();
+            if (!asset) { showErr("Please enter an Asset Pair"); return; }
+            
+            const sl = parseFloat(document.getElementById('sl').value);
+            if (!sl) { showErr("Stop Loss is required"); return; }
 
-            const initData = getTelegramData(); 
-            if (!initData) return tg.showAlert("Auth Failed. Reload.");
+            const entry = parseFloat(document.getElementById('entry').value) || 0; // 0 = Market
+            
+            // Logic Check
+            if (currentSide === 'LONG' && entry > 0 && sl >= entry) { showErr("Long SL must be below Entry"); return; }
+            if (currentSide === 'SHORT' && entry > 0 && sl <= entry) { showErr("Short SL must be above Entry"); return; }
 
-            const btn = document.getElementById('submitBtn');
             btn.disabled = true;
             btn.innerText = "Publishing...";
+            tg.HapticFeedback.notificationOccurred('success');
 
+            const initData = await waitForInitData();
+            
             const payload = {
                 initData: initData,
                 asset: asset,
                 side: currentSide,
-                market: "FUTURES",
-                order_type: "LIMIT",
-                entry: parseFloat(document.getElementById('entry').value) || 0,
-                stop_loss: parseFloat(document.getElementById('sl').value) || 0,
+                market: currentMarket,
+                order_type: entry > 0 ? "LIMIT" : "MARKET",
+                entry: entry,
+                stop_loss: sl,
                 targets_raw: document.getElementById('targets').value,
                 channel_ids: Array.from(selectedChannels)
             };
@@ -160,23 +249,32 @@
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
+                
                 if (data.ok) {
-                    tg.showAlert("✅ Signal Published!");
+                    tg.showAlert(`✅ Signal #${data.id} Published!`);
                     setTimeout(() => tg.close(), 1000);
                 } else {
-                    tg.showAlert("Error: " + data.error);
+                    showErr("Server Error: " + data.error);
                     btn.disabled = false;
-                    btn.innerText = "🚀 Publish Signal";
+                    btn.innerText = "🚀 PUBLISH SIGNAL";
                 }
             } catch (e) {
-                tg.showAlert("Failed to publish");
+                showErr("Connection Failed: " + e.message);
                 btn.disabled = false;
-                btn.innerText = "🚀 Publish Signal";
+                btn.innerText = "🚀 PUBLISH SIGNAL";
             }
         }
 
-        // Initialize
-        fetchChannels();
+        function showErr(msg) {
+            const el = document.getElementById('errorDisplay');
+            el.innerText = msg;
+            el.style.display = 'block';
+            tg.HapticFeedback.notificationOccurred('error');
+        }
+
+        // Start
+        loadChannels();
+
     </script>
 </body>
 </html>
