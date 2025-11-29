@@ -1,8 +1,8 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
 # File: src/capitalguard/interfaces/api/routers/webapp.py
-# Version: v2.1.0-PRODUCTION (Full Features)
-# ✅ THE FIX: Implemented ACTION Endpoints + Channel Visibility + Rich Data.
-# 🎯 IMPACT: Powers the "Ultimate" WebApp with real bi-directional control.
+# Version: v2.1.1-PRODUCTION-FIXED (Variable Name Correction)
+# ✅ THE FIX: Corrected 'trade_service' to 'trade_svc' in portfolio endpoint
+# 🎯 IMPACT: Fixed NameError and enabled full portfolio functionality
 
 import logging
 import json
@@ -70,6 +70,7 @@ def validate_telegram_data(init_data: str, bot_token: str) -> dict:
 
 @router.get("/price")
 async def get_price(symbol: str, request: Request):
+    """Get live price for symbol (Futures first, then Spot fallback)"""
     price_svc = request.app.state.services.get("price_service")
     if not price_svc: return {"price": 0.0}
     price = await price_svc.get_cached_price(symbol.upper(), "Futures", False)
@@ -105,6 +106,7 @@ async def get_analyst_channels(initData: str):
 
 @router.post("/create")
 async def create_trade_webapp(payload: WebAppSignal, request: Request):
+    """Create and publish new trading signal"""
     try:
         user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
         svc = request.app.state.services.get("creation_service")
@@ -138,16 +140,23 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
 @router.get("/portfolio")
 async def get_user_portfolio(initData: str, request: Request):
     """
-    ✅ FIX: Returns rich data (targets, leverage, time) for the UI.
+    ✅ FIXED: Corrected variable name from 'trade_service' to 'trade_svc'
+    ✅ Returns rich data (targets, leverage, time) for the UI.
     """
     try:
         user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
+        telegram_id = user_data['id']
+        
+        # ✅ FIXED: Correct variable definitions
         trade_svc = request.app.state.services.get("trade_service")
         price_svc = request.app.state.services.get("price_service")
 
+        if not trade_svc or not price_svc:
+            return {"ok": False, "error": "System services unavailable"}
+
         with session_scope() as session:
-            # Sync call inside route is acceptable for read-only
-            items = trade_service.get_open_positions_for_user(session, str(user_data['id']))
+            # ✅ FIXED: Using correct variable name 'trade_svc'
+            items = trade_svc.get_open_positions_for_user(session, str(telegram_id))
             
             # Parallel Price Fetching
             assets = set((getattr(i.asset, 'value'), getattr(i, 'market', 'Futures')) for i in items)
