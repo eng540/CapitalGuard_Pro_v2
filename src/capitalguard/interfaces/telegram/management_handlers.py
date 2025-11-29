@@ -1,8 +1,10 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v69.1.0-DB-FIX
-# ✅ THE FIX: Removed AsyncPipeline for DB calls to prevent "Session is in 'prepared' state" errors.
-#    Run DB queries sequentially to ensure session thread-safety.
+# Version: v70.0.0-DB-FIX (Synchronous DB Calls)
+# ✅ THE FIX: Removed 'asyncio.to_thread' for DB calls sharing the same session.
+#    - SQLAlchemy sessions are not thread-safe. Passing them to threads causes "prepared state" errors.
+#    - We now run DB queries synchronously within the handler. This is safer and prevents crashes.
+# 🎯 IMPACT: Fixes 'InvalidRequestError: This session is in prepared state'.
 
 import logging
 import asyncio
@@ -20,11 +22,11 @@ from telegram.ext import (
 )
 
 # --- INFRASTRUCTURE & CORE ---
-from capitalguard.infrastructure.db.uow import uow_transaction, session_scope
+from capitalguard.infrastructure.db.uow import uow_transaction
 from capitalguard.infrastructure.core_engine import core_cache
 
 # --- ARCHITECTURE COMPONENTS ---
-from capitalguard.interfaces.telegram.schemas import TypedCallback, ManagementAction, ManagementNamespace
+from capitalguard.interfaces.telegram.schemas import TypedCallback, ManagementAction
 from capitalguard.interfaces.telegram.session import SessionContext, KEY_AWAITING_INPUT, KEY_PENDING_CHANGE
 from capitalguard.interfaces.telegram.presenters import ManagementPresenter
 
@@ -86,7 +88,6 @@ class PortfolioController:
         tg_id = str(db_user.telegram_user_id)
         cache_key = f"portfolio_view:{user_id}"
 
-        # Try Cache
         try:
             cached_view = await core_cache.get(cache_key)
             if cached_view:
@@ -99,13 +100,9 @@ class PortfolioController:
         trade_service = get_service(context, "trade_service", TradeService)
 
         try:
-            # ✅ SEQUENTIAL EXECUTION to prevent DB Session Concurrency Issues
-            # 1. Get Performance Report
-            # We use asyncio.to_thread to run sync DB calls in thread pool
-            report = await asyncio.to_thread(perf_service.get_trader_performance_report, db_session, db_user.id)
-            
-            # 2. Get Open Positions
-            items = await asyncio.to_thread(trade_service.get_open_positions_for_user, db_session, tg_id)
+            # ✅ FIX: Run DB calls synchronously to respect Session thread-safety
+            report = perf_service.get_trader_performance_report(db_session, db_user.id)
+            items = trade_service.get_open_positions_for_user(db_session, tg_id)
             
             if not isinstance(items, list): items = []
 
@@ -151,11 +148,11 @@ class PortfolioController:
         price_service = get_service(context, "price_service", PriceService)
         trade_service = get_service(context, "trade_service", TradeService)
         
-        # Run DB call in thread
+        # ✅ FIX: Run DB call synchronously
         if list_type == "history":
-            items = await asyncio.to_thread(trade_service.get_analyst_history_for_user, db_session, str(db_user.telegram_user_id))
+            items = trade_service.get_analyst_history_for_user(db_session, str(db_user.telegram_user_id))
         else:
-            items = await asyncio.to_thread(trade_service.get_open_positions_for_user, db_session, str(db_user.telegram_user_id))
+            items = trade_service.get_open_positions_for_user(db_session, str(db_user.telegram_user_id))
         
         target_status = {
             "activated": "ACTIVE", "watchlist": "WATCHLIST", "history": "CLOSED"
@@ -190,7 +187,8 @@ class PortfolioController:
     async def _render_channels_list(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, page: int):
         query = update.callback_query
         trade_service = get_service(context, "trade_service", TradeService)
-        summary = await asyncio.to_thread(trade_service.get_watched_channels_summary, db_session, db_user.id)
+        # ✅ FIX: Run DB call synchronously
+        summary = trade_service.get_watched_channels_summary(db_session, db_user.id)
         keyboard = build_channels_list_keyboard(channels_summary=summary, current_page=page, list_type="channels")
         header_text = "📡 *قنواتك*\n(هذه هي القنوات التي تتابعها)"
         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id,
@@ -202,9 +200,9 @@ class PortfolioController:
         trade_service = get_service(context, "trade_service", TradeService)
         uid = str(db_user.telegram_user_id)
 
-        # Run DB calls sequentially
-        active_items = await asyncio.to_thread(trade_service.get_open_positions_for_user, db_session, uid)
-        history_items = await asyncio.to_thread(trade_service.get_analyst_history_for_user, db_session, uid)
+        # ✅ FIX: Run DB calls synchronously
+        active_items = trade_service.get_open_positions_for_user(db_session, uid)
+        history_items = trade_service.get_analyst_history_for_user(db_session, uid)
         
         active_count = sum(1 for i in active_items if getattr(i, 'unified_status', '') == "ACTIVE")
         pending_count = sum(1 for i in active_items if getattr(i, 'unified_status', '') == "WATCHLIST")
@@ -254,7 +252,8 @@ class PortfolioController:
         user_id = str(db_user.telegram_user_id)
         
         try:
-            pos = await asyncio.to_thread(trade_service.get_position_details_for_user, db_session, user_id, p_type, p_id)
+            # ✅ FIX: Run DB call synchronously
+            pos = trade_service.get_position_details_for_user(db_session, user_id, p_type, p_id)
             if not pos:
                 await query.answer("⚠️ Item no longer exists or was closed.", show_alert=True)
                 return
@@ -289,17 +288,14 @@ class PortfolioController:
             log.error(f"Error showing position {p_id}: {e}", exc_info=True)
             await query.answer("❌ Error loading position.", show_alert=True)
 
-    # ... (Remaining methods show_submenu, handle_edit_selection, etc. are safe as they are triggered sequentially)
-    # The rest of the file remains identical, the critical fix was in show_hub and render_list methods.
-    # Including required methods for completeness:
-
     @staticmethod
     async def show_submenu(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
         query = update.callback_query
         rec_id = callback.get_int(0)
         
         trade_service = get_service(context, "trade_service", TradeService)
-        position = await asyncio.to_thread(trade_service.get_position_details_for_user, db_session, str(db_user.telegram_user_id), "rec", rec_id)
+        # ✅ FIX: Run DB call synchronously
+        position = trade_service.get_position_details_for_user(db_session, str(db_user.telegram_user_id), "rec", rec_id)
         if not position: return
 
         text = build_trade_card_text(position)
@@ -338,7 +334,8 @@ class PortfolioController:
         
         if callback.action == ManagementAction.EDIT_ENTRY.value:
             lifecycle_service = get_service(context, "lifecycle_service", LifecycleService)
-            rec = await asyncio.to_thread(lifecycle_service.repo.get, db_session, rec_id)
+            # ✅ FIX: Run DB call synchronously
+            rec = lifecycle_service.repo.get(db_session, rec_id)
             if rec and rec.status.name == RecommendationStatus.ACTIVE.name:
                 await query.answer("⚠️ لا يمكن تعديل سعر الدخول للصفقات النشطة.", show_alert=True)
                 return
@@ -414,7 +411,8 @@ class PortfolioController:
         user_id = str(db_user.telegram_user_id)
         
         try:
-            pos = await asyncio.to_thread(lifecycle.repo.get, db_session, rec_id)
+            # ✅ FIX: Run DB call synchronously
+            pos = lifecycle.repo.get(db_session, rec_id)
             if not pos or pos.analyst_id != db_user.id: raise ValueError("Denied")
 
             msg = None
@@ -447,7 +445,8 @@ class PortfolioController:
         user_id = str(db_user.telegram_user_id)
         
         try:
-            pos = await asyncio.to_thread(lifecycle.repo.get, db_session, rec_id)
+            # ✅ FIX: Run DB call synchronously
+            pos = lifecycle.repo.get(db_session, rec_id)
             if not pos or pos.analyst_id != db_user.id: raise ValueError("Denied")
             lp = await price_service.get_cached_price(pos.asset, pos.market, True)
             await lifecycle.partial_close_async(rec_id, user_id, Decimal(pct), Decimal(str(lp or 0)), db_session, "MANUAL")
@@ -466,7 +465,8 @@ class PortfolioController:
         price_service = get_service(context, "price_service", PriceService)
         
         try:
-            rec_orm = await asyncio.to_thread(lifecycle_service.repo.get, db_session, rec_id)
+            # ✅ FIX: Run DB call synchronously
+            rec_orm = lifecycle_service.repo.get(db_session, rec_id)
             if not rec_orm:
                 await query.answer("⚠️ Signal not found.", show_alert=True)
                 return
@@ -582,4 +582,4 @@ async def router_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, db
 def register_management_handlers(app: Application):
     app.add_handler(CommandHandler(["myportfolio", "open"], portfolio_command_entry))
     app.add_handler(CallbackQueryHandler(router_callback, pattern=rf"^(?:{CallbackNamespace.MGMT.value}|{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.POSITION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):"), group=1)
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
