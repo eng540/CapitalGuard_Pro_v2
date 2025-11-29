@@ -1,8 +1,10 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
 # File: src/capitalguard/interfaces/api/routers/webapp.py
-# Version: 1.2.1 (Import Fix)
-# ✅ THE FIX: Added missing 'import asyncio'.
-# 🎯 IMPACT: Fixes "name 'asyncio' is not defined" error causing 500 crashes.
+# Version: 1.3.0 (Channel Debug Fix)
+# ✅ THE FIX: Explicit error reporting for channel fetching.
+#    - Returns specific error if user is not ANALYST.
+#    - Logs channel count for debugging.
+# 🎯 IMPACT: Shows why channels are missing in the UI instead of a silent empty list.
 
 from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel
@@ -11,7 +13,7 @@ import hashlib
 import hmac
 import json
 import logging
-import asyncio  # ✅ ADDED: Missing import fixed
+import asyncio
 from urllib.parse import parse_qs
 from decimal import Decimal
 
@@ -40,40 +42,26 @@ class WebAppSignal(BaseModel):
     channel_ids: List[int] = []
 
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
-    """
-    Validates the initData string from Telegram WebApp.
-    """
     if not bot_token:
         log.error("TELEGRAM_BOT_TOKEN is missing in settings!")
         raise HTTPException(status_code=500, detail="Server misconfiguration")
-
     try:
-        # Parse the query string
         parsed_data = parse_qs(init_data)
-        
         if 'hash' not in parsed_data:
-            log.warning(f"Auth failed: No hash found in initData. Data: {init_data[:50]}...")
+            log.warning(f"Auth failed: No hash found. Data: {init_data[:50]}...")
             raise ValueError("No hash found")
-            
         hash_value = parsed_data.pop('hash')[0]
-        
-        # Sort keys alphabetically and construct data-check-string
         data_check_arr = []
         for k, v in sorted(parsed_data.items()):
             data_check_arr.append(f"{k}={v[0]}")
-            
         data_check_string = "\n".join(data_check_arr)
-        
         secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
         calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-        
         if calculated_hash != hash_value:
             log.warning(f"Auth failed: Hash mismatch.")
             raise ValueError("Invalid hash")
-            
         user_json = parsed_data.get('user', ['{}'])[0]
         return json.loads(user_json)
-        
     except Exception as e:
         log.error(f"WebApp validation exception: {e}")
         raise HTTPException(status_code=403, detail="Invalid Authentication Data")
@@ -95,11 +83,22 @@ async def get_analyst_channels(initData: str):
         with session_scope() as db_session:
             user_repo = UserRepository(db_session)
             user = user_repo.find_by_telegram_id(telegram_id)
-            if not user or user.user_type.value != "ANALYST":
-                return {"ok": False, "channels": []}
             
+            # 1. Check if user exists
+            if not user:
+                 log.warning(f"Channels request: User {telegram_id} not found in DB.")
+                 return {"ok": False, "error": "User not registered in bot."}
+
+            # 2. Check if user is Analyst
+            if str(user.user_type.value).upper() != "ANALYST":
+                log.warning(f"Channels request: User {telegram_id} is {user.user_type}, not ANALYST.")
+                return {"ok": False, "error": "Permission Denied: You are not an Analyst."}
+            
+            # 3. Fetch Channels
             channel_repo = ChannelRepository(db_session)
             channels = channel_repo.list_by_analyst(user.id, only_active=True)
+            
+            log.info(f"Channels request: User {telegram_id} found {len(channels)} active channels.")
             
             return {
                 "ok": True,
@@ -109,6 +108,7 @@ async def get_analyst_channels(initData: str):
                 ]
             }
     except Exception as e:
+        log.error(f"Error fetching channels: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
 
 @router.post("/create")
@@ -123,11 +123,13 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
         with session_scope() as db_session:
             user_repo = UserRepository(db_session)
             user = user_repo.find_by_telegram_id(telegram_id)
-            if not user or user.user_type.value != "ANALYST":
-                return {"ok": False, "error": "Permission Denied"}
+            
+            # Strict Role Check
+            if not user or str(user.user_type.value).upper() != "ANALYST":
+                return {"ok": False, "error": "Permission Denied: Analyst role required."}
 
             targets_formatted = parse_targets_list(payload.targets_raw.split())
-            if not targets_formatted: return {"ok": False, "error": "Invalid targets"}
+            if not targets_formatted: return {"ok": False, "error": "Invalid targets format"}
 
             total_pct = sum(t['close_percent'] for t in targets_formatted)
             if total_pct > 100:
@@ -152,7 +154,6 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
                 notes=final_notes
             )
             
-            # Fire and forget background task
             asyncio.create_task(creation_service.background_publish_and_index(
                 rec_id=created_rec.id, user_db_id=user.id, target_channel_ids=target_channels
             ))
@@ -164,11 +165,7 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
 
 @router.get("/portfolio")
 async def get_user_portfolio(initData: str, request: Request):
-    """
-    Fetches the user's portfolio items.
-    """
     try:
-        # 1. Validate Auth
         user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
         telegram_id = user_data['id']
         
@@ -179,27 +176,18 @@ async def get_user_portfolio(initData: str, request: Request):
             return {"ok": False, "error": "System services unavailable"}
 
         with session_scope() as session:
-            # 2. Fetch DB Data (Run in thread to avoid blocking main loop)
-            # This ensures session is used correctly within the thread
             items = await asyncio.to_thread(trade_service.get_open_positions_for_user, session, str(telegram_id))
             
-            # 3. Prepare for Price Fetching
             assets_to_fetch = set(
                 (getattr(item.asset, 'value'), getattr(item, 'market', 'Futures'))
                 for item in items
             )
             
-            # 4. Fetch Prices Concurrently
             price_tasks = [price_service.get_cached_price(asset, market) for asset, market in assets_to_fetch]
             price_results = await asyncio.gather(*price_tasks, return_exceptions=True)
             
-            # Map results
-            prices_map = {}
-            for (asset, _), price in zip(assets_to_fetch, price_results):
-                if isinstance(price, (int, float)):
-                    prices_map[asset] = price
+            prices_map = {asset_market[0]: price for asset_market, price in zip(assets_to_fetch, price_results) if not isinstance(price, Exception) and price is not None}
 
-            # 5. Format Response
             formatted_items = []
             for item in items:
                 asset_val = getattr(item.asset, 'value')
