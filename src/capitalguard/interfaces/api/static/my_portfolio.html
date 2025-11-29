@@ -3,83 +3,75 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>CapitalGuard Pro Terminal</title>
+    <title>CapitalGuard Pro</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
         :root {
-            --bg-app: #0b0e11; --bg-card: #1e2329; --bg-card-hover: #2a2e35;
-            --bg-sheet: #20252b; --text-main: #eaecef; --text-sub: #848e9c;
+            --bg-app: #0b0e11; --bg-card: #1e2329; --bg-sheet: #20252b;
+            --text-main: #eaecef; --text-sub: #848e9c;
             --brand-green: #0ecb81; --brand-red: #f6465d; --brand-yellow: #f0b90b;
-            --border: rgba(255,255,255,0.08);
+            --border: rgba(255,255,255,0.05);
         }
-        body { background: var(--bg-app); color: var(--text-main); font-family: 'Inter', sans-serif; margin: 0; padding-bottom: 120px; -webkit-tap-highlight-color: transparent; }
+        body { background: var(--bg-app); color: var(--text-main); font-family: 'Inter', sans-serif; margin: 0; padding-bottom: 100px; }
         .mono { font-family: 'JetBrains Mono', monospace; }
-        
+
         /* Header */
-        .header { padding: 20px; background: rgba(22,26,30,0.95); position: sticky; top: 0; z-index: 50; backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+        .header { padding: 20px; background: rgba(22,26,30,0.95); position: sticky; top: 0; z-index: 50; border-bottom: 1px solid var(--border); backdrop-filter: blur(10px); }
         .summary-val { font-size: 28px; font-weight: 700; }
         .pos { color: var(--brand-green); } .neg { color: var(--brand-red); }
-
+        
         /* Tabs */
         .tabs { display: flex; gap: 20px; padding: 0 20px; margin-top: 10px; border-bottom: 1px solid var(--border); }
-        .tab { padding: 12px 0; color: var(--text-sub); font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent; transition: 0.3s; }
+        .tab { padding: 12px 0; color: var(--text-sub); font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent; }
         .tab.active { color: var(--text-main); border-bottom-color: var(--brand-yellow); }
 
-        /* Cards */
+        /* List */
         .container { padding: 16px; }
-        .card { background: var(--bg-card); border-radius: 16px; padding: 16px; margin-bottom: 12px; position: relative; border: 1px solid transparent; transition: 0.2s; cursor: pointer; }
-        .card:active { transform: scale(0.98); background: var(--bg-card-hover); }
-        
-        .card-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .pair { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-        .lev { font-size: 11px; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; color: var(--text-sub); }
-        .side-badge { font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 6px; }
+        .card { background: var(--bg-card); border-radius: 16px; padding: 16px; margin-bottom: 12px; cursor: pointer; border: 1px solid transparent; }
+        .card:active { background: #252b32; }
+        .card-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+        .pair { font-size: 16px; font-weight: 700; }
+        .side-badge { font-size: 11px; padding: 4px 8px; border-radius: 6px; font-weight: 800; }
         .long { background: rgba(14,203,129,0.15); color: var(--brand-green); }
         .short { background: rgba(246,70,93,0.15); color: var(--brand-red); }
         
-        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
-        .lbl { font-size: 11px; color: var(--text-sub); display: block; }
+        .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .lbl { font-size: 11px; color: var(--text-sub); }
         .val { font-size: 14px; font-weight: 600; }
         .pnl { font-size: 18px; font-weight: 700; text-align: right; }
 
-        /* Risk Bar */
-        .risk-cont { height: 4px; background: #2b3139; margin-top: 12px; position: relative; border-radius: 2px; }
-        .risk-dot { width: 8px; height: 8px; background: #fff; border-radius: 50%; position: absolute; top: -2px; transition: left 0.5s; box-shadow: 0 0 4px rgba(255,255,255,0.5); }
-
         /* Sheet */
-        .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 100; opacity: 0; visibility: hidden; transition: 0.3s; backdrop-filter: blur(5px); }
+        .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 100; opacity: 0; visibility: hidden; transition: 0.3s; }
         .overlay.open { opacity: 1; visibility: visible; }
-        .sheet { position: fixed; bottom: -100%; left: 0; width: 100%; background: var(--bg-sheet); border-radius: 24px 24px 0 0; padding: 24px; z-index: 101; transition: 0.3s; max-height: 85vh; overflow-y: auto; }
+        .sheet { position: fixed; bottom: -100%; left: 0; width: 100%; background: var(--bg-sheet); border-radius: 24px 24px 0 0; padding: 24px; z-index: 101; transition: 0.3s; }
         .overlay.open .sheet { bottom: 0; }
         
         .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px; }
-        .act-btn { background: #2b3139; border: none; padding: 14px; border-radius: 12px; color: white; font-weight: 600; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 5px;}
-        .act-btn:active { background: #363c45; }
+        .act-btn { background: #2b3139; border: none; padding: 14px; border-radius: 12px; color: white; font-weight: 600; cursor: pointer; }
         .btn-red { background: rgba(246, 70, 93, 0.15); color: var(--brand-red); }
-
-        .target-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
-        .hit { color: var(--brand-green); }
+        .btn-blue { background: rgba(62, 123, 250, 0.15); color: #3e7bfa; grid-column: span 2; }
 
         /* Utils */
-        .loader { text-align: center; padding: 40px; color: var(--text-sub); font-size: 13px; }
-        .fab { position: fixed; bottom: 24px; right: 24px; width: 56px; height: 56px; background: var(--brand-yellow); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 30px; color: #000; box-shadow: 0 8px 20px rgba(240,185,11,0.3); z-index: 90; cursor: pointer; }
+        .loader { text-align: center; padding: 40px; color: var(--text-sub); }
+        .fab { position: fixed; bottom: 24px; right: 24px; width: 56px; height: 56px; background: var(--brand-yellow); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 30px; color: #000; cursor: pointer; box-shadow: 0 8px 20px rgba(240,185,11,0.3); z-index: 90; }
     </style>
 </head>
 <body>
 
     <div class="header">
-        <div style="font-size:12px; color:var(--text-sub); font-weight:600;">TOTAL ACTIVE PNL</div>
+        <div style="font-size:12px; color:var(--text-sub);">ACTIVE PNL</div>
         <div class="summary-val mono" id="totalPnL">--</div>
-        <div class="tabs">
-            <div class="tab active" onclick="filter('ACTIVE', this)">Active</div>
-            <div class="tab" onclick="filter('WATCHLIST', this)">Watchlist</div>
-            <div class="tab" onclick="filter('CLOSED', this)">History</div>
-        </div>
+    </div>
+
+    <div class="tabs">
+        <div class="tab active" onclick="filter('ACTIVE', this)">Active</div>
+        <div class="tab" onclick="filter('WATCHLIST', this)">Watchlist</div>
+        <div class="tab" onclick="filter('CLOSED', this)">History</div>
     </div>
 
     <div class="container">
-        <div id="loader" class="loader">Syncing...</div>
+        <div id="loader" class="loader">Loading...</div>
         <div id="list"></div>
     </div>
 
@@ -88,61 +80,53 @@
     <div class="overlay" id="overlay" onclick="closeSheet()">
         <div class="sheet" onclick="event.stopPropagation()">
             <div style="display:flex; justify-content:space-between; margin-bottom:20px;">
-                <div style="font-size:20px; font-weight:700;" id="sheetTitle">BTC/USDT</div>
+                <div style="font-size:20px; font-weight:700;" id="sheetTitle"></div>
                 <div style="font-size:24px; cursor:pointer;" onclick="closeSheet()">×</div>
             </div>
-
-            <div style="background:var(--bg-card); padding:16px; border-radius:12px; margin-bottom:20px;">
-                <div class="target-row"><span>Entry</span> <span class="mono" id="sEntry"></span></div>
-                <div class="target-row"><span>Current</span> <span class="mono" id="sCurrent"></span></div>
-                <div class="target-row"><span>Stop Loss</span> <span class="mono" id="sSL"></span></div>
+            
+            <div id="mainActions" class="actions">
+                <button class="act-btn" onclick="showEditMenu()">✏️ Edit</button>
+                <button class="act-btn" onclick="doAction('breakeven')">🛡️ Breakeven</button>
+                <button class="act-btn" onclick="doAction('partial', 50)">💰 Take 50%</button>
+                <button class="act-btn btn-red" onclick="doAction('close')">❌ Close</button>
             </div>
 
-            <div style="margin-bottom:10px; font-size:12px; color:var(--text-sub);">PROFIT TARGETS</div>
-            <div id="sTargets"></div>
-
-            <div class="actions" id="sheetActions"></div>
+            <div id="editActions" class="actions" style="display:none;">
+                <button class="act-btn" onclick="promptEdit('update_sl', 'New Stop Loss:')">🛑 Update SL</button>
+                <button class="act-btn" onclick="promptEdit('update_entry', 'New Entry:')">💰 Update Entry</button>
+                <button class="act-btn btn-blue" onclick="showMainMenu()">⬅️ Back</button>
+            </div>
         </div>
     </div>
 
     <script>
         const tg = window.Telegram.WebApp;
         tg.ready(); tg.expand();
-
+        
         let allTrades = [];
         let currentFilter = 'ACTIVE';
         let selectedId = null;
 
-        // Auth Logic
         async function getInitData() {
             if (tg.initData) return tg.initData;
             await new Promise(r => setTimeout(r, 300));
-            if (tg.initData) return tg.initData;
-            // Fallback hash
-            const params = new URLSearchParams(window.location.hash.slice(1));
-            return params.get('tgWebAppData');
+            return tg.initData || new URLSearchParams(window.location.hash.slice(1)).get('tgWebAppData');
         }
 
         async function fetchPortfolio() {
             const initData = await getInitData();
-            if (!initData) return;
-
+            if(!initData) return;
             try {
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
                 const data = await res.json();
-                if (data.ok) {
-                    allTrades = data.portfolio.items;
-                    render();
-                    document.getElementById('loader').style.display = 'none';
-                }
-            } catch (e) { console.error(e); }
+                if(data.ok) { allTrades = data.portfolio.items; render(); document.getElementById('loader').style.display='none'; }
+            } catch(e) { console.error(e); }
         }
 
         function render() {
             // Summary
-            const active = allTrades.filter(t => t.unified_status === 'ACTIVE');
             let total = 0;
-            active.forEach(t => total += parseFloat(t.pnl_live || 0));
+            allTrades.filter(t => t.unified_status === 'ACTIVE').forEach(t => total += parseFloat(t.pnl_live||0));
             const el = document.getElementById('totalPnL');
             el.innerText = (total>0?'+':'') + total.toFixed(2) + "%";
             el.className = `summary-val mono ${total>=0?'pos':'neg'}`;
@@ -156,116 +140,82 @@
                 return t.unified_status === 'CLOSED';
             });
 
-            if (filtered.length === 0) {
-                list.innerHTML = '<div class="loader">No positions here.</div>';
-                return;
-            }
+            if(filtered.length === 0) { list.innerHTML = '<div class="loader">No trades found.</div>'; return; }
 
             filtered.forEach(t => {
                 const isLong = t.side === 'LONG';
                 const pnl = parseFloat(t.pnl_live||0);
-                
-                // Risk Calc
-                let progress = 50;
-                if (t.live_price && t.entry) {
-                    const entry = parseFloat(t.entry);
-                    const curr = parseFloat(t.live_price);
-                    const diff = ((curr - entry) / entry) * 100;
-                    const dir = isLong ? 1 : -1;
-                    progress = Math.max(0, Math.min(100, 30 + (diff * dir * 10)));
-                }
-
                 const html = `
-                <div class="card" onclick="openSheet(${t.id})">
+                <div class="card" onclick="openSheet(${t.id}, '${t.asset}')">
                     <div class="card-row">
-                        <div class="pair">${t.asset} <span class="lev">${t.leverage}</span></div>
+                        <div class="pair">${t.asset}</div>
                         <div class="side-badge ${isLong?'long':'short'}">${t.side}</div>
                     </div>
-                    <div class="stats-grid">
-                        <div><span class="lbl">Entry</span><span class="val mono">${parseFloat(t.entry).toFixed(4)}</span></div>
-                        <div style="text-align:right;"><span class="lbl">PnL</span><span class="pnl mono ${pnl>=0?'pos':'neg'}">${(pnl>0?'+':'')}${pnl.toFixed(2)}%</span></div>
+                    <div class="stats">
+                        <div><span class="lbl">ENTRY</span> <span class="val mono">${parseFloat(t.entry).toFixed(4)}</span></div>
+                        <div style="text-align:right;"><span class="lbl">PNL</span> <span class="pnl mono ${pnl>=0?'pos':'neg'}">${(pnl>0?'+':'')}${pnl.toFixed(2)}%</span></div>
                     </div>
-                    ${t.unified_status === 'ACTIVE' ? `
-                    <div class="risk-cont">
-                        <div class="risk-dot" style="left:${progress}%"></div>
-                    </div>` : ''}
                 </div>`;
                 list.innerHTML += html;
             });
         }
 
-        function openSheet(id) {
+        function openSheet(id, title) {
             selectedId = id;
-            const t = allTrades.find(x => x.id === id);
-            if(!t) return;
-
-            document.getElementById('sheetTitle').innerText = t.asset;
-            document.getElementById('sEntry').innerText = parseFloat(t.entry).toFixed(4);
-            document.getElementById('sCurrent').innerText = parseFloat(t.live_price||0).toFixed(4);
-            document.getElementById('sSL').innerText = parseFloat(t.stop_loss).toFixed(4);
-
-            // Targets
-            const tList = document.getElementById('sTargets');
-            tList.innerHTML = t.targets.map((tg, i) => `
-                <div class="target-row">
-                    <span>Target ${i+1} (${parseFloat(tg.price).toFixed(4)})</span>
-                    <span class="${tg.hit?'hit':'mono'}">${tg.hit?'✅ HIT':'⏳'}</span>
-                </div>
-            `).join('');
-
-            // Actions
-            const acts = document.getElementById('sheetActions');
-            if (t.unified_status === 'ACTIVE') {
-                acts.innerHTML = `
-                    <button class="act-btn" onclick="doAction('edit')">✏️ Edit</button>
-                    <button class="act-btn" onclick="doAction('breakeven')">🛡️ BE</button>
-                    <button class="act-btn" onclick="doAction('partial', 50)">💰 50%</button>
-                    <button class="act-btn btn-red" onclick="doAction('close')">❌ Close</button>
-                `;
-            } else {
-                acts.innerHTML = `<button class="act-btn btn-red" style="grid-column:span 2" onclick="doAction('close')">🗑️ Remove</button>`;
-            }
-
+            document.getElementById('sheetTitle').innerText = title;
+            showMainMenu(); // Reset to main menu
             document.getElementById('overlay').classList.add('open');
+            tg.HapticFeedback.impactOccurred('light');
         }
 
-        function closeSheet() {
-            document.getElementById('overlay').classList.remove('open');
+        function closeSheet() { document.getElementById('overlay').classList.remove('open'); }
+        
+        function showEditMenu() {
+            document.getElementById('mainActions').style.display = 'none';
+            document.getElementById('editActions').style.display = 'grid';
+        }
+
+        function showMainMenu() {
+            document.getElementById('editActions').style.display = 'none';
+            document.getElementById('mainActions').style.display = 'grid';
+        }
+
+        function promptEdit(action, text) {
+            tg.showPopup({
+                title: 'Update Trade',
+                message: text,
+                buttons: [{id: 'save', type: 'ok', text: 'Save'}, {type: 'cancel'}]
+            }, (btnId) => {
+                if (btnId === 'save') {
+                    // Telegram popup doesn't support input, use JS prompt as fallback or build a custom modal
+                    // For better UX, we use JS prompt here as it's reliable
+                    setTimeout(() => {
+                        const val = prompt(text);
+                        if (val) doAction(action, val);
+                    }, 100);
+                }
+            });
         }
 
         async function doAction(action, val=null) {
-            const initData = await getInitData();
             closeSheet();
-            
-            // Optimistic UI update
+            const initData = await getInitData();
             document.getElementById('loader').style.display = 'block';
-            
             try {
                 const res = await fetch('/api/webapp/action', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        initData: initData,
-                        action: action,
-                        trade_id: selectedId,
-                        value: val ? String(val) : null
-                    })
+                    body: JSON.stringify({ initData, action, trade_id: selectedId, value: val ? String(val) : null })
                 });
                 const d = await res.json();
-                if (d.ok) {
-                    tg.showAlert("✅ " + d.message);
-                    fetchPortfolio(); // Refresh
-                } else {
-                    tg.showAlert("❌ " + d.error);
-                }
-            } catch (e) {
-                tg.showAlert("Network Error");
-            }
+                if(d.ok) { tg.showAlert("✅ " + d.message); fetchPortfolio(); }
+                else { tg.showAlert("❌ " + d.error); }
+            } catch(e) { tg.showAlert("Network Error"); }
             document.getElementById('loader').style.display = 'none';
         }
 
-        function filter(status, el) {
-            currentFilter = status;
+        function filter(s, el) {
+            currentFilter = s;
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             el.classList.add('active');
             render();
