@@ -77,9 +77,14 @@
         .progress-container { height: 6px; background: #444; border-radius: 3px; margin-top: 8px; overflow: hidden; }
         .progress-fill { height: 100%; width: 0%; transition: width 0.3s, background-color 0.3s; background-color: var(--green); }
         .progress-text { font-size: 0.75rem; text-align: right; margin-top: 4px; font-weight: bold; color: var(--hint-color); }
+        
+        .error-message { background: rgba(255, 69, 58, 0.1); border: 1px solid var(--red); color: var(--red); padding: 12px; border-radius: 12px; margin-bottom: 16px; text-align: center; }
+        .loading { opacity: 0.6; pointer-events: none; }
     </style>
 </head>
 <body>
+    <div id="errorContainer" style="display: none;"></div>
+
     <div class="market-switch">
         <div class="market-opt active futures" id="optFutures" onclick="setMarket('FUTURES')">FUTURES ⚡</div>
         <div class="market-opt" id="optSpot" onclick="setMarket('SPOT')">SPOT 💎</div>
@@ -177,10 +182,9 @@
     <button class="publish-btn" id="submitBtn" onclick="publish()">🚀 Publish Signal</button>
 
     <script>
+        // 🔥 الإصلاح: تهيئة Telegram WebApp بشكل صحيح
         const tg = window.Telegram.WebApp;
-        tg.expand();
-        tg.ready();
-
+        
         // --- State ---
         let currentMarket = 'FUTURES';
         let currentSide = 'LONG';
@@ -189,20 +193,58 @@
         let livePriceVal = 0;
         let fetchTimeout;
 
-        // --- Init ---
-        addTargetRow('', 0); 
-        fetchPrice();
-        fetchChannels();
+        // --- Initialization ---
+        function initializeApp() {
+            console.log('Telegram WebApp initialized:', {
+                initData: tg.initData ? 'Present' : 'Missing',
+                initDataUnsafe: tg.initDataUnsafe ? 'Present' : 'Missing',
+                platform: tg.platform,
+                version: tg.version
+            });
+
+            // توسيع النافذة والتهيئة
+            tg.expand();
+            tg.ready();
+
+            // 🔥 التحقق من بيانات المصادقة
+            if (!tg.initData && !tg.initDataUnsafe) {
+                showError('⚠️ Telegram Auth Error<br>Please open this app from Telegram directly');
+                return;
+            }
+
+            // تهيئة التطبيق
+            addTargetRow('', 0); 
+            fetchPrice();
+            fetchChannels();
+        }
+
+        function showError(message) {
+            const errorContainer = document.getElementById('errorContainer');
+            errorContainer.innerHTML = `
+                <div class="error-message">
+                    <h3>${message}</h3>
+                    <button onclick="location.reload()" style="background: var(--button-color); color: white; border: none; padding: 10px 20px; border-radius: 10px; margin-top: 10px; cursor: pointer;">
+                        Reload App
+                    </button>
+                </div>
+            `;
+            errorContainer.style.display = 'block';
+            document.body.classList.add('loading');
+        }
 
         // --- API Calls ---
         async function fetchChannels() {
             try {
-                const res = await fetch(`/api/webapp/channels?initData=${encodeURIComponent(tg.initData)}`);
+                // 🔥 الإصلاح: استخدام initDataUnsafe أولاً ثم initData
+                const initData = tg.initDataUnsafe ? JSON.stringify(tg.initDataUnsafe) : tg.initData;
+                console.log('Fetching channels with initData:', initData ? 'Present' : 'Missing');
+                
+                const res = await fetch(`/api/webapp/channels?initData=${encodeURIComponent(initData)}`);
                 const data = await res.json();
                 const grid = document.getElementById('channelGrid');
                 grid.innerHTML = '';
                 
-                if(data.ok && data.channels.length > 0) {
+                if(data.ok && data.channels && data.channels.length > 0) {
                     data.channels.forEach(ch => {
                         const div = document.createElement('div');
                         div.className = 'channel-chip selected';
@@ -211,10 +253,15 @@
                         div.innerHTML = `📢 ${ch.title}`;
                         grid.appendChild(div);
                     });
+                    console.log(`Loaded ${data.channels.length} channels`);
                 } else {
-                    grid.innerHTML = '<div class="channel-chip">No active channels found</div>';
+                    grid.innerHTML = '<div class="channel-chip" style="width:100%; text-align:center; color: var(--orange);">📭 No channels available</div>';
+                    console.warn('No channels available or API error:', data);
                 }
-            } catch(e) { console.error(e); }
+            } catch(e) { 
+                console.error('Channels fetch error:', e);
+                document.getElementById('channelGrid').innerHTML = '<div class="channel-chip" style="width:100%; text-align:center; color: var(--red);">❌ Network error loading channels</div>';
+            }
         }
 
         async function fetchPrice() {
@@ -225,9 +272,10 @@
                 const res = await fetch(`/api/webapp/price?symbol=${symbol}`);
                 const data = await res.json();
                 livePriceVal = data.price;
-                document.getElementById('livePrice').innerText = livePriceVal > 0 ? livePriceVal : "N/A";
+                document.getElementById('livePrice').innerText = livePriceVal > 0 ? livePriceVal.toFixed(2) : "N/A";
                 if(currentType === 'MARKET') runFullValidation();
             } catch(e) {
+                console.error('Price fetch error:', e);
                 document.getElementById('livePrice').innerText = "Error";
             }
         }
@@ -280,7 +328,6 @@
         }
 
         // --- 🧠 THE BRAIN: Full Logic Validation ---
-        
         function runFullValidation() {
             updateCalc();
             const isValid = validateLogic();
@@ -375,7 +422,7 @@
             const text = document.getElementById('totalPercentText');
             
             bar.style.width = Math.min(total, 100) + '%';
-            text.innerText = `Total: ${total}%`;
+            text.innerText = `Total: ${total.toFixed(1)}%`;
             
             if (Math.abs(total - 100) < 0.1) {
                 bar.style.backgroundColor = 'var(--green)';
@@ -387,7 +434,6 @@
         }
 
         // --- Smart Calculation Helpers ---
-
         function smartCalc(percent) {
             const base = getBasePrice();
             if (!base) return tg.showAlert("Set Entry Price first!");
@@ -445,16 +491,21 @@
             runFullValidation();
             tg.HapticFeedback.selectionChanged();
         }
-       function addManualTarget() {
-         let currentTotal = 0;
-         document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
-         let remaining = Math.max(0, 100 - currentTotal);
 
-          addTargetRow("", remaining);
-         tg.HapticFeedback.impactOccurred('light');
-         runFullValidation();
-       }
-        function toggleChip(el) { el.classList.toggle('selected'); tg.HapticFeedback.selectionChanged(); }
+        function addManualTarget() {
+            let currentTotal = 0;
+            document.querySelectorAll('.tp-pct').forEach(i => currentTotal += parseFloat(i.value) || 0);
+            let remaining = Math.max(0, 100 - currentTotal);
+            addTargetRow("", remaining);
+            tg.HapticFeedback.impactOccurred('light');
+            runFullValidation();
+        }
+
+        function toggleChip(el) { 
+            el.classList.toggle('selected'); 
+            tg.HapticFeedback.selectionChanged(); 
+        }
+
         function toggleAllChannels() {
             document.querySelectorAll('.channel-chip').forEach(c => c.classList.toggle('selected'));
             tg.HapticFeedback.impactOccurred('medium');
@@ -484,8 +535,11 @@
                 if(chip.dataset.id) selectedChannels.push(parseInt(chip.dataset.id));
             });
 
+            // 🔥 الإصلاح: استخدام initDataUnsafe أولاً
+            const initData = tg.initDataUnsafe ? JSON.stringify(tg.initDataUnsafe) : tg.initData;
+
             const payload = {
-                initData: tg.initData,
+                initData: initData,
                 asset: document.getElementById('asset').value.toUpperCase(),
                 side: currentSide,
                 market: currentMarket,
@@ -506,18 +560,22 @@
                 });
                 const data = await res.json();
                 if(data.ok) {
-                    tg.close();
+                    tg.showAlert("✅ Signal published successfully!");
+                    setTimeout(() => tg.close(), 1500);
                 } else {
-                    tg.showAlert("Error: " + data.error);
+                    tg.showAlert("❌ Error: " + (data.error || "Unknown error"));
                     btn.disabled = false;
                     btn.innerText = "🚀 Publish Signal";
                 }
             } catch(e) {
-                tg.showAlert("Network Error");
+                tg.showAlert("❌ Network Error - Please try again");
                 btn.disabled = false;
                 btn.innerText = "🚀 Publish Signal";
             }
         }
+
+        // 🔥 بدء التطبيق عند التحميل
+        document.addEventListener('DOMContentLoaded', initializeApp);
     </script>
 </body>
 </html>
