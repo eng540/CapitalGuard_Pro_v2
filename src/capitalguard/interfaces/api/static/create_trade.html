@@ -1,279 +1,1716 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>CapitalGuard Terminal</title>
+    <title>CapitalGuard Terminal - منشئ التوصيات المتقدم</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
-            --bg-app: #0b0e11; --bg-card: #1e2329;
-            --text-main: #eaecef; --text-sub: #848e9c;
-            --brand-yellow: #f0b90b; --brand-green: #0ecb81; --brand-red: #f6465d;
-            --border: rgba(255,255,255,0.1);
-            --input-bg: #2b3139;
+            --bg-color: var(--tg-theme-bg-color, #1c1c1e);
+            --card-bg: var(--tg-theme-secondary-bg-color, #2c2c2e);
+            --text-color: var(--tg-theme-text-color, #ffffff);
+            --hint-color: var(--tg-theme-hint-color, #8e8e93);
+            --button-color: var(--tg-theme-button-color, #0a84ff);
+            --button-text: var(--tg-theme-button-text-color, #ffffff);
+            --green: #32d74b; --red: #ff453a; --orange: #ff9f0a; --blue: #0a84ff;
+            --border: rgba(128, 128, 128, 0.2); --switcher-bg: #000000;
+            --input-bg: rgba(0, 0, 0, 0.2);
+            --success: #32d74b; --warning: #ff9f0a; --danger: #ff453a;
         }
-        body { background-color: var(--bg-app); color: var(--text-main); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; padding-bottom: 100px; }
-        
-        /* --- UI Components --- */
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        .title { font-size: 20px; font-weight: 800; color: var(--brand-yellow); }
-        
-        .section { background: var(--bg-card); padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid var(--border); }
-        .label { font-size: 11px; color: var(--text-sub); text-transform: uppercase; margin-bottom: 6px; display: block; font-weight: 600; }
-        
-        /* Inputs */
-        input, textarea { width: 100%; background: var(--input-bg); border: 1px solid var(--border); color: var(--text-main); padding: 12px; border-radius: 8px; font-size: 14px; box-sizing: border-box; font-family: monospace; }
-        input:focus, textarea:focus { border-color: var(--brand-yellow); outline: none; }
 
-        /* Switches */
-        .switch-row { display: flex; background: #000; border-radius: 8px; padding: 2px; margin-bottom: 15px; }
-        .switch-opt { flex: 1; text-align: center; padding: 10px; font-size: 13px; color: var(--text-sub); border-radius: 6px; cursor: pointer; font-weight: 600; }
-        .switch-opt.active { background: var(--bg-card); color: var(--text-main); box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
-        .long.active { color: var(--brand-green); }
-        .short.active { color: var(--brand-red); }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
 
-        /* Channels Grid */
-        .channel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
-        .channel-chip { background: var(--bg-app); border: 1px solid var(--border); padding: 10px; border-radius: 8px; font-size: 11px; color: var(--text-sub); cursor: pointer; transition: all 0.2s; text-align: center; display: flex; align-items: center; justify-content: center; gap: 5px;}
-        .channel-chip.selected { background: rgba(240, 185, 11, 0.15); border-color: var(--brand-yellow); color: var(--brand-yellow); }
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            margin: 0;
+            padding: 16px;
+            padding-bottom: 120px;
+            -webkit-tap-highlight-color: transparent;
+            line-height: 1.5;
+        }
 
-        /* Button */
-        .main-btn { position: fixed; bottom: 20px; left: 16px; right: 16px; background: var(--brand-yellow); color: #000; border: none; padding: 16px; border-radius: 12px; font-size: 16px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 20px rgba(240, 185, 11, 0.2); z-index: 100; transition: transform 0.1s; }
-        .main-btn:active { transform: scale(0.98); }
-        .main-btn:disabled { opacity: 0.5; cursor: not-allowed; background: #444; color: #888; }
+        /* تحسينات التصميم العامة */
+        .section {
+            background-color: var(--card-bg);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+            border: 1px solid var(--border);
+            transition: all 0.3s ease;
+        }
 
-        /* States */
-        .loader { text-align: center; padding: 20px; color: var(--text-sub); font-size: 12px; }
-        .error-box { background: rgba(246, 70, 93, 0.15); color: var(--brand-red); padding: 12px; border-radius: 8px; font-size: 12px; margin-bottom: 15px; display: none; }
+        .section:hover {
+            border-color: rgba(128, 128, 128, 0.4);
+        }
+
+        .input-label {
+            font-size: 0.75rem;
+            color: var(--hint-color);
+            margin-bottom: 8px;
+            display: block;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+        }
+
+        input, textarea, select {
+            width: 100%;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            color: var(--text-color);
+            padding: 14px 16px;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-family: inherit;
+            transition: all 0.2s ease;
+        }
+
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: var(--button-color);
+            box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.2);
+        }
+
+        /* تحسينات الأزرار */
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .btn-select {
+            flex: 1;
+            padding: 14px 12px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: var(--bg-color);
+            color: var(--hint-color);
+            font-weight: 600;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-select::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+            transition: left 0.5s;
+        }
+
+        .btn-select:active::before {
+            left: 100%;
+        }
+
+        .btn-select.active-long {
+            background: rgba(50, 215, 75, 0.15);
+            border-color: var(--green);
+            color: var(--green);
+            box-shadow: 0 4px 12px rgba(50, 215, 75, 0.2);
+        }
+
+        .btn-select.active-short {
+            background: rgba(255, 69, 58, 0.15);
+            border-color: var(--red);
+            color: var(--red);
+            box-shadow: 0 4px 12px rgba(255, 69, 58, 0.2);
+        }
+
+        .btn-select.active-type {
+            background: rgba(10, 132, 255, 0.15);
+            border-color: var(--button-color);
+            color: var(--button-color);
+            box-shadow: 0 4px 12px rgba(10, 132, 255, 0.2);
+        }
+
+        /* تحسينات السويتشر */
+        .market-switch {
+            display: flex;
+            background: var(--switcher-bg);
+            padding: 6px;
+            border-radius: 14px;
+            margin-bottom: 24px;
+            border: 1px solid var(--border);
+        }
+
+        .market-opt {
+            flex: 1;
+            text-align: center;
+            padding: 12px 8px;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 0.85rem;
+            color: var(--hint-color);
+            cursor: pointer;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+        }
+
+        .market-opt.active {
+            background: var(--card-bg);
+            color: var(--text-color);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+            transform: translateY(-1px);
+        }
+
+        .market-opt.active.futures { color: var(--orange); }
+        .market-opt.active.spot { color: var(--blue); }
+
+        /* تحسينات الرأس */
+        .header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .asset-input {
+            background: transparent;
+            border: none;
+            color: var(--text-color);
+            font-size: 1.6rem;
+            font-weight: 800;
+            width: 100%;
+            text-transform: uppercase;
+            padding: 0;
+            letter-spacing: 0.5px;
+        }
+
+        .live-price {
+            color: var(--green);
+            font-weight: bold;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 1.1rem;
+            background: rgba(50, 215, 75, 0.1);
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(50, 215, 75, 0.3);
+        }
+
+        /* تحسينات الرافعة المالية */
+        .leverage-section {
+            transition: all 0.4s ease;
+            overflow: hidden;
+        }
+
+        .leverage-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .leverage-val {
+            font-weight: bold;
+            color: var(--orange);
+            width: 50px;
+            text-align: center;
+            background: rgba(255, 159, 10, 0.1);
+            padding: 6px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 159, 10, 0.3);
+        }
+
+        input[type=range] {
+            width: 100%;
+            height: 6px;
+            background: #444;
+            border-radius: 3px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            background: var(--orange);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
+
+        /* تحسينات الأهداف */
+        .targets-section {
+            position: relative;
+        }
+
+        .target-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 12px;
+            background: rgba(128,128,128,0.08);
+            padding: 12px;
+            border-radius: 12px;
+            animation: slideIn 0.3s ease-out;
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px) scale(0.95);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        .target-row:hover {
+            background: rgba(128,128,128,0.12);
+            border-color: var(--border);
+        }
+
+        .target-row.error {
+            background: rgba(255, 69, 58, 0.1);
+            border: 1px solid var(--red);
+            animation: shake 0.5s ease-in-out;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
+        }
+
+        .tp-badge {
+            background: var(--button-color);
+            color: white;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: bold;
+            flex-shrink: 0;
+            box-shadow: 0 2px 8px rgba(10, 132, 255, 0.3);
+        }
+
+        .tp-remove {
+            color: var(--red);
+            padding: 8px;
+            cursor: pointer;
+            font-size: 1.3rem;
+            transition: transform 0.2s ease;
+        }
+
+        .tp-remove:active {
+            transform: scale(0.9);
+        }
+
+        /* تحسينات الرقائق الذكية */
+        .smart-chips {
+            display: flex;
+            gap: 10px;
+            overflow-x: auto;
+            padding: 16px 0;
+            margin: 0 -16px;
+            padding-left: 16px;
+            scrollbar-width: none;
+        }
+
+        .smart-chips::-webkit-scrollbar {
+            display: none;
+        }
+
+        .chip {
+            background: var(--bg-color);
+            border: 1px solid var(--border);
+            color: var(--hint-color);
+            padding: 10px 16px;
+            border-radius: 24px;
+            font-size: 0.85rem;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 500;
+            flex-shrink: 0;
+        }
+
+        .chip:active {
+            transform: scale(0.95);
+        }
+
+        .chip-blue {
+            border-color: var(--button-color);
+            color: var(--button-color);
+            background: rgba(10, 132, 255, 0.1);
+        }
+
+        .chip:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+
+        /* تحسينات شريط التقدم */
+        .progress-container {
+            height: 8px;
+            background: #444;
+            border-radius: 4px;
+            margin: 16px 0;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            background: linear-gradient(90deg, var(--orange), var(--green));
+            position: relative;
+        }
+
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
+
+        .progress-text {
+            font-size: 0.8rem;
+            text-align: right;
+            margin-top: 8px;
+            font-weight: bold;
+            transition: color 0.3s ease;
+        }
+
+        /* تحسينات القنوات */
+        .channel-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .channel-chip {
+            background: var(--bg-color);
+            border: 1px solid var(--border);
+            padding: 12px 16px;
+            border-radius: 16px;
+            font-size: 0.85rem;
+            color: var(--hint-color);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s ease;
+            text-align: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .channel-chip::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+            transition: left 0.5s;
+        }
+
+        .channel-chip:active::before {
+            left: 100%;
+        }
+
+        .channel-chip.selected {
+            background: var(--button-color);
+            border-color: var(--button-color);
+            color: white;
+            box-shadow: 0 4px 16px rgba(10, 132, 255, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .channel-chip.inactive {
+            opacity: 0.6;
+            border-style: dashed;
+        }
+
+        .channel-chip.inactive.selected {
+            background: rgba(10, 132, 255, 0.5);
+        }
+
+        /* زر النشر المحسن */
+        .publish-btn {
+            width: 92%;
+            background: var(--button-color);
+            color: var(--button-text);
+            border: none;
+            padding: 18px;
+            border-radius: 16px;
+            font-size: 1.1rem;
+            font-weight: 700;
+            position: fixed;
+            bottom: 20px;
+            left: 4%;
+            box-shadow: 0 8px 32px rgba(10, 132, 255, 0.4);
+            cursor: pointer;
+            z-index: 1000;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            letter-spacing: 0.5px;
+        }
+
+        .publish-btn:active {
+            transform: scale(0.98) translateY(2px);
+            box-shadow: 0 4px 16px rgba(10, 132, 255, 0.3);
+        }
+
+        .publish-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background: #555;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .publish-btn.loading {
+            background: linear-gradient(90deg, var(--button-color), #4dabf7, var(--button-color));
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+        }
+
+        @keyframes loading {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        /* تحسينات التنبيهات */
+        .alert {
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 16px;
+            border: 1px solid;
+            animation: slideDown 0.3s ease-out;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .alert-success {
+            background: rgba(50, 215, 75, 0.1);
+            border-color: var(--green);
+            color: var(--green);
+        }
+
+        .alert-warning {
+            background: rgba(255, 159, 10, 0.1);
+            border-color: var(--orange);
+            color: var(--orange);
+        }
+
+        .alert-danger {
+            background: rgba(255, 69, 58, 0.1);
+            border-color: var(--red);
+            color: var(--red);
+        }
+
+        /* تحسينات التحميل */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            backdrop-filter: blur(5px);
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid transparent;
+            border-top: 3px solid var(--button-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* تحسينات الاستجابة */
+        @media (max-width: 380px) {
+            .section {
+                padding: 16px;
+            }
+            
+            .btn-select {
+                padding: 12px 8px;
+                font-size: 0.8rem;
+            }
+            
+            .channel-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* تأثيرات خاصة */
+        .floating-label {
+            position: relative;
+            margin-bottom: 20px;
+        }
+
+        .floating-label input {
+            padding-top: 20px;
+        }
+
+        .floating-label .label-text {
+            position: absolute;
+            top: 8px;
+            left: 16px;
+            font-size: 0.75rem;
+            color: var(--hint-color);
+            transition: all 0.3s ease;
+            pointer-events: none;
+        }
+
+        .floating-label input:focus + .label-text,
+        .floating-label input:not(:placeholder-shown) + .label-text {
+            top: 2px;
+            font-size: 0.7rem;
+            color: var(--button-color);
+        }
     </style>
 </head>
 <body>
-
-    <div class="header">
-        <div class="title">New Signal</div>
-        <div style="font-size:12px; color:var(--text-sub);">v3.5 Pro</div>
+    <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+        <div class="spinner"></div>
     </div>
 
-    <div id="errorDisplay" class="error-box"></div>
+    <div id="alertContainer"></div>
 
-    <div class="section">
-        <label class="label">Configuration</label>
-        <div class="switch-row">
-            <div class="switch-opt active" id="mkt_futures" onclick="setMarket('FUTURES')">FUTURES</div>
-            <div class="switch-opt" id="mkt_spot" onclick="setMarket('SPOT')">SPOT</div>
-        </div>
-        <div class="switch-row">
-            <div class="switch-opt long active" id="side_long" onclick="setSide('LONG')">LONG 🟢</div>
-            <div class="switch-opt short" id="side_short" onclick="setSide('SHORT')">SHORT 🔴</div>
-        </div>
-        <input type="text" id="asset" placeholder="Asset (e.g. BTCUSDT)" oninput="this.value = this.value.toUpperCase()">
-    </div>
-
-    <div class="section">
-        <label class="label">Strategy Levels</label>
-        <input type="number" id="entry" placeholder="Entry Price (0 for Market)" style="margin-bottom:8px;">
-        <input type="number" id="sl" placeholder="Stop Loss" style="border-color:rgba(246, 70, 93, 0.3);">
-    </div>
-
-    <div class="section">
-        <label class="label">Targets</label>
-        <textarea id="targets" rows="2" placeholder="e.g. 92000 93000@50 94000"></textarea>
-        <div style="font-size:10px; color:var(--text-sub); margin-top:4px;">Format: Price OR Price@Percent</div>
-    </div>
-
-    <div class="section">
-        <div style="display:flex; justify-content:space-between;">
-            <label class="label">Publish To</label>
-            <label class="label" style="color:var(--brand-yellow); cursor:pointer;" onclick="toggleAllChannels()">Toggle All</label>
-        </div>
-        <div id="channelsContainer" class="channel-grid">
-            <div class="loader">Connecting to CapitalGuard Core...</div>
+    <!-- طريقة الإدخال -->
+    <div class="section" id="inputMethodSection">
+        <h3 style="margin-bottom: 16px;">🚀 طريقة إنشاء التوصية</h3>
+        <div class="btn-group">
+            <div class="btn-select active-type" onclick="setInputMethod('interactive')">
+                📱 تفاعلي
+            </div>
+            <div class="btn-select" onclick="setInputMethod('quick')">
+                ⚡ سريع
+            </div>
+            <div class="btn-select" onclick="setInputMethod('editor')">
+                📝 محرر
+            </div>
         </div>
     </div>
 
-    <div style="height: 60px;"></div>
-    <button class="main-btn" id="pubBtn" onclick="publish()">🚀 PUBLISH SIGNAL</button>
+    <!-- الإدخال السريع/المحرر -->
+    <div class="section" id="textInputSection" style="display: none;">
+        <div id="textInputContent"></div>
+        <button class="publish-btn" onclick="parseTextInput()" style="position: relative; margin-top: 16px;">
+            تحليل والمتابعة
+        </button>
+    </div>
+
+    <!-- الواجهة التفاعلية -->
+    <div id="interactiveInterface" style="display: none;">
+        <!-- السوق -->
+        <div class="market-switch">
+            <div class="market-opt active futures" onclick="setMarket('FUTURES')">العقود ⚡</div>
+            <div class="market-opt" onclick="setMarket('SPOT')">سبوت 💎</div>
+        </div>
+
+        <!-- الأصل -->
+        <div class="section">
+            <div class="header-row">
+                <div style="flex: 1;">
+                    <label class="input-label">زوج التداول</label>
+                    <input type="text" class="asset-input" id="asset" value="BTCUSDT" placeholder="SYMBOL" 
+                           oninput="debounceFetchPrice()" onkeyup="validateAsset(this.value)">
+                </div>
+                <div style="text-align: left;">
+                    <div class="input-label">السعر الحي</div>
+                    <div class="live-price" id="livePrice">...</div>
+                </div>
+            </div>
+            <div id="assetSuggestions" class="smart-chips" style="margin-top: 12px;"></div>
+        </div>
+
+        <!-- الاتجاه ونوع الطلب -->
+        <div class="section">
+            <div class="btn-group">
+                <div class="btn-select active-long" onclick="setSide('LONG')">🟢 شراء</div>
+                <div class="btn-select" onclick="setSide('SHORT')">🔴 بيع</div>
+            </div>
+            <div class="btn-group">
+                <div class="btn-select active-type" onclick="setType('LIMIT')">Limit</div>
+                <div class="btn-select" onclick="setType('MARKET')">Market</div>
+                <div class="btn-select" onclick="setType('STOP')">Stop</div>
+            </div>
+            
+            <!-- الرافعة المالية -->
+            <div class="leverage-section" id="leverageSection">
+                <div style="margin-top: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <label class="input-label">الرافعة المالية</label>
+                        <span class="leverage-val" id="levVal">20x</span>
+                    </div>
+                    <div class="leverage-container">
+                        <input type="range" id="leverage" min="1" max="125" value="20" 
+                               oninput="updateLeverage(this.value)">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- الأسعار -->
+        <div class="section">
+            <div class="floating-label">
+                <input type="number" id="entry" placeholder=" " oninput="runFullValidation()">
+                <span class="label-text" id="entryLabel">سعر الدخول</span>
+            </div>
+            
+            <div class="floating-label" style="margin-bottom: 0;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                    <span class="label-text">وقف الخسارة</span>
+                    <span class="label-text" id="riskLabel" style="color: var(--red);">0.00% مخاطرة</span>
+                </div>
+                <input type="number" id="sl" placeholder=" " style="border-color: rgba(255, 69, 58, 0.5);" 
+                       oninput="runFullValidation()">
+            </div>
+        </div>
+
+        <!-- الأهداف -->
+        <div class="section targets-section">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <label class="input-label" style="margin:0;">الأهداف</label>
+                <div class="progress-text" id="totalPercentText">المجموع: 0%</div>
+            </div>
+            <div class="progress-container">
+                <div class="progress-fill" id="totalPercentBar"></div>
+            </div>
+            
+            <div id="targetsContainer" class="target-container" style="margin: 20px 0;"></div>
+            
+            <div class="smart-chips">
+                <div class="chip chip-blue" onclick="addManualTarget()">+ إضافة هدف</div>
+                <div class="chip" onclick="smartCalc(1)">+1%</div>
+                <div class="chip" onclick="smartCalc(2)">+2%</div>
+                <div class="chip" onclick="smartCalc(5)">+5%</div>
+                <div class="chip" onclick="promptCustomCalc()">نسبة مخصصة</div>
+                <div class="chip" onclick="calcRR(1)">R:R 1:1</div>
+                <div class="chip" onclick="calcRR(2)">R:R 1:2</div>
+            </div>
+        </div>
+
+        <!-- الملاحظات والقنوات -->
+        <div class="section">
+            <div class="floating-label">
+                <textarea id="notes" rows="2" placeholder=" "></textarea>
+                <span class="label-text">الملاحظات / الاستراتيجية</span>
+            </div>
+            
+            <div style="margin-top: 24px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 16px;">
+                    <label class="input-label">النشر في القنوات</label>
+                    <label class="input-label" style="color: var(--button-color); cursor: pointer;" 
+                           onclick="toggleAllChannels()">تحديد الكل</label>
+                </div>
+                <div class="channel-grid" id="channelGrid">
+                    <div class="channel-chip" style="grid-column: 1 / -1; text-align: center;">
+                        جاري تحميل القنوات...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- زر النشر -->
+    <button class="publish-btn" id="submitBtn" onclick="publishSignal()">
+        🚀 نشر التوصية
+    </button>
 
     <script>
+        // ==============================================================================
+        // 1. INITIALIZATION & STATE MANAGEMENT
+        // ==============================================================================
+
         const tg = window.Telegram.WebApp;
-        tg.ready();
-        tg.expand();
+        let appState = {
+            currentMarket: 'FUTURES',
+            currentSide: 'LONG',
+            currentType: 'LIMIT',
+            currentMethod: 'interactive',
+            targetCount: 0,
+            livePriceVal: 0,
+            draftData: {},
+            selectedChannels: new Set(),
+            recentAssets: [],
+            fetchTimeout: null,
+            priceUpdateInterval: null
+        };
 
-        // --- State ---
-        let currentMarket = 'FUTURES';
-        let currentSide = 'LONG';
-        let selectedChannels = new Set();
-
-        // --- Secure Auth Logic (Android Fix) ---
-        function getTelegramData() {
-            if (tg.initData) return tg.initData;
-            const hash = window.location.hash.slice(1);
-            const params = new URLSearchParams(hash);
-            if (params.has('tgWebAppData')) return params.get('tgWebAppData');
-            return null;
-        }
-
-        function waitForInitData(maxRetries = 20) {
-            return new Promise((resolve) => {
-                let attempts = 0;
-                const check = () => {
-                    const data = getTelegramData();
-                    if (data) return resolve(data);
-                    attempts++;
-                    if (attempts >= maxRetries) return resolve(null);
-                    setTimeout(check, 250);
-                };
-                check();
-            });
-        }
-
-        // --- Core Logic ---
-        function setMarket(m) {
-            currentMarket = m;
-            document.getElementById('mkt_futures').classList.toggle('active', m === 'FUTURES');
-            document.getElementById('mkt_spot').classList.toggle('active', m === 'SPOT');
-            tg.HapticFeedback.selectionChanged();
-        }
-
-        function setSide(s) {
-            currentSide = s;
-            document.getElementById('side_long').classList.toggle('active', s === 'LONG');
-            document.getElementById('side_short').classList.toggle('active', s === 'SHORT');
-            tg.HapticFeedback.selectionChanged();
-        }
-
-        // --- API Integration (Restored) ---
-        async function loadChannels() {
-            const container = document.getElementById('channelsContainer');
-            const initData = await waitForInitData();
+        // Initialize the application
+        function initializeApp() {
+            console.log('🚀 Initializing CapitalGuard WebApp...');
             
-            if (!initData) {
-                container.innerHTML = '<div style="color:var(--brand-red); font-size:11px; grid-column:1/-1; text-align:center;">⚠️ Auth Failed. Open from Telegram.</div>';
+            // Telegram WebApp setup
+            tg.expand();
+            tg.ready();
+            
+            // Validate authentication
+            if (!tg.initData && !tg.initDataUnsafe) {
+                showAlert('⚠️ خطأ في المصادقة', 'يرجى فتح التطبيق من خلال Telegram مباشرة', 'danger');
                 return;
             }
 
-            try {
-                // Call real API
-                const res = await fetch(`/api/webapp/channels?initData=${encodeURIComponent(initData)}`);
-                const data = await res.json();
+            // Start the application based on initial method
+            setupInputMethod('interactive');
+            
+            // Load initial data
+            loadInitialData();
+            
+            // Start price updates
+            startPriceUpdates();
+            
+            console.log('✅ WebApp initialized successfully');
+        }
 
-                if (data.ok) {
-                    container.innerHTML = '';
-                    if (data.channels.length === 0) {
-                        container.innerHTML = '<div style="color:var(--text-sub); grid-column:1/-1; text-align:center;">No linked channels.<br>Use /link_channel</div>';
-                    }
-                    data.channels.forEach(ch => {
-                        const div = document.createElement('div');
-                        div.className = 'channel-chip selected'; // Default select all
-                        div.innerHTML = `📢 ${ch.title}`;
-                        div.dataset.id = ch.id;
-                        div.onclick = () => {
-                            if (selectedChannels.has(ch.id)) {
-                                selectedChannels.delete(ch.id);
-                                div.classList.remove('selected');
-                            } else {
-                                selectedChannels.add(ch.id);
-                                div.classList.add('selected');
-                            }
-                            tg.HapticFeedback.selectionChanged();
-                        };
-                        selectedChannels.add(ch.id);
-                        container.appendChild(div);
-                    });
-                } else {
-                    container.innerHTML = `<div style="color:var(--brand-red); grid-column:1/-1;">API Error: ${data.error}</div>`;
-                }
-            } catch (e) {
-                container.innerHTML = `<div style="color:var(--brand-red); grid-column:1/-1;">Network Error: ${e.message}</div>`;
+        // Load initial data
+        async function loadInitialData() {
+            showLoading(true);
+            try {
+                await Promise.all([
+                    fetchChannels(),
+                    fetchRecentAssets(),
+                    fetchPrice('BTCUSDT')
+                ]);
+            } catch (error) {
+                console.error('Error loading initial data:', error);
+                showAlert('⚠️ خطأ في التحميل', 'تعذر تحميل بعض البيانات', 'warning');
             }
+            showLoading(false);
+        }
+
+        // ==============================================================================
+        // 2. INPUT METHOD HANDLING
+        // ==============================================================================
+
+        function setInputMethod(method) {
+            appState.currentMethod = method;
+            
+            // Update UI
+            document.querySelectorAll('.btn-select').forEach(btn => {
+                btn.classList.remove('active-type');
+            });
+            event.target.classList.add('active-type');
+            
+            setupInputMethod(method);
+        }
+
+        function setupInputMethod(method) {
+            const methodSection = document.getElementById('inputMethodSection');
+            const textInputSection = document.getElementById('textInputSection');
+            const interactiveInterface = document.getElementById('interactiveInterface');
+            
+            // Hide all sections first
+            textInputSection.style.display = 'none';
+            interactiveInterface.style.display = 'none';
+            
+            switch(method) {
+                case 'interactive':
+                    interactiveInterface.style.display = 'block';
+                    initializeInteractiveMode();
+                    break;
+                    
+                case 'quick':
+                    textInputSection.style.display = 'block';
+                    setupQuickInputMode();
+                    break;
+                    
+                case 'editor':
+                    textInputSection.style.display = 'block';
+                    setupEditorMode();
+                    break;
+            }
+        }
+
+        function setupQuickInputMode() {
+            const content = `
+                <h3 style="margin-bottom: 16px;">⚡ وضع الإدخال السريع</h3>
+                <p style="color: var(--hint-color); margin-bottom: 16px; font-size: 0.9rem;">
+                    أدخل التوصية في سطر واحد بالتنسيق:<br>
+                    <code style="background: var(--bg-color); padding: 8px 12px; border-radius: 8px; display: block; margin: 8px 0;">
+                    الرمز الاتجاه الدخول الوقف الأهداف...
+                    </code>
+                </p>
+                <div class="floating-label">
+                    <textarea id="quickInput" rows="4" placeholder=" "></textarea>
+                    <span class="label-text">أدخل التوصية الكاملة</span>
+                </div>
+                <div style="margin-top: 12px;">
+                    <strong>أمثلة:</strong>
+                    <div style="font-size: 0.8rem; color: var(--hint-color); margin-top: 8px;">
+                        • <code>BTCUSDT LONG 90000 89000 91000 92000 93000</code><br>
+                        • <code>ETHUSDT SHORT 3500 3600 3400 3300 3200</code>
+                    </div>
+                </div>
+            `;
+            document.getElementById('textInputContent').innerHTML = content;
+        }
+
+        function setupEditorMode() {
+            const content = `
+                <h3 style="margin-bottom: 16px;">📝 وضع المحرر النصي</h3>
+                <p style="color: var(--hint-color); margin-bottom: 16px; font-size: 0.9rem;">
+                    الصق التوصية بالتنسيق التالي (كل معلومة في سطر):
+                </p>
+                <div class="floating-label">
+                    <textarea id="editorInput" rows="6" placeholder=" "></textarea>
+                    <span class="label-text">الصق البيانات هنا</span>
+                </div>
+                <div style="margin-top: 12px;">
+                    <strong>التنسيق المطلوب:</strong>
+                    <pre style="background: var(--bg-color); padding: 12px; border-radius: 8px; font-size: 0.8rem; margin-top: 8px; color: var(--text-color);">
+Asset: BTCUSDT
+Side: LONG  
+Entry: 90000
+SL: 89000
+TPs: 91000 92000 93000
+Notes: توصية شرطية
+Leverage: 20</pre>
+                </div>
+            `;
+            document.getElementById('textInputContent').innerHTML = content;
+        }
+
+        function initializeInteractiveMode() {
+            // Add initial target
+            addManualTarget();
+            
+            // Setup asset suggestions
+            setupAssetSuggestions();
+            
+            // Initial validation
+            runFullValidation();
+        }
+
+        // ==============================================================================
+        // 3. ASSET & PRICE MANAGEMENT
+        // ==============================================================================
+
+        async function fetchRecentAssets() {
+            try {
+                // This would call your backend API
+                // const response = await fetch('/api/webapp/recent-assets?initData=' + encodeURIComponent(getInitData()));
+                // const data = await response.json();
+                
+                // Mock data for demonstration
+                appState.recentAssets = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'ADAUSDT'];
+                updateAssetSuggestions();
+            } catch (error) {
+                console.error('Error fetching recent assets:', error);
+            }
+        }
+
+        function setupAssetSuggestions() {
+            const assetInput = document.getElementById('asset');
+            assetInput.addEventListener('focus', updateAssetSuggestions);
+        }
+
+        function updateAssetSuggestions() {
+            const container = document.getElementById('assetSuggestions');
+            if (!container) return;
+
+            if (appState.recentAssets.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+
+            const chips = appState.recentAssets.map(asset => 
+                `<div class="chip" onclick="setAsset('${asset}')">${asset}</div>`
+            ).join('');
+            
+            container.innerHTML = chips;
+        }
+
+        function setAsset(asset) {
+            document.getElementById('asset').value = asset;
+            validateAsset(asset);
+            fetchPrice(asset);
+            updateAssetSuggestions();
+        }
+
+        function validateAsset(symbol) {
+            // Basic validation - in real app, call your market data service
+            const isValid = symbol.length >= 5 && symbol.includes('USDT');
+            const input = document.getElementById('asset');
+            
+            if (isValid) {
+                input.style.borderColor = 'var(--green)';
+                input.style.backgroundColor = 'rgba(50, 215, 75, 0.1)';
+            } else {
+                input.style.borderColor = 'var(--red)';
+                input.style.backgroundColor = 'rgba(255, 69, 58, 0.1)';
+            }
+            
+            return isValid;
+        }
+
+        async function fetchPrice(symbol) {
+            if (!symbol) return;
+            
+            const priceElement = document.getElementById('livePrice');
+            priceElement.textContent = '...';
+            
+            try {
+                // Mock API call - replace with actual API
+                // const response = await fetch(`/api/webapp/price?symbol=${symbol.toUpperCase()}`);
+                // const data = await response.json();
+                
+                // Mock data for demonstration
+                const mockPrices = {
+                    'BTCUSDT': 90000 + (Math.random() * 1000 - 500),
+                    'ETHUSDT': 3500 + (Math.random() * 50 - 25),
+                    'SOLUSDT': 180 + (Math.random() * 5 - 2.5),
+                    'BNBUSDT': 600 + (Math.random() * 10 - 5),
+                    'ADAUSDT': 0.45 + (Math.random() * 0.1 - 0.05)
+                };
+                
+                const price = mockPrices[symbol] || (90000 + Math.random() * 1000);
+                appState.livePriceVal = price;
+                priceElement.textContent = formatPrice(price);
+                
+                // Update entry price if market order
+                if (appState.currentType === 'MARKET') {
+                    document.getElementById('entry').value = price;
+                    runFullValidation();
+                }
+            } catch (error) {
+                console.error('Error fetching price:', error);
+                priceElement.textContent = 'خطأ';
+                priceElement.style.color = 'var(--red)';
+            }
+        }
+
+        function debounceFetchPrice() {
+            clearTimeout(appState.fetchTimeout);
+            const symbol = document.getElementById('asset').value;
+            if (symbol && validateAsset(symbol)) {
+                appState.fetchTimeout = setTimeout(() => fetchPrice(symbol), 800);
+            }
+        }
+
+        function startPriceUpdates() {
+            // Update price every 30 seconds for current asset
+            appState.priceUpdateInterval = setInterval(() => {
+                const symbol = document.getElementById('asset').value;
+                if (symbol && validateAsset(symbol)) {
+                    fetchPrice(symbol);
+                }
+            }, 30000);
+        }
+
+        function formatPrice(price) {
+            if (!price) return '0.00';
+            const num = parseFloat(price);
+            return num >= 1000 ? num.toFixed(2) : num.toFixed(4);
+        }
+
+        // ==============================================================================
+        // 4. TRADE CONFIGURATION HANDLERS
+        // ==============================================================================
+
+        function setMarket(market) {
+            appState.currentMarket = market;
+            
+            // Update UI
+            document.querySelectorAll('.market-opt').forEach(opt => {
+                opt.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // Show/hide leverage section
+            document.getElementById('leverageSection').style.display = 
+                market === 'SPOT' ? 'none' : 'block';
+                
+            runFullValidation();
+            tg.HapticFeedback.selectionChanged();
+        }
+
+        function setSide(side) {
+            appState.currentSide = side;
+            
+            // Update UI
+            document.querySelectorAll('.btn-select').forEach(btn => {
+                btn.classList.remove('active-long', 'active-short');
+            });
+            event.target.classList.add(side === 'LONG' ? 'active-long' : 'active-short');
+            
+            runFullValidation();
+            tg.HapticFeedback.selectionChanged();
+        }
+
+        function setType(type) {
+            appState.currentType = type;
+            
+            // Update UI
+            document.querySelectorAll('.btn-select').forEach(btn => {
+                btn.classList.remove('active-type');
+            });
+            event.target.classList.add('active-type');
+            
+            // Handle input state
+            const entryInput = document.getElementById('entry');
+            const entryLabel = document.getElementById('entryLabel');
+            
+            if (type === 'MARKET') {
+                entryInput.disabled = true;
+                entryInput.value = appState.livePriceVal || '';
+                entryInput.placeholder = "سعر السوق الحالي";
+                entryLabel.textContent = "سعر الدخول (سوق)";
+            } else {
+                entryInput.disabled = false;
+                entryInput.placeholder = "0.00";
+                entryLabel.textContent = type === 'STOP' ? "سعر التنفيذ" : "سعر الدخول";
+            }
+            
+            runFullValidation();
+            tg.HapticFeedback.selectionChanged();
+        }
+
+        function updateLeverage(value) {
+            document.getElementById('levVal').textContent = value + 'x';
+            runFullValidation();
+        }
+
+        // ==============================================================================
+        // 5. TARGETS MANAGEMENT
+        // ==============================================================================
+
+        function addManualTarget() {
+            const currentTotal = getTotalPercentage();
+            const remaining = Math.max(0, 100 - currentTotal);
+            
+            addTargetRow('', remaining);
+            tg.HapticFeedback.impactOccurred('light');
+            runFullValidation();
+        }
+
+        function addTargetRow(price = "", percent = "") {
+            appState.targetCount++;
+            const container = document.getElementById('targetsContainer');
+            const row = document.createElement('div');
+            row.className = 'target-row';
+            row.innerHTML = `
+                <div class="tp-badge">${appState.targetCount}</div>
+                <input type="number" class="tp-price" value="${price}" placeholder="السعر" 
+                       oninput="runFullValidation()">
+                <input type="number" class="tp-pct" value="${percent}" placeholder="%" 
+                       oninput="runFullValidation()" style="width: 70px;">
+                <div class="tp-remove" onclick="removeTarget(this)">×</div>
+            `;
+            container.appendChild(row);
+            runFullValidation();
+        }
+
+        function removeTarget(element) {
+            element.parentElement.remove();
+            appState.targetCount--;
+            
+            // Update badges
+            document.querySelectorAll('.tp-badge').forEach((badge, index) => {
+                badge.textContent = index + 1;
+            });
+            
+            runFullValidation();
+            tg.HapticFeedback.selectionChanged();
+        }
+
+        function smartCalc(percent) {
+            const basePrice = getBasePrice();
+            if (!basePrice) {
+                tg.showAlert("⚠️ يرجى تحديد سعر الدخول أولاً");
+                return;
+            }
+            
+            const targetPrice = appState.currentSide === 'LONG' 
+                ? basePrice * (1 + (percent / 100))
+                : basePrice * (1 - (percent / 100));
+                
+            const currentTotal = getTotalPercentage();
+            const remaining = Math.max(0, 100 - currentTotal);
+            
+            addTargetRow(targetPrice.toFixed(2), remaining);
+            tg.HapticFeedback.impactOccurred('light');
+            runFullValidation();
+        }
+
+        function promptCustomCalc() {
+            const percent = prompt("أدخل النسبة المئوية (مثال: 3.5):");
+            if (percent && !isNaN(parseFloat(percent))) {
+                smartCalc(parseFloat(percent));
+            }
+        }
+
+        function calcRR(ratio) {
+            const basePrice = getBasePrice();
+            const slPrice = parseFloat(document.getElementById('sl').value);
+            
+            if (!basePrice || !slPrice) {
+                tg.showAlert("⚠️ يرجى تحديد سعر الدخول ووقف الخسارة أولاً");
+                return;
+            }
+            
+            const risk = Math.abs(basePrice - slPrice);
+            const targetPrice = appState.currentSide === 'LONG' 
+                ? basePrice + (risk * ratio)
+                : basePrice - (risk * ratio);
+                
+            const currentTotal = getTotalPercentage();
+            const remaining = Math.max(0, 100 - currentTotal);
+            
+            addTargetRow(targetPrice.toFixed(2), remaining);
+            tg.HapticFeedback.impactOccurred('light');
+            runFullValidation();
+        }
+
+        function getBasePrice() {
+            if (appState.currentType === 'MARKET') {
+                return appState.livePriceVal;
+            }
+            return parseFloat(document.getElementById('entry').value) || 0;
+        }
+
+        function getTotalPercentage() {
+            let total = 0;
+            document.querySelectorAll('.tp-pct').forEach(input => {
+                total += parseFloat(input.value) || 0;
+            });
+            return total;
+        }
+
+        function updateTotalPercent() {
+            const total = getTotalPercentage();
+            const bar = document.getElementById('totalPercentBar');
+            const text = document.getElementById('totalPercentText');
+            
+            bar.style.width = Math.min(total, 100) + '%';
+            text.textContent = `المجموع: ${total.toFixed(1)}%`;
+            
+            if (Math.abs(total - 100) < 0.1) {
+                bar.style.background = 'var(--green)';
+                text.style.color = 'var(--green)';
+            } else {
+                bar.style.background = 'linear-gradient(90deg, var(--orange), var(--green))';
+                text.style.color = total > 100 ? 'var(--red)' : 'var(--orange)';
+            }
+        }
+
+        // ==============================================================================
+        // 6. VALIDATION ENGINE
+        // ==============================================================================
+
+        function runFullValidation() {
+            updateCalculations();
+            const isValid = validateTradeLogic();
+            
+            const submitBtn = document.getElementById('submitBtn');
+            if (isValid) {
+                submitBtn.disabled = false;
+                submitBtn.style.opacity = "1";
+                submitBtn.innerHTML = "🚀 نشر التوصية";
+            } else {
+                submitBtn.disabled = true;
+                submitBtn.style.opacity = "0.5";
+                submitBtn.innerHTML = "⚠️ تحقق من البيانات";
+            }
+            
+            return isValid;
+        }
+
+        function validateTradeLogic() {
+            let isValid = true;
+            const entry = getBasePrice();
+            const slInput = document.getElementById('sl');
+            const sl = parseFloat(slInput.value);
+
+            // 1. Validate Entry vs Stop Loss
+            if (entry > 0 && sl > 0) {
+                let slError = false;
+                if (appState.currentSide === 'LONG' && sl >= entry) slError = true;
+                if (appState.currentSide === 'SHORT' && sl <= entry) slError = true;
+
+                if (slError) {
+                    slInput.style.borderColor = 'var(--red)';
+                    slInput.style.backgroundColor = 'rgba(255, 69, 58, 0.1)';
+                    isValid = false;
+                } else {
+                    slInput.style.borderColor = 'rgba(255, 69, 58, 0.5)';
+                    slInput.style.backgroundColor = 'var(--input-bg)';
+                }
+            }
+
+            // 2. Validate Targets Sequence
+            const rows = document.querySelectorAll('.target-row');
+            let previousPrice = entry;
+
+            rows.forEach(row => {
+                const priceInput = row.querySelector('.tp-price');
+                const price = parseFloat(priceInput.value);
+
+                if (!price) return;
+
+                let rowError = false;
+                if (appState.currentSide === 'LONG') {
+                    if (price <= previousPrice) rowError = true;
+                } else {
+                    if (price >= previousPrice && previousPrice > 0) rowError = true;
+                }
+
+                if (rowError) {
+                    row.classList.add('error');
+                    isValid = false;
+                } else {
+                    row.classList.remove('error');
+                }
+                previousPrice = price;
+            });
+            
+            // 3. Validate Total Percentage
+            const total = getTotalPercentage();
+            if (Math.abs(total - 100) > 0.1) isValid = false;
+
+            // 4. Validate Required Fields
+            if (!document.getElementById('asset').value) isValid = false;
+            if (appState.selectedChannels.size === 0) isValid = false;
+
+            return isValid;
+        }
+
+        function updateCalculations() {
+            const entry = getBasePrice();
+            const sl = parseFloat(document.getElementById('sl').value) || 0;
+            
+            if (entry > 0 && sl > 0) {
+                const diff = Math.abs(entry - sl);
+                const pct = ((diff / entry) * 100).toFixed(2);
+                document.getElementById('riskLabel').textContent = `-${pct}% مخاطرة`;
+            }
+            updateTotalPercent();
+        }
+
+        // ==============================================================================
+        // 7. CHANNELS MANAGEMENT
+        // ==============================================================================
+
+        async function fetchChannels() {
+            try {
+                // Mock API call - replace with actual API
+                // const initData = tg.initDataUnsafe ? JSON.stringify(tg.initDataUnsafe) : tg.initData;
+                // const response = await fetch(`/api/webapp/channels?initData=${encodeURIComponent(initData)}`);
+                // const data = await response.json();
+                
+                // Mock data for demonstration
+                const mockChannels = [
+                    { id: '1', title: 'القناة الرئيسية', is_active: true },
+                    { id: '2', title: 'إشارات VIP', is_active: true },
+                    { id: '3', title: 'تحليل السوق', is_active: true },
+                    { id: '4', title: 'القناة الاحتياطية', is_active: false }
+                ];
+                
+                const grid = document.getElementById('channelGrid');
+                grid.innerHTML = '';
+                
+                mockChannels.forEach(channel => {
+                    const chip = document.createElement('div');
+                    chip.className = `channel-chip ${channel.is_active ? '' : 'inactive'}`;
+                    chip.dataset.id = channel.id;
+                    chip.innerHTML = `📢 ${channel.title}`;
+                    chip.onclick = () => toggleChannel(channel.id, chip);
+                    
+                    // Select active channels by default
+                    if (channel.is_active) {
+                        appState.selectedChannels.add(channel.id);
+                        chip.classList.add('selected');
+                    }
+                    
+                    grid.appendChild(chip);
+                });
+                
+                console.log(`✅ Loaded ${mockChannels.length} channels`);
+            } catch (error) {
+                console.error('Error fetching channels:', error);
+                document.getElementById('channelGrid').innerHTML = 
+                    '<div class="channel-chip" style="grid-column: 1 / -1; color: var(--red);">❌ خطأ في تحميل القنوات</div>';
+            }
+        }
+
+        function toggleChannel(channelId, element) {
+            if (appState.selectedChannels.has(channelId)) {
+                appState.selectedChannels.delete(channelId);
+                element.classList.remove('selected');
+            } else {
+                appState.selectedChannels.add(channelId);
+                element.classList.add('selected');
+            }
+            
+            runFullValidation();
+            tg.HapticFeedback.selectionChanged();
         }
 
         function toggleAllChannels() {
-            const chips = document.querySelectorAll('.channel-chip');
-            const allSelected = Array.from(chips).every(c => c.classList.contains('selected'));
+            const allChips = document.querySelectorAll('.channel-chip:not(.inactive)');
+            const allSelected = allChips.length === appState.selectedChannels.size;
             
-            chips.forEach(c => {
-                const id = parseInt(c.dataset.id);
+            allChips.forEach(chip => {
+                const channelId = chip.dataset.id;
+                
                 if (allSelected) {
-                    c.classList.remove('selected');
-                    selectedChannels.delete(id);
+                    appState.selectedChannels.delete(channelId);
+                    chip.classList.remove('selected');
                 } else {
-                    c.classList.add('selected');
-                    selectedChannels.add(id);
+                    appState.selectedChannels.add(channelId);
+                    chip.classList.add('selected');
                 }
             });
+            
+            runFullValidation();
             tg.HapticFeedback.impactOccurred('medium');
         }
 
-        async function publish() {
-            const btn = document.getElementById('pubBtn');
-            const errBox = document.getElementById('errorDisplay');
-            errBox.style.display = 'none';
-            
-            // Validation
-            const asset = document.getElementById('asset').value.trim();
-            if (!asset) { showErr("Please enter an Asset Pair"); return; }
-            
-            const sl = parseFloat(document.getElementById('sl').value);
-            if (!sl) { showErr("Stop Loss is required"); return; }
+        // ==============================================================================
+        // 8. TEXT INPUT PARSING
+        // ==============================================================================
 
-            const entry = parseFloat(document.getElementById('entry').value) || 0; // 0 = Market
+        function parseTextInput() {
+            const method = appState.currentMethod;
+            let inputText = '';
             
-            // Logic Check
-            if (currentSide === 'LONG' && entry > 0 && sl >= entry) { showErr("Long SL must be below Entry"); return; }
-            if (currentSide === 'SHORT' && entry > 0 && sl <= entry) { showErr("Short SL must be above Entry"); return; }
-
-            btn.disabled = true;
-            btn.innerText = "Publishing...";
-            tg.HapticFeedback.notificationOccurred('success');
-
-            const initData = await waitForInitData();
+            if (method === 'quick') {
+                inputText = document.getElementById('quickInput').value.trim();
+            } else if (method === 'editor') {
+                inputText = document.getElementById('editorInput').value.trim();
+            }
             
-            const payload = {
-                initData: initData,
-                asset: asset,
-                side: currentSide,
-                market: currentMarket,
-                order_type: entry > 0 ? "LIMIT" : "MARKET",
-                entry: entry,
-                stop_loss: sl,
-                targets_raw: document.getElementById('targets').value,
-                channel_ids: Array.from(selectedChannels)
-            };
-
+            if (!inputText) {
+                showAlert('⚠️ مدخلات فارغة', 'يرجى إدخال البيانات أولاً', 'warning');
+                return;
+            }
+            
             try {
-                const res = await fetch('/api/webapp/create', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                });
-                const data = await res.json();
-                
-                if (data.ok) {
-                    tg.showAlert(`✅ Signal #${data.id} Published!`);
-                    setTimeout(() => tg.close(), 1000);
+                const parsedData = method === 'quick' 
+                    ? parseQuickInput(inputText)
+                    : parseEditorInput(inputText);
+                    
+                if (parsedData) {
+                    applyParsedData(parsedData);
+                    setupInputMethod('interactive');
+                    showAlert('✅ تم التحليل بنجاح', 'تم تحليل البيانات بنجاح', 'success');
                 } else {
-                    showErr("Server Error: " + data.error);
-                    btn.disabled = false;
-                    btn.innerText = "🚀 PUBLISH SIGNAL";
+                    throw new Error('تنسيق غير صالح');
                 }
-            } catch (e) {
-                showErr("Connection Failed: " + e.message);
-                btn.disabled = false;
-                btn.innerText = "🚀 PUBLISH SIGNAL";
+            } catch (error) {
+                showAlert('❌ خطأ في التحليل', error.message, 'danger');
             }
         }
 
-        function showErr(msg) {
-            const el = document.getElementById('errorDisplay');
-            el.innerText = msg;
-            el.style.display = 'block';
-            tg.HapticFeedback.notificationOccurred('error');
+        function parseQuickInput(text) {
+            const tokens = text.trim().split(/\s+/);
+            if (tokens.length < 5) {
+                throw new Error('بيانات غير كافية. التنسيق: الرمز الاتجاه الدخول الوقف الأهداف...');
+            }
+            
+            const asset = tokens[0].toUpperCase();
+            const side = tokens[1].toUpperCase();
+            const entry = parseFloat(tokens[2]);
+            const sl = parseFloat(tokens[3]);
+            const targets = tokens.slice(4).map(t => parseFloat(t)).filter(t => !isNaN(t));
+            
+            if (!['LONG', 'SHORT'].includes(side)) {
+                throw new Error('الاتجاه يجب أن يكون LONG أو SHORT');
+            }
+            
+            if (isNaN(entry) || isNaN(sl) || targets.length === 0) {
+                throw new Error('أسعار غير صالحة');
+            }
+            
+            return {
+                asset,
+                side,
+                entry,
+                stop_loss: sl,
+                targets: targets.map((price, index) => ({
+                    price,
+                    close_percent: Math.floor(100 / targets.length)
+                })),
+                market: 'Futures',
+                order_type: 'LIMIT'
+            };
         }
 
-        // Start
-        loadChannels();
+        function parseEditorInput(text) {
+            const lines = text.split('\n').map(line => line.trim()).filter(line => line);
+            const data = {};
+            
+            lines.forEach(line => {
+                const [key, ...valueParts] = line.split(':');
+                if (key && valueParts.length > 0) {
+                    const value = valueParts.join(':').trim();
+                    const lowerKey = key.trim().toLowerCase();
+                    
+                    switch (lowerKey) {
+                        case 'asset':
+                            data.asset = value.toUpperCase();
+                            break;
+                        case 'side':
+                            data.side = value.toUpperCase();
+                            break;
+                        case 'entry':
+                            data.entry = parseFloat(value);
+                            break;
+                        case 'sl':
+                        case 'stop loss':
+                        case 'stop_loss':
+                            data.stop_loss = parseFloat(value);
+                            break;
+                        case 'tps':
+                        case 'targets':
+                            data.targets = value.split(/\s+/)
+                                .map(t => parseFloat(t))
+                                .filter(t => !isNaN(t))
+                                .map((price, index, arr) => ({
+                                    price,
+                                    close_percent: Math.floor(100 / arr.length)
+                                }));
+                            break;
+                        case 'market':
+                            data.market = value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+                            break;
+                        case 'order type':
+                        case 'order_type':
+                            data.order_type = value.toUpperCase();
+                            break;
+                        case 'leverage':
+                            data.leverage = value.replace('x', '');
+                            break;
+                        case 'notes':
+                            data.notes = value;
+                            break;
+                    }
+                }
+            });
+            
+            // Validation
+            if (!data.asset || !data.side || !data.entry || !data.stop_loss || !data.targets) {
+                throw new Error('بيانات ناقصة. يرجى التأكد من وجود: Asset, Side, Entry, SL, TPs');
+            }
+            
+            if (!['LONG', 'SHORT'].includes(data.side)) {
+                throw new Error('الاتجاه يجب أن يكون LONG أو SHORT');
+            }
+            
+            data.market = data.market || 'Futures';
+            data.order_type = data.order_type || 'LIMIT';
+            
+            return data;
+        }
+
+        function applyParsedData(parsedData) {
+            // Set basic fields
+            setAsset(parsedData.asset);
+            setSide(parsedData.side);
+            setType(parsedData.order_type);
+            
+            // Set market if provided
+            if (parsedData.market) {
+                const marketBtn = parsedData.market === 'Spot' ? document.querySelector('.market-opt:last-child') 
+                                                              : document.querySelector('.market-opt:first-child');
+                if (marketBtn) marketBtn.click();
+            }
+            
+            // Set prices
+            document.getElementById('entry').value = parsedData.entry;
+            document.getElementById('sl').value = parsedData.stop_loss;
+            
+            // Set leverage if provided
+            if (parsedData.leverage) {
+                document.getElementById('leverage').value = parsedData.leverage;
+                updateLeverage(parsedData.leverage);
+            }
+            
+            // Set notes if provided
+            if (parsedData.notes) {
+                document.getElementById('notes').value = parsedData.notes;
+            }
+            
+            // Clear existing targets and add new ones
+            document.getElementById('targetsContainer').innerHTML = '';
+            appState.targetCount = 0;
+            
+            parsedData.targets.forEach(target => {
+                addTargetRow(target.price, target.close_percent);
+            });
+            
+            runFullValidation();
+        }
+
+        // ==============================================================================
+        // 9. PUBLICATION & API COMMUNICATION
+        // ==============================================================================
+
+        async function publishSignal() {
+            if (!runFullValidation()) {
+                tg.showAlert("⚠️ يرجى تصحيح الأخطاء الموجودة في البيانات");
+                return;
+            }
+
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.classList.add('loading');
+            submitBtn.innerHTML = "⏳ جاري النشر...";
+            
+            tg.HapticFeedback.notificationOccurred('success');
+
+            try {
+                // Prepare targets
+                const targets = [];
+                document.querySelectorAll('.target-row').forEach(row => {
+                    const price = row.querySelector('.tp-price').value;
+                    const percent = row.querySelector('.tp-pct').value;
+                    if (price) {
+                        targets.push(percent ? `${price}@${percent}` : price);
+                    }
+                });
+
+                // Prepare payload
+                const payload = {
+                    initData: tg.initDataUnsafe ? JSON.stringify(tg.initDataUnsafe) : tg.initData,
+                    asset: document.getElementById('asset').value.toUpperCase(),
+                    side: appState.currentSide,
+                    market: appState.currentMarket,
+                    order_type: appState.currentType,
+                    entry: parseFloat(document.getElementById('entry').value) || 0,
+                    stop_loss: parseFloat(document.getElementById('sl').value) || 0,
+                    targets_raw: targets.join(' '),
+                    notes: document.getElementById('notes').value,
+                    leverage: document.getElementById('leverage').value,
+                    channel_ids: Array.from(appState.selectedChannels)
+                };
+
+                // Mock API call - replace with actual API
+                // const response = await fetch('/api/webapp/create', {
+                //     method: 'POST',
+                //     headers: {
+                //         'Content-Type': 'application/json',
+                //     },
+                //     body: JSON.stringify(payload)
+                // });
+
+                // const data = await response.json();
+                
+                // Mock success response
+                const mockResponse = { ok: true, id: 'SIG_' + Date.now() };
+
+                if (mockResponse.ok) {
+                    showAlert('✅ نجاح', `تم نشر التوصية بنجاح (ID: ${mockResponse.id})`, 'success');
+                    setTimeout(() => {
+                        tg.close();
+                    }, 2000);
+                } else {
+                    throw new Error(mockResponse.error || 'خطأ غير معروف');
+                }
+
+            } catch (error) {
+                console.error('Publication error:', error);
+                showAlert('❌ خطأ', error.message, 'danger');
+                
+                submitBtn.disabled = false;
+                submitBtn.classList.remove('loading');
+                submitBtn.innerHTML = "🚀 نشر التوصية";
+            }
+        }
+
+        // ==============================================================================
+        // 10. UI UTILITIES
+        // ==============================================================================
+
+        function showAlert(title, message, type) {
+            const container = document.getElementById('alertContainer');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.innerHTML = `
+                <strong>${title}</strong>
+                <div style="margin-top: 8px; font-size: 0.9rem;">${message}</div>
+            `;
+            
+            container.appendChild(alert);
+            
+            // Auto remove after 5 seconds
+            setTimeout(() => {
+                if (alert.parentNode) {
+                    alert.parentNode.removeChild(alert);
+                }
+            }, 5000);
+        }
+
+        function showLoading(show) {
+            const overlay = document.getElementById('loadingOverlay');
+            overlay.style.display = show ? 'flex' : 'none';
+        }
+
+        function getInitData() {
+            return tg.initDataUnsafe ? JSON.stringify(tg.initDataUnsafe) : tg.initData;
+        }
+
+        // ==============================================================================
+        // 11. INITIALIZATION
+        // ==============================================================================
+
+        // Initialize when DOM is loaded
+        document.addEventListener('DOMContentLoaded', initializeApp);
+
+        // Cleanup on unload
+        window.addEventListener('beforeunload', () => {
+            if (appState.priceUpdateInterval) {
+                clearInterval(appState.priceUpdateInterval);
+            }
+        });
 
     </script>
 </body>
