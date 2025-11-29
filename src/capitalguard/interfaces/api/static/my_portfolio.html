@@ -3,196 +3,87 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>CapitalGuard Pro</title>
+    <title>CapitalGuard Portfolio</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
         
         :root {
-            --bg-app: #0b0e11;
-            --bg-surface: #151a1f;
-            --bg-card: #1e2329;
-            --bg-card-hover: #252b32;
-            --bg-sheet: #20252b;
-            --text-primary: #eaecef;
-            --text-secondary: #848e9c;
-            --brand-green: #0ecb81;
-            --brand-red: #f6465d;
-            --brand-yellow: #f0b90b;
-            --bg-green-dim: rgba(14, 203, 129, 0.15);
-            --bg-red-dim: rgba(246, 70, 93, 0.15);
+            --bg-app: #0b0e11; --bg-card: #1e2329; --bg-card-hover: #2a2e35;
+            --bg-sheet: #20252b; --bg-surface: #161a20;
+            --text-main: #eaecef; --text-sub: #848e9c;
+            --brand-green: #0ecb81; --brand-red: #f6465d; --brand-yellow: #f0b90b;
             --border: rgba(255,255,255,0.05);
         }
-
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { background-color: var(--bg-app); color: var(--text-primary); font-family: 'Inter', sans-serif; margin: 0; padding: 0; padding-bottom: 100px; overflow-x: hidden; }
+        body { background: var(--bg-app); color: var(--text-main); font-family: 'Inter', sans-serif; margin: 0; padding-bottom: 100px; }
         .mono { font-family: 'JetBrains Mono', monospace; }
 
-        /* --- Header & Summary --- */
-        .dashboard-header { padding: 20px 16px; background: linear-gradient(180deg, rgba(30,35,41,0.95) 0%, rgba(11,14,17,0) 100%); position: sticky; top: 0; z-index: 100; backdrop-filter: blur(20px); border-bottom: 1px solid var(--border); }
-        .header-top { display: flex; justify-content: space-between; margin-bottom: 16px; }
-        .app-title { font-size: 18px; font-weight: 700; color: var(--brand-yellow); }
-        
-        .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-        .summary-card { background: linear-gradient(135deg, #2b3139 0%, #1e2329 100%); border-radius: 16px; padding: 16px; border: 1px solid var(--border); box-shadow: 0 4px 16px rgba(0,0,0,0.2); }
-        .summary-main { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; }
-        .summary-label { font-size: 11px; color: var(--text-secondary); font-weight: 600; text-transform: uppercase; display: block; margin-bottom: 4px; }
-        .summary-value { font-size: 28px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+        /* Header */
+        .header { padding: 20px; background: linear-gradient(180deg, rgba(30,35,41,0.95) 0%, rgba(0,0,0,0) 100%); position: sticky; top: 0; z-index: 50; backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+        .app-title { font-size: 18px; font-weight: 800; color: var(--brand-yellow); margin-bottom: 15px; }
+        .summary-card { background: var(--bg-card); padding: 15px; border-radius: 12px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+        .summary-val { font-size: 24px; font-weight: 700; }
         .pos { color: var(--brand-green); } .neg { color: var(--brand-red); }
 
-        /* --- Tabs --- */
-        .tabs-container { position: sticky; top: 140px; background: var(--bg-app); z-index: 90; padding: 0 16px; border-bottom: 1px solid var(--border); margin-top: -1px; }
-        .tabs { display: flex; gap: 24px; }
-        .tab { padding: 14px 0; font-size: 14px; font-weight: 600; color: var(--text-secondary); cursor: pointer; position: relative; transition: color 0.3s; }
-        .tab.active { color: var(--text-primary); }
-        .tab.active::after { content: ''; position: absolute; bottom: -1px; left: 0; width: 100%; height: 3px; background: var(--brand-yellow); border-radius: 3px 3px 0 0; }
-        .tab-badge { background: var(--bg-surface); color: var(--text-primary); font-size: 10px; padding: 2px 6px; border-radius: 8px; margin-left: 4px; border: 1px solid var(--border); }
+        /* Tabs */
+        .tabs { display: flex; gap: 20px; padding: 0 20px; margin-top: 15px; border-bottom: 1px solid var(--border); }
+        .tab { padding: 12px 0; color: var(--text-sub); font-weight: 600; font-size: 14px; cursor: pointer; position: relative; }
+        .tab.active { color: var(--text-main); }
+        .tab.active::after { content:''; position: absolute; bottom: -1px; left: 0; width: 100%; height: 3px; background: var(--brand-yellow); border-radius: 3px 3px 0 0; }
 
-        /* --- Trade Cards --- */
-        .container { padding: 16px; min-height: 400px; }
-        
-        .trade-card { 
-            background: var(--bg-card); border-radius: 16px; padding: 16px; margin-bottom: 12px; 
-            position: relative; overflow: hidden; border: 1px solid transparent; transition: transform 0.1s; cursor: pointer; 
-        }
+        /* List */
+        .container { padding: 16px; }
+        .trade-card { background: var(--bg-card); border-radius: 16px; padding: 16px; margin-bottom: 12px; position: relative; overflow: hidden; border: 1px solid transparent; transition: transform 0.1s; cursor: pointer; }
         .trade-card:active { transform: scale(0.98); background: var(--bg-card-hover); }
         
-        /* Side Indicator Strip */
-        .trade-card::before { content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%; background: var(--text-secondary); opacity: 0.5; }
-        .trade-card.long::before { background: var(--brand-green); opacity: 1; }
-        .trade-card.short::before { background: var(--brand-red); opacity: 1; }
-
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-        .pair-wrapper { display: flex; align-items: center; gap: 10px; }
-        .pair-icon { width: 36px; height: 36px; background: var(--bg-surface); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; border: 1px solid var(--border); }
-        .pair-name { font-size: 16px; font-weight: 700; }
-        .leverage { font-size: 11px; color: var(--text-secondary); background: var(--bg-surface); padding: 2px 6px; border-radius: 4px; margin-left: 6px; }
+        /* Card Layout */
+        .card-top { display: flex; justify-content: space-between; margin-bottom: 12px; }
+        .pair { font-size: 16px; font-weight: 700; }
+        .side-badge { font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 4px; text-transform: uppercase; }
+        .long { background: rgba(14, 203, 129, 0.15); color: var(--brand-green); }
+        .short { background: rgba(246, 70, 93, 0.15); color: var(--brand-red); }
         
-        .side-badge { font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 6px; text-transform: uppercase; }
-        .bg-long { background: var(--bg-green-dim); color: var(--brand-green); }
-        .bg-short { background: var(--bg-red-dim); color: var(--brand-red); }
+        .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .lbl { font-size: 11px; color: var(--text-sub); }
+        .val { font-size: 14px; font-weight: 600; }
+        .pnl { font-size: 18px; font-weight: 700; text-align: right; }
 
-        .card-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-        .stat-label { font-size: 11px; color: var(--text-secondary); margin-bottom: 2px; }
-        .stat-val { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600; }
-        .pnl-val { font-size: 18px; font-weight: 700; text-align: right; display: block; }
+        /* Risk Meter */
+        .risk-bar { height: 4px; background: #2b3139; margin-top: 12px; position: relative; border-radius: 2px; overflow: visible; }
+        .risk-dot { width: 8px; height: 8px; background: #fff; border-radius: 50%; position: absolute; top: -2px; box-shadow: 0 0 5px rgba(255,255,255,0.5); transition: left 0.5s; }
 
-        /* Visual Risk Bar */
-        .risk-container { margin-top: 16px; position: relative; height: 18px; }
-        .risk-track { height: 6px; background: var(--bg-surface); border-radius: 3px; position: absolute; top: 6px; width: 100%; }
-        .risk-fill { height: 100%; border-radius: 3px; position: absolute; top: 0; opacity: 0.3; transition: width 0.5s; }
-        .dot { position: absolute; top: 3px; width: 2px; height: 12px; z-index: 2; }
-        .dot.sl { background: var(--brand-red); left: 0%; }
-        .dot.entry { background: var(--text-secondary); left: 30%; }
-        .dot.tp { background: var(--brand-green); right: 0%; }
-        .dot-current { top: 2px; width: 14px; height: 14px; background: #fff; border-radius: 50%; box-shadow: 0 0 8px rgba(255,255,255,0.5); z-index: 3; transition: left 0.5s; border: 2px solid var(--bg-card); }
-
-        /* --- Bottom Sheet --- */
-        .sheet-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 150; opacity: 0; visibility: hidden; transition: all 0.3s; backdrop-filter: blur(5px); }
-        .sheet-overlay.open { opacity: 1; visibility: visible; }
-        .bottom-sheet { position: fixed; bottom: -100%; left: 0; width: 100%; background: var(--bg-sheet); border-radius: 24px 24px 0 0; padding: 24px; z-index: 151; transition: bottom 0.3s cubic-bezier(0.1, 0.9, 0.2, 1); box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
-        .sheet-overlay.open .bottom-sheet { bottom: 0; }
-
-        .sheet-header { display: flex; justify-content: space-between; margin-bottom: 20px; align-items: center; }
-        .sheet-title { font-size: 20px; font-weight: 700; }
-        .sheet-subtitle { font-size: 13px; color: var(--text-secondary); }
-        .sheet-close { background: var(--bg-surface); border: none; color: var(--text-secondary); width: 32px; height: 32px; border-radius: 50%; font-size: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-
-        .action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px; }
-        .action-btn { background: var(--bg-surface); border: none; padding: 16px; border-radius: 12px; color: var(--text-primary); font-size: 13px; font-weight: 600; display: flex; flex-direction: column; align-items: center; gap: 8px; cursor: pointer; }
-        .action-btn:active { background: var(--border); }
-        .icon { font-size: 20px; }
-        .btn-danger { background: rgba(246, 70, 93, 0.15); color: var(--brand-red); }
-        
-        /* Loader & State */
-        .loader { text-align: center; padding: 50px; color: var(--text-secondary); }
-        .error-msg { background: rgba(246, 70, 93, 0.1); color: var(--brand-red); padding: 15px; border-radius: 12px; text-align: center; margin: 20px; }
-        .retry-btn { background: var(--brand-yellow); color: #000; border: none; padding: 10px 20px; border-radius: 8px; font-weight: bold; margin-top: 10px; cursor: pointer; }
-        
-        /* FAB */
-        .fab { position: fixed; bottom: 24px; right: 24px; width: 56px; height: 56px; background: var(--brand-yellow); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; color: #000; cursor: pointer; box-shadow: 0 8px 24px rgba(240, 185, 11, 0.3); z-index: 90; }
+        /* Loader */
+        .loader { text-align: center; padding: 40px; color: var(--text-sub); font-size: 13px; }
+        .error-msg { background: rgba(246, 70, 93, 0.15); color: var(--brand-red); padding: 15px; border-radius: 12px; text-align: center; display: none; }
     </style>
 </head>
 <body>
 
-    <div class="dashboard-header">
-        <div class="header-top">
-            <div class="app-title">CapitalGuard Pro</div>
-        </div>
-        <div class="summary-grid">
-            <div class="summary-card summary-main">
-                <div>
-                    <span class="summary-label">Active PnL</span>
-                    <div class="summary-value" id="totalPnL">--</div>
-                </div>
-                <div style="text-align:right;">
-                    <span class="summary-label">Trades</span>
-                    <div class="summary-value" id="activeCount">0</div>
-                </div>
+    <div class="header">
+        <div class="app-title">CapitalGuard Pro</div>
+        <div class="summary-card">
+            <div>
+                <div class="lbl">TOTAL ACTIVE PNL</div>
+                <div class="summary-val mono" id="totalPnL">--</div>
             </div>
-            <div class="summary-card">
-                <span class="summary-label">Watchlist</span>
-                <div class="summary-value" id="watchCount">0</div>
-            </div>
-            <div class="summary-card">
-                <span class="summary-label">Closed Today</span>
-                <div class="summary-value" id="closedCount">0</div>
+            <div style="text-align: right;">
+                <div class="lbl">OPEN POSITIONS</div>
+                <div class="val" style="font-size: 20px;" id="activeCount">0</div>
             </div>
         </div>
     </div>
 
-    <div class="tabs-container">
-        <div class="tabs">
-            <div class="tab active" onclick="setFilter('ACTIVE')">Active</div>
-            <div class="tab" onclick="setFilter('WATCHLIST')">Watchlist</div>
-            <div class="tab" onclick="setFilter('CLOSED')">History</div>
-        </div>
+    <div class="tabs">
+        <div class="tab active" onclick="filter('ACTIVE', this)">Active</div>
+        <div class="tab" onclick="filter('WATCHLIST', this)">Watchlist</div>
+        <div class="tab" onclick="filter('CLOSED', this)">History</div>
     </div>
 
     <div class="container">
-        <div id="loader" class="loader">Connecting Securely...</div>
-        <div id="errorState" style="display:none;" class="error-msg"></div>
-        <div id="tradeList"></div>
-    </div>
-
-    <div class="fab" onclick="createNewSignal()">+</div>
-
-    <div class="sheet-overlay" id="sheetOverlay" onclick="closeSheet()">
-        <div class="bottom-sheet" onclick="event.stopPropagation()">
-            <div class="sheet-header">
-                <div>
-                    <div class="sheet-title" id="sheetTitle">BTC/USDT</div>
-                    <div class="sheet-subtitle" id="sheetSubtitle">LONG • Futures</div>
-                </div>
-                <button class="sheet-close" onclick="closeSheet()">×</button>
-            </div>
-
-            <div style="background:var(--bg-card); padding:16px; border-radius:12px; margin-bottom:20px;">
-                <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-                    <span style="color:var(--text-secondary)">Entry</span>
-                    <span class="mono" style="font-weight:bold;" id="sheetEntry">0.00</span>
-                </div>
-                <div style="display:flex; justify-content:space-between;">
-                    <span style="color:var(--text-secondary)">PnL</span>
-                    <span class="mono" style="font-weight:bold;" id="sheetPnL">0.00%</span>
-                </div>
-            </div>
-
-            <div class="action-grid">
-                <button class="action-btn" onclick="action('edit')">
-                    <span class="icon">✏️</span> Edit
-                </button>
-                <button class="action-btn" onclick="action('breakeven')">
-                    <span class="icon">🛡️</span> Break Even
-                </button>
-                <button class="action-btn" onclick="action('partial')">
-                    <span class="icon">💰</span> Take 50%
-                </button>
-                <button class="action-btn btn-danger" onclick="action('close')">
-                    <span class="icon">❌</span> Close
-                </button>
-            </div>
-        </div>
+        <div id="loader" class="loader">Connecting to Secure Core...</div>
+        <div id="errorBox" class="error-msg"></div>
+        <div id="list"></div>
     </div>
 
     <script>
@@ -202,18 +93,22 @@
 
         let allTrades = [];
         let currentFilter = 'ACTIVE';
-        let selectedTrade = null;
 
-        // --- Robust Auth (Fixed Android Issue) ---
+        // --- Auth Engine ---
+        function getTelegramData() {
+            if (tg.initData) return tg.initData;
+            const hash = window.location.hash.slice(1);
+            const params = new URLSearchParams(hash);
+            if (params.has('tgWebAppData')) return params.get('tgWebAppData');
+            return null;
+        }
+
         function waitForInitData(maxRetries = 20) {
             return new Promise((resolve) => {
                 let attempts = 0;
                 const check = () => {
-                    if (tg.initData) return resolve(tg.initData);
-                    // Hash Fallback
-                    const hashParams = new URLSearchParams(window.location.hash.slice(1));
-                    if (hashParams.has('tgWebAppData')) return resolve(hashParams.get('tgWebAppData'));
-                    
+                    const data = getTelegramData();
+                    if (data) return resolve(data);
                     attempts++;
                     if (attempts >= maxRetries) return resolve(null);
                     setTimeout(check, 250);
@@ -222,169 +117,118 @@
             });
         }
 
-        async function fetchPortfolio() {
+        // --- Data Fetch ---
+        async function fetchData() {
             const initData = await waitForInitData();
             if (!initData) {
-                showError("Auth Failed: Please open from Telegram", true);
+                showError("Auth Failed: Open from Telegram.");
                 return;
             }
 
             try {
                 const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
-                if (!res.ok) throw new Error(`Server Error (${res.status})`);
+                if (!res.ok) throw new Error("Server Error");
                 
                 const data = await res.json();
                 if (data.ok) {
                     allTrades = data.portfolio.items || [];
-                    updateSummary();
-                    renderList();
+                    updateUI();
                     document.getElementById('loader').style.display = 'none';
                 } else {
-                    showError("API Error: " + data.error);
+                    showError(data.error);
                 }
             } catch (e) {
                 showError("Connection Error");
             }
         }
 
-        function updateSummary() {
+        // --- UI Logic ---
+        function updateUI() {
+            // Summary
             const active = allTrades.filter(t => t.unified_status === 'ACTIVE');
-            const watch = allTrades.filter(t => t.unified_status === 'WATCHLIST' || t.unified_status === 'PENDING_ACTIVATION');
-            
-            let totalPnL = 0;
-            active.forEach(t => totalPnL += parseFloat(t.pnl_live || 0));
+            let total = 0;
+            active.forEach(t => total += parseFloat(t.pnl_live || 0));
             
             const pnlEl = document.getElementById('totalPnL');
-            pnlEl.innerText = (totalPnL>0?'+':'') + totalPnL.toFixed(2) + "%";
-            pnlEl.className = `summary-value ${totalPnL>=0?'pos':'neg'}`;
-            
+            pnlEl.innerText = (total > 0 ? "+" : "") + total.toFixed(2) + "%";
+            pnlEl.className = `summary-val mono ${total >= 0 ? 'pos' : 'neg'}`;
             document.getElementById('activeCount').innerText = active.length;
-            document.getElementById('watchCount').innerText = watch.length;
-        }
 
-        function renderList() {
-            const container = document.getElementById('tradeList');
+            // List
+            const container = document.getElementById('list');
             container.innerHTML = '';
             
-            let filtered = [];
-            if (currentFilter === 'ACTIVE') {
-                filtered = allTrades.filter(t => t.unified_status === 'ACTIVE');
-            } else if (currentFilter === 'WATCHLIST') {
-                filtered = allTrades.filter(t => t.unified_status === 'WATCHLIST' || t.unified_status === 'PENDING_ACTIVATION');
-            } else {
-                filtered = allTrades.filter(t => t.unified_status === 'CLOSED');
-            }
+            const filtered = allTrades.filter(t => {
+                if (currentFilter === 'ACTIVE') return t.unified_status === 'ACTIVE';
+                if (currentFilter === 'WATCHLIST') return ['WATCHLIST', 'PENDING_ACTIVATION'].includes(t.unified_status);
+                return t.unified_status === 'CLOSED';
+            });
 
             if (filtered.length === 0) {
-                container.innerHTML = `<div style="text-align:center; color:var(--text-secondary); margin-top:40px;">No ${currentFilter.toLowerCase()} positions.</div>`;
+                container.innerHTML = `<div class="loader">No ${currentFilter.toLowerCase()} trades found.</div>`;
                 return;
             }
 
             filtered.forEach(t => {
                 const isLong = t.side === 'LONG';
                 const pnl = parseFloat(t.pnl_live || 0);
-                const isProfitable = pnl >= 0;
-                const badgeClass = isLong ? 'bg-long' : 'bg-short';
-                const pnlColor = isProfitable ? 'var(--brand-green)' : 'var(--brand-red)';
+                const colorClass = pnl >= 0 ? 'pos' : 'neg';
                 
-                // Risk Calculation Logic
-                let progress = 30; // Default Entry position
-                if (t.live_price && t.entry) {
-                    const entry = parseFloat(t.entry);
-                    const current = parseFloat(t.live_price);
-                    const diffPct = ((current - entry) / entry) * 100;
-                    // Visual scale multiplier
-                    const visualShift = (isLong ? diffPct : -diffPct) * 5; 
-                    progress = Math.min(Math.max(30 + visualShift, 0), 100);
+                // Risk Meter Calc (Simplified)
+                let progress = 50; // Default middle
+                if (t.entry && t.live_price) {
+                     const entry = parseFloat(t.entry);
+                     const curr = parseFloat(t.live_price);
+                     const diff = ((curr - entry) / entry) * 100;
+                     const dir = isLong ? 1 : -1;
+                     progress = 50 + (diff * dir * 5); // Scale
+                     progress = Math.max(0, Math.min(100, progress));
                 }
 
                 const html = `
-                <div class="trade-card ${isLong?'long':'short'}" onclick="openSheet(${t.id})">
+                <div class="trade-card" onclick="tg.openLink('https://t.me/${tg.initDataUnsafe?.start_param || 'Tradingplatformxbot'}/signal_dashboard.html?id=${t.id}')">
                     <div class="card-top">
-                        <div class="pair-wrapper">
-                            <div class="pair-icon">${t.asset.substring(0,1)}</div>
-                            <div>
-                                <span class="pair-name">${t.asset}</span>
-                                <span class="leverage">${t.market}</span>
-                            </div>
-                        </div>
-                        <span class="side-badge ${badgeClass}">${t.side}</span>
+                        <div class="pair">${t.asset}</div>
+                        <div class="side-badge ${isLong ? 'long' : 'short'}">${t.side}</div>
                     </div>
-                    
-                    <div class="card-stats">
+                    <div class="stats">
                         <div>
-                            <div class="stat-label">Entry</div>
-                            <div class="stat-val">${parseFloat(t.entry).toFixed(4)}</div>
+                            <div class="lbl">ENTRY</div>
+                            <div class="val mono">${parseFloat(t.entry).toFixed(4)}</div>
                         </div>
-                        <div style="text-align:right;">
-                            <div class="stat-label">PnL</div>
-                            <span class="pnl-val" style="color:${pnlColor}">${(pnl>0?'+':'')}${pnl.toFixed(2)}%</span>
+                        <div>
+                            <div class="lbl" style="text-align:right;">PNL</div>
+                            <div class="pnl mono ${colorClass}">${(pnl>0?'+':'')}${pnl.toFixed(2)}%</div>
                         </div>
                     </div>
-
                     ${currentFilter === 'ACTIVE' ? `
-                    <div class="risk-container">
-                        <div class="risk-track"></div>
-                        <div class="risk-fill" style="width:${isLong?'100%':'100%'}; background:${isLong?'var(--brand-green)':'var(--brand-red)'}; left:0;"></div>
-                        <div class="dot sl"></div>
-                        <div class="dot entry"></div>
-                        <div class="dot tp"></div>
-                        <div class="dot-current" style="left:${progress}%;"></div>
-                    </div>
-                    ` : ''}
-                </div>
-                `;
+                    <div class="risk-bar">
+                        <div class="risk-dot" style="left: ${progress}%"></div>
+                    </div>` : ''}
+                </div>`;
                 container.innerHTML += html;
             });
         }
 
-        // --- Actions ---
-        function setFilter(filter) {
-            currentFilter = filter;
+        function filter(status, tabEl) {
+            currentFilter = status;
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            event.target.classList.add('active');
-            renderList();
+            tabEl.classList.add('active');
+            updateUI();
+            tg.HapticFeedback.selectionChanged();
         }
 
-        function openSheet(id) {
-            selectedTrade = allTrades.find(t => t.id === id);
-            if (!selectedTrade) return;
-
-            document.getElementById('sheetTitle').innerText = selectedTrade.asset;
-            document.getElementById('sheetSubtitle').innerText = `${selectedTrade.side} • ${selectedTrade.market}`;
-            document.getElementById('sheetEntry').innerText = selectedTrade.entry;
-            
-            const pnl = parseFloat(selectedTrade.pnl_live || 0);
-            const pnlEl = document.getElementById('sheetPnL');
-            pnlEl.innerText = `${(pnl>0?'+':'')}${pnl.toFixed(2)}%`;
-            pnlEl.style.color = pnl >= 0 ? 'var(--brand-green)' : 'var(--brand-red)';
-
-            document.getElementById('sheetOverlay').classList.add('open');
-        }
-
-        function closeSheet() {
-            document.getElementById('sheetOverlay').classList.remove('open');
-        }
-
-        function createNewSignal() {
-            // Navigate to create page or close webapp to trigger creation
-            tg.close(); 
-        }
-
-        function action(act) {
-            alert("Action: " + act + " (Coming Soon in v4 API)");
-        }
-
-        function showError(msg, retry=false) {
+        function showError(msg) {
             document.getElementById('loader').style.display = 'none';
-            const el = document.getElementById('errorState');
+            const el = document.getElementById('errorBox');
+            el.innerText = "⚠️ " + msg;
             el.style.display = 'block';
-            el.innerHTML = msg + (retry ? '<br><button class="retry-btn" onclick="location.reload()">Retry</button>' : '');
         }
 
-        // Auto-refresh
-        setInterval(fetchPortfolio, 10000);
-        fetchPortfolio();
+        // Loop
+        setInterval(fetchData, 5000);
+        fetchData();
+
     </script>
 </body>
 </html>
