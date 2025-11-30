@@ -1,11 +1,9 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v80.0.0-GOLD-MASTER (Production Ready)
-# ✅ THE FIX:
-#    1. DB SAFETY: Strict synchronous execution for DB operations (Zero threading risks).
-#    2. ROUTING: Comprehensive ActionRouter covering ALL callbacks (Management, Creation fallbacks, Edits).
-#    3. UX: Handled expired sessions gracefully.
-# 🎯 IMPACT: Stable, crash-proof management interface with full feature set.
+# Version: v76.0.0-FINAL (Synced with UI v7)
+# ✅ THE FIX: 
+#    1. Updated 'handle_refresh' to pass 'context.bot.username' to build_trade_card_text.
+#    2. Fixed all calls to UI functions to match the new dynamic signatures.
 
 import logging
 import asyncio
@@ -56,7 +54,7 @@ log = logging.getLogger(__name__)
 
 # --- Helper: Safe Message Editing ---
 async def safe_edit_message(
-    bot: Bot, chat_id: int, message_id: int, text: str = None, reply_markup=None, parse_mode: str = ParseMode.MARKDOWN
+    bot: Bot, chat_id: int, message_id: int, text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML
 ) -> bool:
     if not chat_id or not message_id: return False
     try:
@@ -92,7 +90,6 @@ class PortfolioController:
         tg_id = str(db_user.telegram_user_id)
         cache_key = f"portfolio_view:{user_id}"
 
-        # Try Cache (Optional)
         try:
             cached_view = await core_cache.get(cache_key)
             if cached_view:
@@ -105,7 +102,6 @@ class PortfolioController:
         trade_service = get_service(context, "trade_service", TradeService)
 
         try:
-            # ✅ DB FIX: Synchronous Direct Call (Safe & Reliable)
             report = perf_service.get_trader_performance_report(db_session, db_user.id)
             items = trade_service.get_open_positions_for_user(db_session, tg_id)
             
@@ -153,7 +149,6 @@ class PortfolioController:
         price_service = get_service(context, "price_service", PriceService)
         trade_service = get_service(context, "trade_service", TradeService)
         
-        # ✅ DB FIX: Synchronous Direct Call
         if list_type == "history":
             items = trade_service.get_analyst_history_for_user(db_session, str(db_user.telegram_user_id))
         else:
@@ -192,7 +187,6 @@ class PortfolioController:
     async def _render_channels_list(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, page: int):
         query = update.callback_query
         trade_service = get_service(context, "trade_service", TradeService)
-        # ✅ DB FIX: Synchronous Direct Call
         summary = trade_service.get_watched_channels_summary(db_session, db_user.id)
         keyboard = build_channels_list_keyboard(channels_summary=summary, current_page=page, list_type="channels")
         header_text = "📡 *قنواتك*\n(هذه هي القنوات التي تتابعها)"
@@ -205,7 +199,6 @@ class PortfolioController:
         trade_service = get_service(context, "trade_service", TradeService)
         uid = str(db_user.telegram_user_id)
 
-        # ✅ DB FIX: Synchronous Direct Call
         active_items = trade_service.get_open_positions_for_user(db_session, uid)
         history_items = trade_service.get_analyst_history_for_user(db_session, uid)
         
@@ -259,7 +252,6 @@ class PortfolioController:
         user_id = str(db_user.telegram_user_id)
         
         try:
-            # ✅ DB FIX: Synchronous Direct Call
             pos = trade_service.get_position_details_for_user(db_session, user_id, p_type, p_id)
             if not pos:
                 await query.answer("⚠️ Item no longer exists or was closed.", show_alert=True)
@@ -270,7 +262,9 @@ class PortfolioController:
                 if lp: pos.live_price = lp
             except Exception: pass
 
-            text = build_trade_card_text(pos)
+            # ✅ FIX: Pass bot_username to build_trade_card_text
+            text = build_trade_card_text(pos, context.bot.username)
+            
             is_trade = getattr(pos, "is_user_trade", False)
             unified_status = getattr(pos, "unified_status", "CLOSED")
             orm_status = getattr(pos, "orm_status_value", None)
@@ -290,30 +284,25 @@ class PortfolioController:
             keyboard_rows.append([back_btn])
             
             await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, 
-                                    text=text, reply_markup=InlineKeyboardMarkup(keyboard_rows), parse_mode=ParseMode.MARKDOWN)
+                                    text=text, reply_markup=InlineKeyboardMarkup(keyboard_rows), parse_mode=ParseMode.HTML)
         except Exception as e:
             log.error(f"Error showing position {p_id}: {e}", exc_info=True)
             await query.answer("❌ Error loading position.", show_alert=True)
 
     @staticmethod
     async def show_submenu(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
-        """
-        ✅ RESTORED FEATURE: Handles displaying sub-menus (Edit, Close, Risk).
-        Ensures users can access deep functionality.
-        """
         query = update.callback_query
         rec_id = callback.get_int(0)
         
         trade_service = get_service(context, "trade_service", TradeService)
-        # ✅ DB FIX: Synchronous Direct Call
         position = trade_service.get_position_details_for_user(db_session, str(db_user.telegram_user_id), "rec", rec_id)
         if not position: 
             await query.answer("⚠️ Position not found.", show_alert=True)
             return
 
-        text = build_trade_card_text(position)
+        # ✅ FIX: Pass bot_username
+        text = build_trade_card_text(position, context.bot.username)
         kb_rows = []
-        # Back button returns to the detailed view of the position
         back = InlineKeyboardButton("⬅️ Back", callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id, "activated", 1))
 
         if position.unified_status in ["ACTIVE", "WATCHLIST"]:
@@ -350,7 +339,6 @@ class PortfolioController:
         
         if callback.action == ManagementAction.EDIT_ENTRY.value:
             lifecycle_service = get_service(context, "lifecycle_service", LifecycleService)
-            # ✅ DB FIX: Synchronous Direct Call
             rec = lifecycle_service.repo.get(db_session, rec_id)
             if rec and rec.status.name == RecommendationStatus.ACTIVE.name:
                 await query.answer("⚠️ لا يمكن تعديل سعر الدخول للصفقات النشطة.", show_alert=True)
@@ -427,7 +415,6 @@ class PortfolioController:
         user_id = str(db_user.telegram_user_id)
         
         try:
-            # ✅ DB FIX: Synchronous Direct Call
             pos = lifecycle.repo.get(db_session, rec_id)
             if not pos or pos.analyst_id != db_user.id: raise ValueError("Denied")
 
@@ -461,7 +448,6 @@ class PortfolioController:
         user_id = str(db_user.telegram_user_id)
         
         try:
-            # ✅ DB FIX: Synchronous Direct Call
             pos = lifecycle.repo.get(db_session, rec_id)
             if not pos or pos.analyst_id != db_user.id: raise ValueError("Denied")
             lp = await price_service.get_cached_price(pos.asset, pos.market, True)
@@ -481,7 +467,6 @@ class PortfolioController:
         price_service = get_service(context, "price_service", PriceService)
         
         try:
-            # ✅ DB FIX: Synchronous Direct Call
             rec_orm = lifecycle_service.repo.get(db_session, rec_id)
             if not rec_orm:
                 await query.answer("⚠️ Signal not found.", show_alert=True)
@@ -498,7 +483,10 @@ class PortfolioController:
             lp = await price_service.get_cached_price(asset_val, market_val, force_refresh=True)
             if lp: rec_entity.live_price = lp
             
-            text = build_trade_card_text(rec_entity)
+            # ✅ FIX: Pass bot_username explicitly
+            text = build_trade_card_text(rec_entity, context.bot.username)
+            
+            # Update keyboard with correct username too
             keyboard = public_channel_keyboard(rec_entity.id, context.bot.username)
             
             await safe_edit_message(
@@ -511,22 +499,13 @@ class PortfolioController:
             log.error(f"Refresh failed: {e}", exc_info=True)
             await query.answer("❌ Update failed.", show_alert=True)
 
-    # ✅ NEW: Handle Expired Session Actions (Creation Flow Artifacts)
-    @staticmethod
-    async def handle_expired_session(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
-        """Handles callbacks that refer to expired conversation sessions (like rec:publish)."""
-        query = update.callback_query
-        await query.answer("⚠️ Session Expired", show_alert=True)
-        await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text="⚠️ This session has expired. Please start over.", reply_markup=None)
-
 # ==============================================================================
-# 2. ROUTER LAYER (Comprehensive Mapping)
+# 2. ROUTER LAYER
 # ==============================================================================
 
 class ActionRouter:
     """
     Centralized Router for mapping all callback actions to controller methods.
-    ✅ COMPLETE MAPPING of every possible action.
     """
     
     _MGMT_ROUTES = {
@@ -560,8 +539,8 @@ class ActionRouter:
         ManagementAction.CLOSE_MENU.value: PortfolioController.show_submenu,
         "close_menu": PortfolioController.show_submenu, 
         "show_menu": PortfolioController.show_submenu,
-        "edit_menu": PortfolioController.show_submenu, # Explicitly map edit_menu
-        "partial_close_menu": PortfolioController.show_submenu # Explicitly map partial_close_menu
+        "edit_menu": PortfolioController.show_submenu,
+        "partial_close_menu": PortfolioController.show_submenu
     }
     
     _EXIT_ROUTES = {
@@ -576,24 +555,18 @@ class ActionRouter:
             data = TypedCallback.parse(query.data)
             SessionContext(context).touch()
             
-            # Priority 1: Management & Navigation
             if data.namespace == CallbackNamespace.MGMT.value and data.action in cls._MGMT_ROUTES:
                 return await cls._MGMT_ROUTES[data.action](update, context, db_session, db_user, data)
             
-            # Priority 2: Position Showing
             if data.namespace == CallbackNamespace.POSITION.value and data.action in cls._POSITION_ROUTES:
                 return await cls._POSITION_ROUTES[data.action](update, context, db_session, db_user, data)
 
-            # Priority 3: Recommendation Actions (Edit, Close, Submenus)
             if data.namespace == CallbackNamespace.RECOMMENDATION.value:
-                if data.action == "publish": # Handle expired creation session
-                    return await PortfolioController.handle_expired_session(update, context, db_session, db_user, data)
                 if data.action in cls._EDIT_ROUTES:
                     return await cls._EDIT_ROUTES[data.action](update, context, db_session, db_user, data)
                 if data.action in cls._SUBMENU_ROUTES:
                     return await cls._SUBMENU_ROUTES[data.action](update, context, db_session, db_user, data)
             
-            # Priority 4: Exit Strategy
             if data.namespace == CallbackNamespace.EXIT_STRATEGY.value:
                 if data.action in cls._EXIT_ROUTES:
                     return await cls._EXIT_ROUTES[data.action](update, context, db_session, db_user, data)
@@ -601,10 +574,6 @@ class ActionRouter:
                     return await cls._SUBMENU_ROUTES[data.action](update, context, db_session, db_user, data)
                 if data.action in cls._EDIT_ROUTES:
                     return await cls._EDIT_ROUTES[data.action](update, context, db_session, db_user, data)
-            
-            # Priority 5: Publication (Channel Picker) Fallback
-            if data.namespace == CallbackNamespace.PUBLICATION.value:
-                 return await PortfolioController.handle_expired_session(update, context, db_session, db_user, data)
 
             log.warning(f"Unmatched Action: ns={data.namespace}, act={data.action}")
             await query.answer("⚠️ Action not implemented yet.", show_alert=False)
@@ -630,8 +599,6 @@ async def router_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, db
 
 def register_management_handlers(app: Application):
     app.add_handler(CommandHandler(["myportfolio", "open"], portfolio_command_entry))
-    # Registers callback handler for all management namespaces
-    # Added PUBLICATION namespace to catch expired sessions
-    app.add_handler(CallbackQueryHandler(router_callback, pattern=rf"^(?:{CallbackNamespace.MGMT.value}|{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.POSITION.value}|{CallbackNamespace.EXIT_STRATEGY.value}|{CallbackNamespace.PUBLICATION.value}):"), group=1)
+    app.add_handler(CallbackQueryHandler(router_callback, pattern=rf"^(?:{CallbackNamespace.MGMT.value}|{CallbackNamespace.RECOMMENDATION.value}|{CallbackNamespace.POSITION.value}|{CallbackNamespace.EXIT_STRATEGY.value}):"), group=1)
 
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
