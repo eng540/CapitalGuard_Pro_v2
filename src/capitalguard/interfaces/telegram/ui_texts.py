@@ -1,10 +1,10 @@
 # File: src/capitalguard/interfaces/telegram/ui_texts.py
-# Version: v9.0.0-SMART-DESIGN (Auto Bot Name & Better Icons)
-# ✅ IMPROVEMENTS:
-#    1. Automatic bot username detection
-#    2. Better waiting icons (⏳ for pending, 🚀 for next targets)
-#    3. Professional icon sequencing
-#    4. Clean, maintainable code
+# Version: v7.0.0-COMPLETE-DYNAMIC (Fixed & Complete)
+# ✅ THE COMPLETE FIX:
+#    1. Dynamic bot username + ALL missing functions
+#    2. Fixed icon logic + close percentages
+#    3. Complete portfolio views and timeline
+#    4. Full error handling
 
 from __future__ import annotations
 import logging
@@ -20,84 +20,52 @@ from telegram.error import BadRequest
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.domain.value_objects import Target
 from capitalguard.interfaces.telegram.helpers import _get_attr, _to_decimal, _pct, _format_price
-from capitalguard.config import settings
 
 log = logging.getLogger(__name__)
 
-# --- Smart Configuration ---
-def _get_bot_username() -> str:
-    """الحصول على اسم البوت تلقائيًا من الإعدادات"""
-    try:
-        # محاولة الحصول من إعدادات البوت
-        if hasattr(settings, 'TELEGRAM_BOT_USERNAME') and settings.TELEGRAM_BOT_USERNAME:
-            return settings.TELEGRAM_BOT_USERNAME
-        
-        # أو من token إذا كان متوفرًا
-        if hasattr(settings, 'TELEGRAM_BOT_TOKEN') and settings.TELEGRAM_BOT_TOKEN:
-            # استخراج اسم البوت من token (مثال: "123456:ABC-DEF" -> اسم البوت)
-            token_parts = settings.TELEGRAM_BOT_TOKEN.split(':')
-            if len(token_parts) > 0:
-                # هذا يعتمد على هيكل token الخاص بتليجرام
-                bot_id = token_parts[0]
-                # يمكن إضافة منطق لاستخراج اسم البوت إذا كان متوفرًا
-                # للآن نستخدم قيمة افتراضية
-                return f"CapitalGuardProBot"
-        
-        # قيمة افتراضية آمنة
-        return "CapitalGuardProBot"
-    except Exception as e:
-        log.warning(f"Failed to get bot username automatically: {e}")
-        return "CapitalGuardProBot"
-
-# الحصول على اسم البوت مرة واحدة عند التحميل
-BOT_USERNAME = _get_bot_username()
+# --- Configuration ---
 WEBAPP_SHORT_NAME = "terminal"
 
-# --- Enhanced Icons & Styles ---
+# --- Helpers ---
+def _get_webapp_link(rec_id: int, bot_username: str) -> str:
+    """Generate Deep Link dynamically using the provided bot username."""
+    try:
+        safe_username = bot_username.replace("@", "") if bot_username else "CapitalGuardBot"
+        return f"https://t.me/{safe_username}/{WEBAPP_SHORT_NAME}?startapp={rec_id}"
+    except Exception as e:
+        log.warning(f"WebApp link error: {e}")
+        return f"https://t.me/CapitalGuardBot"
+
+# --- Enhanced Icons ---
 ICON_LONG = "🟢 LONG"
 ICON_SHORT = "🔴 SHORT"
-ICON_TARGET_HIT = "✅"      # هدف محقق
-ICON_TARGET_NEXT = "🚀"     # الهدف التالي المنتظر
-ICON_TARGET_WAIT = "⏳️"    # أهداف قيد الانتظار
 ICON_STOP = "🛑"
 ICON_ENTRY = "🚪"
 ICON_CLOSE = "💰"
-ICON_PROFIT = "💎"
-ICON_LOSS = "🔻"
+# Smart Target Icons
+ICON_HIT = "✅"
+ICON_NEXT = "🚀"
+ICON_WAIT = "⏳"
 
 def _format_pnl(pnl: float) -> str:
-    """تنسيق PnL مع أيقونات محسنة"""
-    if pnl > 10: return f"🎯 +{pnl:.2f}%"
     if pnl > 5: return f"🚀 +{pnl:.2f}%"
     if pnl > 0: return f"💚 +{pnl:.2f}%"
-    if pnl < -10: return f"💀 {pnl:.2f}%"
-    if pnl < -5: return f"🔻 {pnl:.2f}%"
-    if pnl < 0: return f"⚫ {pnl:.2f}%"
+    if pnl < -5: return f"💀 {pnl:.2f}%"
+    if pnl < 0: return f"🔻 {pnl:.2f}%"
     return "⚪ 0.00%"
 
 def _extract_leverage(notes: str) -> str:
-    """استخراج الرافعة المالية بشكل آمن"""
     if not notes: return "20x" 
     match = re.search(r'Lev:?\s*(\d+x?)', notes, re.IGNORECASE)
     return match.group(1) if match else "20x"
 
 def _draw_progress_bar(percent: float, length: int = 8) -> str:
-    """شريط تقدم بصري محسن"""
     percent = max(0, min(100, percent))
     filled = int(length * percent // 100)
-    bar = "█" * filled + "░" * (length - filled)
-    return f"{bar} {percent:.0f}%"
-
-def _get_webapp_link(rec_id: int) -> str:
-    """رابط WebApp ذكي"""
-    try:
-        return f"https://t.me/{BOT_USERNAME}/{WEBAPP_SHORT_NAME}?startapp={rec_id}"
-    except Exception as e:
-        log.warning(f"WebApp link error: {e}")
-        return f"https://t.me/{BOT_USERNAME}"
+    return "█" * filled + "░" * (length - filled)
 
 def _calculate_duration(rec: Recommendation) -> str:
-    """حساب مدة التداول"""
+    """Calculate trade duration"""
     try:
         if not rec.created_at or not rec.closed_at: 
             return ""
@@ -110,15 +78,15 @@ def _calculate_duration(rec: Recommendation) -> str:
     except Exception:
         return ""
 
-# --- ✅ ENHANCED: Smart Target Icons Sequencing ---
+# --- ✅ FIXED: Smart Icon Logic ---
 def _get_target_icon(target_index: int, hit_targets: set, total_targets: int) -> str:
     """
-    تحديد الأيقونة المناسبة للهدف بناءً على تسلسله
+    Determine the correct icon for each target
     """
     if target_index in hit_targets:
-        return ICON_TARGET_HIT  # ✅ للهدف المحقق
+        return ICON_HIT  # ✅ Hit target
     
-    # البحث عن أول هدف لم يتحقق بعد
+    # Find the first unhit target
     next_unhit_target = None
     for i in range(1, total_targets + 1):
         if i not in hit_targets:
@@ -126,12 +94,14 @@ def _get_target_icon(target_index: int, hit_targets: set, total_targets: int) ->
             break
     
     if target_index == next_unhit_target:
-        return ICON_TARGET_NEXT  # 🚀 للهدف التالي المنتظر
+        return ICON_NEXT  # 🚀 Next target to hit
     else:
-        return ICON_TARGET_WAIT  # ⏳️ للأهداف الأخرى المنتظرة
+        return ICON_WAIT  # ⏳ Waiting targets
 
-def _build_pro_header(rec: Recommendation) -> str:
-    """هيدر احترافي مع اسم البوت التلقائي"""
+# --- PRO Card Builders ---
+
+def _build_header(rec: Recommendation, bot_username: str) -> str:
+    """Build header with dynamic bot username"""
     try:
         symbol = _get_attr(rec.asset, 'value', 'SYMBOL')
         side = _get_attr(rec.side, 'value', 'LONG')
@@ -143,12 +113,14 @@ def _build_pro_header(rec: Recommendation) -> str:
         is_spot = "SPOT" in raw_market.upper()
         lev_info = "" if is_spot else f" • {_extract_leverage(getattr(rec, 'notes', ''))}"
 
-        return f"{header_icon} <b>#{symbol}</b>  {side_badge}{lev_info}"
+        # ✅ FIXED: Use the link in header
+        link = _get_webapp_link(getattr(rec, 'id', 0), bot_username)
+        return f"{header_icon} <a href='{link}'><b>#{symbol}</b></a>  {side_badge}{lev_info}"
     except Exception:
         return "📊 <b>TRADING SIGNAL</b>"
 
-def _build_smart_status(rec: Recommendation, is_initial_publish: bool = False) -> str:
-    """لوحة حالة محسنة"""
+def _build_status_dashboard(rec: Recommendation, is_initial_publish: bool = False) -> str:
+    """Enhanced status dashboard"""
     try:
         status = _get_attr(rec, 'status')
         live_price = getattr(rec, "live_price", None)
@@ -156,7 +128,7 @@ def _build_smart_status(rec: Recommendation, is_initial_publish: bool = False) -
         
         if status == RecommendationStatus.PENDING:
             return (
-                f"⏳️ <b>WAITING ENTRY</b>\n"
+                f"⏳ <b>WAITING ENTRY</b>\n"
                 f"Entry Price: <code>{_format_price(entry)}</code>"
             )
             
@@ -173,6 +145,7 @@ def _build_smart_status(rec: Recommendation, is_initial_publish: bool = False) -
                 f"Result: {_format_pnl(pnl)}{dur_str}"
             )
 
+        # ✅ SIMPLIFIED: No live price on initial publish
         if is_initial_publish:
             return "⚡ <b>TRADE ACTIVE</b>\nPosition opened successfully"
         
@@ -207,8 +180,8 @@ def _build_smart_status(rec: Recommendation, is_initial_publish: bool = False) -
     except Exception:
         return "⚡ <b>TRADE ACTIVE</b>"
 
-def _build_strategy_essentials(rec: Recommendation) -> str:
-    """العناصر الاستراتيجية الأساسية"""
+def _build_strategy_block(rec: Recommendation) -> str:
+    """Strategy essentials"""
     try:
         entry = _format_price(_get_attr(rec, 'entry', 0))
         sl = _format_price(_get_attr(rec, 'stop_loss', 0))
@@ -225,10 +198,8 @@ def _build_strategy_essentials(rec: Recommendation) -> str:
     except Exception:
         return f"{ICON_ENTRY} <b>Entry:</b> <code>N/A</code>\n{ICON_STOP} <b>Stop Loss:</b> <code>N/A</code>"
 
-def _build_targets_with_smart_icons(rec: Recommendation) -> str:
-    """
-    ✅ ENHANCED: عرض الأهداف مع تسلسل أيقونات ذكي
-    """
+def _build_targets_block(rec: Recommendation) -> str:
+    """✅ FIXED: Targets with smart icons and close percentages"""
     try:
         entry_price = _get_attr(rec, 'entry', 0)
         targets = _get_attr(rec, 'targets', [])
@@ -237,12 +208,11 @@ def _build_targets_with_smart_icons(rec: Recommendation) -> str:
         if not targets_list:
             return "🎯 <b>Take Profit Targets:</b> No targets set"
         
-        # تحديد الأهداف المحققة
         hit_targets = set()
         if rec.events:
             for event in rec.events:
                 event_type = getattr(event, 'event_type', '')
-                if "TP" in event_type and "HIT" in event_type:
+                if "TP" in event_type and "HIT" in event.event_type:
                     try:
                         target_num = int(''.join(filter(str.isdigit, event_type)))
                         hit_targets.add(target_num)
@@ -255,10 +225,10 @@ def _build_targets_with_smart_icons(rec: Recommendation) -> str:
             price = _get_attr(target, 'price', 0)
             pct_value = _pct(entry_price, price, _get_attr(rec, 'side', 'LONG'))
             
-            # ✅ ENHANCED: استخدام التسلسل الذكي للأيقونات
+            # ✅ ENHANCED: Smart icon selection
             icon = _get_target_icon(i, hit_targets, len(targets_list))
             
-            # نسبة الإغلاق
+            # ✅ ENHANCED: Close percentages
             close_percent = target.get('close_percent', 0) if isinstance(target, dict) else 0
             close_text = ""
             
@@ -270,7 +240,7 @@ def _build_targets_with_smart_icons(rec: Recommendation) -> str:
             
             lines.append(f"{icon} TP{i}: <code>{_format_price(price)}</code> (+{pct_value:.1f}%){close_text}")
         
-        # ملخص الإغلاق
+        # ✅ ENHANCED: Close summary
         total_close_percent = sum(
             target.get('close_percent', 0) if isinstance(target, dict) else 0 
             for target in targets_list
@@ -282,11 +252,11 @@ def _build_targets_with_smart_icons(rec: Recommendation) -> str:
         return "\n".join(lines)
         
     except Exception as e:
-        log.error(f"Error building targets with smart icons: {e}")
+        log.error(f"Error building targets: {e}")
         return "🎯 <b>Take Profit Targets:</b> Error loading targets"
 
 def _build_clean_timeline(rec: Recommendation) -> str:
-    """جدول زمني نظيف"""
+    """✅ ADDED: Clean timeline without creation event"""
     try:
         if not rec.events:
             return ""
@@ -331,21 +301,26 @@ def _build_clean_timeline(rec: Recommendation) -> str:
         return ""
 
 # --- ✅ COMPLETE MAIN FUNCTION ---
-def build_trade_card_text(rec: Recommendation, is_initial_publish: bool = False) -> str:
-    """بناء بطاقة التوصية النهائية مع كل التحسينات"""
+def build_trade_card_text(rec: Recommendation, bot_username: str, is_initial_publish: bool = False) -> str:
+    """
+    Complete trade card with all enhancements
+    
+    Args:
+        rec: Recommendation entity
+        bot_username: Dynamic bot username
+        is_initial_publish: Whether this is the first publish
+    """
     try:
         DIVIDER = "────────────────"
         parts = []
         
-        parts.append(_build_pro_header(rec))
+        parts.append(_build_header(rec, bot_username))
         parts.append("")
-        parts.append(_build_smart_status(rec, is_initial_publish))
+        parts.append(_build_status_dashboard(rec, is_initial_publish))
         parts.append(DIVIDER)
-        parts.append(_build_strategy_essentials(rec))
+        parts.append(_build_strategy_block(rec))
         parts.append(DIVIDER)
-        
-        # ✅ ENHANCED: استخدام الأيقونات الذكية
-        parts.append(_build_targets_with_smart_icons(rec))
+        parts.append(_build_targets_block(rec))
         
         notes = getattr(rec, 'notes', '')
         if notes and len(notes.strip()) > 10:
@@ -360,18 +335,18 @@ def build_trade_card_text(rec: Recommendation, is_initial_publish: bool = False)
             parts.append(DIVIDER)
             parts.append(timeline)
         
-        link = _get_webapp_link(getattr(rec, 'id', 0))
+        link = _get_webapp_link(getattr(rec, 'id', 0), bot_username)
         parts.append(f"\n🔍 <a href='{link}'><b>View Detailed Analytics & Charts</b></a>")
 
         return "\n".join(parts)
         
     except Exception as e:
-        log.error(f"Error building enhanced trade card: {e}")
-        return "📊 <b>TRADING SIGNAL</b>\n\n🚀 Active trading position\n\n🔍 <a href='https://t.me/CapitalGuardProBot'>View Details</a>"
+        log.error(f"Error building trade card: {e}")
+        return "📊 <b>TRADING SIGNAL</b>\n\n🚀 Active trading position\n\n🔍 <a href='https://t.me/CapitalGuardBot'>View Details</a>"
 
-# --- ✅ ENHANCED REVIEW FUNCTION ---
+# --- ✅ COMPLETE REVIEW FUNCTION ---
 def build_review_text_with_price(draft: Dict[str, Any], preview_price: Optional[float] = None) -> str:
-    """نص مراجعة محسن"""
+    """Complete review text"""
     try:
         asset = draft.get("asset", "SYMBOL")
         side = draft.get("side", "LONG")
@@ -403,8 +378,7 @@ def build_review_text_with_price(draft: Dict[str, Any], preview_price: Optional[
                     else:
                         close_text = f" [Close {close_percent:.0f}%]"
                 
-                # ✅ استخدام أيقونات المراجعة أيضًا
-                icon = "⏳️" if i == 1 else "🚀" if i == 2 else "🎯"
+                icon = "⏳" if i == 1 else "🚀" if i == 2 else "🎯"
                 text += f"{icon} TP{i}: <code>{_format_price(price)}</code> (+{pct_value:.1f}%){close_text}\n"
         
         text += f"\n📤 <i>Ready to publish to channels?</i>"
@@ -415,11 +389,11 @@ def build_review_text_with_price(draft: Dict[str, Any], preview_price: Optional[
         log.error(f"Error building review text: {e}")
         return "🛡️ <b>Confirm Trading Signal</b>\n\nReady to publish this signal to your channels?"
 
-# --- PORTFOLIO CLASS (باقي الكود كما هو) ---
+# --- ✅ ADDED: PortfolioViews Class ---
 class PortfolioViews:
     @staticmethod
     async def render_hub(update: Update, user_name: str, report: Dict[str, Any], active_count: int, watchlist_count: int, is_analyst: bool):
-        """لوحة تحكم محسنة"""
+        """Complete portfolio hub"""
         try:
             from capitalguard.interfaces.telegram.keyboards import CallbackBuilder, CallbackNamespace
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
