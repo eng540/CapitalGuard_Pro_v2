@@ -581,18 +581,21 @@ class LifecycleService:
 
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
         with session_scope() as s:
+            # 1. Fetch the object
             rec_orm = self.repo.get_for_update(s, item_id)
             if not rec_orm or rec_orm.status != RecommendationStatusEnum.ACTIVE:
                 return
             
             event_type = f"TP{target_index}_HIT"
             if any(e.event_type == event_type for e in (rec_orm.events or [])):
-                logger.debug(f"TP event {event_type} processed {item_id}")
                 return
                 
             s.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type=event_type, event_data={"price": float(price)}))
             self.notify_reply(rec_orm.id, f"🎯 #{rec_orm.asset} hit TP{target_index} at {_format_price(price)}!", db_session=s)
             
+            # Flush early to save the event
+            s.flush()
+
             try:
                 target_info = rec_orm.targets[target_index - 1]
             except Exception:
@@ -602,14 +605,18 @@ class LifecycleService:
             analyst_uid_str = str(rec_orm.analyst.telegram_user_id) if rec_orm.analyst else None
             
             if not analyst_uid_str:
-                logger.error(f"Cannot process TP {item_id}: Analyst missing.")
                 await self._commit_and_dispatch(s, rec_orm, False)
                 return
 
             if close_percent > 0:
+                # This might commit the session internally
                 await self.partial_close_async(rec_orm.id, analyst_uid_str, close_percent, price, s, triggered_by="AUTO")
             
-            s.refresh(rec_orm) # Refresh after partial_close
+            # ✅ THE FIX: Re-fetch instead of refresh to avoid "not persistent" error
+            # because partial_close_async might have committed/expired the session
+            rec_orm = self.repo.get(s, item_id)
+            if not rec_orm: return 
+
             is_final_tp = (target_index == len(rec_orm.targets or []))
             should_auto_close = (rec_orm.exit_strategy == ExitStrategyEnum.CLOSE_AT_FINAL_TP and is_final_tp)
             is_effectively_closed = (rec_orm.open_size_percent is not None and rec_orm.open_size_percent < Decimal('0.1'))
