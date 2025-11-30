@@ -1,12 +1,9 @@
 # File: src/capitalguard/application/services/lifecycle_service.py
-# Version: v3.0.1-R2
-# ✅ THE FIX: (NEW FILE - R2 Architecture)
-#    - 1. (NEW) خدمة جديدة ومستقلة تمامًا، تنفذ مبدأ "الأرض الواسعة".
-#    - 2. (SoC) تفصل منطق "دورة الحياة" (Lifecycle) عن "الإنشاء" (Creation).
-#    - 3. (Core Algorithm) تنقل جميع معالجات الأحداث (process_..._event)
-#       ووظائف الإغلاق والتحديث (close_..., update_...) إلى هنا.
-#    - 4. (v3.0.1) إزالة جميع علامات الاقتباس من التعليقات.
-# 🎯 IMPACT: هذا الملف هو "مصدر الحقيقة" (SSoT) لجميع تغييرات الحالة في النظام.
+# Version: v5.0.0-GOLD (Graceful Handling & Session Integrity)
+# ✅ THE FIX: 
+#    1. Graceful PnL/Close logic (No crashes on 'Already Closed').
+#    2. Inject Live Price into Card Updates (Fixes 'Loading...').
+#    3. Robust Session Management (Re-fetch objects in TP Hit event).
 
 from __future__ import annotations
 import logging
@@ -16,7 +13,7 @@ from typing import List, Optional, Tuple, Dict, Any, Set, Union
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 # Infrastructure & Domain Imports
@@ -25,8 +22,7 @@ from capitalguard.infrastructure.db.models import (
     PublishedMessage, Recommendation, RecommendationEvent, User,
     RecommendationStatusEnum, UserTrade, 
     OrderTypeEnum, ExitStrategyEnum,
-    UserTradeStatusEnum, 
-    UserTradeEvent
+    UserTradeStatusEnum, UserTradeEvent
 )
 from capitalguard.infrastructure.db.repository import (
     RecommendationRepository, ChannelRepository, UserRepository
@@ -46,38 +42,25 @@ if False:
 
 logger = logging.getLogger(__name__)
 
-# --- Helper Functions (Moved from TradeService) ---
-# (تم نسخها من creation_service.py أو trade_service.py لضمان استقلالية الملف)
+# --- Helper Functions (Simplified) ---
 def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
-    if isinstance(value, Decimal):
-        return value if value.is_finite() else default
-    if value is None:
-        return default
-    try:
-        d = Decimal(str(value))
-        return d if d.is_finite() else default
-    except (InvalidOperation, TypeError, ValueError):
+    try: 
+        return Decimal(str(value)) if value is not None else default
+    except: 
         return default
 
 def _format_price(price: Any) -> str:
-    price_dec = _to_decimal(price)
-    return "N/A" if not price_dec.is_finite() else f"{price_dec:g}"
+    d = _to_decimal(price)
+    return f"{d:g}" if d.is_finite() else "N/A"
 
-def _pct(entry: Any, target_price: Any, side: str) -> float:
+def _pct(entry: Any, target: Any, side: str) -> float:
     try:
-        entry_dec = _to_decimal(entry)
-        target_dec = _to_decimal(target_price)
-        if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite():
-            return 0.0
-        side_upper = (str(side.value) if hasattr(side, 'value') else str(side) or "").upper()
-        if side_upper == "LONG":
-            pnl = ((target_dec / entry_dec) - 1) * 100
-        elif side_upper == "SHORT":
-            pnl = ((entry_dec / target_dec) - 1) * 100
-        else:
-            return 0.0
-        return float(pnl)
-    except (InvalidOperation, TypeError, ZeroDivisionError):
+        e, t = _to_decimal(entry), _to_decimal(target)
+        if e <= 0: return 0.0
+        if "LONG" in str(side).upper(): 
+            return float(((t/e)-1)*100)
+        return float(((e/t)-1)*100)
+    except: 
         return 0.0
 
 def _parse_int_user_id(user_id: Any) -> Optional[int]:
@@ -90,7 +73,6 @@ def _parse_int_user_id(user_id: Any) -> Optional[int]:
         return None
 
 def _validate_recommendation_data(side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
-    # (هذه الدالة مستنسخة هنا أيضًا للتحقق من صحة التحديثات)
     side_upper = (str(side) or "").upper()
     if not all(v is not None and isinstance(v, Decimal) and v.is_finite() and v > 0 for v in [entry, stop_loss]):
         raise ValueError("Entry and SL must be positive finite Decimals.")
@@ -131,44 +113,36 @@ class LifecycleService:
         # يتم حقن هذه الخدمة لاحقًا (Circular Dependency)
         self.alert_service: Optional["AlertService"] = None
 
-    # --- Internal DB / Notifier Helpers (Moved from TradeService) ---
-    async def _commit_and_dispatch(self, db_session: Session, orm_object: Union[Recommendation, UserTrade], rebuild_alerts: bool = True):
-        item_id = getattr(orm_object, 'id', 'N/A')
-        item_type = type(orm_object).__name__
+    # --- Internal DB / Notifier Helpers (Improved) ---
+    async def _commit_and_dispatch(self, session: Session, obj: Any, rebuild: bool = True):
+        item_id = getattr(obj, 'id', 'N/A')
+        item_type = type(obj).__name__
         try:
-            db_session.commit()
-            db_session.refresh(orm_object)
+            session.commit()
+            session.refresh(obj)
             logger.debug(f"Committed {item_type} ID {item_id}")
         except Exception as commit_err:
             logger.error(f"Commit failed {item_type} ID {item_id}: {commit_err}", exc_info=True)
-            db_session.rollback()
+            session.rollback()
             raise
 
-        if isinstance(orm_object, Recommendation):
-            rec_orm = orm_object
-            if rebuild_alerts and self.alert_service:
-                try:
-                    logger.info(f"Rebuilding full alert index on request for Rec ID {item_id}...")
-                    await self.alert_service.build_triggers_index()
-                except Exception as alert_err:
-                    logger.exception(f"Alert rebuild fail Rec ID {item_id}: {alert_err}")
+        if rebuild and self.alert_service:
+            try:
+                logger.info(f"Rebuilding full alert index on request for {item_type} ID {item_id}...")
+                await self.alert_service.build_triggers_index()
+            except Exception as alert_err:
+                logger.exception(f"Alert rebuild fail {item_type} ID {item_id}: {alert_err}")
 
+        if isinstance(obj, Recommendation):
+            rec_orm = obj
             updated_entity = self.repo._to_entity(rec_orm)
             if updated_entity:
                 try:
-                    await self.notify_card_update(updated_entity, db_session)
+                    await self.notify_card_update(updated_entity, session)
                 except Exception as notify_err:
                     logger.exception(f"Notify fail Rec ID {item_id}: {notify_err}")
             else:
                 logger.error(f"Failed conv ORM Rec {item_id} to entity")
-        
-        elif isinstance(orm_object, UserTrade):
-             if rebuild_alerts and self.alert_service:
-                try:
-                    logger.info(f"Rebuilding full alert index on request for UserTrade ID {item_id}...")
-                    await self.alert_service.build_triggers_index()
-                except Exception as alert_err:
-                    logger.exception(f"Alert rebuild fail UserTrade ID {item_id}: {alert_err}")
 
     async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
         if inspect.iscoroutinefunction(fn):
@@ -177,18 +151,34 @@ class LifecycleService:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, fn, *args, **kwargs)
 
-    async def notify_card_update(self, rec_entity: RecommendationEntity, db_session: Session):
+    async def notify_card_update(self, rec_entity: RecommendationEntity, session: Session):
         """تحديث بطاقة التوصية في جميع القنوات المنشورة فيها."""
-        if getattr(rec_entity, "is_shadow", False): return
+        if getattr(rec_entity, "is_shadow", False): 
+            return
+        
+        # ✅ FIX: Inject Live Price for UI to prevent "Loading..."
+        if not getattr(rec_entity, "live_price", None) and self.alert_service:
+            try:
+                lp = await self.alert_service.price_service.get_cached_price(rec_entity.asset.value, rec_entity.market)
+                if lp: 
+                    rec_entity.live_price = lp
+            except Exception:
+                pass
+
         try:
-            published_messages = self.repo.get_published_messages(db_session, rec_entity.id)
-            if not published_messages: return
-            tasks = [ self._call_notifier_maybe_async(
-                self.notifier.edit_recommendation_card_by_ids,
-                channel_id=msg.telegram_channel_id,
-                message_id=msg.telegram_message_id,
-                rec=rec_entity
-            ) for msg in published_messages ]
+            published_messages = self.repo.get_published_messages(session, rec_entity.id)
+            if not published_messages: 
+                return
+            
+            async def _update_card(channel_id, message_id):
+                await self._call_notifier_maybe_async(
+                    self.notifier.edit_recommendation_card_by_ids,
+                    channel_id=channel_id,
+                    message_id=message_id,
+                    rec=rec_entity
+                )
+            
+            tasks = [_update_card(msg.telegram_channel_id, msg.telegram_message_id) for msg in published_messages]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for res in results:
                 if isinstance(res, Exception):
@@ -214,19 +204,27 @@ class LifecycleService:
         except Exception as e:
             logger.error(f"Failed to send private notification to user {user_id}: {e}", exc_info=True)
     
-    def notify_reply(self, rec_id: int, text: str, db_session: Session):
+    async def notify_reply(self, rec_id: int, text: str, db_session: Session):
         """Posts a reply to all published messages for a recommendation."""
         rec_orm = self.repo.get(db_session, rec_id)
         if not rec_orm or getattr(rec_orm, "is_shadow", False):
             return
+        
         published_messages = self.repo.get_published_messages(db_session, rec_id)
+        
+        async def _send_reply(channel_id, message_id, reply_text):
+            try:
+                await self._call_notifier_maybe_async(
+                    self.notifier.post_notification_reply,
+                    chat_id=channel_id,
+                    message_id=message_id,
+                    text=reply_text
+                )
+            except Exception as e:
+                logger.error(f"Failed to send reply to channel {channel_id}: {e}")
+
         for msg in published_messages:
-            asyncio.create_task(self._call_notifier_maybe_async(
-                self.notifier.post_notification_reply,
-                chat_id=msg.telegram_channel_id,
-                message_id=msg.telegram_message_id,
-                text=text
-            ))
+            asyncio.create_task(_send_reply(msg.telegram_channel_id, msg.telegram_message_id, text))
 
     # --- Public API - Close Trade (Trader) ---
     async def close_user_trade_async(
@@ -237,11 +235,18 @@ class LifecycleService:
         إغلاق صفقة متداول شخصية وحساب PnL.
         """
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-        if not user: raise ValueError("User not found.")
+        if not user: 
+            raise ValueError("User not found.")
         
-        trade = db_session.query(UserTrade).filter( UserTrade.id == trade_id, UserTrade.user_id == user.id ).with_for_update().first()
-        if not trade: raise ValueError(f"Trade #{trade_id} not found or access denied.")
+        trade = db_session.query(UserTrade).filter(
+            UserTrade.id == trade_id, 
+            UserTrade.user_id == user.id
+        ).with_for_update().first()
         
+        if not trade: 
+            raise ValueError(f"Trade #{trade_id} not found or access denied.")
+        
+        # ✅ FIX: Idempotency - If already closed, just return success gracefully
         if trade.status == UserTradeStatusEnum.CLOSED:
             logger.warning(f"Closing already closed UserTrade #{trade_id}")
             return trade
@@ -280,7 +285,15 @@ class LifecycleService:
         return trade
 
     # --- Public API - Close Recommendation (Analyst) ---
-    async def close_recommendation_async(self, rec_id: int, user_id: Optional[str], exit_price: Decimal, db_session: Optional[Session] = None, reason: str = "MANUAL_CLOSE", rebuild_alerts: bool = True) -> RecommendationEntity:
+    async def close_recommendation_async(
+        self, 
+        rec_id: int, 
+        user_id: Optional[str], 
+        exit_price: Decimal, 
+        db_session: Optional[Session] = None, 
+        reason: str = "MANUAL_CLOSE", 
+        rebuild_alerts: bool = True
+    ) -> RecommendationEntity:
         """
         [Core Algorithm]
         إغلاق توصية محلل رسمية.
@@ -290,18 +303,21 @@ class LifecycleService:
                 return await self.close_recommendation_async(rec_id, user_id, exit_price, s, reason, rebuild_alerts)
         
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm: raise ValueError(f"Rec #{rec_id} not found.")
+        if not rec_orm: 
+            raise ValueError(f"Rec #{rec_id} not found.")
         
+        # ✅ FIX: Idempotency - If already closed, just return success gracefully
         if rec_orm.status == RecommendationStatusEnum.CLOSED:
             logger.warning(f"Closing already closed rec #{rec_id}")
             return self.repo._to_entity(rec_orm)
         
-        if user_id is not None:
+        # Auth check (skip for system triggers)
+        is_system_trigger = reason not in ["MANUAL_CLOSE", "MARKET_CLOSE_MANUAL", "MANUAL_PRICE_CLOSE"]
+        if user_id is not None and not is_system_trigger:
             user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-            is_system_trigger = reason not in ["MANUAL_CLOSE", "MARKET_CLOSE_MANUAL", "MANUAL_PRICE_CLOSE"]
-            if not user and not is_system_trigger:
+            if not user:
                 raise ValueError("User not found.")
-            if user and rec_orm.analyst_id != user.id and not is_system_trigger:
+            if rec_orm.analyst_id != user.id:
                 raise ValueError("Access denied. You do not own this recommendation.")
         
         if not exit_price.is_finite() or exit_price <= 0:
@@ -310,11 +326,26 @@ class LifecycleService:
         remaining_percent = _to_decimal(rec_orm.open_size_percent)
         if remaining_percent > 0:
             pnl_on_part = _pct(rec_orm.entry, exit_price, rec_orm.side)
-            event_data = {"price": float(exit_price), "closed_percent": float(remaining_percent), "pnl_on_part": pnl_on_part, "triggered_by": reason}
+            event_data = {
+                "price": float(exit_price), 
+                "closed_percent": float(remaining_percent), 
+                "pnl_on_part": pnl_on_part, 
+                "triggered_by": reason
+            }
         else:
-            event_data = {"price": float(exit_price), "closed_percent": 0, "pnl_on_part": 0.0, "triggered_by": reason}
+            event_data = {
+                "price": float(exit_price), 
+                "closed_percent": 0, 
+                "pnl_on_part": 0.0, 
+                "triggered_by": reason
+            }
         
-        db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="FINAL_CLOSE", event_data=event_data))
+        db_session.add(RecommendationEvent(
+            recommendation_id=rec_id, 
+            event_type="FINAL_CLOSE", 
+            event_data=event_data
+        ))
+        
         rec_orm.status = RecommendationStatusEnum.CLOSED
         rec_orm.exit_price = exit_price
         rec_orm.closed_at = datetime.now(timezone.utc)
@@ -332,13 +363,33 @@ class LifecycleService:
 
     # --- Public API - Update Operations (Analyst) ---
     
-    async def partial_close_async(self, rec_id: int, user_id: str, close_percent: Decimal, price: Decimal, db_session: Session, triggered_by: str = "MANUAL") -> RecommendationEntity:
+    async def partial_close_async(
+        self, 
+        rec_id: int, 
+        user_id: str, 
+        close_percent: Decimal, 
+        price: Decimal, 
+        db_session: Session, 
+        triggered_by: str = "MANUAL"
+    ) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-        if not user: raise ValueError("User not found.")
+        if not user: 
+            raise ValueError("User not found.")
+        
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm: raise ValueError(f"Rec #{rec_id} not found.")
-        if rec_orm.analyst_id != user.id: raise ValueError("Access denied.")
-        if rec_orm.status != RecommendationStatusEnum.ACTIVE: raise ValueError("Only ACTIVE.")
+        if not rec_orm: 
+            raise ValueError(f"Rec #{rec_id} not found.")
+        
+        if rec_orm.analyst_id != user.id: 
+            raise ValueError("Access denied.")
+        
+        # ✅ FIX: Graceful handling for closed trades
+        if rec_orm.status == RecommendationStatusEnum.CLOSED:
+            logger.warning(f"Attempt to partial close CLOSED rec {rec_id}")
+            return self.repo._to_entity(rec_orm)
+        
+        if rec_orm.status != RecommendationStatusEnum.ACTIVE:
+            raise ValueError("Only ACTIVE recommendations can be partially closed.")
         
         current_open_percent = _to_decimal(rec_orm.open_size_percent)
         close_percent_dec = _to_decimal(close_percent)
@@ -358,8 +409,18 @@ class LifecycleService:
         pnl_formatted = f"{pnl_on_part:+.2f}%"
         
         event_type = "PARTIAL_CLOSE_AUTO" if triggered_by.upper() == "AUTO" else "PARTIAL_CLOSE_MANUAL"
-        event_data = {"price": float(price_dec), "closed_percent": float(actual_close_percent), "remaining_percent": float(rec_orm.open_size_percent), "pnl_on_part": pnl_on_part}
-        db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type=event_type, event_data=event_data))
+        event_data = {
+            "price": float(price_dec), 
+            "closed_percent": float(actual_close_percent), 
+            "remaining_percent": float(rec_orm.open_size_percent), 
+            "pnl_on_part": pnl_on_part
+        }
+        
+        db_session.add(RecommendationEvent(
+            recommendation_id=rec_id, 
+            event_type=event_type, 
+            event_data=event_data
+        ))
         
         notif_icon = "💰 Profit" if pnl_on_part >= 0 else "⚠️ Loss Mgt"
         notif_text = f"{notif_icon} Partial Close #{rec_orm.asset}. Closed {actual_close_percent:g}% at {_format_price(price_dec)} ({pnl_formatted}).\nRemaining: {rec_orm.open_size_percent:g}%"
@@ -367,66 +428,146 @@ class LifecycleService:
         
         if rec_orm.open_size_percent < Decimal('0.1'):
             logger.info(f"Rec #{rec_id} fully closed via partial.")
-            return await self.close_recommendation_async(rec_id, user_id, price_dec, db_session, reason="PARTIAL_CLOSE_FINAL", rebuild_alerts=False)
+            return await self.close_recommendation_async(
+                rec_id, user_id, price_dec, db_session, 
+                reason="PARTIAL_CLOSE_FINAL", rebuild_alerts=False
+            )
         else:
             await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=False)
+        
         return self.repo._to_entity(rec_orm)
 
-    async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Optional[Session] = None) -> RecommendationEntity:
+    async def update_sl_for_user_async(
+        self, 
+        rec_id: int, 
+        user_id: str, 
+        new_sl: Decimal, 
+        db_session: Optional[Session] = None
+    ) -> RecommendationEntity:
         if db_session is None:
-            with session_scope() as s: return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
+            with session_scope() as s: 
+                return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
         
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-        if not user: raise ValueError("User not found.")
+        if not user: 
+            raise ValueError("User not found.")
+        
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm: raise ValueError(f"Rec #{rec_id} not found.")
-        if rec_orm.analyst_id != user.id: raise ValueError("Access denied.")
-        if rec_orm.status != RecommendationStatusEnum.ACTIVE: raise ValueError("Only ACTIVE.")
+        if not rec_orm: 
+            raise ValueError(f"Rec #{rec_id} not found.")
+        
+        if rec_orm.analyst_id != user.id: 
+            raise ValueError("Access denied.")
+        
+        if rec_orm.status != RecommendationStatusEnum.ACTIVE: 
+            raise ValueError("Only ACTIVE.")
         
         old_sl = rec_orm.stop_loss
         try:
-            targets_list = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in (rec_orm.targets or [])]
-            _validate_recommendation_data(rec_orm.side, _to_decimal(rec_orm.entry), new_sl, targets_list)
+            targets_list = [
+                {
+                    'price': _to_decimal(t.get('price')), 
+                    'close_percent': t.get('close_percent', 0.0)
+                } for t in (rec_orm.targets or [])
+            ]
+            _validate_recommendation_data(
+                rec_orm.side, 
+                _to_decimal(rec_orm.entry), 
+                new_sl, 
+                targets_list
+            )
         except ValueError as e:
             logger.warning(f"Invalid SL update rec #{rec_id}: {e}")
             raise ValueError(f"Invalid new SL: {e}")
             
         rec_orm.stop_loss = new_sl
-        db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="SL_UPDATED", event_data={"old": str(old_sl), "new": str(new_sl)}))
+        db_session.add(RecommendationEvent(
+            recommendation_id=rec_id, 
+            event_type="SL_UPDATED", 
+            event_data={"old": str(old_sl), "new": str(new_sl)}
+        ))
+        
         self.notify_reply(rec_id, f"⚠️ SL for #{rec_orm.asset} updated to {_format_price(new_sl)}.", db_session)
         await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True)
         return self.repo._to_entity(rec_orm)
 
-    
-    async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict[str, Any]], db_session: Session) -> RecommendationEntity:
+    async def update_targets_for_user_async(
+        self, 
+        rec_id: int, 
+        user_id: str, 
+        new_targets: List[Dict[str, Any]], 
+        db_session: Session
+    ) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-        if not user: raise ValueError("User not found.")
+        if not user: 
+            raise ValueError("User not found.")
+        
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm: raise ValueError(f"Rec #{rec_id} not found.")
-        if rec_orm.analyst_id != user.id: raise ValueError("Access denied.")
-        if rec_orm.status != RecommendationStatusEnum.ACTIVE: raise ValueError("Only ACTIVE.")
+        if not rec_orm: 
+            raise ValueError(f"Rec #{rec_id} not found.")
+        
+        if rec_orm.analyst_id != user.id: 
+            raise ValueError("Access denied.")
+        
+        if rec_orm.status != RecommendationStatusEnum.ACTIVE: 
+            raise ValueError("Only ACTIVE.")
         
         try:
-            targets_validated = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in new_targets]
-            _validate_recommendation_data(rec_orm.side, _to_decimal(rec_orm.entry), _to_decimal(rec_orm.stop_loss), targets_validated)
+            targets_validated = [
+                {
+                    'price': _to_decimal(t['price']), 
+                    'close_percent': t.get('close_percent', 0.0)
+                } for t in new_targets
+            ]
+            _validate_recommendation_data(
+                rec_orm.side, 
+                _to_decimal(rec_orm.entry), 
+                _to_decimal(rec_orm.stop_loss), 
+                targets_validated
+            )
         except (ValueError, KeyError, TypeError) as e:
             logger.warning(f"Invalid TP update rec #{rec_id}: {e}")
             raise ValueError(f"Invalid new Targets: {e}")
             
         old_targets_json = rec_orm.targets
-        rec_orm.targets = [{'price': str(t['price']), 'close_percent': t['close_percent']} for t in targets_validated]
-        db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="TP_UPDATED", event_data={"old": old_targets_json, "new": rec_orm.targets}))
+        rec_orm.targets = [
+            {
+                'price': str(t['price']), 
+                'close_percent': t['close_percent']
+            } for t in targets_validated
+        ]
+        
+        db_session.add(RecommendationEvent(
+            recommendation_id=rec_id, 
+            event_type="TP_UPDATED", 
+            event_data={"old": old_targets_json, "new": rec_orm.targets}
+        ))
+        
         self.notify_reply(rec_id, f"🎯 Targets for #{rec_orm.asset} updated.", db_session)
         await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=True)
         return self.repo._to_entity(rec_orm)
 
-    async def update_entry_and_notes_async(self, rec_id: int, user_id: str, new_entry: Optional[Decimal], new_notes: Optional[str], db_session: Session) -> RecommendationEntity:
+    async def update_entry_and_notes_async(
+        self, 
+        rec_id: int, 
+        user_id: str, 
+        new_entry: Optional[Decimal], 
+        new_notes: Optional[str], 
+        db_session: Session
+    ) -> RecommendationEntity:
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-        if not user: raise ValueError("User not found.")
+        if not user: 
+            raise ValueError("User not found.")
+        
         rec_orm = self.repo.get_for_update(db_session, rec_id)
-        if not rec_orm: raise ValueError(f"Rec #{rec_id} not found.")
-        if rec_orm.analyst_id != user.id: raise ValueError("Access denied.")
-        if rec_orm.status == RecommendationStatusEnum.CLOSED: raise ValueError("Cannot edit closed.")
+        if not rec_orm: 
+            raise ValueError(f"Rec #{rec_id} not found.")
+        
+        if rec_orm.analyst_id != user.id: 
+            raise ValueError("Access denied.")
+        
+        if rec_orm.status == RecommendationStatusEnum.CLOSED: 
+            raise ValueError("Cannot edit closed.")
         
         event_data = {}
         updated = False
@@ -435,24 +576,44 @@ class LifecycleService:
             if rec_orm.status != RecommendationStatusEnum.PENDING:
                 raise ValueError("Entry only editable PENDING.")
             try:
-                targets_list = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in (rec_orm.targets or [])]
-                _validate_recommendation_data(rec_orm.side, new_entry, _to_decimal(rec_orm.stop_loss), targets_list)
+                targets_list = [
+                    {
+                        'price': _to_decimal(t.get('price')), 
+                        'close_percent': t.get('close_percent', 0.0)
+                    } for t in (rec_orm.targets or [])
+                ]
+                _validate_recommendation_data(
+                    rec_orm.side, 
+                    new_entry, 
+                    _to_decimal(rec_orm.stop_loss), 
+                    targets_list
+                )
             except ValueError as e:
                 raise ValueError(f"Invalid new Entry: {e}")
             
             if rec_orm.entry != new_entry:
-                event_data.update({"old_entry": str(rec_orm.entry), "new_entry": str(new_entry)})
+                event_data.update({
+                    "old_entry": str(rec_orm.entry), 
+                    "new_entry": str(new_entry)
+                })
                 rec_orm.entry = new_entry
                 updated = True
                 
         if new_notes is not None or (new_notes is None and rec_orm.notes is not None):
             if rec_orm.notes != new_notes:
-                event_data.update({"old_notes": rec_orm.notes, "new_notes": new_notes})
+                event_data.update({
+                    "old_notes": rec_orm.notes, 
+                    "new_notes": new_notes
+                })
                 rec_orm.notes = new_notes
                 updated = True
                 
         if updated:
-            db_session.add(RecommendationEvent(recommendation_id=rec_id, event_type="DATA_UPDATED", event_data=event_data))
+            db_session.add(RecommendationEvent(
+                recommendation_id=rec_id, 
+                event_type="DATA_UPDATED", 
+                event_data=event_data
+            ))
             self.notify_reply(rec_id, f"✏️ Data #{rec_orm.asset} updated.", db_session)
             await self._commit_and_dispatch(db_session, rec_orm, rebuild_alerts=(new_entry is not None))
         else:
@@ -460,16 +621,33 @@ class LifecycleService:
             
         return self.repo._to_entity(rec_orm)
 
-    async def set_exit_strategy_async(self, rec_id: int, user_id: str, mode: str, price: Optional[Decimal] = None, trailing_value: Optional[Decimal] = None, active: bool = True, session: Optional[Session] = None) -> RecommendationEntity:
+    async def set_exit_strategy_async(
+        self, 
+        rec_id: int, 
+        user_id: str, 
+        mode: str, 
+        price: Optional[Decimal] = None, 
+        trailing_value: Optional[Decimal] = None, 
+        active: bool = True, 
+        session: Optional[Session] = None
+    ) -> RecommendationEntity:
         if session is None:
-            with session_scope() as s: return await self.set_exit_strategy_async(rec_id, user_id, mode, price, trailing_value, active, s)
+            with session_scope() as s: 
+                return await self.set_exit_strategy_async(rec_id, user_id, mode, price, trailing_value, active, s)
         
         user = UserRepository(session).find_by_telegram_id(_parse_int_user_id(user_id))
-        if not user: raise ValueError("User not found.")
+        if not user: 
+            raise ValueError("User not found.")
+        
         rec = self.repo.get_for_update(session, rec_id)
-        if not rec: raise ValueError(f"Rec #{rec_id} not found.")
-        if rec.analyst_id != user.id: raise ValueError("Access denied.")
-        if rec.status != RecommendationStatusEnum.ACTIVE and active: raise ValueError("Requires ACTIVE.")
+        if not rec: 
+            raise ValueError(f"Rec #{rec_id} not found.")
+        
+        if rec.analyst_id != user.id: 
+            raise ValueError("Access denied.")
+        
+        if rec.status != RecommendationStatusEnum.ACTIVE and active: 
+            raise ValueError("Requires ACTIVE.")
         
         mode_upper = mode.upper()
         if mode_upper == "FIXED" and (price is None or not price.is_finite() or price <= 0):
@@ -483,14 +661,23 @@ class LifecycleService:
         rec.profit_stop_active = active
         
         event_data = {"mode": rec.profit_stop_mode, "active": active}
-        if rec.profit_stop_price: event_data["price"] = str(rec.profit_stop_price)
-        if rec.profit_stop_trailing_value: event_data["trailing_value"] = str(rec.profit_stop_trailing_value)
-        session.add(RecommendationEvent(recommendation_id=rec_id, event_type="EXIT_STRATEGY_UPDATED", event_data=event_data))
+        if rec.profit_stop_price: 
+            event_data["price"] = str(rec.profit_stop_price)
+        if rec.profit_stop_trailing_value: 
+            event_data["trailing_value"] = str(rec.profit_stop_trailing_value)
+        
+        session.add(RecommendationEvent(
+            recommendation_id=rec_id, 
+            event_type="EXIT_STRATEGY_UPDATED", 
+            event_data=event_data
+        ))
         
         if active:
             msg = f"📈 Exit strategy #{rec.asset} set: {mode_upper}"
-            if mode_upper == "FIXED": msg += f" at {_format_price(price)}"
-            elif mode_upper == "TRAILING": msg += f" with value {_format_price(trailing_value)}"
+            if mode_upper == "FIXED": 
+                msg += f" at {_format_price(price)}"
+            elif mode_upper == "TRAILING": 
+                msg += f" with value {_format_price(trailing_value)}"
         else:
             msg = f"❌ Exit strategy #{rec.asset} cancelled."
             
@@ -499,7 +686,11 @@ class LifecycleService:
         return self.repo._to_entity(rec)
 
     # --- Automation Helpers ---
-    async def move_sl_to_breakeven_async(self, rec_id: int, db_session: Optional[Session] = None) -> RecommendationEntity:
+    async def move_sl_to_breakeven_async(
+        self, 
+        rec_id: int, 
+        db_session: Optional[Session] = None
+    ) -> RecommendationEntity:
         if db_session is None:
             with session_scope() as s:
                 return await self.move_sl_to_breakeven_async(rec_id, s)
@@ -540,7 +731,11 @@ class LifecycleService:
             
             rec.status = RecommendationStatusEnum.CLOSED
             rec.closed_at = datetime.now(timezone.utc)
-            db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="INVALIDATED", event_data={"reason": "SL hit before entry"}))
+            db_session.add(RecommendationEvent(
+                recommendation_id=rec.id, 
+                event_type="INVALIDATED", 
+                event_data={"reason": "SL hit before entry"}
+            ))
             
             if self.alert_service:
                 await self.alert_service.remove_single_trigger(item_type="recommendation", item_id=item_id)
@@ -556,7 +751,10 @@ class LifecycleService:
                 
             rec.status = RecommendationStatusEnum.ACTIVE
             rec.activated_at = datetime.now(timezone.utc)
-            db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="ACTIVATED"))
+            db_session.add(RecommendationEvent(
+                recommendation_id=rec.id, 
+                event_type="ACTIVATED"
+            ))
             self.notify_reply(rec.id, f"▶️ Signal #{rec.asset} ACTIVE!", db_session=db_session)
             
             # [ADR-001] إعادة الفهرسة الذكية
@@ -580,6 +778,7 @@ class LifecycleService:
             await self.close_recommendation_async(rec.id, None, price, s, reason="SL_HIT", rebuild_alerts=False)
 
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
+        """Handles TP Hit with session safety."""
         with session_scope() as s:
             # 1. Fetch the object
             rec_orm = self.repo.get_for_update(s, item_id)
@@ -590,10 +789,14 @@ class LifecycleService:
             if any(e.event_type == event_type for e in (rec_orm.events or [])):
                 return
                 
-            s.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type=event_type, event_data={"price": float(price)}))
+            s.add(RecommendationEvent(
+                recommendation_id=rec_orm.id, 
+                event_type=event_type, 
+                event_data={"price": float(price)}
+            ))
             self.notify_reply(rec_orm.id, f"🎯 #{rec_orm.asset} hit TP{target_index} at {_format_price(price)}!", db_session=s)
             
-            # Flush early to save the event
+            # Flush early to save the event log
             s.flush()
 
             try:
@@ -602,20 +805,24 @@ class LifecycleService:
                 target_info = {}
             
             close_percent = _to_decimal(target_info.get("close_percent", 0))
+            
+            # We need analyst ID for partial close logic
             analyst_uid_str = str(rec_orm.analyst.telegram_user_id) if rec_orm.analyst else None
             
             if not analyst_uid_str:
+                # Just save the event if analyst not found
                 await self._commit_and_dispatch(s, rec_orm, False)
                 return
 
             if close_percent > 0:
-                # This might commit the session internally
+                # This function call might commit the session internally
                 await self.partial_close_async(rec_orm.id, analyst_uid_str, close_percent, price, s, triggered_by="AUTO")
             
-            # ✅ THE FIX: Re-fetch instead of refresh to avoid "not persistent" error
-            # because partial_close_async might have committed/expired the session
+            # ✅ THE FIX: Re-fetch the object instead of refreshing
+            # This is critical because partial_close_async committed the previous session state
             rec_orm = self.repo.get(s, item_id)
-            if not rec_orm: return 
+            if not rec_orm: 
+                return 
 
             is_final_tp = (target_index == len(rec_orm.targets or []))
             should_auto_close = (rec_orm.exit_strategy == ExitStrategyEnum.CLOSE_AT_FINAL_TP and is_final_tp)
@@ -625,6 +832,7 @@ class LifecycleService:
                 reason = "AUTO_CLOSE_FINAL_TP" if should_auto_close else "CLOSED_VIA_PARTIAL"
                 await self.close_recommendation_async(rec_orm.id, analyst_uid_str, price, s, reason=reason, rebuild_alerts=False)
             elif close_percent <= 0:
+                # Just save the TP Hit event
                 await self._commit_and_dispatch(s, rec_orm, False)
         
     # --- Event Processors (UserTrade) ---
