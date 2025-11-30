@@ -1,10 +1,11 @@
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 # File: src/capitalguard/interfaces/telegram/ui_texts.py
-# Version: v7.0.0-COMPLETE-DYNAMIC (Fixed & Complete)
-# ✅ THE COMPLETE FIX:
-#    1. Dynamic bot username + ALL missing functions
-#    2. Fixed icon logic + close percentages
-#    3. Complete portfolio views and timeline
-#    4. Full error handling
+# Version: v9.0.0-GOLD-MASTER (Visual Fixes + PortfolioViews)
+# ✅ FEATURES:
+#    1. Visual Hierarchy: Icons for Long/Short, Closed/Active.
+#    2. Smart Targets: Shows 'Next' target (🚀) and 'Hit' (✅).
+#    3. Close Percentages: Shows '📦 50%' next to targets.
+#    4. PortfolioViews: Includes the missing class for /myportfolio.
 
 from __future__ import annotations
 import logging
@@ -13,13 +14,13 @@ from typing import List, Optional, Dict, Any
 from decimal import Decimal
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
-from capitalguard.domain.value_objects import Target
 from capitalguard.interfaces.telegram.helpers import _get_attr, _to_decimal, _pct, _format_price
+from capitalguard.config import settings
 
 log = logging.getLogger(__name__)
 
@@ -78,15 +79,11 @@ def _calculate_duration(rec: Recommendation) -> str:
     except Exception:
         return ""
 
-# --- ✅ FIXED: Smart Icon Logic ---
 def _get_target_icon(target_index: int, hit_targets: set, total_targets: int) -> str:
-    """
-    Determine the correct icon for each target
-    """
+    """Determine the correct icon for each target."""
     if target_index in hit_targets:
-        return ICON_HIT  # ✅ Hit target
+        return ICON_HIT
     
-    # Find the first unhit target
     next_unhit_target = None
     for i in range(1, total_targets + 1):
         if i not in hit_targets:
@@ -94,45 +91,58 @@ def _get_target_icon(target_index: int, hit_targets: set, total_targets: int) ->
             break
     
     if target_index == next_unhit_target:
-        return ICON_NEXT  # 🚀 Next target to hit
+        return ICON_NEXT
     else:
-        return ICON_WAIT  # ⏳ Waiting targets
+        return ICON_WAIT
 
 # --- PRO Card Builders ---
 
 def _build_header(rec: Recommendation, bot_username: str) -> str:
-    """Build header with dynamic bot username"""
+    """Build header with dynamic bot username and status icon."""
     try:
         symbol = _get_attr(rec.asset, 'value', 'SYMBOL')
         side = _get_attr(rec.side, 'value', 'LONG')
+        status = _get_attr(rec, 'status')
+
+        # Visual Status
+        if status == RecommendationStatus.CLOSED:
+            header_icon = "🏁"
+            status_tag = " [CLOSED]"
+        elif status == RecommendationStatus.PENDING:
+            header_icon = "⏳"
+            status_tag = ""
+        else:
+            header_icon = "📈" if side == "LONG" else "📉"
+            status_tag = ""
         
-        header_icon = "📈" if side == "LONG" else "📉"
         side_badge = ICON_LONG if side == "LONG" else ICON_SHORT
         
         raw_market = getattr(rec, 'market', 'Futures') or 'Futures'
         is_spot = "SPOT" in raw_market.upper()
-        lev_info = "" if is_spot else f" • {_extract_leverage(getattr(rec, 'notes', ''))}"
+        lev_info = "" if is_spot else f" • <b>{_extract_leverage(getattr(rec, 'notes', ''))}</b>"
 
-        # ✅ FIXED: Use the link in header
         link = _get_webapp_link(getattr(rec, 'id', 0), bot_username)
-        return f"{header_icon} <a href='{link}'><b>#{symbol}</b></a>  {side_badge}{lev_info}"
+        return f"{header_icon} <a href='{link}'><b>#{symbol}</b></a>{status_tag}\n{side_badge}{lev_info}"
     except Exception:
         return "📊 <b>TRADING SIGNAL</b>"
 
 def _build_status_dashboard(rec: Recommendation, is_initial_publish: bool = False) -> str:
-    """Enhanced status dashboard"""
+    """Enhanced status dashboard."""
     try:
         status = _get_attr(rec, 'status')
         live_price = getattr(rec, "live_price", None)
         entry = _to_decimal(_get_attr(rec, 'entry', 0))
         
-        if status == RecommendationStatus.PENDING:
-            return (
-                f"⏳ <b>WAITING ENTRY</b>\n"
-                f"Entry Price: <code>{_format_price(entry)}</code>"
-            )
+        status_str = str(status.value if hasattr(status, 'value') else status)
+        
+        if status_str == "PENDING":
+            txt = f"⏳ <b>PENDING ORDER</b>\nWait for Entry @ <code>{_format_price(entry)}</code>"
+            if live_price:
+                dist = _pct(entry, live_price, _get_attr(rec, 'side'))
+                txt += f"\nCurrent: `{_format_price(live_price)}` ({abs(dist):.2f}% away)"
+            return txt
             
-        if status == RecommendationStatus.CLOSED:
+        if status_str == "CLOSED":
             exit_price = _to_decimal(_get_attr(rec, 'exit_price', 0))
             pnl = _pct(entry, exit_price, _get_attr(rec, 'side', 'LONG'))
             duration = _calculate_duration(rec)
@@ -142,13 +152,14 @@ def _build_status_dashboard(rec: Recommendation, is_initial_publish: bool = Fals
             return (
                 f"{result_emoji} <b>TRADE CLOSED</b>\n"
                 f"Final Price: <code>{_format_price(exit_price)}</code>\n"
-                f"Result: {_format_pnl(pnl)}{dur_str}"
+                f"Result: <b>{_format_pnl(pnl)}</b>{dur_str}"
             )
 
-        # ✅ SIMPLIFIED: No live price on initial publish
+        # Initial Publish (Clean Look)
         if is_initial_publish:
             return "⚡ <b>TRADE ACTIVE</b>\nPosition opened successfully"
         
+        # Active Update
         if live_price:
             pnl = _pct(entry, live_price, _get_attr(rec, 'side', 'LONG'))
             
@@ -164,24 +175,19 @@ def _build_status_dashboard(rec: Recommendation, is_initial_publish: bool = Fals
                 
                 return (
                     f"⚡ <b>LIVE TRADING</b>\n"
-                    f"Price: <code>{_format_price(live_price)}</code>\n"
-                    f"PnL: {_format_pnl(pnl)}\n"
-                    f"Progress: {bar}"
+                    f"Current: <code>{_format_price(live_price)}</code> ({_format_pnl(pnl)})\n"
+                    f"<code>{bar}</code>"
                 )
             
-            return (
-                f"⚡ <b>LIVE TRADING</b>\n"
-                f"Price: <code>{_format_price(live_price)}</code>\n"
-                f"PnL: {_format_pnl(pnl)}"
-            )
+            return f"⚡ <b>LIVE TRADING</b>\nCurrent: <code>{_format_price(live_price)}</code> ({_format_pnl(pnl)})"
         
-        return "⚡ <b>TRADE ACTIVE</b>\nMonitoring markets..."
+        return "⚡ <b>TRADE ACTIVE</b>"
         
     except Exception:
         return "⚡ <b>TRADE ACTIVE</b>"
 
 def _build_strategy_block(rec: Recommendation) -> str:
-    """Strategy essentials"""
+    """Strategy essentials."""
     try:
         entry = _format_price(_get_attr(rec, 'entry', 0))
         sl = _format_price(_get_attr(rec, 'stop_loss', 0))
@@ -192,14 +198,13 @@ def _build_strategy_block(rec: Recommendation) -> str:
         
         return (
             f"{ICON_ENTRY} <b>Entry:</b> <code>{entry}</code>\n"
-            f"{ICON_STOP} <b>Stop Loss:</b> <code>{sl}</code>\n"
-            f"📊 <b>Risk:</b> {risk_pct:.1f}%"
+            f"{ICON_STOP} <b>Stop Loss:</b> <code>{sl}</code> ({risk_pct:.2f}% Risk)"
         )
     except Exception:
-        return f"{ICON_ENTRY} <b>Entry:</b> <code>N/A</code>\n{ICON_STOP} <b>Stop Loss:</b> <code>N/A</code>"
+        return f"{ICON_ENTRY} <b>Entry:</b> <code>N/A</code>"
 
 def _build_targets_block(rec: Recommendation) -> str:
-    """✅ FIXED: Targets with smart icons and close percentages"""
+    """Targets with smart icons and percentages."""
     try:
         entry_price = _get_attr(rec, 'entry', 0)
         targets = _get_attr(rec, 'targets', [])
@@ -216,38 +221,36 @@ def _build_targets_block(rec: Recommendation) -> str:
                     try:
                         target_num = int(''.join(filter(str.isdigit, event_type)))
                         hit_targets.add(target_num)
-                    except:
-                        pass
+                    except: pass
 
-        lines = ["🎯 <b>Take Profit Targets:</b>"]
+        lines = ["🎯 <b>Targets:</b>"]
         
         for i, target in enumerate(targets_list, start=1):
             price = _get_attr(target, 'price', 0)
             pct_value = _pct(entry_price, price, _get_attr(rec, 'side', 'LONG'))
-            
-            # ✅ ENHANCED: Smart icon selection
             icon = _get_target_icon(i, hit_targets, len(targets_list))
             
-            # ✅ ENHANCED: Close percentages
-            close_percent = target.get('close_percent', 0) if isinstance(target, dict) else 0
-            close_text = ""
-            
+            # Close Percentage Display
+            close_percent = 0.0
+            if isinstance(target, dict):
+                close_percent = float(target.get('close_percent', 0))
+            elif hasattr(target, 'close_percent'):
+                close_percent = float(target.close_percent)
+
+            close_tag = ""
             if close_percent > 0:
                 if close_percent == 100 and i == len(targets_list):
-                    close_text = " [FULL CLOSE]"
+                    close_tag = " 🏁"
                 else:
-                    close_text = f" [Close {close_percent:.0f}%]"
+                    close_tag = f" 📦{int(close_percent)}%"
             
-            lines.append(f"{icon} TP{i}: <code>{_format_price(price)}</code> (+{pct_value:.1f}%){close_text}")
-        
-        # ✅ ENHANCED: Close summary
-        total_close_percent = sum(
-            target.get('close_percent', 0) if isinstance(target, dict) else 0 
-            for target in targets_list
-        )
-        
-        if total_close_percent > 0:
-            lines.append(f"\n{ICON_CLOSE} <b>Close Summary:</b> {total_close_percent:.0f}% total position will be closed at targets")
+            # Strikethrough for hit targets
+            if i in hit_targets:
+                line = f"{icon} <s>TP{i}: {price:g}</s> (+{pct_value:.1f}%){close_tag}"
+            else:
+                line = f"{icon} TP{i}: <code>{price:g}</code> <i>(+{pct_value:.1f}%)</i>{close_tag}"
+            
+            lines.append(line)
         
         return "\n".join(lines)
         
@@ -256,60 +259,35 @@ def _build_targets_block(rec: Recommendation) -> str:
         return "🎯 <b>Take Profit Targets:</b> Error loading targets"
 
 def _build_clean_timeline(rec: Recommendation) -> str:
-    """✅ ADDED: Clean timeline without creation event"""
+    """Clean timeline."""
     try:
-        if not rec.events:
-            return ""
+        if not rec.events: return ""
         
-        important_events = []
-        for event in rec.events:
-            event_type = getattr(event, 'event_type', '')
-            if event_type in ["CREATED", "RECOMMENDATION_CREATED"]:
-                continue
-            important_events.append(event)
+        IGNORED_EVENTS = ["CREATED", "CREATED_ACTIVE", "CREATED_PENDING", "PUBLISHED"]
+        meaningful_events = [e for e in rec.events if getattr(e, 'event_type', '') not in IGNORED_EVENTS]
         
-        if not important_events:
-            return ""
+        if not meaningful_events: return ""
             
-        events_sorted = sorted(important_events, key=lambda e: getattr(e, 'event_timestamp', datetime.now()), reverse=True)[:2]
+        events_sorted = sorted(meaningful_events, key=lambda e: getattr(e, 'event_timestamp', datetime.now()), reverse=True)[:3]
         lines = ["🕐 <b>Recent Activity:</b>"]
         
         for event in events_sorted:
-            ts = getattr(event, 'event_timestamp', datetime.now()).strftime("%m/%d %H:%M")
+            ts = getattr(event, 'event_timestamp', datetime.now()).strftime("%H:%M")
             e_type = getattr(event, 'event_type', '').replace("_", " ").title()
             
-            if "Tp" in e_type and "Hit" in e_type:
-                e_type = "🎯 Target Hit"
-            elif "Sl" in e_type and "Hit" in e_type:
-                e_type = "🛑 Stop Loss"
-            elif "Partial" in e_type:
-                event_data = getattr(event, 'event_data', {}) or {}
-                closed_pct = event_data.get('closed_percent', 0)
-                if closed_pct > 0:
-                    e_type = f"💰 Close {closed_pct:.0f}%"
-                else:
-                    e_type = "💰 Partial Close"
-            elif "Activated" in e_type:
-                e_type = "⚡ Activated"
-            elif "Closed" in e_type:
-                e_type = "🏁 Closed"
+            if "Tp" in e_type and "Hit" in e_type: e_type = "🎯 Target Hit"
+            elif "Sl" in e_type and "Hit" in e_type: e_type = "🛑 Stop Loss"
+            elif "Partial" in e_type: e_type = "💰 Partial Close"
+            elif "Activated" in e_type: e_type = "⚡ Activated"
+            elif "Closed" in e_type: e_type = "🏁 Closed"
                 
-            lines.append(f"▸ {ts} - {e_type}")
+            lines.append(f"▸ `{ts}` {e_type}")
         
         return "\n".join(lines)
-    except Exception:
-        return ""
+    except Exception: return ""
 
-# --- ✅ COMPLETE MAIN FUNCTION ---
 def build_trade_card_text(rec: Recommendation, bot_username: str, is_initial_publish: bool = False) -> str:
-    """
-    Complete trade card with all enhancements
-    
-    Args:
-        rec: Recommendation entity
-        bot_username: Dynamic bot username
-        is_initial_publish: Whether this is the first publish
-    """
+    """Main card builder."""
     try:
         DIVIDER = "────────────────"
         parts = []
@@ -323,12 +301,11 @@ def build_trade_card_text(rec: Recommendation, bot_username: str, is_initial_pub
         parts.append(_build_targets_block(rec))
         
         notes = getattr(rec, 'notes', '')
-        if notes and len(notes.strip()) > 10:
+        if notes and len(notes.strip()) > 1:
             clean_notes = re.sub(r'Lev:?\s*\d+x?\s*\|?', '', notes, flags=re.IGNORECASE).strip()
             if clean_notes:
                 parts.append(DIVIDER)
-                short_notes = clean_notes[:100] + "..." if len(clean_notes) > 100 else clean_notes
-                parts.append(f"📝 <b>Analysis:</b> {short_notes}")
+                parts.append(f"📝 <b>Notes:</b> {clean_notes[:100]}")
         
         timeline = _build_clean_timeline(rec)
         if timeline:
@@ -336,75 +313,61 @@ def build_trade_card_text(rec: Recommendation, bot_username: str, is_initial_pub
             parts.append(timeline)
         
         link = _get_webapp_link(getattr(rec, 'id', 0), bot_username)
-        parts.append(f"\n🔍 <a href='{link}'><b>View Detailed Analytics & Charts</b></a>")
+        parts.append(f"\n🔍 <a href='{link}'><b>View Detailed Analytics & Control</b></a>")
 
         return "\n".join(parts)
-        
     except Exception as e:
         log.error(f"Error building trade card: {e}")
-        return "📊 <b>TRADING SIGNAL</b>\n\n🚀 Active trading position\n\n🔍 <a href='https://t.me/CapitalGuardBot'>View Details</a>"
+        return "📊 <b>TRADING SIGNAL</b>"
 
-# --- ✅ COMPLETE REVIEW FUNCTION ---
 def build_review_text_with_price(draft: Dict[str, Any], preview_price: Optional[float] = None) -> str:
-    """Complete review text"""
-    try:
-        asset = draft.get("asset", "SYMBOL")
-        side = draft.get("side", "LONG")
-        entry = _to_decimal(draft.get("entry", 0))
-        sl = _to_decimal(draft.get("stop_loss", 0))
-        
-        icon = "🟢" if side == "LONG" else "🔴"
-        
-        text = (
-            f"🛡️ <b>Confirm Trading Signal</b>\n\n"
-            f"💎 <b>#{asset}</b>\n"
-            f"Direction: {icon} <b>{side}</b>\n"
-            f"Entry Price: <code>{_format_price(entry)}</code>\n"
-            f"Stop Loss: <code>{_format_price(sl)}</code>\n"
-        )
-        
-        targets = draft.get("targets", [])
-        if targets:
-            text += f"\n🎯 <b>Take Profit Targets:</b>\n"
-            for i, target in enumerate(targets, start=1):
-                price = _to_decimal(target.get('price', 0))
-                close_percent = target.get('close_percent', 0)
-                pct_value = _pct(entry, price, side)
-                
-                close_text = ""
-                if close_percent > 0:
-                    if close_percent == 100 and i == len(targets):
-                        close_text = " [FULL CLOSE]"
-                    else:
-                        close_text = f" [Close {close_percent:.0f}%]"
-                
-                icon = "⏳" if i == 1 else "🚀" if i == 2 else "🎯"
-                text += f"{icon} TP{i}: <code>{_format_price(price)}</code> (+{pct_value:.1f}%){close_text}\n"
-        
-        text += f"\n📤 <i>Ready to publish to channels?</i>"
-        
-        return text
-        
-    except Exception as e:
-        log.error(f"Error building review text: {e}")
-        return "🛡️ <b>Confirm Trading Signal</b>\n\nReady to publish this signal to your channels?"
+    """Review text for analysts."""
+    asset = draft.get("asset", "SYMBOL")
+    side = draft.get("side", "LONG")
+    entry = _to_decimal(draft.get("entry", 0))
+    sl = _to_decimal(draft.get("stop_loss", 0))
+    icon = "🟢" if side == "LONG" else "🔴"
+    
+    text = (
+        f"🛡️ <b>Confirm Trading Signal</b>\n\n"
+        f"💎 <b>#{asset}</b>\n"
+        f"Direction: {icon} <b>{side}</b>\n"
+        f"Entry Price: <code>{_format_price(entry)}</code>\n"
+        f"Stop Loss: <code>{_format_price(sl)}</code>\n"
+    )
+    
+    targets = draft.get("targets", [])
+    if targets:
+        text += f"\n🎯 <b>Targets:</b>\n"
+        for i, target in enumerate(targets, start=1):
+            price = _to_decimal(target.get('price', 0))
+            pct = target.get('close_percent', 0)
+            pct_str = f" 📦{int(pct)}%" if pct > 0 else ""
+            text += f"TP{i}: <code>{_format_price(price)}</code>{pct_str}\n"
+    
+    text += f"\n📤 <i>Ready to publish?</i>"
+    return text
 
-# --- ✅ ADDED: PortfolioViews Class ---
+# --- ✅ ADDED: PortfolioViews Class (Crucial for /myportfolio) ---
 class PortfolioViews:
     @staticmethod
     async def render_hub(update: Update, user_name: str, report: Dict[str, Any], active_count: int, watchlist_count: int, is_analyst: bool):
-        """Complete portfolio hub"""
+        """Renders the main portfolio dashboard."""
         try:
+            # Import locally to avoid circular import issues
             from capitalguard.interfaces.telegram.keyboards import CallbackBuilder, CallbackNamespace
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-            header = "📊 <b>CapitalGuard Portfolio</b>\nYour trading dashboard."
+            
+            header = f"📊 <b>CapitalGuard Portfolio</b>\nWelcome, {user_name}."
+            
+            win_rate = report.get('win_rate_pct', 'N/A')
+            total_pnl = report.get('total_pnl_pct', '0%')
             
             stats_card = (
                 "────────────────\n"
-                "📈 <b>Portfolio Summary</b>\n"
+                "📈 <b>Performance Summary</b>\n"
+                f"• Win Rate: <b>{win_rate}</b>\n"
+                f"• Total PnL: <b>{total_pnl}</b>\n"
                 f"• Active Trades: <b>{active_count}</b>\n"
-                f"• Watchlist: <b>{watchlist_count}</b>\n"
                 "────────────────\n"
                 "<b>Quick Access:</b>"
             )
@@ -413,6 +376,7 @@ class PortfolioViews:
             keyboard = [
                 [InlineKeyboardButton(f"🚀 Active ({active_count})", callback_data=CallbackBuilder.create(ns, "show_list", "activated", 1))],
                 [InlineKeyboardButton(f"👁️ Watchlist ({watchlist_count})", callback_data=CallbackBuilder.create(ns, "show_list", "watchlist", 1))],
+                [InlineKeyboardButton("📜 History", callback_data=CallbackBuilder.create(ns, "show_list", "history", 1))]
             ]
             
             if is_analyst:
@@ -438,3 +402,5 @@ class PortfolioViews:
             pass
         except Exception as e:
             log.warning(f"Portfolio hub error: {e}")
+
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
