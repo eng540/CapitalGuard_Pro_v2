@@ -1,15 +1,19 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/notify/telegram.py ---
 # File: src/capitalguard/infrastructure/notify/telegram.py
-# Version: v9.1.0-HOTFIX (Added set_ptb_app)
-# ✅ THE FIX: Added missing 'set_ptb_app' method required by boot.py.
-# ✅ COMPATIBLE: Fully compatible with lifecycle_service.py and ui_texts.py
+# Version: v11.0.0-ULTIMATE (Combined Best Features)
+# ✅ COMBINED FEATURES:
+#    1. Connection Pooling & Performance (from v10)
+#    2. Full Compatibility & set_ptb_app (from v9)
+#    3. Enhanced Error Handling & Retry Logic
+#    4. Fire-and-Forget for Non-Blocking Operations
 
 import logging
 import asyncio
 from typing import Optional, Union, Tuple, Dict, Any
 from telegram import Bot, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.error import RetryAfter
+from telegram.error import RetryAfter, TimedOut, NetworkError
+from telegram.request import HTTPXRequest
 
 from capitalguard.config import settings
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
@@ -20,8 +24,9 @@ log = logging.getLogger(__name__)
 
 class TelegramNotifier:
     """
-    Handles all outbound communication to the Telegram Bot API.
-    Compatible with lifecycle_service.py and ui_texts.py
+    Ultimate Telegram Notifier - Combines performance with full compatibility.
+    ✅ Compatible with: lifecycle_service.py, ui_texts.py, boot.py
+    ✅ High-performance: Connection pooling, smart retries, non-blocking
     """
 
     def __init__(self, bot_token: str = None):
@@ -29,14 +34,22 @@ class TelegramNotifier:
         if not self.bot_token:
             raise ValueError("Telegram bot token is required")
 
-        self.bot = Bot(token=self.bot_token)
+        # ✅ PERFORMANCE: Optimized connection pool (from v10)
+        request = HTTPXRequest(
+            connection_pool_size=20,
+            read_timeout=10.0,
+            write_timeout=10.0,
+            connect_timeout=5.0
+        )
+        self.bot = Bot(token=self.bot_token, request=request)
         self._bot_username: Optional[str] = None
-        self.ptb_app = None  # ✅ Added to store the Application instance
+        self.ptb_app = None  # ✅ COMPATIBILITY: Required by boot.py (from v9)
 
         # Initialize bot info immediately if possible
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
+                # Don't block startup - schedule async init
                 loop.create_task(self._init_bot_info())
             else:
                 loop.run_until_complete(self._init_bot_info())
@@ -52,7 +65,7 @@ class TelegramNotifier:
         except Exception as e:
             log.error(f"Failed to get bot info: {e}")
 
-    # ✅ NEW METHOD: This fixes the AttributeError in boot.py
+    # ✅ COMPATIBILITY: Required method for boot.py (from v9)
     def set_ptb_app(self, ptb_app: Any):
         """Injects the running PTB application instance into the notifier."""
         self.ptb_app = ptb_app
@@ -62,7 +75,7 @@ class TelegramNotifier:
 
     @property
     def bot_username(self) -> str:
-        """Get bot username with fallback"""
+        """Get bot username with multiple fallbacks"""
         if self._bot_username:
             return self._bot_username
         if self.ptb_app and hasattr(self.ptb_app, 'bot') and self.ptb_app.bot:
@@ -71,9 +84,10 @@ class TelegramNotifier:
 
     async def _send_text(self, chat_id: Union[int, str], text: str, 
                         keyboard: Optional[InlineKeyboardMarkup] = None,
-                        **kwargs) -> Optional[Tuple[int, int]]:
+                        retries: int = 3) -> Optional[Tuple[int, int]]:
         """
-        Send text message with proper error handling and retry logic
+        Enhanced send with connection pooling and smart retry logic
+        Combines best of both versions
         """
         try:
             msg = await self.bot.send_message(
@@ -81,14 +95,21 @@ class TelegramNotifier:
                 text=text,
                 reply_markup=keyboard,
                 parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-                **kwargs
+                disable_web_page_preview=True
             )
             return (msg.chat.id, msg.message_id)
         except RetryAfter as e:
-            log.warning(f"Flood limit exceeded. Sleep {e.retry_after}s")
+            log.warning(f"Flood limit exceeded. Sleeping {e.retry_after}s")
             await asyncio.sleep(e.retry_after)
-            return await self._send_text(chat_id, text, keyboard, **kwargs)
+            return await self._send_text(chat_id, text, keyboard, retries)
+        except (TimedOut, NetworkError) as e:
+            # ✅ ENHANCED: Smart network error handling (from v10)
+            if retries > 0:
+                log.warning(f"Network error, retrying... ({retries} left): {e}")
+                await asyncio.sleep(1)
+                return await self._send_text(chat_id, text, keyboard, retries - 1)
+            log.error(f"Network failed after {retries} retries for {chat_id}: {e}")
+            return None
         except Exception as e:
             log.error(f"Failed to send message to {chat_id}: {e}")
             return None
@@ -96,7 +117,7 @@ class TelegramNotifier:
     async def _edit_text(self, chat_id: Union[int, str], message_id: int, 
                         text: str, keyboard: Optional[InlineKeyboardMarkup] = None) -> bool:
         """
-        Edit existing message with proper error handling
+        Enhanced edit with better error handling
         """
         try:
             await self.bot.edit_message_text(
@@ -109,18 +130,21 @@ class TelegramNotifier:
             )
             return True
         except Exception as e:
-            # Message not modified is not an error
+            # Message not modified is not an error - common case
             if "message is not modified" in str(e).lower():
                 return True
-            log.error(f"Failed to edit message {chat_id}/{message_id}: {e}")
+            log.warning(f"Failed to edit message {chat_id}/{message_id}: {e}")
             return False
 
-    # --- Public API - Compatible with LifecycleService ---
+    # --- Public API - Fully Compatible with LifecycleService ---
 
     async def send_admin_alert(self, text: str):
-        """Send alert to admin channel"""
+        """Send alert to admin channel - non-blocking"""
         if settings.TELEGRAM_ADMIN_CHAT_ID:
-            await self._send_text(settings.TELEGRAM_ADMIN_CHAT_ID, f"🚨 <b>SYSTEM ALERT</b>\n{text}")
+            # ✅ PERFORMANCE: Fire-and-forget to avoid blocking (from v10)
+            asyncio.create_task(
+                self._send_text(settings.TELEGRAM_ADMIN_CHAT_ID, f"🚨 <b>SYSTEM ALERT</b>\n{text}")
+            )
 
     async def send_private_text(self, chat_id: int, text: str):
         """Send private message to user"""
@@ -130,7 +154,7 @@ class TelegramNotifier:
                             keyboard: Optional[InlineKeyboardMarkup] = None) -> Optional[Tuple[int, int]]:
         """
         Post recommendation to channel
-        Compatible with lifecycle_service.py calls
+        ✅ COMPATIBLE: Matches lifecycle_service.py call signature exactly
         """
         # Generate text with dynamic bot username
         text = build_trade_card_text(rec, self.bot_username, is_initial_publish=True)
@@ -146,8 +170,8 @@ class TelegramNotifier:
                                             rec: Recommendation, 
                                             bot_username: str = None) -> bool:
         """
-        ✅ FIXED: Accepts 'bot_username' parameter to match LifecycleService call signature
-        Compatible with lifecycle_service.py notify_card_update method
+        ✅ COMPATIBLE: Accepts 'bot_username' parameter to match LifecycleService call signature
+        Exact signature required by lifecycle_service.py notify_card_update method
         """
         # Use passed username or fallback to instance username
         username_to_use = bot_username or self.bot_username
@@ -165,7 +189,7 @@ class TelegramNotifier:
     async def post_notification_reply(self, chat_id: int, message_id: int, text: str):
         """
         Post reply to existing message
-        Compatible with lifecycle_service.py notify_reply method
+        ✅ COMPATIBLE: Matches lifecycle_service.py notify_reply method
         """
         try:
             await self.bot.send_message(
