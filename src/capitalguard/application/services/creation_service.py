@@ -95,9 +95,9 @@ def _parse_int_user_id(user_id: Any) -> Optional[int]:
 
 class CreationService:
     """
-    [R2 Service]
-    مسؤولة حصريًا عن "إنشاء" الكيانات (التوصيات والصفقات) والتحقق من صحتها.
-    تنفذ "العقد التشغيلي" للمرحلة R1/R2.
+    R2 Service
+    مسؤولة حصريًا عن إنشاء الكيانات (التوصيات والصفقات) والتحقق من صحتها.
+    تنفذ العقد التشغيلي للمرحلة R1/R2.
     """
     def __init__(
         self,
@@ -117,7 +117,7 @@ class CreationService:
     # --- Validation (Moved from TradeService) ---
     def _validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]):
         """
-        [الخوارزمية الأساسية]
+        الخوارزمية الأساسية
         التحقق الدلالي الصارم
         """
         side_upper = (str(side) or "").upper()
@@ -134,24 +134,31 @@ class CreationService:
             if not price.is_finite() or price <= 0:
                 raise ValueError(f"Target {i+1} price invalid.")
             target_prices.append(price)
-            # ... (rest of validation logic remains) ...
+            weight = t.get('weight', 1.0)
+            if not isinstance(weight, (int, float)) or weight <= 0:
+                raise ValueError(f"Target {i+1} weight must be positive number.")
 
-        if not target_prices: raise ValueError("No valid target prices found.")
-        if side_upper == "LONG" and stop_loss >= entry: raise ValueError("LONG SL must be < Entry.")
-        if side_upper == "SHORT" and stop_loss <= entry: raise ValueError("SHORT SL must be > Entry.")
-        if side_upper == "LONG" and any(p <= entry for p in target_prices): raise ValueError("LONG targets must be > Entry.")
-        if side_upper == "SHORT" and any(p >= entry for p in target_prices): raise ValueError("SHORT targets must be < Entry.")
+        if not target_prices:
+            raise ValueError("No valid target prices found.")
+        if side_upper == "LONG" and stop_loss >= entry:
+            raise ValueError("LONG SL must be < Entry.")
+        if side_upper == "SHORT" and stop_loss <= entry:
+            raise ValueError("SHORT SL must be > Entry.")
+        if side_upper == "LONG" and any(p <= entry for p in target_prices):
+            raise ValueError("LONG targets must be > Entry.")
+        if side_upper == "SHORT" and any(p >= entry for p in target_prices):
+            raise ValueError("SHORT targets must be < Entry.")
         
         risk = abs(entry - stop_loss)
-        if risk.is_zero(): raise ValueError("Entry and SL cannot be equal.")
-        # ... (rest of validation logic) ...
+        if risk.is_zero():
+            raise ValueError("Entry and SL cannot be equal.")
+        
         logger.debug("Data validation successful.")
-
 
     # --- Publishing (Moved from TradeService) ---
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_db_id: int, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
         """
-        [Helper]
+        Helper
         منطق النشر الفعلي، يتم استدعاؤه الآن من المهمة الخلفية.
         """
         report: Dict[str, List[Dict[str, Any]]] = {"success": [], "failed": []}
@@ -203,12 +210,17 @@ class CreationService:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, fn, *args, **kwargs)
 
+    async def _notify_user_trade_update(self, user_id: int, text: str):
+        """Helper method for user notifications."""
+        # سيتم تنفيذ هذا لاحقًا
+        pass
+
     # --- Public API - Create Recommendation (Analyst) ---
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         """
-        [Lightweight Creator - ADR-001]
+        Lightweight Creator - ADR-001
         1. التحقق من الصحة
-        2. الحفظ كـ "ظل" (is_shadow=True)
+        2. الحفظ كـ ظل (is_shadow=True)
         3. الإرجاع فورًا
         """
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
@@ -235,7 +247,6 @@ class CreationService:
         else:
             exit_strategy_enum = ExitStrategyEnum(exit_strategy_val)
 
-
         if order_type_enum == OrderTypeEnum.MARKET:
             live_price = await self.price_service.get_cached_price(asset, market, force_refresh=True)
             status, final_entry = RecommendationStatusEnum.ACTIVE, _to_decimal(live_price) if live_price is not None else None
@@ -255,7 +266,7 @@ class CreationService:
             status=status, market=market, notes=kwargs.get('notes'), 
             exit_strategy=exit_strategy_enum, 
             activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None,
-            is_shadow=True # [ADR-001] حفظ كـ "ظل"
+            is_shadow=True  # ADR-001 حفظ كـ ظل
         )
         
         db_session.add(rec_orm)
@@ -283,62 +294,66 @@ class CreationService:
         target_channel_ids: Optional[Set[int]] = None
     ):
         """
-        [Background Task - ADR-001]
-        1. النشر البطيء
-        2. إضافة الفهرس الذكي (Smart Indexing)
-        3. إزالة "الظل" (is_shadow=False)
+        [Background Task - ADR-001] - ROBUST & FAULT TOLERANT VERSION
         """
+        logger.info(f"[BG Task Rec {rec_id}]: Starting background process...")
+        
         if not self.alert_service:
-            logger.critical(f"[BG Task Rec {rec_id}]: AlertService is not injected. Aborting.")
-            return
+            logger.critical(f"[BG Task Rec {rec_id}]: AlertService missing! Processing anyway to un-shadow.")
 
-        logger.info(f"[BG Task Rec {rec_id}]: Starting background publish and index...")
         try:
             with session_scope() as session:
-                # 1. جلب الكائن
                 rec_orm = self.repo.get(session, rec_id)
                 if not rec_orm:
-                    logger.error(f"[BG Task Rec {rec_id}]: ORM object not found in DB.")
+                    logger.error(f"[BG Task Rec {rec_id}]: ORM object not found.")
                     return
 
-                # 2. النشر
+                # 1. محاولة النشر (معزولة لكي لا تقتل العملية)
                 rec_entity = self.repo._to_entity(rec_orm)
-                if not rec_entity:
-                     logger.error(f"[BG Task Rec {rec_id}]: Failed to convert ORM to entity.")
-                     return
+                success_count = 0
                 
-                _, report = await self._publish_recommendation(
-                    session, rec_entity, user_db_id, target_channel_ids
-                )
-                
-                success_count = len(report.get("success", []))
-                if success_count == 0:
-                    logger.warning(f"[BG Task Rec {rec_id}]: Failed to publish to any channel. Report: {report.get('failed')}")
-                    # سنقوم بالفهرسة على أي حال
-                else:
-                    logger.info(f"[BG Task Rec {rec_id}]: Published to {success_count} channels.")
+                try:
+                    if rec_entity:
+                        _, report = await self._publish_recommendation(
+                            session, rec_entity, user_db_id, target_channel_ids
+                        )
+                        success_count = len(report.get("success", []))
+                        logger.info(f"[BG Task Rec {rec_id}]: Published to {success_count} channels.")
+                except Exception as e:
+                    # نسجل الخطأ لكن نواصل العمل!
+                    logger.error(f"[BG Task Rec {rec_id}]: Publishing failed (Non-fatal): {e}")
 
-                # 3. بناء بيانات الفهرس
-                rec_orm_for_trigger = self.repo.get(session, rec_id) # إعادة الجلب بالعلاقات
-                trigger_data = self.alert_service.build_trigger_data_from_orm(rec_orm_for_trigger)
+                # 2. تفعيل الصفقة وإزالة الظل (الأهمية القصوى)
+                try:
+                    rec_orm.is_shadow = False
+                    session.commit()
+                    logger.info(f"[BG Task Rec {rec_id}]: UN-SHADOWED successfully. Trade is LIVE.")
+                except Exception as e:
+                    logger.critical(f"[BG Task Rec {rec_id}]: Failed to Un-shadow! {e}")
+                    return # إذا فشل الداتابيس، نتوقف هنا.
 
-                # 4. إضافة الفهرس الذكي
-                if trigger_data:
-                    await self.alert_service.add_trigger_data(trigger_data)
-                else:
-                    logger.error(f"[BG Task Rec {rec_id}]: Failed to build trigger data. AlertService will not track this trade!")
+                # 3. الفهرسة للمراقبة (Smart Indexing)
+                if self.alert_service:
+                    try:
+                        rec_orm_for_trigger = self.repo.get(session, rec_id) 
+                        trigger_data = self.alert_service.build_trigger_data_from_orm(rec_orm_for_trigger)
+                        if trigger_data:
+                            await self.alert_service.add_trigger_data(trigger_data)
+                            logger.info(f"[BG Task Rec {rec_id}]: Added to Monitoring Index.")
+                    except Exception as e:
+                         logger.error(f"[BG Task Rec {rec_id}]: Indexing failed: {e}")
 
-                # 5. إزالة الظل (تفعيل نهائي)
-                rec_orm.is_shadow = False
-                session.commit()
-                logger.info(f"[BG Task Rec {rec_id}]: Task complete. Recommendation is now live and indexed.")
-                
-                # ... (منطق إشعار المستخدم) ...
+                # 4. إرسال رسالة التأكيد للمحلل
+                try:
+                    await self._notify_user_trade_update(
+                        user_id=user_db_id,
+                        text=f"✅ **Published & Live!**\nSignal #{rec_orm.asset} is active in {success_count} channels."
+                    )
+                except Exception:
+                    logger.warning(f"[BG Task Rec {rec_id}]: Failed to send user notification.")
 
         except Exception as e:
-            logger.error(f"[BG Task Rec {rec_id}]: CRITICAL FAILURE in background task: {e}", exc_info=True)
-            # ... (منطق إشعار المستخدم بالفشل) ...
-
+            logger.error(f"[BG Task Rec {rec_id}]: CRITICAL FAILURE in background task wrapper: {e}", exc_info=True)
 
     # --- Public API - Create Trade (Trader) ---
     async def create_trade_from_forwarding_async(
@@ -347,14 +362,14 @@ class CreationService:
         trade_data: Dict[str, Any], 
         original_text: Optional[str], 
         db_session: Session,
-        status_to_set: str, # 'WATCHLIST' or 'PENDING_ACTIVATION'
+        status_to_set: str,  # 'WATCHLIST' or 'PENDING_ACTIVATION'
         original_published_at: Optional[datetime],
         channel_info: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        [Core Algorithm - R1]
-        الخوارزمية الأساسية لإنشاء صفقة متداول من "إعادة التوجيه الذكية".
-        يتم وضعها في طبقة "المتابعة" أو "الانتظار".
+        Core Algorithm - R1
+        الخوارزمية الأساسية لإنشاء صفقة متداول من إعادة التوجيه الذكية.
+        يتم وضعها في طبقة المتابعة أو الانتظار.
         """
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user:
@@ -396,7 +411,7 @@ class CreationService:
                 entry=entry_dec,
                 stop_loss=sl_dec,
                 targets=targets_for_db,
-                status=UserTradeStatusEnum[status_to_set], # [Core Algorithm]
+                status=UserTradeStatusEnum[status_to_set],  # Core Algorithm
                 source_forwarded_text=original_text,
                 original_published_at=original_published_at,
                 watched_channel_id=watched_channel.id if watched_channel else None,
@@ -428,14 +443,16 @@ class CreationService:
 
     async def create_trade_from_recommendation(self, user_id: str, rec_id: int, db_session: Session) -> Dict[str, Any]:
         """
-        [Core Algorithm]
-        تسمح للمتداول بـ "تفعيل" توصية محلل رسمية في محفظته.
+        Core Algorithm
+        تسمح للمتداول بـ تفعيل توصية محلل رسمية في محفظته.
         """
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
-        if not trader_user: return {'success': False, 'error': 'User not found'}
+        if not trader_user:
+            return {'success': False, 'error': 'User not found'}
         
         rec_orm = self.repo.get(db_session, rec_id)
-        if not rec_orm: return {'success': False, 'error': 'Signal not found'}
+        if not rec_orm:
+            return {'success': False, 'error': 'Signal not found'}
 
         existing_trade = self.repo.find_user_trade_by_source_id(db_session, trader_user.id, rec_id)
         if existing_trade:
@@ -450,7 +467,7 @@ class CreationService:
             elif rec_status == RecommendationStatusEnum.ACTIVE:
                 user_trade_status = UserTradeStatusEnum.ACTIVATED
                 user_trade_activated_at = rec_orm.activated_at or datetime.now(timezone.utc)
-            else: # CLOSED
+            else:  # CLOSED
                 return {'success': False, 'error': 'This signal is already closed.'}
 
             # 2. إنشاء الصفقة
