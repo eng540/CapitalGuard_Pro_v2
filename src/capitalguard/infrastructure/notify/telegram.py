@@ -1,7 +1,7 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/notify/telegram.py ---
 # File: src/capitalguard/infrastructure/notify/telegram.py
-# Version: v9.0.0-FINAL-COMPATIBLE (Sync with Lifecycle & UI Texts)
-# ✅ THE FIX: Updated signatures to accept 'bot_username' and prevent crashes.
+# Version: v9.1.0-HOTFIX (Added set_ptb_app)
+# ✅ THE FIX: Added missing 'set_ptb_app' method required by boot.py.
 # ✅ COMPATIBLE: Fully compatible with lifecycle_service.py and ui_texts.py
 
 import logging
@@ -28,10 +28,11 @@ class TelegramNotifier:
         self.bot_token = bot_token or settings.TELEGRAM_BOT_TOKEN
         if not self.bot_token:
             raise ValueError("Telegram bot token is required")
-            
+
         self.bot = Bot(token=self.bot_token)
         self._bot_username: Optional[str] = None
-        
+        self.ptb_app = None  # ✅ Added to store the Application instance
+
         # Initialize bot info immediately if possible
         try:
             loop = asyncio.get_event_loop()
@@ -51,10 +52,22 @@ class TelegramNotifier:
         except Exception as e:
             log.error(f"Failed to get bot info: {e}")
 
+    # ✅ NEW METHOD: This fixes the AttributeError in boot.py
+    def set_ptb_app(self, ptb_app: Any):
+        """Injects the running PTB application instance into the notifier."""
+        self.ptb_app = ptb_app
+        # Try to set username directly if app is ready
+        if hasattr(ptb_app, 'bot') and ptb_app.bot:
+             self._bot_username = ptb_app.bot.username
+
     @property
     def bot_username(self) -> str:
         """Get bot username with fallback"""
-        return self._bot_username or "CapitalGuardBot"
+        if self._bot_username:
+            return self._bot_username
+        if self.ptb_app and hasattr(self.ptb_app, 'bot') and self.ptb_app.bot:
+             return self.ptb_app.bot.username
+        return "CapitalGuardBot"
 
     async def _send_text(self, chat_id: Union[int, str], text: str, 
                         keyboard: Optional[InlineKeyboardMarkup] = None,
@@ -121,11 +134,11 @@ class TelegramNotifier:
         """
         # Generate text with dynamic bot username
         text = build_trade_card_text(rec, self.bot_username, is_initial_publish=True)
-        
+
         # Use provided keyboard or create default one
         if keyboard is None:
             keyboard = public_channel_keyboard(rec.id, self.bot_username)
-            
+
         return await self._send_text(channel_id, text, keyboard)
 
     async def edit_recommendation_card_by_ids(self, channel_id: Union[int, str], 
@@ -138,15 +151,15 @@ class TelegramNotifier:
         """
         # Use passed username or fallback to instance username
         username_to_use = bot_username or self.bot_username
-        
+
         # Generate updated card text
         text = build_trade_card_text(rec, username_to_use, is_initial_publish=False)
-        
+
         # Create keyboard only for active recommendations
         keyboard = None
         if rec.status != RecommendationStatus.CLOSED:
             keyboard = public_channel_keyboard(rec.id, username_to_use)
-            
+
         return await self._edit_text(channel_id, message_id, text, keyboard)
 
     async def post_notification_reply(self, chat_id: int, message_id: int, text: str):
