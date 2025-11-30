@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.uow import session_scope
@@ -264,7 +264,7 @@ class CreationService:
         logger.info(f"Shadow Recommendation #{created_rec_entity.id} created. Pending BG publish.")
         return created_rec_entity, {}
 
-    # --- Public API - Background Publish (The Fault-Tolerant Fix) ---
+    # --- Public API - Background Publish (Analyst) ---
     async def background_publish_and_index(
         self, 
         rec_id: int, 
@@ -272,23 +272,24 @@ class CreationService:
         target_channel_ids: Optional[Set[int]] = None
     ):
         """
-        [Background Task - FINAL ROBUST VERSION]
-        الهدف: تفعيل الصفقة في قاعدة البيانات *مهما حدث* أثناء النشر.
+        [Background Task - FINAL ATOMIC VERSION]
+        الهدف: ضمان التثبيت الحقيقي في قاعدة البيانات.
         """
         logger.info(f"[BG Rec {rec_id}]: Starting background process...")
         
+        # تجهيز الخدمات (Fail-safe)
         if not self.alert_service:
             logger.critical(f"[BG Rec {rec_id}]: AlertService missing. Proceeding with DB update.")
 
         try:
             with session_scope() as session:
+                # 1. التحقق من وجود الصفقة
                 rec_orm = self.repo.get(session, rec_id)
                 if not rec_orm:
                     logger.error(f"[BG Rec {rec_id}]: ORM object not found.")
                     return
 
-                # 1. النشر (Publishing) - محاولة معزولة
-                # إذا فشل النشر، نسجل الخطأ ونكمل لتفعيل الصفقة.
+                # 2. النشر (Publishing)
                 rec_entity = self.repo._to_entity(rec_orm)
                 success_count = 0
                 publish_error = None
@@ -300,51 +301,55 @@ class CreationService:
                         )
                         success_count = len(report.get("success", []))
                         logger.info(f"[BG Rec {rec_id}]: Published to {success_count} channels.")
+                        # حفظ معرفات الرسائل المنشورة
                         session.flush() 
                     except Exception as e:
                         publish_error = str(e)
-                        logger.error(f"[BG Rec {rec_id}]: Publishing partial failure: {e}")
+                        logger.error(f"[BG Rec {rec_id}]: Publishing failure: {e}")
 
-                # 2. التثبيت وإزالة الظل (CRITICAL STEP)
-                # هذه الخطوة هي الأهم. يجب أن تتم بنجاح لتصبح الصفقة حقيقية.
+                # 3. التثبيت وإزالة الظل (Atomic Commit)
                 try:
-                    current_status = rec_orm.status.value
-                    rec_orm.is_shadow = False  # ✅ إلغاء الظل
-                    session.commit()           # ✅ تثبيت في قاعدة البيانات
-                    logger.info(f"[BG Rec {rec_id}]: COMMITTED. State is {current_status} (No Shadow).")
+                    # فرض التحديث المباشر باستخدام SQL الخام لتجاوز أي مشاكل في الـ ORM Session
+                    session.execute(
+                        text("UPDATE recommendations SET is_shadow = :val WHERE id = :rid"),
+                        {"val": False, "rid": rec_id}
+                    )
+                    session.commit() # تثبيت إجباري
+                    logger.info(f"[BG Rec {rec_id}]: FORCE COMMITTED (is_shadow=False).")
                 
                 except Exception as e:
                     logger.critical(f"[BG Rec {rec_id}]: FATAL DB ERROR during commit: {e}")
-                    return # إذا فشلت قاعدة البيانات، لا يمكننا فعل شيء.
+                    return # لا نرسل رسالة نجاح إذا فشل التثبيت
 
-                # 3. الفهرسة (Indexing)
-                # تتم بعد التثبيت. حتى لو فشلت، الصفقة محفوظة وستلتقطها المزامنة الدورية.
+                # 4. الفهرسة (Indexing) - بعد التأكد من التثبيت
                 if self.alert_service:
                     try:
-                        rec_orm_for_trigger = self.repo.get(session, rec_id) 
-                        trigger_data = self.alert_service.build_trigger_data_from_orm(rec_orm_for_trigger)
+                        # إعادة جلب الكائن لضمان البيانات الطازجة
+                        rec_orm_fresh = self.repo.get(session, rec_id) 
+                        trigger_data = self.alert_service.build_trigger_data_from_orm(rec_orm_fresh)
                         if trigger_data:
                             await self.alert_service.add_trigger_data(trigger_data)
-                            logger.info(f"[BG Rec {rec_id}]: Added to In-Memory Index.")
+                            logger.info(f"[BG Rec {rec_id}]: Added to Monitoring Index.")
                     except Exception as e:
                         logger.error(f"[BG Rec {rec_id}]: Indexing failed (Non-fatal): {e}")
 
-                # 4. إشعار المحلل
+                # 5. إشعار المحلل (فقط إذا نجح التثبيت)
                 try:
-                    state_emoji = "▶️" if rec_orm.status.name == "ACTIVE" else "⏳"
-                    msg = f"✅ **تم التثبيت!**\nالصفقة #{rec_orm.asset} أصبحت حقيقية.\nالحالة: {state_emoji} **{rec_orm.status.value}**"
+                    # نعيد جلب الحالة الحالية للعرض الصحيح
+                    final_rec = self.repo.get(session, rec_id)
+                    status_str = final_rec.status.value
+                    state_emoji = "▶️" if status_str == "ACTIVE" else "⏳"
+                    
+                    msg = f"✅ **تم التثبيت بنجاح!**\nالصفقة #{final_rec.asset} أصبحت حقيقية.\nالحالة: {state_emoji} **{status_str}**"
                     
                     if publish_error:
-                        msg += f"\n⚠️ تنبيه: فشل النشر في القنوات ({publish_error})، لكن الصفقة تعمل."
-                    elif success_count == 0:
-                        msg += "\nℹ️ لم يتم النشر في أي قناة (ربما لا توجد قنوات)، لكن الصفقة تعمل."
+                        msg += f"\n⚠️ تنبيه: فشل النشر في القنوات ({publish_error})."
                     
                     await self._notify_user_trade_update(user_id=user_db_id, text=msg)
                 except: pass
 
         except Exception as e:
             logger.error(f"[BG Rec {rec_id}]: UNHANDLED CRASH: {e}", exc_info=True)
-
 
     # --- Public API - Create Trade (Trader) ---
     async def create_trade_from_forwarding_async(
