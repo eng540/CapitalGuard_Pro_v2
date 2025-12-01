@@ -1,10 +1,7 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/notify/telegram.py ---
 # File: src/capitalguard/infrastructure/notify/telegram.py
-# Version: v11.0.0-ULTIMATE (High Performance & Stability)
-# ✅ THE FIX: 
-#    1. Connection Pooling: Uses a persistent connection pool to prevent 'ConnectTimeout'.
-#    2. Compatibility: Fully supports 'bot_username' and 'set_ptb_app' to stop crashes.
-#    3. Resilience: Smart retry logic for network fluctuations.
+# Version: v11.1.0-HOTFIX (Async Text Build)
+# ✅ THE FIX: Added 'await' before build_trade_card_text calls to support Live Price fetching.
 
 import logging
 import asyncio
@@ -22,28 +19,22 @@ from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
 log = logging.getLogger(__name__)
 
 class TelegramNotifier:
-    """
-    Ultimate Telegram Notifier - High Performance Engine.
-    Prevents system asphyxiation by reusing connections.
-    """
-
     def __init__(self, bot_token: str = None):
         self.bot_token = bot_token or settings.TELEGRAM_BOT_TOKEN
         if not self.bot_token:
             raise ValueError("Telegram bot token is required")
 
-        # ✅ CRITICAL FIX: Connection Pooling to stop Timeouts
+        # Robust connection pool
         request = HTTPXRequest(
-            connection_pool_size=20,  # Handle up to 20 concurrent requests
+            connection_pool_size=20,
             read_timeout=10.0,
             write_timeout=10.0,
             connect_timeout=5.0
         )
         self.bot = Bot(token=self.bot_token, request=request)
         self._bot_username: Optional[str] = None
-        self.ptb_app = None  # Fixes AttributeError in boot.py
+        self.ptb_app = None
 
-        # Async Initialization
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -61,7 +52,6 @@ class TelegramNotifier:
         except Exception as e:
             log.error(f"Failed to get bot info: {e}")
 
-    # ✅ CRITICAL FIX: Required by boot.py
     def set_ptb_app(self, ptb_app: Any):
         self.ptb_app = ptb_app
         if hasattr(ptb_app, 'bot') and ptb_app.bot:
@@ -76,7 +66,6 @@ class TelegramNotifier:
     async def _send_text(self, chat_id: Union[int, str], text: str, 
                         keyboard: Optional[InlineKeyboardMarkup] = None,
                         retries: int = 3) -> Optional[Tuple[int, int]]:
-        """Robust send with retries"""
         try:
             msg = await self.bot.send_message(
                 chat_id=chat_id,
@@ -121,7 +110,6 @@ class TelegramNotifier:
 
     async def send_admin_alert(self, text: str):
         if settings.TELEGRAM_ADMIN_CHAT_ID:
-            # Fire and forget to avoid blocking main loop
             asyncio.create_task(self._send_text(settings.TELEGRAM_ADMIN_CHAT_ID, f"🚨 <b>SYSTEM ALERT</b>\n{text}"))
 
     async def send_private_text(self, chat_id: int, text: str):
@@ -129,7 +117,9 @@ class TelegramNotifier:
 
     async def post_to_channel(self, channel_id: Union[int, str], rec: Recommendation, 
                             keyboard: Optional[InlineKeyboardMarkup] = None) -> Optional[Tuple[int, int]]:
-        text = build_trade_card_text(rec, self.bot_username, is_initial_publish=True)
+        # ✅ CRITICAL FIX: Added 'await' here
+        text = await build_trade_card_text(rec, self.bot_username, is_initial_publish=True)
+        
         if keyboard is None:
             keyboard = public_channel_keyboard(rec.id, self.bot_username)
         return await self._send_text(channel_id, text, keyboard)
@@ -138,11 +128,10 @@ class TelegramNotifier:
                                             message_id: int, 
                                             rec: Recommendation, 
                                             bot_username: str = None) -> bool:
-        """
-        ✅ CRITICAL FIX: Accepts 'bot_username' to match LifecycleService.
-        """
         uname = bot_username or self.bot_username
-        text = build_trade_card_text(rec, uname, is_initial_publish=False)
+        
+        # ✅ CRITICAL FIX: Added 'await' here
+        text = await build_trade_card_text(rec, uname, is_initial_publish=False)
         
         keyboard = None
         if rec.status != RecommendationStatus.CLOSED:
@@ -161,5 +150,4 @@ class TelegramNotifier:
             )
         except Exception as e:
             log.error(f"Reply failed {chat_id}/{message_id}: {e}")
-
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
