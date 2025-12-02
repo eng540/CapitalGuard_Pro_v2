@@ -1,9 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v102.6.0-NOTE-FIX
+# Version: v102.7.0-TYPE-FIX (ID Security & Robustness)
 # ✅ CRITICAL FIXES:
-#    1. Added support for 'add_notes' action in Router (Fixed "Unmatched Action" error).
-#    2. Uses Central Parsers for all inputs.
+#    1. Explicit INT casting for 'rec_id' to prevent DB lookup failures.
+#    2. Added robust error logging for ID types.
+#    3. Integrated Central Parsers.
 
 import logging
 import asyncio
@@ -364,7 +365,12 @@ class PortfolioController:
         text_val = update.message.text.strip()
         
         action = state.get("action")
-        rec_id = state.get("rec_id")
+        # ✅ FIX: Explicit cast to int to avoid DB lookup errors
+        try:
+            rec_id = int(state.get("rec_id"))
+        except (ValueError, TypeError):
+            await update.message.reply_text("❌ Error: Invalid Recommendation ID.")
+            return
         
         lifecycle = get_service(context, "lifecycle_service", LifecycleService)
         user_id = str(db_user.telegram_user_id)
