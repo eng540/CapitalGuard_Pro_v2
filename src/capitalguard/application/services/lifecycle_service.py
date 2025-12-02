@@ -1,10 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/lifecycle_service.py ---
 # File: src/capitalguard/application/services/lifecycle_service.py
-# Version: v105.1.0-SYNTAX-FIX
+# Version: v105.2.0-AWAIT-FIX (Final Stability)
 # ✅ CRITICAL FIX:
-#    1. Fixed SyntaxError in one-liner 'if/with' statements.
-#    2. Python does not allow 'with' inside a one-line 'if'.
-#    3. Expanded all compact lines to standard block format.
+#    1. Added missing 'await' to ALL notify_reply calls (Fixed RuntimeWarning).
+#    2. Ensured notifications are sent for Activation, Updates, and TP Hits.
+#    3. Maintained all Syntax fixes and Logic improvements.
 
 from __future__ import annotations
 import logging
@@ -92,16 +92,13 @@ def _validate_recommendation_data(side: str, entry: Decimal, stop_loss: Decimal,
     """✅ ENHANCED: Supports breakeven moves with tolerance."""
     side_upper = (str(side) or "").upper()
     
-    # Basic validation
     if not all(v is not None and isinstance(v, Decimal) and v.is_finite() and v > 0 for v in [entry, stop_loss]):
         raise ValueError("Entry and SL must be positive finite Decimals.")
     
     if not targets or not isinstance(targets, list):
         raise ValueError("Targets must be a non-empty list.")
     
-    # ✅ BREAKEVEN-AWARE VALIDATION
     if is_breakeven_move:
-        # Allow very close to entry for breakeven to cover fees
         BREAKEVEN_TOLERANCE = Decimal('0.0005')  # 0.05% tolerance
         if side_upper == "LONG":
             max_allowed = entry * (Decimal('1') + BREAKEVEN_TOLERANCE)
@@ -112,13 +109,11 @@ def _validate_recommendation_data(side: str, entry: Decimal, stop_loss: Decimal,
             if stop_loss < min_allowed:
                 raise ValueError(f"SHORT breakeven SL cannot be more than {BREAKEVEN_TOLERANCE*100}% below entry.")
     else:
-        # Standard validation (Strict safety for manual inputs)
         if side_upper == "LONG" and stop_loss >= entry:
             raise ValueError("LONG SL must be < Entry.")
         if side_upper == "SHORT" and stop_loss <= entry:
             raise ValueError("SHORT SL must be > Entry.")
     
-    # Target validation
     target_prices: List[Decimal] = []
     for i, t in enumerate(targets):
         price = _to_decimal(t.get('price'))
@@ -165,7 +160,6 @@ class LifecycleService:
     async def notify_card_update(self, rec_entity: RecommendationEntity, session: Session):
         if getattr(rec_entity, "is_shadow", False): return
         
-        # Inject Live Price
         if not getattr(rec_entity, "live_price", None) and self.alert_service:
             try:
                 lp = await self.alert_service.price_service.get_cached_price(rec_entity.asset.value, rec_entity.market)
@@ -241,6 +235,7 @@ class LifecycleService:
         if self.alert_service:
             await self.alert_service.remove_single_trigger("recommendation", rec.id)
 
+        # ✅ FIXED: Added await
         await self.notify_reply(rec.id, f"✅ Signal Closed at {_format_price(exit_price)}", db_session)
         await self._commit_and_dispatch(db_session, rec, rebuild_alerts=rebuild_alerts)
         return self.repo._to_entity(rec)
@@ -262,6 +257,8 @@ class LifecycleService:
         pnl = _pct(rec.entry, price, rec.side)
         
         db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="PARTIAL", event_data={"price": float(price), "amount": float(close_percent), "pnl": pnl}))
+        
+        # ✅ FIXED: Added await
         await self.notify_reply(rec.id, f"💰 Partial Close {close_percent}% at {_format_price(price)} (PnL: {pnl:.2f}%)", db_session)
         
         if rec.open_size_percent < Decimal('0.1'):
@@ -281,7 +278,6 @@ class LifecycleService:
         if not rec: raise ValueError("Not found")
         if rec.status == RecommendationStatusEnum.CLOSED: raise ValueError("Closed")
 
-        # Standard update uses strict validation for safety
         try:
             targets_list = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in (rec.targets or [])]
             _validate_recommendation_data(rec.side, _to_decimal(rec.entry), new_sl, targets_list, is_breakeven_move=False)
@@ -290,7 +286,9 @@ class LifecycleService:
 
         rec.stop_loss = new_sl
         db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="SL_UPDATED", event_data={"new": str(new_sl)}))
-        self.notify_reply(rec.id, f"⚠️ SL Updated to {_format_price(new_sl)}", db_session)
+        
+        # ✅ FIXED: Added await
+        await self.notify_reply(rec.id, f"⚠️ SL Updated to {_format_price(new_sl)}", db_session)
         await self._commit_and_dispatch(db_session, rec, rebuild_alerts=True)
         return self.repo._to_entity(rec)
 
@@ -301,7 +299,9 @@ class LifecycleService:
              
         rec.targets = [{'price': str(t['price']), 'close_percent': t['close_percent']} for t in new_targets]
         db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="TP_UPDATED"))
-        self.notify_reply(rec.id, "🎯 Targets Updated", db_session)
+        
+        # ✅ FIXED: Added await
+        await self.notify_reply(rec.id, "🎯 Targets Updated", db_session)
         await self._commit_and_dispatch(db_session, rec, rebuild_alerts=True)
         return self.repo._to_entity(rec)
     
@@ -320,7 +320,8 @@ class LifecycleService:
              updated = True
         if updated:
             db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="DATA_UPDATED"))
-            self.notify_reply(rec.id, "✏️ Data Updated", db_session)
+            # ✅ FIXED: Added await
+            await self.notify_reply(rec.id, "✏️ Data Updated", db_session)
             await self._commit_and_dispatch(db_session, rec, rebuild_alerts=True)
         return self.repo._to_entity(rec)
     
@@ -337,12 +338,13 @@ class LifecycleService:
         if price: rec.profit_stop_price = price
         if trailing_value: rec.profit_stop_trailing_value = trailing_value
         msg = f"📈 Strategy: {mode}" if active else "❌ Strategy Cancelled"
-        self.notify_reply(rec.id, msg, session)
+        
+        # ✅ FIXED: Added await
+        await self.notify_reply(rec.id, msg, session)
         await self._commit_and_dispatch(session, rec, rebuild_alerts=True)
         return self.repo._to_entity(rec)
 
     async def move_sl_to_breakeven_async(self, rec_id: int, db_session: Optional[Session] = None):
-        """✅ FIXED BREAKEVEN LOGIC"""
         if db_session is None: 
             with session_scope() as s: 
                 return await self.move_sl_to_breakeven_async(rec_id, s)
@@ -351,11 +353,9 @@ class LifecycleService:
         if not rec or rec.status != RecommendationStatusEnum.ACTIVE: raise ValueError("Only ACTIVE trades.")
             
         entry = _to_decimal(rec.entry)
-        # 0.05% buffer to cover fees
         buffer = entry * Decimal('0.0005') 
         new_sl = entry + buffer if rec.side == 'LONG' else entry - buffer
         
-        # Validate with relaxed rules for Breakeven
         try:
             targets_list = [{'price': _to_decimal(t.get('price')), 'close_percent': t.get('close_percent', 0.0)} for t in (rec.targets or [])]
             _validate_recommendation_data(rec.side, entry, new_sl, targets_list, is_breakeven_move=True)
@@ -364,7 +364,9 @@ class LifecycleService:
 
         rec.stop_loss = new_sl
         db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="SL_UPDATED", event_data={"reason": "BreakEven", "new": str(new_sl)}))
-        self.notify_reply(rec.id, f"🛡️ Moved to Break-Even: {_format_price(new_sl)}", db_session)
+        
+        # ✅ FIXED: Added await
+        await self.notify_reply(rec.id, f"🛡️ Moved to Break-Even: {_format_price(new_sl)}", db_session)
         await self._commit_and_dispatch(db_session, rec, rebuild_alerts=True)
         return self.repo._to_entity(rec)
 
@@ -379,7 +381,9 @@ class LifecycleService:
             if any(e.event_type == event_type for e in (rec_orm.events or [])): return
             
             s.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type=event_type, event_data={"price": float(price)}))
-            self.notify_reply(rec_orm.id, f"🎯 Hit TP{target_index} at {_format_price(price)}!", db_session=s)
+            
+            # ✅ FIXED: Added await
+            await self.notify_reply(rec_orm.id, f"🎯 Hit TP{target_index} at {_format_price(price)}!", db_session=s)
             s.flush()
 
             try: target_info = rec_orm.targets[target_index - 1]
@@ -390,7 +394,6 @@ class LifecycleService:
             if analyst_uid and close_percent > 0:
                 await self.partial_close_async(rec_orm.id, analyst_uid, close_percent, price, s, triggered_by="AUTO")
             
-            # Re-fetch
             rec_orm = self.repo.get(s, item_id)
             if not rec_orm: return 
 
@@ -414,7 +417,9 @@ class LifecycleService:
                  rec.status = RecommendationStatusEnum.ACTIVE
                  rec.activated_at = datetime.now(timezone.utc)
                  s.add(RecommendationEvent(recommendation_id=rec.id, event_type="ACTIVATED"))
-                 self.notify_reply(rec.id, f"▶️ ACTIVE!", db_session=s)
+                 
+                 # ✅ FIXED: Added await
+                 await self.notify_reply(rec.id, f"▶️ ACTIVE!", db_session=s)
                  await self._commit_and_dispatch(s, rec, rebuild_alerts=True)
 
     async def process_invalidation_event(self, item_id: int):
@@ -424,11 +429,13 @@ class LifecycleService:
                  rec.status = RecommendationStatusEnum.CLOSED
                  rec.closed_at = datetime.now(timezone.utc)
                  s.add(RecommendationEvent(recommendation_id=rec.id, event_type="INVALIDATED"))
-                 self.notify_reply(rec.id, f"❌ Invalidated", db_session=s)
+                 
+                 # ✅ FIXED: Added await
+                 await self.notify_reply(rec.id, f"❌ Invalidated", db_session=s)
                  if self.alert_service: await self.alert_service.remove_single_trigger("recommendation", rec.id)
                  await self._commit_and_dispatch(s, rec, rebuild_alerts=False)
 
-    # --- ✅ FULLY IMPLEMENTED: UserTrade Lifecycle (Portfolio) ---
+    # --- UserTrade Lifecycle ---
     
     async def process_user_trade_activation_event(self, item_id: int):
         with session_scope() as s:
