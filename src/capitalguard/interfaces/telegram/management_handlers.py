@@ -1,11 +1,11 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v102.3.0-PLATINUM-FINAL
-# ✅ FULL COMPATIBILITY WITH LIFECYCLE V12:
-#    1. REMOVED UI restrictions on SL position (Unleashes v12 power).
-#    2. Fixed session state handling for all input types.
-#    3. Verified Async/Await chains for all service calls.
-#    4. Ready for high-load production.
+# Version: v102.5.0-INTEGRATED (Uses Central Parsers)
+# ✅ REFACTOR:
+#    1. Removed redundant '_parse_human_number'.
+#    2. Now imports and uses 'capitalguard.interfaces.telegram.parsers'.
+#    3. Standardized parsing for Arabic digits, K/M suffixes, and Targets.
+#    4. Full Logic Compatibility with Lifecycle v12.
 
 import logging
 import asyncio
@@ -48,6 +48,9 @@ from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.performance_service import PerformanceService
 from capitalguard.application.services.lifecycle_service import LifecycleService
+
+# ✅ IMPORT CENTRAL PARSERS
+from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets_list
 
 log = logging.getLogger(__name__)
 
@@ -284,7 +287,7 @@ class PortfolioController:
         kb_rows.append([back])
         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text=text, reply_markup=InlineKeyboardMarkup(kb_rows), parse_mode=ParseMode.HTML)
 
-    # --- C. ENHANCED INPUT HANDLING (PLATINUM EDITION) ---
+    # --- C. ENHANCED INPUT HANDLING (INTEGRATED) ---
     
     @staticmethod
     async def handle_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
@@ -317,8 +320,8 @@ class PortfolioController:
         context.user_data["last_input_state"] = state
         
         prompt_map = {
-            ManagementAction.EDIT_SL.value: "🔢 Enter new <b>Stop Loss</b> price:",
-            ManagementAction.EDIT_TP.value: "🎯 Enter Take Profit targets (Format: <code>Price Percent</code> or just <code>Price</code>)\nExample: <code>91000 50</code>",
+            ManagementAction.EDIT_SL.value: "🔢 Enter new <b>Stop Loss</b> price (e.g. <code>90k</code>, <code>1.2m</code>):",
+            ManagementAction.EDIT_TP.value: "🎯 Enter Targets. Supports <code>k/m</code> and <code>@</code>.\nExample: <code>91k@50, 92k</code>",
             ManagementAction.SET_FIXED.value: "🎯 Enter <b>Take Profit</b> price for Profit Stop:",
             ManagementAction.SET_TRAILING.value: "📉 Enter Trailing Step value (e.g. 100 or 0.5):",
             ManagementAction.EDIT_ENTRY.value: "🚪 Enter new <b>Entry</b> price:",
@@ -336,7 +339,7 @@ class PortfolioController:
 
     @staticmethod
     async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user):
-        """Step 2: Process the text input for ALL actions."""
+        """Step 2: Process the text input using CENTRAL PARSERS."""
         session = SessionContext(context)
         
         state = session.get_input_state()
@@ -354,11 +357,10 @@ class PortfolioController:
         if missing_fields:
             session.clear_input_state()
             context.user_data.pop("last_input_state", None)
-            await update.message.reply_text("⚠️ Session corrupted. Please start over.")
+            await update.message.reply_text("⚠️ Session expired. Please try again.")
             return
         
         text_val = update.message.text.strip()
-        clean_val = text_val.replace("$", "").replace(",", "")
         
         action = state.get("action")
         rec_id = state.get("rec_id")
@@ -369,59 +371,54 @@ class PortfolioController:
         try:
             reply_text = "✅ Done"
             
-            # --- NUMERIC INPUTS ---
+            # --- NUMERIC INPUTS (Using parse_number from parsers.py) ---
             if action in [
                 ManagementAction.EDIT_SL.value, ManagementAction.SET_FIXED.value, 
                 ManagementAction.SET_TRAILING.value, ManagementAction.EDIT_ENTRY.value,
                 ManagementAction.CLOSE_MANUAL.value
             ]:
-                try:
-                    val = Decimal(clean_val.replace("%", ""))
-                    if val <= 0: 
-                        raise ValueError("Positive number required")
-                    
-                    if action == ManagementAction.EDIT_SL.value:
-                        # ✅ PLATINUM UPDATE: Removed UI validation to fully support v12 Freedom
-                        await lifecycle.update_sl_for_user_async(rec_id, user_id, val, db_session)
-                        reply_text = f"✅ Stop Loss updated to {val}"
-                        
-                    elif action == ManagementAction.SET_FIXED.value:
-                        result = await lifecycle.set_exit_strategy_async(
-                            rec_id, user_id, "FIXED", price=val, active=True, session=db_session
-                        )
-                        reply_text = f"✅ Profit Stop set to {val}"
-                        
-                    elif action == ManagementAction.SET_TRAILING.value:
-                        result = await lifecycle.set_exit_strategy_async(
-                            rec_id, user_id, "TRAILING", trailing_value=val, active=True, session=db_session
-                        )
-                        reply_text = f"✅ Trailing Stop set to {val}"
-
-                    elif action == ManagementAction.EDIT_ENTRY.value:
-                        await lifecycle.update_entry_and_notes_async(rec_id, user_id, new_entry=val, new_notes=None, db_session=db_session)
-                        reply_text = f"✅ Entry updated to {val}"
-                    
-                    elif action == ManagementAction.CLOSE_MANUAL.value:
-                        await lifecycle.close_recommendation_async(rec_id, user_id, exit_price=val, db_session=db_session, reason="MANUAL_PRICE_CLOSE")
-                        reply_text = f"✅ Closed at {val}"
-
-                except InvalidOperation:
-                    await update.message.reply_text("❌ Invalid number format. Please send a valid price.")
+                # ✅ USE CENTRAL PARSER (Handles K, M, Arabic, etc.)
+                val = parse_number(text_val)
+                
+                if val is None or val <= 0:
+                    await update.message.reply_text("❌ Invalid number. Use formats like 90k, 1.2m, or standard digits.")
                     return
+                
+                if action == ManagementAction.EDIT_SL.value:
+                    await lifecycle.update_sl_for_user_async(rec_id, user_id, val, db_session)
+                    reply_text = f"✅ Stop Loss updated to {val:g}"
+                    
+                elif action == ManagementAction.SET_FIXED.value:
+                    await lifecycle.set_exit_strategy_async(
+                        rec_id, user_id, "FIXED", price=val, active=True, session=db_session
+                    )
+                    reply_text = f"✅ Profit Stop set to {val:g}"
+                    
+                elif action == ManagementAction.SET_TRAILING.value:
+                    await lifecycle.set_exit_strategy_async(
+                        rec_id, user_id, "TRAILING", trailing_value=val, active=True, session=db_session
+                    )
+                    reply_text = f"✅ Trailing Stop set to {val:g}"
 
-            # --- COMPLEX INPUTS (Targets) ---
+                elif action == ManagementAction.EDIT_ENTRY.value:
+                    await lifecycle.update_entry_and_notes_async(rec_id, user_id, new_entry=val, new_notes=None, db_session=db_session)
+                    reply_text = f"✅ Entry updated to {val:g}"
+                
+                elif action == ManagementAction.CLOSE_MANUAL.value:
+                    await lifecycle.close_recommendation_async(rec_id, user_id, exit_price=val, db_session=db_session, reason="MANUAL_PRICE_CLOSE")
+                    reply_text = f"✅ Closed at {val:g}"
+
+            # --- TARGETS INPUT (Using parse_targets_list from parsers.py) ---
             elif action == ManagementAction.EDIT_TP.value:
-                targets = []
-                items = clean_val.split(',')
-                for item in items:
-                    parts = item.split()
-                    if len(parts) >= 1:
-                        price = Decimal(parts[0])
-                        pct = Decimal(parts[1].replace('%', '')) if len(parts) > 1 else Decimal(0)
-                        targets.append({"price": price, "close_percent": float(pct)})
+                # Prepare token list: split by newlines or spaces (normalize punctuation first)
+                cleaned_text = text_val.replace(',', ' ')
+                tokens = cleaned_text.split()
+                
+                # ✅ USE CENTRAL PARSER
+                targets = parse_targets_list(tokens)
                 
                 if not targets: 
-                    raise ValueError("No valid targets found. Format: Price Percent")
+                    raise ValueError("No valid targets found.")
                 
                 await lifecycle.update_targets_for_user_async(rec_id, user_id, targets, db_session)
                 reply_text = "✅ Take Profit targets updated"
