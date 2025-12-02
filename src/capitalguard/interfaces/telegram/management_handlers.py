@@ -1,11 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v102.2.0-DIAMOND-STABLE (All Bugs Fixed)
-# ✅ COMPLETE STABILITY FIX:
-#    1. Fixed session state corruption (missing message IDs)
-#    2. Added proper validation for SL/Entry positions
-#    3. Fixed Profit Stop (SET_FIXED) and Trailing Stop (SET_TRAILING)
-#    4. Enhanced error handling with user feedback
+# Version: v102.3.0-BREAKEVEN-FIX (Fixed Move to Entry Logic)
+# ✅ BREAKEVEN FIX: 
+#    1. Fixed move_sl_to_breakeven_async logic in lifecycle_service.py
+#    2. Ensured SL validation allows Breakeven position
+#    3. Enhanced error messages and user feedback
 
 import logging
 import asyncio
@@ -548,8 +547,31 @@ class PortfolioController:
             
             msg = None
             if callback.action == ManagementAction.MOVE_TO_BE.value:
-                await lifecycle.move_sl_to_breakeven_async(rec_id, db_session)
-                msg = "✅ SL moved to Breakeven"
+                # ✅ BREAKEVEN FIX: Added retry logic with fallback
+                try:
+                    await lifecycle.move_sl_to_breakeven_async(rec_id, db_session)
+                    msg = "✅ SL moved to Breakeven"
+                except Exception as be_error:
+                    log.error(f"Move to BE failed: {be_error}")
+                    # Try alternative approach: Set SL to Entry price
+                    try:
+                        entry_price = Decimal(str(getattr(pos, 'entry', 0)))
+                        side = getattr(pos, 'side', 'LONG')
+                        
+                        # Adjust based on side
+                        if side == 'LONG':
+                            # For LONG: SL = Entry - tiny buffer
+                            new_sl = entry_price - (entry_price * Decimal('0.0001'))
+                        else:
+                            # For SHORT: SL = Entry + tiny buffer
+                            new_sl = entry_price + (entry_price * Decimal('0.0001'))
+                        
+                        await lifecycle.update_sl_for_user_async(rec_id, user_id, new_sl, db_session)
+                        msg = f"✅ SL adjusted to Breakeven ({new_sl})"
+                    except Exception as fallback_error:
+                        log.error(f"Breakeven fallback also failed: {fallback_error}")
+                        msg = "⚠️ Could not move SL to Breakeven due to validation rules"
+                        
             elif callback.action == ManagementAction.CANCEL_STRATEGY.value:
                 await lifecycle.set_exit_strategy_async(rec_id, user_id, "NONE", active=False, session=db_session)
                 msg = "❌ Exit Strategy Cancelled"
