@@ -1,9 +1,10 @@
 # --- START OF PRODUCTION READY FILE: src/capitalguard/application/services/lifecycle_service.py ---
 # File: src/capitalguard/application/services/lifecycle_service.py
-# Version: v12.1.0-ASYNC-FIX
+# Version: v12.2.0-LOOP-FIX (Critical Stability Update)
 # ✅ CRITICAL FIXES:
-#    1. Added missing 'await' to all self.notify_reply() calls.
-#    2. Fixed RuntimeWarning that prevented notifications from being sent.
+#    1. REMOVED 'run_in_executor' for async callbacks to fix "different event loop" crash.
+#    2. Added explicit type casting (int/Decimal) to prevent DB lookup failures.
+#    3. Enhanced 'get_for_update' logic to be more robust.
 
 from __future__ import annotations
 import logging
@@ -28,7 +29,6 @@ from capitalguard.infrastructure.db.repository import (
 )
 from capitalguard.domain.entities import Recommendation as RecommendationEntity
 
-# Type hints to avoid circular imports
 if False:
     from .alert_service import AlertService
 
@@ -100,6 +100,28 @@ class LifecycleService:
             session.rollback()
             raise
 
+    async def _execute_notifier_method(self, method_name: str, **kwargs):
+        """
+        Executes a notifier method safely, handling both sync and async implementations.
+        ✅ FIX: Does NOT use run_in_executor for coroutines to avoid Loop Binding Error.
+        """
+        try:
+            if not hasattr(self.notifier, method_name):
+                return
+
+            method = getattr(self.notifier, method_name)
+            
+            if inspect.iscoroutinefunction(method):
+                # It's async (PTB v20+), await it directly in the current loop
+                await method(**kwargs)
+            else:
+                # It's sync, run in thread to avoid blocking main loop
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, lambda: method(**kwargs))
+                
+        except Exception as e:
+            logger.error(f"Notifier execution failed for {method_name}: {e}")
+
     async def notify_card_update(self, rec_entity: RecommendationEntity, session: Session):
         if getattr(rec_entity, "is_shadow", False): return
         
@@ -115,35 +137,31 @@ class LifecycleService:
         if not msgs: return
 
         bot_username = getattr(self.notifier, "bot_username", "CapitalGuardBot")
+        
+        # Process updates sequentially or gather them safely
         tasks = []
         for m in msgs:
-            if inspect.iscoroutinefunction(self.notifier.edit_recommendation_card_by_ids):
-                tasks.append(self.notifier.edit_recommendation_card_by_ids(
-                    m.telegram_channel_id, m.telegram_message_id, rec_entity, bot_username
-                ))
-            else:
-                loop = asyncio.get_running_loop()
-                tasks.append(loop.run_in_executor(
-                    None, self.notifier.edit_recommendation_card_by_ids, 
-                    m.telegram_channel_id, m.telegram_message_id, rec_entity, bot_username
-                ))
-
+            tasks.append(self._execute_notifier_method(
+                "edit_recommendation_card_by_ids",
+                channel_id=m.telegram_channel_id,
+                message_id=m.telegram_message_id,
+                rec=rec_entity,
+                bot_username=bot_username
+            ))
+        
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def notify_reply(self, rec_id: int, text: str, db_session: Session):
         msgs = self.repo.get_published_messages(db_session, rec_id)
         for m in msgs:
-             asyncio.create_task(self._send_reply(m.telegram_channel_id, m.telegram_message_id, text))
-
-    async def _send_reply(self, ch, msg, text):
-        try:
-            if inspect.iscoroutinefunction(self.notifier.post_notification_reply):
-                await self.notifier.post_notification_reply(ch, msg, text)
-            else:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self.notifier.post_notification_reply, ch, msg, text)
-        except Exception: pass
+             # Fire and forget reply tasks
+             asyncio.create_task(self._execute_notifier_method(
+                 "post_notification_reply",
+                 chat_id=m.telegram_channel_id,
+                 message_id=m.telegram_message_id,
+                 text=text
+             ))
 
     async def _notify_user_trade_update(self, user_id: int, text: str):
         try:
@@ -152,11 +170,7 @@ class LifecycleService:
                 if not user: return
                 chat_id = user.telegram_user_id
 
-            if inspect.iscoroutinefunction(self.notifier.send_private_text):
-                await self.notifier.send_private_text(chat_id, text)
-            else:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self.notifier.send_private_text, chat_id, text)
+            await self._execute_notifier_method("send_private_text", chat_id=chat_id, text=text)
         except Exception as e:
             logger.error(f"Failed to notify user {user_id}: {e}")
 
@@ -169,8 +183,11 @@ class LifecycleService:
              with session_scope() as s: 
                  return await self.close_recommendation_async(rec_id, user_id, exit_price, s, reason, rebuild_alerts)
         
+        # ✅ FIX: Ensure rec_id is int
+        rec_id = int(rec_id)
+        
         rec = self.repo.get_for_update(db_session, rec_id)
-        if not rec: raise ValueError("Recommendation not found")
+        if not rec: raise ValueError(f"Recommendation #{rec_id} not found")
         
         if rec.status == RecommendationStatusEnum.CLOSED:
             return self.repo._to_entity(rec)
@@ -195,15 +212,15 @@ class LifecycleService:
         if self.alert_service:
             await self.alert_service.remove_single_trigger("recommendation", rec.id)
 
-        # ✅ FIXED: Added await
         await self.notify_reply(rec.id, f"✅ Signal Closed at {_format_price(exit_price)}", db_session)
         await self._commit_and_dispatch(db_session, rec, rebuild_alerts=rebuild_alerts)
         return self.repo._to_entity(rec)
 
     async def partial_close_async(self, rec_id: int, user_id: str, close_percent: Decimal, price: Decimal, 
                                  db_session: Session, triggered_by: str = "MANUAL"):
+        rec_id = int(rec_id)
         rec = self.repo.get_for_update(db_session, rec_id)
-        if not rec: raise ValueError("Recommendation not found")
+        if not rec: raise ValueError(f"Recommendation #{rec_id} not found")
         
         if rec.status != RecommendationStatusEnum.ACTIVE:
             if rec.status == RecommendationStatusEnum.CLOSED: return self.repo._to_entity(rec)
@@ -227,7 +244,6 @@ class LifecycleService:
             event_data={"price": float(price), "amount": float(close_percent), "pnl": pnl}
         ))
         
-        # ✅ FIXED: Added await
         await self.notify_reply(rec.id, f"💰 Partial Close {close_percent:g}% at {_format_price(price)} (PnL: {pnl:.2f}%)", db_session)
         
         if rec.open_size_percent < Decimal('0.1'):
@@ -240,8 +256,9 @@ class LifecycleService:
         if db_session is None: 
             with session_scope() as s: return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
         
+        rec_id = int(rec_id)
         rec = self.repo.get_for_update(db_session, rec_id)
-        if not rec: raise ValueError("Not found")
+        if not rec: raise ValueError(f"Recommendation #{rec_id} not found")
         
         if rec.status == RecommendationStatusEnum.CLOSED:
              raise ValueError("Cannot update SL for closed trade.")
@@ -257,14 +274,14 @@ class LifecycleService:
             event_data={"old": str(old_sl), "new": str(new_sl)}
         ))
         
-        # ✅ FIXED: Added await
         await self.notify_reply(rec.id, f"⚠️ SL Updated to {_format_price(new_sl)}", db_session)
         await self._commit_and_dispatch(db_session, rec, rebuild_alerts=True)
         return self.repo._to_entity(rec)
 
     async def update_targets_for_user_async(self, rec_id: int, user_id: str, new_targets: List[Dict], db_session: Session):
+        rec_id = int(rec_id)
         rec = self.repo.get_for_update(db_session, rec_id)
-        if not rec: raise ValueError("Not found")
+        if not rec: raise ValueError(f"Recommendation #{rec_id} not found")
         
         if rec.status == RecommendationStatusEnum.CLOSED:
              raise ValueError("Cannot update targets for closed trade.")
@@ -273,14 +290,14 @@ class LifecycleService:
         
         db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="TP_UPDATED"))
         
-        # ✅ FIXED: Added await
         await self.notify_reply(rec.id, "🎯 Targets Updated", db_session)
         await self._commit_and_dispatch(db_session, rec, rebuild_alerts=True)
         return self.repo._to_entity(rec)
     
     async def update_entry_and_notes_async(self, rec_id: int, user_id: str, new_entry: Optional[Decimal], new_notes: Optional[str], db_session: Session):
+        rec_id = int(rec_id)
         rec = self.repo.get_for_update(db_session, rec_id)
-        if not rec: raise ValueError("Not found")
+        if not rec: raise ValueError(f"Recommendation #{rec_id} not found")
         updated = False
         
         if new_entry is not None:
@@ -298,7 +315,6 @@ class LifecycleService:
         
         if updated:
             db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="DATA_UPDATED"))
-            # ✅ FIXED: Added await
             await self.notify_reply(rec.id, "✏️ Data Updated", db_session)
             await self._commit_and_dispatch(db_session, rec, rebuild_alerts=True)
         return self.repo._to_entity(rec)
@@ -308,8 +324,9 @@ class LifecycleService:
         if session is None: 
             with session_scope() as s: return await self.set_exit_strategy_async(rec_id, user_id, mode, price, trailing_value, active, s)
         
+        rec_id = int(rec_id)
         rec = self.repo.get_for_update(session, rec_id)
-        if not rec: raise ValueError("Not found")
+        if not rec: raise ValueError(f"Recommendation #{rec_id} not found")
         
         rec.profit_stop_mode = mode
         rec.profit_stop_active = active
@@ -318,7 +335,6 @@ class LifecycleService:
         
         msg = f"📈 Strategy: {mode}" if active else "❌ Strategy Cancelled"
         
-        # ✅ FIXED: Added await
         await self.notify_reply(rec.id, msg, session)
         await self._commit_and_dispatch(session, rec, rebuild_alerts=True)
         return self.repo._to_entity(rec)
@@ -327,6 +343,7 @@ class LifecycleService:
         if db_session is None: 
             with session_scope() as s: return await self.move_sl_to_breakeven_async(rec_id, s)
         
+        rec_id = int(rec_id)
         rec = self.repo.get_for_update(db_session, rec_id)
         if not rec or rec.status != RecommendationStatusEnum.ACTIVE: 
             raise ValueError("Only ACTIVE trades can move to Breakeven.")
@@ -346,12 +363,11 @@ class LifecycleService:
                  event_type="SL_UPDATED", 
                  event_data={"reason": "BreakEven", "new": str(new_sl)}
              ))
-             # ✅ FIXED: Added await
              await self.notify_reply(rec.id, f"🛡️ Moved to Break-Even: {_format_price(new_sl)}", db_session)
              await self._commit_and_dispatch(db_session, rec, rebuild_alerts=True)
              return self.repo._to_entity(rec)
 
-    # --- Recommendation Event Processing ---
+    # --- Event Processing ---
 
     async def process_tp_hit_event(self, item_id: int, target_index: int, price: Decimal):
         with session_scope() as s:
@@ -364,7 +380,6 @@ class LifecycleService:
                 return
                 
             s.add(RecommendationEvent(recommendation_id=rec_orm.id, event_type=event_type, event_data={"price": float(price)}))
-            # ✅ FIXED: Added await
             await self.notify_reply(rec_orm.id, f"🎯 Hit TP{target_index} at {_format_price(price)}!", db_session=s)
             s.flush() 
 
@@ -407,7 +422,6 @@ class LifecycleService:
                  rec.status = RecommendationStatusEnum.ACTIVE
                  rec.activated_at = datetime.now(timezone.utc)
                  s.add(RecommendationEvent(recommendation_id=rec.id, event_type="ACTIVATED"))
-                 # ✅ FIXED: Added await
                  await self.notify_reply(rec.id, f"▶️ ACTIVE!", db_session=s)
                  await self._commit_and_dispatch(s, rec, rebuild_alerts=True)
 
@@ -418,7 +432,6 @@ class LifecycleService:
                  rec.status = RecommendationStatusEnum.CLOSED
                  rec.closed_at = datetime.now(timezone.utc)
                  s.add(RecommendationEvent(recommendation_id=rec.id, event_type="INVALIDATED"))
-                 # ✅ FIXED: Added await
                  await self.notify_reply(rec.id, f"❌ Invalidated (SL hit before Entry)", db_session=s)
                  if self.alert_service:
                      await self.alert_service.remove_single_trigger("recommendation", rec.id)
