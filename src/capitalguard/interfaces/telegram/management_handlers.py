@@ -1,11 +1,9 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v102.5.0-INTEGRATED (Uses Central Parsers)
-# ✅ REFACTOR:
-#    1. Removed redundant '_parse_human_number'.
-#    2. Now imports and uses 'capitalguard.interfaces.telegram.parsers'.
-#    3. Standardized parsing for Arabic digits, K/M suffixes, and Targets.
-#    4. Full Logic Compatibility with Lifecycle v12.
+# Version: v102.6.0-NOTE-FIX
+# ✅ CRITICAL FIXES:
+#    1. Added support for 'add_notes' action in Router (Fixed "Unmatched Action" error).
+#    2. Uses Central Parsers for all inputs.
 
 import logging
 import asyncio
@@ -287,7 +285,7 @@ class PortfolioController:
         kb_rows.append([back])
         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, text=text, reply_markup=InlineKeyboardMarkup(kb_rows), parse_mode=ParseMode.HTML)
 
-    # --- C. ENHANCED INPUT HANDLING (INTEGRATED) ---
+    # --- C. ENHANCED INPUT HANDLING ---
     
     @staticmethod
     async def handle_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
@@ -298,6 +296,9 @@ class PortfolioController:
         rec_id = callback.get_int(0)
         action = callback.action
         
+        # Mapping old action names to enum
+        if action == "add_notes": action = ManagementAction.EDIT_NOTES.value
+
         # Check if editable
         if action == ManagementAction.EDIT_ENTRY.value:
             lifecycle_service = get_service(context, "lifecycle_service", LifecycleService)
@@ -410,7 +411,7 @@ class PortfolioController:
 
             # --- TARGETS INPUT (Using parse_targets_list from parsers.py) ---
             elif action == ManagementAction.EDIT_TP.value:
-                # Prepare token list: split by newlines or spaces (normalize punctuation first)
+                # Prepare token list
                 cleaned_text = text_val.replace(',', ' ')
                 tokens = cleaned_text.split()
                 
@@ -597,6 +598,7 @@ class ActionRouter:
         ManagementAction.CLOSE_MARKET.value: PortfolioController.handle_immediate_action,
         ManagementAction.PARTIAL.value: PortfolioController.handle_partial_close_fixed,
         ManagementAction.REFRESH.value: PortfolioController.handle_refresh,
+        "add_notes": PortfolioController.handle_edit_selection # ✅ FIXED: Added missing route
     }
     _SUBMENU_ROUTES = {
         ManagementAction.EDIT_MENU.value: PortfolioController.show_submenu,
