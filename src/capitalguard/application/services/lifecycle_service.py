@@ -1,10 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/lifecycle_service.py ---
 # File: src/capitalguard/application/services/lifecycle_service.py
-# Version: v105.0.0-MASTER-FINANCE-COMPLIANT
-# ✅ FEATURES:
-#    1. ADVANCED RISK LOGIC: Breakeven with fee tolerance & Context-Aware Validation.
-#    2. FULL USER TRADE SUPPORT: All event processors implemented (No 'pass').
-#    3. ROBUST SESSION HANDLING: Re-fetching objects to prevent DB errors.
+# Version: v105.1.0-SYNTAX-FIX
+# ✅ CRITICAL FIX:
+#    1. Fixed SyntaxError in one-liner 'if/with' statements.
+#    2. Python does not allow 'with' inside a one-line 'if'.
+#    3. Expanded all compact lines to standard block format.
 
 from __future__ import annotations
 import logging
@@ -218,7 +218,8 @@ class LifecycleService:
 
     async def close_recommendation_async(self, rec_id: int, user_id: Optional[str], exit_price: Decimal, db_session: Optional[Session] = None, reason: str = "MANUAL_CLOSE", rebuild_alerts: bool = True):
         if db_session is None:
-             with session_scope() as s: return await self.close_recommendation_async(rec_id, user_id, exit_price, s, reason, rebuild_alerts)
+             with session_scope() as s: 
+                 return await self.close_recommendation_async(rec_id, user_id, exit_price, s, reason, rebuild_alerts)
         
         rec = self.repo.get_for_update(db_session, rec_id)
         if not rec: raise ValueError("Rec not found")
@@ -272,7 +273,10 @@ class LifecycleService:
     # --- Recommendation Updates ---
 
     async def update_sl_for_user_async(self, rec_id: int, user_id: str, new_sl: Decimal, db_session: Optional[Session] = None):
-        if db_session is None: with session_scope() as s: return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
+        if db_session is None: 
+            with session_scope() as s: 
+                return await self.update_sl_for_user_async(rec_id, user_id, new_sl, s)
+        
         rec = self.repo.get_for_update(db_session, rec_id)
         if not rec: raise ValueError("Not found")
         if rec.status == RecommendationStatusEnum.CLOSED: raise ValueError("Closed")
@@ -321,7 +325,10 @@ class LifecycleService:
         return self.repo._to_entity(rec)
     
     async def set_exit_strategy_async(self, rec_id: int, user_id: str, mode: str, price: Optional[Decimal] = None, trailing_value: Optional[Decimal] = None, active: bool = True, session: Optional[Session] = None):
-        if session is None: with session_scope() as s: return await self.set_exit_strategy_async(rec_id, user_id, mode, price, trailing_value, active, s)
+        if session is None: 
+            with session_scope() as s: 
+                return await self.set_exit_strategy_async(rec_id, user_id, mode, price, trailing_value, active, s)
+        
         rec = self.repo.get_for_update(session, rec_id)
         if not rec: raise ValueError("Not found")
         
@@ -336,7 +343,9 @@ class LifecycleService:
 
     async def move_sl_to_breakeven_async(self, rec_id: int, db_session: Optional[Session] = None):
         """✅ FIXED BREAKEVEN LOGIC"""
-        if db_session is None: with session_scope() as s: return await self.move_sl_to_breakeven_async(rec_id, s)
+        if db_session is None: 
+            with session_scope() as s: 
+                return await self.move_sl_to_breakeven_async(rec_id, s)
         
         rec = self.repo.get_for_update(db_session, rec_id)
         if not rec or rec.status != RecommendationStatusEnum.ACTIVE: raise ValueError("Only ACTIVE trades.")
