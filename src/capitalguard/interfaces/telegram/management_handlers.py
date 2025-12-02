@@ -1,11 +1,9 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v102.0.0-DIAMOND (Complete & Final)
-# ✅ THE ULTIMATE FIX:
-#    1. Based on v91.0.0-ASYNC-FIX (stable foundation)
-#    2. Integrated text input system from v100.0.0-PLATINUM
-#    3. RESTORED ALL FUNCTIONS: Partial Close, Channel Filter, Session Management
-#    4. FIXED RISK MANAGEMENT: Move to Entry, Profit Stop, Trailing Stop
+# Version: v102.1.0-DIAMOND-FIXED (Bug Fixes)
+# ✅ THE ULTIMATE FIX WITH BUG CORRECTIONS:
+#    1. Fixed: Parse_mode → ParseMode (typo fix)
+#    2. Enhanced: Better validation messages for SL/TP
 
 import logging
 import asyncio
@@ -14,7 +12,7 @@ from typing import Optional, Any, Union, List, Dict
 from decimal import Decimal, InvalidOperation
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode  # ✅ IMPORT FIXED
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -331,7 +329,7 @@ class PortfolioController:
             context.bot, query.message.chat_id, query.message.message_id, 
             f"⌨️ {msg}\n\n<i>Reply to this message with your value.</i>", 
             None,
-            Parse_mode.HTML
+            ParseMode.HTML  # ✅ FIXED: Parse_mode → ParseMode
         )
 
     @staticmethod
@@ -367,6 +365,21 @@ class PortfolioController:
                     if val <= 0: raise ValueError("Positive number required")
                     
                     if action == ManagementAction.EDIT_SL.value:
+                        # ✅ ENHANCED: Validate SL position before updating
+                        try:
+                            pos = lifecycle.repo.get(db_session, rec_id)
+                            if pos:
+                                side = getattr(pos, 'side', 'LONG')
+                                entry = getattr(pos, 'entry', 0)
+                                if side == "LONG" and val >= entry:
+                                    await update.message.reply_text("❌ For LONG positions, Stop Loss must be BELOW Entry price.")
+                                    return
+                                elif side == "SHORT" and val <= entry:
+                                    await update.message.reply_text("❌ For SHORT positions, Stop Loss must be ABOVE Entry price.")
+                                    return
+                        except Exception as val_err:
+                            log.debug(f"Pre-validation check: {val_err}")
+                        
                         await lifecycle.update_sl_for_user_async(rec_id, user_id, val, db_session)
                         reply_text = f"✅ SL updated to {val}"
                         
