@@ -1,8 +1,8 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
 # File: src/capitalguard/interfaces/api/routers/webapp.py
-# Version: v2.3.0-ACTIONS (Full Edit Support)
-# ✅ THE FIX: Implemented handlers for 'update_sl', 'update_tp', 'update_entry'.
-# 🎯 IMPACT: Enables full trade management directly from the WebApp.
+# Version: v2.4.0-ANALYTICS-FIX
+# ✅ THE FIX: Restored and implemented 'get_signal_details' endpoint.
+# 🎯 IMPACT: Fixes the "Open Analytics" button error in Telegram.
 
 import logging
 import json
@@ -19,12 +19,13 @@ from pydantic import BaseModel
 
 from capitalguard.config import settings
 from capitalguard.infrastructure.db.uow import session_scope
-from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository
+from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository, RecommendationRepository
 from capitalguard.interfaces.telegram.parsers import parse_targets_list
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.lifecycle_service import LifecycleService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
+from capitalguard.infrastructure.db.models import RecommendationStatusEnum
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
@@ -45,9 +46,9 @@ class WebAppSignal(BaseModel):
 
 class TradeAction(BaseModel):
     initData: str
-    action: str  # close, breakeven, partial, update_sl, update_tp, update_entry
+    action: str
     trade_id: int
-    value: Optional[str] = None  # Price, Percent, or Targets String
+    value: Optional[str] = None
 
 # --- Helpers ---
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
@@ -155,7 +156,7 @@ async def get_user_portfolio(initData: str, request: Request):
                     "live_price": live, "pnl_live": pnl,
                     "unified_status": getattr(i, 'unified_status', 'WATCHLIST'),
                     "is_user_trade": getattr(i, 'is_user_trade', False),
-                    "leverage": getattr(i, 'leverage', "20x"), # Mock or parse
+                    "leverage": getattr(i, 'leverage', "20x"), 
                     "targets": targets_ui
                 })
             return {"ok": True, "portfolio": {"items": out_items}}
@@ -165,9 +166,6 @@ async def get_user_portfolio(initData: str, request: Request):
 
 @router.post("/action")
 async def handle_trade_action(payload: TradeAction, request: Request):
-    """
-    ✅ Handles trade management actions (Close, Edit, Risk).
-    """
     try:
         user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
         lifecycle = request.app.state.services.get("lifecycle_service")
@@ -177,19 +175,16 @@ async def handle_trade_action(payload: TradeAction, request: Request):
             user_id = str(user_data['id'])
             rec_id = payload.trade_id
             
-            # 1. CLOSE
             if payload.action == "close":
                 rec = lifecycle.repo.get(session, rec_id)
                 live = await price_svc.get_cached_price(rec.asset, rec.market, True)
                 await lifecycle.close_recommendation_async(rec_id, user_id, Decimal(str(live or 0)), session, "WEB_CLOSE")
                 return {"ok": True, "message": f"Closed at {live}"}
             
-            # 2. BREAKEVEN
             elif payload.action == "breakeven":
                 await lifecycle.move_sl_to_breakeven_async(rec_id, session)
                 return {"ok": True, "message": "Moved to Breakeven"}
             
-            # 3. PARTIAL
             elif payload.action == "partial":
                 rec = lifecycle.repo.get(session, rec_id)
                 live = await price_svc.get_cached_price(rec.asset, rec.market, True)
@@ -197,13 +192,11 @@ async def handle_trade_action(payload: TradeAction, request: Request):
                 await lifecycle.partial_close_async(rec_id, user_id, pct, Decimal(str(live or 0)), session, "WEB_PARTIAL")
                 return {"ok": True, "message": f"Closed {pct}%"}
 
-            # 4. UPDATE SL
             elif payload.action == "update_sl":
                 new_sl = Decimal(str(payload.value))
                 await lifecycle.update_sl_for_user_async(rec_id, user_id, new_sl, session)
                 return {"ok": True, "message": f"SL Updated to {new_sl}"}
 
-            # 5. UPDATE ENTRY
             elif payload.action == "update_entry":
                 new_entry = Decimal(str(payload.value))
                 await lifecycle.update_entry_and_notes_async(rec_id, user_id, new_entry, None, session)
@@ -215,7 +208,84 @@ async def handle_trade_action(payload: TradeAction, request: Request):
         log.error(f"Action Error: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
 
+# ✅ RESTORED: Full Signal Analytics Endpoint
 @router.get("/signal/{rec_id}")
 async def get_signal_details(rec_id: int, request: Request):
-    return {"ok": False, "error": "Deprecated. Use /portfolio."}
+    """
+    Provides detailed data for a single signal (for Open Analytics button).
+    Includes Live Price, PnL, Targets status, and Event Timeline.
+    """
+    try:
+        lifecycle = request.app.state.services.get("lifecycle_service")
+        price_svc = request.app.state.services.get("price_service")
+
+        with session_scope() as session:
+            rec_orm = lifecycle.repo.get(session, rec_id)
+            if not rec_orm:
+                return {"ok": False, "error": "Signal not found"}
+
+            rec = lifecycle.repo._to_entity(rec_orm)
+            
+            # Fetch Live Price
+            live_price = await price_svc.get_cached_price(rec.asset.value, rec.market, force_refresh=False)
+            if not live_price:
+                 live_price = float(_to_decimal(rec.entry.value))
+
+            # Calculate PnL
+            entry_val = _to_decimal(rec.entry.value)
+            side_val = rec.side.value
+            pnl = _pct(entry_val, live_price, side_val)
+            
+            # Format Targets
+            targets_ui = []
+            hit_targets = set()
+            # Basic hit detection from events
+            for e in rec.events:
+                 if "TP" in e.event_type and "HIT" in e.event_type:
+                     try: hit_targets.add(int(''.join(filter(str.isdigit, e.event_type))))
+                     except: pass
+            
+            for i, t in enumerate(rec.targets.values, 1):
+                t_price = _to_decimal(t.price.value)
+                is_hit = i in hit_targets
+                # Also check live price if active
+                if not is_hit and rec.status == RecommendationStatusEnum.ACTIVE:
+                     if side_val == "LONG" and live_price >= t_price: is_hit = True
+                     elif side_val == "SHORT" and live_price <= t_price: is_hit = True
+                
+                targets_ui.append({
+                    "price": float(t_price),
+                    "roi": round(_pct(entry_val, t_price, side_val), 1),
+                    "hit": is_hit
+                })
+
+            # Format Timeline
+            timeline = []
+            for e in rec.events:
+                ts_str = e.event_timestamp.strftime("%H:%M")
+                desc = e.event_type.replace("_", " ").title()
+                if e.event_data and "price" in e.event_data:
+                    desc += f" @ {e.event_data['price']}"
+                timeline.append({"time": ts_str, "description": desc})
+
+            # Construct Response
+            signal_data = {
+                "asset": rec.asset.value,
+                "side": side_val,
+                "entry": float(entry_val),
+                "stop_loss": float(_to_decimal(rec.stop_loss.value)),
+                "live_price": live_price,
+                "pnl": pnl,
+                "leverage": "20x", # Placeholder or parse from notes
+                "status": rec.status.value,
+                "targets": targets_ui,
+                "events": timeline[-5:] # Last 5 events
+            }
+            
+            return {"ok": True, "signal": signal_data}
+
+    except Exception as e:
+        log.error(f"Signal Detail Error: {e}", exc_info=True)
+        return {"ok": False, "error": str(e)}
+
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/routers/webapp.py ---
