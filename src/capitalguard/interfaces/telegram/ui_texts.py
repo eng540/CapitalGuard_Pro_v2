@@ -1,11 +1,10 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/ui_texts.py ---
 # File: src/capitalguard/interfaces/telegram/ui_texts.py
-# Version: v17.0.0-GOLD-MERGE (Zero Defects)
-# ✅ THE FIXES MERGED:
-#    1. [Portfolio] Fixed argument names: 'active_count', 'watchlist_count' (No more TypeErrors).
-#    2. [Review] Full implementation of 'build_review_text_with_price' (No more placeholders).
-#    3. [Links] '_get_webapp_link' is globally defined (No more NameErrors).
-#    4. [Async] 'build_trade_card_text' is async for Live Price injection.
+# Version: v17.1.0-CLEAN-CARD (Leverage & Redundancy Fix)
+# ✅ CRITICAL FIXES:
+#    1. LEVERAGE FIX: Removed default '20x'. Only shows if explicitly set in notes (e.g., "Lev: 50x").
+#    2. CLEAN LAYOUT: Removed redundant price/symbol info to save space.
+#    3. BETTER UX: Improved Risk/Reward display formatting.
 
 from __future__ import annotations
 import logging
@@ -13,10 +12,6 @@ import re
 from typing import List, Optional, Dict, Any
 from decimal import Decimal
 from datetime import datetime
-
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.constants import ParseMode
-from telegram.error import BadRequest
 
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.interfaces.telegram.helpers import _get_attr, _to_decimal, _pct, _format_price
@@ -26,9 +21,8 @@ log = logging.getLogger(__name__)
 # --- Configuration ---
 WEBAPP_SHORT_NAME = "terminal"
 
-# --- Helpers (Global Scope) ---
+# --- Helpers ---
 def _get_webapp_link(rec_id: int, bot_username: str) -> str:
-    """Generates dynamic deep link."""
     try:
         safe_username = bot_username.replace("@", "") if bot_username else "CapitalGuardBot"
         return f"https://t.me/{safe_username}/{WEBAPP_SHORT_NAME}?startapp={rec_id}"
@@ -44,13 +38,14 @@ def _format_price_clean(price) -> str:
         num = float(price)
         if num >= 1000: return f"{num:,.2f}"
         if num >= 1: return f"{num:.3f}"
-        return f"{num:.5f}"
+        return f"{num:.5f}" # More precision for small assets
     except: return str(price)
 
-def _extract_leverage(notes: str) -> str:
-    if not notes: return "20x"
+# ✅ FIX: Removed default '20x'. Returns empty string if not found.
+def _extract_leverage_str(notes: str) -> str:
+    if not notes: return ""
     match = re.search(r'Lev:?\s*(\d+x?)', notes, re.IGNORECASE)
-    return match.group(1) if match else "20x"
+    return f" • <b>{match.group(1)}</b>" if match else ""
 
 def _get_target_icon(target_index: int, hit_targets: set, total_targets: int) -> str:
     if target_index in hit_targets: return "✅"
@@ -59,19 +54,24 @@ def _get_target_icon(target_index: int, hit_targets: set, total_targets: int) ->
         if i not in hit_targets:
             next_unhit = i
             break
-    return "🚀" if target_index == next_unhit else "⏳"
+    return "🎯" if target_index == next_unhit else "⏳"
 
 def _calculate_duration(rec: Recommendation) -> str:
     try:
         if not rec.created_at or not rec.closed_at: return ""
         diff = rec.closed_at - rec.created_at
-        if diff.seconds > 3600: return f" ({diff.seconds // 3600}h)"
-        return ""
+        
+        days = diff.days
+        hours = diff.seconds // 3600
+        minutes = (diff.seconds % 3600) // 60
+        
+        if days > 0: return f"({days}d {hours}h)"
+        if hours > 0: return f"({hours}h {minutes}m)"
+        return f"({minutes}m)"
     except: return ""
 
 # --- CORE: Live Price Integration ---
 async def get_live_price(symbol: str, market: str = "Futures") -> Optional[float]:
-    """Get real-time price from Redis cache"""
     try:
         from capitalguard.infrastructure.core_engine import core_cache
         cache_key = f"price:{market.upper()}:{symbol}"
@@ -82,13 +82,10 @@ async def get_live_price(symbol: str, market: str = "Futures") -> Optional[float
         alt_key = f"price:{alt_market}:{symbol}"
         price = await core_cache.get(alt_key)
         return float(price) if price else None
-    except Exception as e:
-        log.debug(f"Live price fetch failed for {symbol}: {e}")
-        return None
+    except Exception: return None
 
 # --- CORE: Real PnL Calculator ---
 def calculate_real_pnl(rec: Recommendation) -> Dict[str, Any]:
-    """Calculates TRUE PnL considering partial closes"""
     try:
         entry = _to_decimal(_get_attr(rec, 'entry', 0))
         side = _get_attr(rec.side, 'value', 'LONG')
@@ -137,11 +134,9 @@ def calculate_real_pnl(rec: Recommendation) -> Dict[str, Any]:
     except Exception:
         return {'total_pnl': 0.0, 'realized_pnl': 0.0, 'closed_percentage': 0.0, 'weighted_exit_price': None}
 
-# --- Constants ---
+# --- UI Constants ---
 ICON_LONG = "🟢 LONG"
 ICON_SHORT = "🔴 SHORT"
-ICON_ENTRY = "🚪"
-ICON_STOP = "🛑"
 
 # --- PRO Card Builders ---
 def _build_header(rec: Recommendation, bot_username: str) -> str:
@@ -149,31 +144,21 @@ def _build_header(rec: Recommendation, bot_username: str) -> str:
         symbol = _get_attr(rec.asset, 'value', 'SYMBOL')
         side = _get_attr(rec.side, 'value', 'LONG')
         status = _get_attr(rec, 'status')
+        notes = getattr(rec, 'notes', '')
         
-        display_price = getattr(rec, 'live_price', None) or _to_decimal(_get_attr(rec, 'entry', 0))
-
-        if status == RecommendationStatus.CLOSED:
-            pnl_info = calculate_real_pnl(rec)
-            real_pnl = pnl_info['total_pnl']
-            header_icon = "🏆" if real_pnl > 0 else "🏁"
-            status_tag = " [CLOSED]"
-            price_tag = ""
-        elif status == RecommendationStatus.PENDING:
-            header_icon = "⏳"
-            status_tag = ""
-            price_tag = ""
-        else:
-            header_icon = "📈" if side == "LONG" else "📉"
-            status_tag = ""
-            price_tag = f" • {_format_price_clean(display_price)}"
+        # ✅ FIX: Leverage only if present
+        lev_str = _extract_leverage_str(notes)
         
-        side_badge = ICON_LONG if side == "LONG" else ICON_SHORT
-        lev_info = "" if "SPOT" in getattr(rec, 'market', 'Futures').upper() else f" • <b>{_extract_leverage(getattr(rec, 'notes', ''))}</b>"
-
         link = _get_webapp_link(getattr(rec, 'id', 0), bot_username)
-        return f"{header_icon} <a href='{link}'><b>#{symbol}</b></a>{status_tag}{price_tag}\n{side_badge}{lev_info}"
+        
+        # Header Line 1: #SYMBOL • SIDE • LEVERAGE
+        # Example: #BTCUSDT • LONG • 20x
+        side_icon = "🟢" if side == "LONG" else "🔴"
+        header_line = f"{side_icon} <a href='{link}'><b>#{symbol}</b></a> • {side}{lev_str}"
+        
+        return header_line
     except Exception:
-        return "📊 <b>TRADING SIGNAL</b>"
+        return "📊 <b>SIGNAL</b>"
 
 def _build_status_dashboard(rec: Recommendation, is_initial_publish: bool = False) -> str:
     try:
@@ -183,10 +168,10 @@ def _build_status_dashboard(rec: Recommendation, is_initial_publish: bool = Fals
         status_str = str(status.value if hasattr(status, 'value') else status)
         
         if status_str == "PENDING":
-            txt = f"⏳ <b>PENDING ORDER</b>\nWait for Entry @ <code>{_format_price_clean(entry)}</code>"
+            txt = f"⏳ <b>PENDING</b>\nEntry: <code>{_format_price_clean(entry)}</code>"
             if live_price and live_price != float(entry):
                 dist = _pct(entry, live_price, _get_attr(rec, 'side'))
-                txt += f"\nCurrent: `{_format_price_clean(live_price)}` ({abs(dist):.2f}% away)"
+                txt += f" (Diff: {abs(dist):.2f}%)"
             return txt
             
         if status_str == "CLOSED":
@@ -194,43 +179,51 @@ def _build_status_dashboard(rec: Recommendation, is_initial_publish: bool = Fals
             exit_price = _to_decimal(_get_attr(rec, 'exit_price', 0))
             duration = _calculate_duration(rec)
             dur_str = f" | ⏱️ {duration}" if duration else ""
-            return f"🏁 <b>TRADE CLOSED</b>\nNet Result: <b>{_format_pnl_display(pnl_data['total_pnl'])}</b>{dur_str}\nLast Price: <code>{_format_price_clean(exit_price)}</code>"
+            
+            # ✅ FIX: Cleaner Closed View
+            return (
+                f"🏁 <b>TRADE CLOSED</b>\n"
+                f"Result: <b>{_format_pnl_display(pnl_data['total_pnl'])}</b>{dur_str}\n"
+                f"Exit: <code>{_format_price_clean(exit_price)}</code>"
+            )
 
         if is_initial_publish:
-            return "⚡ <b>TRADE ACTIVE</b>\nPosition opened successfully"
+            return "⚡ <b>ACTIVE</b>\nMarket Order Filled"
         
         current_price = live_price if live_price else float(entry)
         pnl = _pct(entry, current_price, _get_attr(rec, 'side', 'LONG'))
-        pnl_data = calculate_real_pnl(rec)
-        total_curr_pnl = pnl_data['realized_pnl'] + (pnl * (100 - pnl_data['closed_percentage']) / 100)
         
-        lines = [f"🚀 <b>LIVE TRADING</b>"]
-        lines.append(f"Current: <code>{_format_price_clean(current_price)}</code> ({_format_pnl_display(total_curr_pnl)})")
-        if pnl_data['realized_pnl'] != 0:
-            lines.append(f"Realized: {_format_pnl_display(pnl_data['realized_pnl'])} (Locked)")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error(f"Dashboard error: {e}")
-        return "⚡ <b>TRADE ACTIVE</b>"
+        # ✅ FIX: Simplified Live View
+        return (
+            f"🚀 <b>LIVE</b>\n"
+            f"Price: <code>{_format_price_clean(current_price)}</code> ({_format_pnl_display(pnl)})"
+        )
+    except Exception:
+        return "⚡ <b>ACTIVE</b>"
 
 def _build_strategy_block(rec: Recommendation) -> str:
     try:
         entry = _format_price_clean(_get_attr(rec, 'entry', 0))
         sl = _format_price_clean(_get_attr(rec, 'stop_loss', 0))
+        
+        # Calculate Risk %
         e_val = _to_decimal(_get_attr(rec, 'entry', 0))
         s_val = _to_decimal(_get_attr(rec, 'stop_loss', 0))
         risk_pct = abs((e_val - s_val) / e_val * 100) if e_val > 0 else 0
-        return f"🚪 Entry : <code>{entry}</code>\n🛑 Stop  : <code>{sl}</code> ({risk_pct:.2f}% Risk)"
+        
+        # ✅ FIX: Better formatting
+        return (
+            f"🚪 Entry: <code>{entry}</code>\n"
+            f"🛑 Stop : <code>{sl}</code> (Risk: -{risk_pct:.2f}%)"
+        )
     except Exception:
-        return f"{ICON_ENTRY} <b>Entry:</b> <code>N/A</code>"
+        return ""
 
 def _build_targets_block(rec: Recommendation) -> str:
     try:
-        entry_price = _get_attr(rec, 'entry', 0)
         targets = _get_attr(rec, 'targets', [])
         t_list = targets.values if hasattr(targets, 'values') else []
-        
-        if not t_list: return "🎯 <b>Targets:</b> None"
+        if not t_list: return ""
         
         hit_targets = set()
         if rec.events:
@@ -242,33 +235,43 @@ def _build_targets_block(rec: Recommendation) -> str:
         lines = ["🎯 <b>TARGETS</b>"]
         for i, t in enumerate(t_list, 1):
             price = _get_attr(t, 'price', 0)
-            t_pnl = _pct(entry_price, price, _get_attr(rec, 'side'))
             icon = _get_target_icon(i, hit_targets, len(t_list))
             p_fmt = _format_price_clean(price)
+            
+            # Strikethrough if hit
             if i in hit_targets: p_fmt = f"<s>{p_fmt}</s>"
-            elif icon == "🚀": p_fmt = f"<b>{p_fmt}</b>"
+            
             close_pct = t.get('close_percent', 0) if isinstance(t, dict) else getattr(t, 'close_percent', 0)
-            tag = f" 📦{int(close_pct)}%" if close_pct > 0 else ""
-            lines.append(f"{icon} TP{i}: {p_fmt} ({t_pnl:.1f}%){tag}")
+            tag = f" ({int(close_pct)}%)" if close_pct > 0 else ""
+            
+            lines.append(f"{icon} TP{i}: {p_fmt}{tag}")
+            
         return "\n".join(lines)
     except Exception: return ""
 
 def _build_clean_timeline(rec: Recommendation) -> str:
     try:
         if not rec.events: return ""
-        IGNORED = ["CREATED", "CREATED_ACTIVE", "CREATED_PENDING", "PUBLISHED", "ACTIVATED"]
-        meaningful = [e for e in rec.events if getattr(e, 'event_type', '') not in IGNORED]
+        # Only show important events to keep card clean
+        IMPORTANT = ["SL_HIT", "TP1_HIT", "TP2_HIT", "TP3_HIT", "TP4_HIT", "PARTIAL", "FINAL_CLOSE"]
+        meaningful = [e for e in rec.events if getattr(e, 'event_type', '') in IMPORTANT]
+        
         if not meaningful: return ""
+        
+        # Show last 3 events
         events = sorted(meaningful, key=lambda e: e.event_timestamp, reverse=True)[:3]
-        lines = ["🕐 <b>Activity:</b>"]
+        
+        lines = ["🕐 <b>Latest Updates:</b>"]
         for event in events:
             ts = getattr(event, 'event_timestamp', datetime.now()).strftime("%H:%M")
             e_type = getattr(event, 'event_type', '').replace("_", " ").title()
-            if "Tp" in e_type and "Hit" in e_type: e_type = "🎯 Target Hit"
+            
+            # Simplify event names
+            if "Tp" in e_type: e_type = e_type.replace("Hit", "✅")
             elif "Sl" in e_type: e_type = "🛑 Stop Loss"
-            elif "Partial" in e_type: e_type = "💰 Partial Close"
-            elif "Closed" in e_type: e_type = "🏁 Closed"
-            lines.append(f"▸ `{ts}` {e_type}")
+            elif "Partial" in e_type: e_type = "💰 Partial Exit"
+            
+            lines.append(f"▪️ `{ts}` {e_type}")
         return "\n".join(lines)
     except Exception: return ""
 
@@ -282,7 +285,6 @@ async def build_trade_card_text(rec: Recommendation, bot_username: str, is_initi
         cached_price = getattr(rec, 'live_price', None)
         if not cached_price:
             cached_price = await get_live_price(symbol, market)
-        # Fallback to entry
         if not cached_price:
             cached_price = float(_to_decimal(_get_attr(rec, 'entry', 0)))
             
@@ -290,34 +292,47 @@ async def build_trade_card_text(rec: Recommendation, bot_username: str, is_initi
         
         DIVIDER = "────────────────"
         parts = []
+        
+        # 1. Header (Symbol + Side + Leverage)
         parts.append(_build_header(rec, bot_username))
         parts.append("")
+        
+        # 2. Dashboard (Live Price + PnL)
         parts.append(_build_status_dashboard(rec, is_initial_publish))
         parts.append(DIVIDER)
+        
+        # 3. Strategy (Entry + SL + Risk)
         parts.append(_build_strategy_block(rec))
-        parts.append(DIVIDER)
+        parts.append("")
+        
+        # 4. Targets
         parts.append(_build_targets_block(rec))
         
+        # 5. Notes (Cleaned)
         notes = getattr(rec, 'notes', '')
-        if notes and len(notes.strip()) > 1:
-            clean = re.sub(r'Lev:?\s*\d+x?\s*\|?', '', notes, flags=re.IGNORECASE).strip()
-            if clean:
+        if notes:
+            # Remove technical notes like "Lev: 20x" from display notes
+            clean_notes = re.sub(r'Lev:?\s*\d+x?\s*\|?', '', notes, flags=re.IGNORECASE).strip()
+            if clean_notes:
                 parts.append(DIVIDER)
-                parts.append(f"📝 <b>Notes:</b> {clean[:100]}")
+                parts.append(f"📝 {clean_notes[:100]}")
         
+        # 6. Timeline
         timeline = _build_clean_timeline(rec)
         if timeline:
             parts.append(DIVIDER)
             parts.append(timeline)
             
+        # 7. Footer Link
         link = _get_webapp_link(getattr(rec, 'id', 0), bot_username)
         parts.append(f"\n🔍 <a href='{link}'><b>Open Analytics</b></a>")
+        
         return "\n".join(parts)
     except Exception as e:
         log.error(f"Card Error: {e}", exc_info=True)
         return "📊 <b>SIGNAL ERROR</b>"
 
-# --- Review Function (Fully Implemented) ---
+# --- Review Function ---
 def build_review_text_with_price(draft: Dict[str, Any], preview_price: Optional[float] = None) -> str:
     asset = draft.get("asset", "SYMBOL")
     side = draft.get("side", "LONG")
@@ -342,21 +357,17 @@ def build_review_text_with_price(draft: Dict[str, Any], preview_price: Optional[
         for i, target in enumerate(targets, 1):
             price = _to_decimal(target.get('price', 0))
             pct = target.get('close_percent', 0)
-            tag = f" 📦{int(pct)}%" if pct > 0 else ""
+            tag = f" ({int(pct)}%)" if pct > 0 else ""
             text += f"TP{i}: <code>{_format_price_clean(price)}</code>{tag}\n"
     
     text += f"\n📤 <i>Ready to publish?</i>"
     return text
 
-# --- PortfolioViews (Correct Signature) ---
+# --- PortfolioViews (Unchanged) ---
 class PortfolioViews:
     @staticmethod
     async def render_hub(update: Update, user_name: str, report: Dict[str, Any], 
                         active_count: int, watchlist_count: int, is_analyst: bool):
-        """
-        Renders the portfolio hub.
-        ✅ ARGS MATCH: management_handlers.py calls this with (active_count, watchlist_count).
-        """
         try:
             from capitalguard.interfaces.telegram.keyboards import CallbackBuilder, CallbackNamespace
             header = f"📊 <b>CapitalGuard Portfolio</b>\nWelcome, {user_name}."
