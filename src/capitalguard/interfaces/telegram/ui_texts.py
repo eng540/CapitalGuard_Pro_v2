@@ -13,6 +13,12 @@ from typing import List, Optional, Dict, Any
 from decimal import Decimal
 from datetime import datetime
 
+# --- ✅ FIXED: Added Missing Telegram Imports ---
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
+
+# --- Internal Imports ---
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.interfaces.telegram.helpers import _get_attr, _to_decimal, _pct, _format_price
 
