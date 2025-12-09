@@ -1,11 +1,13 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/management_handlers.py ---
 # File: src/capitalguard/interfaces/telegram/management_handlers.py
-# Version: v106.3.0-SUBSCRIPTION-GATE (Growth Hack)
-# ✅ CRITICAL FIXES + GROWTH HACK:
-#    1. PUBLIC ACCESS: 'Refresh' button now redirects guests to bot for subscription.
-#    2. GROWTH FUNNEL: Converts passive channel viewers into registered users.
-#    3. SMART GATING: Only registered active users can refresh prices in channels.
-#    4. DEEP LINK TRACKING: Tracks subscription source for analytics.
+# Version: v106.3.1-PRODUCTION-MERGED
+# ✅ MERGED FIXES:
+#    1. Tuple Crash Fix: Changed 'kb_rows = ()' to 'kb_rows = []' to support append.
+#    2. Channel Silence: Restricted text input to PRIVATE chats only.
+#    3. PUBLIC ACCESS: 'Refresh' button redirects guests to bot for subscription.
+#    4. GROWTH FUNNEL: Converts passive channel viewers into registered users.
+#    5. SMART GATING: Only registered active users can refresh prices in channels.
+#    6. DEEP LINK TRACKING: Tracks subscription source for analytics.
 
 import logging
 import asyncio
@@ -78,6 +80,12 @@ class PortfolioController:
     async def show_hub(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, *args):
         session = SessionContext(context)
         session.touch()
+        
+        # ✅ FIX: Check for private chat only (from v200)
+        if update.effective_chat.type != "private":
+            await update.effective_message.reply_text("⚠️ Please use /open in private chat.", quote=True)
+            return
+            
         user_id = str(db_user.id)
         tg_id = str(db_user.telegram_user_id)
         cache_key = f"portfolio_view:{user_id}"
@@ -170,12 +178,19 @@ class PortfolioController:
             await update.callback_query.answer("⚠️ Not found.")
             return
         text = await build_trade_card_text(pos, context.bot.username)
+        
+        # ✅ FIX: Changed from 'kb_rows = ()' to 'kb_rows = []' (from v200)
         kb_rows = []
+        
         act = callback.action
         if act in [ManagementAction.EDIT_MENU.value, "edit_menu"]: kb_rows = build_trade_data_edit_keyboard(rec_id).inline_keyboard
         elif act in [ManagementAction.CLOSE_MENU.value, "close_menu"]: kb_rows = build_close_options_keyboard(rec_id).inline_keyboard
         elif act in [ManagementAction.PARTIAL_CLOSE_MENU.value, "partial_close_menu"]: kb_rows = build_partial_close_keyboard(rec_id).inline_keyboard
         elif act in [ManagementAction.SHOW_MENU.value, "show_menu"]: kb_rows = build_exit_management_keyboard(pos).inline_keyboard
+        
+        # ✅ FIX: Properly convert to list for appending
+        kb_rows = list(kb_rows) if isinstance(kb_rows, tuple) else kb_rows
+        
         back = [InlineKeyboardButton("⬅️ Back", callback_data=CallbackBuilder.create(CallbackNamespace.POSITION, CallbackAction.SHOW, 'rec', rec_id))]
         kb_rows.append(back)
         await safe_edit_message(context.bot, update.callback_query.message.chat_id, update.callback_query.message.message_id, text, InlineKeyboardMarkup(kb_rows))
@@ -183,6 +198,12 @@ class PortfolioController:
     @staticmethod
     async def handle_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, callback: TypedCallback):
         query = update.callback_query
+        
+        # ✅ FIX: Check for private chat only (from v200)
+        if query.message.chat.type != "private":
+            await query.answer("⚠️ Use Private Chat to edit.", show_alert=True)
+            return
+            
         await query.answer()
         rec_id, action = callback.get_int(0), callback.action
         session = SessionContext(context)
@@ -196,6 +217,7 @@ class PortfolioController:
             ManagementAction.EDIT_TP.value: "🎯 Enter Targets (e.g. <code>91k 50%</code> or <code>@</code>):",
             ManagementAction.EDIT_NOTES.value: "📝 Enter <b>Notes</b>:",
             ManagementAction.CLOSE_MANUAL.value: "💸 Enter <b>Exit Price</b>:",
+            ManagementAction.EDIT_ENTRY.value: "🚪 Enter <b>Entry Price</b>:",
             "add_notes": "📝 Enter <b>Notes</b>:"
         }.get(action, "Enter value:")
         await safe_edit_message(context.bot, query.message.chat_id, query.message.message_id, f"{prompt}\n\n<i>Reply here.</i>", None)
