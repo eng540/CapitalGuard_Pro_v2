@@ -1,10 +1,12 @@
-# src/capitalguard/infrastructure/db/base.py (v2.1 - COMPLETE, FINAL & PRODUCTION-READY)
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/base.py ---
+# src/capitalguard/infrastructure/db/base.py (v2.2 - Fix for Supabase Transaction Pooler)
 """
 Database engine setup and session management.
 
-This version includes a custom JSON serializer to handle Decimal types,
-fixing the "Decimal is not JSON serializable" error when using JSONB columns.
-This is a complete, final, and production-ready file.
+Updates:
+- Added 'prepare_threshold': None to connect_args for PostgreSQL.
+  This fixes the 'psycopg.errors.DuplicatePreparedStatement' error caused by
+  Supabase's Transaction Pooler (PgBouncer) which does not support prepared statements.
 """
 
 import json
@@ -31,20 +33,28 @@ def _custom_json_serializer(obj):
 
 
 # --- Database Engine Creation ---
-# The engine is the starting point for any SQLAlchemy application. It's the
-# 'home base' for the actual DBAPI connections and dialect.
+# Prepare connection arguments
+connect_args = {}
+
+if settings.DATABASE_URL.startswith("sqlite"):
+    connect_args["check_same_thread"] = False
+else:
+    # ✅ THE FIX: Disable prepared statements for PostgreSQL (Supabase Transaction Pooler)
+    # Setting prepare_threshold to None tells psycopg not to use server-side prepared statements.
+    connect_args["prepare_threshold"] = None
+
 engine = create_engine(
     settings.DATABASE_URL,
     
-    # Connection arguments specific to certain database drivers.
-    # For SQLite, this prevents errors when multiple threads access the same connection,
-    # which is common in web applications.
-    connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {},
+    # Pass the configured arguments
+    connect_args=connect_args,
     
-    # ✅ THE CORE FIX: Pass the custom serializer to the engine.
-    # This instructs SQLAlchemy's dialect (e.g., psycopg) to use our custom function
-    # whenever it needs to serialize a Python object into a JSON string for the database.
-    json_serializer=lambda obj: json.dumps(obj, default=_custom_json_serializer)
+    # Pass the custom serializer
+    json_serializer=lambda obj: json.dumps(obj, default=_custom_json_serializer),
+    
+    # Recommended settings for cloud databases to prevent stale connections
+    pool_pre_ping=True,
+    pool_recycle=1800
 )
 
 
@@ -72,3 +82,4 @@ def get_session():
         yield db
     finally:
         db.close()
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/db/base.py ---
