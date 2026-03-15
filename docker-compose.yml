@@ -1,30 +1,44 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: docker-compose.yml ---
-# docker-compose.yml
-# --- START OF FINAL, UNIFIED AND CORRECTED FILE (Version 13.0.0 - AI Service) ---
-# ✅ NEW: Adds the 'ai-service' container for decoupled parsing.
-# ✅ MODIFIED: Adds 'AI_SERVICE_URL' to the 'api' container environment.
-# ✅ MODIFIED: Added volume mapping for backups to prevent data loss.
+# docker-compose.yml — CapitalGuard Pro v2
+# Version: 14.0.0-RAILWAY-SUPABASE
+#
+# ✅ THE FIX (BUG-DC1 + BUG-DC2):
+#   REDIS_URL غير معرَّف وredis service غير موجود.
+#   main.py ينهار عند startup إذا لم يجد REDIS_URL.
+#   الإصلاح: إضافة redis:7-alpine service + تمرير REDIS_URL.
+#
+# ملاحظات البيئة:
+#   - الإنتاج  (Railway):  لا يستخدم هذا الملف.
+#                          Railway يبني مباشرة من Dockerfile ويقرأ
+#                          DATABASE_URL وREDIS_URL من متغيرات Railway Dashboard.
+#
+#   - التطوير المحلي:     هذا الملف يُشغِّل Redis محلياً.
+#                          DATABASE_URL تُقرأ من .env (Supabase أو postgres محلي).
+#                          أضف REDIS_URL=redis://redis:6379/0 في .env المحلي.
+#
+# Reviewed-by: Guardian Protocol v1 — 2026-03-15
 
 version: "3.9"
 
 services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-capitalguard}
-      POSTGRES_USER: ${POSTGRES_USER:-cg}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cgpass}
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+
+  # ── Redis (مطلوب — main.py يتوقف بدونه) ──────────────────────
+  # ✅ BUG-DC1/DC2 FIX: Redis service مضاف
+  redis:
+    image: redis:7-alpine
     restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+      --save ""
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cg -d capitalguard"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
-      timeout: 5s
+      timeout: 3s
       retries: 5
 
+  # ── API الرئيسي + Telegram Bot ────────────────────────────────
   api:
     build:
       context: .
@@ -34,37 +48,95 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+psycopg://cg:cgpass@db:5432/capitalguard
-      # ✅ NEW: Pass the AI service URL to the main API
-      - AI_SERVICE_URL=${AI_SERVICE_URL}
+      # ✅ BUG-DC1 FIX: REDIS_URL يُمرَّر صراحةً للـ container
+      - REDIS_URL=redis://redis:6379/0
+
+      # DATABASE_URL تُقرأ من .env
+      # في التطوير المحلي: ضع Supabase URL أو postgresql://localhost/...
+      # في الإنتاج على Railway: يُضبط في Railway Dashboard تلقائياً
+
+      # AI Service URL (داخلي)
+      - AI_SERVICE_URL=http://ai-service:8001/ai/parse
+
     volumes:
-      # ✅ FIX: Persist backups outside the container
+      # استمرار ملفات النسخ الاحتياطية خارج الـ container
       - ./backups:/app/backups
+
     depends_on:
-      db:
+      redis:
         condition: service_healthy
+      # ملاحظة: db service اختياري محلياً — إذا كنت تستخدم Supabase أزل هذا
+      # db:
+      #   condition: service_healthy
+
     restart: unless-stopped
 
-  # --- ✅ NEW: AI PARSING MICROSERVICE ---
+  # ── خدمة الذكاء الاصطناعي (fal.ai + Regex) ───────────────────
   ai-service:
     build:
-      # المسار إلى مجلد الخدمة الجديدة
-      context: ./ai_service 
+      context: ./ai_service
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file:
-      - .env # تمرير نفس ملف .env (سيقرأ DATABASE_URL و LLM_API_KEY)
+      - .env
     environment:
-      # تأكد من أن الخدمة تستخدم نفس قاعدة البيانات
-      - DATABASE_URL=postgresql+psycopg://cg:cgpass@db:5432/capitalguard
-    depends_on:
-      db:
-        condition: service_healthy
-    # لا حاجة لـ 'ports' خارجية، هذه خدمة داخلية
-    # سيعمل على المنفذ 8001 (كما هو محدد في Dockerfile الخاص به)
+      - FAL_KEY=${FAL_KEY:-}
+      - FAL_VISION_MODEL=${FAL_VISION_MODEL:-fal-ai/any-llm}
+      - FAL_LLM_MODEL=${FAL_LLM_MODEL:-google/gemini-flash-1.5}
+      - PORT=8001
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── PostgreSQL محلي (اختياري — أزله إذا تستخدم Supabase) ──────
+  # فعّل هذا الـ service بالأمر: docker compose --profile local-db up
+  db:
+    image: postgres:16
+    profiles: ["local-db"]
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-capitalguard}
+      POSTGRES_USER:     ${POSTGRES_USER:-cg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cgpass}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cg} -d ${POSTGRES_DB:-capitalguard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   pgdata:
 
-# --- END OF FINAL, UNIFIED AND CORRECTED FILE ---
+# ─────────────────────────────────────────────────────────────────
+# تعليمات التشغيل
+# ─────────────────────────────────────────────────────────────────
+#
+# التطوير مع Supabase (الشائع):
+#   1. أضف في .env:
+#      DATABASE_URL=postgresql://...supabase...
+#      TELEGRAM_BOT_TOKEN=...
+#      TELEGRAM_ADMIN_CHAT_ID=...
+#      API_KEY=...
+#      FAL_KEY=...
+#
+#   2. شغّل:
+#      docker compose up --build
+#
+# التطوير مع postgres محلي:
+#   docker compose --profile local-db up --build
+#
+# الإنتاج على Railway:
+#   - ارفع الكود إلى GitHub
+#   - Railway يبني من Dockerfile تلقائياً
+#   - أضف في Railway Dashboard:
+#     DATABASE_URL  ← من Supabase
+#     REDIS_URL     ← من Railway Redis plugin
+#     TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, API_KEY, FAL_KEY
+# ─────────────────────────────────────────────────────────────────
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: docker-compose.yml ---
