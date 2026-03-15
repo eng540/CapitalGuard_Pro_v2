@@ -1,3 +1,4 @@
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/bot_polling_runner.py ---
 # --- START OF FINAL, CORRECTED FILE (Version 9.1.0) ---
 # src/capitalguard/interfaces/telegram/bot_polling_runner.py
 
@@ -11,6 +12,8 @@ load_dotenv()
 # ✅ CRITICAL FIX: Import the single, correct bootstrap function from boot.py
 from capitalguard.boot import bootstrap_app
 from capitalguard.logging_conf import setup_logging
+# ✅ NEW: Import backup loop to run as background task
+from capitalguard.infrastructure.db.backup_service import auto_backup_loop
 
 async def main():
     """Initializes and runs the bot in polling mode for local development."""
@@ -22,10 +25,9 @@ async def main():
         logging.critical("Failed to bootstrap the application. Exiting.")
         return
 
-    # The alert service is already scheduled inside bootstrap_app via main.py's startup logic,
-    # but for standalone polling, we might need to schedule it here if not running via FastAPI.
-    # However, the current design ties scheduling to FastAPI's startup event.
-    # For simplicity and consistency, we will rely on the scheduling done by bootstrap_app's internals.
+    # Start the automated backup loop in the background
+    logging.info("Starting Auto-Backup background task...")
+    asyncio.create_task(auto_backup_loop())
     
     try:
         # Initialize and run polling
@@ -50,3 +52,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logging.info("Bot stopped manually.")
 # --- END OF FINAL, CORRECTED FILE (Version 9.1.0) ---
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/telegram/bot_polling_runner.py ---

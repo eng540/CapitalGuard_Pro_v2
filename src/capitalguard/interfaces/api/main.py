@@ -1,8 +1,7 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
 # File: src/capitalguard/interfaces/api/main.py
-# Version: v27.1 - Webapp Portfolio Shortcut
-# ✅ THE FIX: Added a shortcut endpoint /portfolio to serve the new WebApp file.
-# 🎯 IMPACT: Simplifies access to the new WebApp feature.
+# Version: v27.2 - Webapp Portfolio Shortcut & Auto-Backup
+# ✅ THE FIX: Added Auto-Backup loop to FastAPI startup event for production.
 
 import logging
 import asyncio
@@ -28,6 +27,9 @@ from capitalguard.interfaces.api.routers import webapp as webapp_router
 from capitalguard.interfaces.api.metrics import router as metrics_router
 from capitalguard.application.services.alert_service import AlertService
 from capitalguard.application.services.market_data_service import MarketDataService
+
+# ✅ NEW: Import auto_backup_loop for background execution in production
+from capitalguard.infrastructure.db.backup_service import auto_backup_loop
 
 log = logging.getLogger(__name__)
 
@@ -113,7 +115,7 @@ class RedisPersistence(BasePersistence):
 
 # --- FastAPI Application ---
 
-app = FastAPI(title="CapitalGuard Pro API", version="27.1-webapp") # ✅ Version Bump
+app = FastAPI(title="CapitalGuard Pro API", version="27.2-webapp") # ✅ Version Bump
 app.state.ptb_app = None
 app.state.services = None
 
@@ -126,6 +128,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 @app.on_event("startup")
 async def on_startup():
     log.info("🚀 Application startup sequence initiated...")
+
+    # ✅ START AUTO-BACKUP TASK FOR PRODUCTION
+    log.info("Starting Auto-Backup background task for Production environment...")
+    asyncio.create_task(auto_backup_loop())
 
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
@@ -233,19 +239,15 @@ app.include_router(auth_router.router)
 app.include_router(webapp_router.router)
 app.include_router(metrics_router)
 
-# ✅ SHORTCUT: مسار مختصر لفتح لوحة القيادة
 @app.get("/dash")
 async def serve_dashboard():
     return FileResponse("src/capitalguard/interfaces/api/static/signal_dashboard.html")
 
-# ✅ SHORTCUT: مسار مختصر لفتح صفحة الإنشاء (احتياط)
 @app.get("/new")
 async def serve_creator():
     return FileResponse("src/capitalguard/interfaces/api/static/create_trade.html")
 
-# ✅ NEW SHORTCUT: مسار مختصر لفتح محفظة المستخدم
 @app.get("/portfolio")
 async def serve_portfolio():
     return FileResponse("src/capitalguard/interfaces/api/static/my_portfolio.html")
-
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/interfaces/api/main.py ---
