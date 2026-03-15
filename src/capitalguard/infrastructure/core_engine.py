@@ -1,16 +1,19 @@
-# --- START OF NEW FILE: src/capitalguard/infrastructure/core_engine.py --- v1
-# Architecture: Resilience & Performance Layer
-# Components: L1/L2 Cache, Circuit Breaker, Async Pipeline
-# ✅ Implements "The Vision" Infrastructure
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+# File: src/capitalguard/infrastructure/core_engine.py
+# Version: v2.0-REDIS-FIX
+#
+# ✅ THE FIX (السبب D):
+#   core_cache كان يُنشأ بدون redis_url → Redis لا يُستخدم أبداً
+#   → أسعار الـ WebApp تُعرض "Loading..."
+#   الإصلاح: core_cache يقرأ REDIS_URL من settings عند أول استخدام (lazy init).
 
 import asyncio
 import time
 import logging
 import json
-from typing import Any, Callable, Dict, Optional, TypeVar, Generic
-from dataclasses import dataclass, field
+import os
+from typing import Any, Callable, Dict, Optional, TypeVar
 
-# افتراض وجود Redis (يمكن استبداله بـ Mock إذا لم يكن متوفراً)
 try:
     import redis.asyncio as redis
     REDIS_AVAILABLE = True
@@ -20,76 +23,108 @@ except ImportError:
 T = TypeVar("T")
 log = logging.getLogger(__name__)
 
-# 1. ✅ نظام التخزين المؤقت متعدد المستويات (L1/L2 Cache)
+
 class CacheStats:
     l1_hits: int = 0
     l2_hits: int = 0
     misses: int = 0
 
+
 class AdvancedCacheSystem:
     """
-    Hybrid Caching System:
-    L1: Memory (Fastest, Process-bound)
-    L2: Redis (Distributed, Persistent)
+    Hybrid Cache: L1 (memory) + L2 (Redis).
+    ✅ FIX: redis_url يُقرأ من env عند أول استخدام إن لم يُمرَّر مباشرة.
     """
+
     def __init__(self, redis_url: str = None):
         self.l1_cache: Dict[str, Any] = {}
         self.l1_ttl: Dict[str, float] = {}
-        # NOTE: Pass the actual Redis URL from environment variables here
-        self.redis = redis.from_url(redis_url) if REDIS_AVAILABLE and redis_url else None
+        self._redis_url = redis_url  # قد يكون None — يُحمَّل lazily
+        self._redis: Optional[Any] = None
+        self._redis_initialized = False
         self.stats = CacheStats()
-        self._lock = asyncio.Lock()
+        self._lock = asyncio.Lock() if self._is_in_loop() else None
+
+    def _is_in_loop(self) -> bool:
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
+    def _get_redis(self):
+        """Lazy init لـ Redis — يقرأ REDIS_URL من env إن لم يُمرَّر."""
+        if self._redis_initialized:
+            return self._redis
+        self._redis_initialized = True
+        if not REDIS_AVAILABLE:
+            return None
+        url = self._redis_url or os.getenv("REDIS_URL")
+        if not url:
+            log.info("core_cache: No REDIS_URL — using memory-only cache.")
+            return None
+        try:
+            self._redis = redis.from_url(url, decode_responses=False)
+            log.info(f"core_cache: Redis connected at {url[:30]}...")
+        except Exception as e:
+            log.warning(f"core_cache: Redis init failed: {e}")
+            self._redis = None
+        return self._redis
 
     async def get(self, key: str) -> Any:
-        # 1. Check L1 (Memory)
+        # L1
         if key in self.l1_cache:
             if time.time() < self.l1_ttl[key]:
                 self.stats.l1_hits += 1
                 return self.l1_cache[key]
             else:
-                del self.l1_cache[key] # Expired
+                del self.l1_cache[key]
 
-        # 2. Check L2 (Redis)
-        if self.redis:
+        # L2 Redis
+        r = self._get_redis()
+        if r:
             try:
-                data = await self.redis.get(key)
+                data = await r.get(key)
                 if data:
                     self.stats.l2_hits += 1
                     decoded = json.loads(data)
-                    # Populate L1 for next time (Hot Path)
-                    await self._set_l1(key, decoded, ttl=10) 
+                    self.l1_cache[key] = decoded
+                    self.l1_ttl[key] = time.time() + 10
                     return decoded
             except Exception as e:
-                log.warning(f"Redis L2 Error: {e}")
+                log.warning(f"Redis get error: {e}")
 
         self.stats.misses += 1
         return None
 
     async def set(self, key: str, value: Any, ttl: int = 60):
-        # Set L1
-        await self._set_l1(key, value, ttl)
-        # Set L2
-        if self.redis:
+        # L1
+        self.l1_cache[key] = value
+        self.l1_ttl[key] = time.time() + ttl
+        # L2
+        r = self._get_redis()
+        if r:
             try:
-                serialized = json.dumps(value, default=str)
-                await self.redis.setex(key, ttl, serialized)
+                await r.setex(key, ttl, json.dumps(value, default=str))
             except Exception as e:
-                log.warning(f"Redis Set Error: {e}")
+                log.warning(f"Redis set error: {e}")
 
-    async def _set_l1(self, key: str, value: Any, ttl: int):
-        async with self._lock:
-            self.l1_cache[key] = value
-            self.l1_ttl[key] = time.time() + ttl
+    async def delete(self, key: str):
+        self.l1_cache.pop(key, None)
+        self.l1_ttl.pop(key, None)
+        r = self._get_redis()
+        if r:
+            try:
+                await r.delete(key)
+            except Exception:
+                pass
 
-# 2. ✅ قاطع الدائرة المالية (Financial Circuit Breaker)
+
 class CircuitBreakerOpenError(Exception):
     pass
 
+
 class CircuitBreaker:
-    """
-    Protects the system from cascading failures (e.g., Telegram/Binance API down).
-    States: CLOSED (Normal) -> OPEN (Failing) -> HALF_OPEN (Testing)
-    """
     def __init__(self, name: str, failure_threshold: int = 5, recovery_timeout: int = 30):
         self.name = name
         self.failure_threshold = failure_threshold
@@ -102,17 +137,13 @@ class CircuitBreaker:
         if self.state == "OPEN":
             if time.time() - self.last_failure_time > self.recovery_timeout:
                 self.state = "HALF_OPEN"
-                log.info(f"Circuit {self.name} HALF_OPEN: Testing service recovery.")
             else:
-                raise CircuitBreakerOpenError(f"Circuit {self.name} is OPEN. Service unavailable.")
-
+                raise CircuitBreakerOpenError(f"Circuit {self.name} is OPEN.")
         try:
-            # Use asyncio.to_thread if the function is not async (e.g. DB access)
             if asyncio.iscoroutinefunction(func):
-                 result = await func(*args, **kwargs)
+                result = await func(*args, **kwargs)
             else:
-                 result = await asyncio.to_thread(func, *args, **kwargs)
-
+                result = await asyncio.to_thread(func, *args, **kwargs)
             if self.state == "HALF_OPEN":
                 self.reset()
             return result
@@ -125,36 +156,23 @@ class CircuitBreaker:
         self.last_failure_time = time.time()
         if self.failure_count >= self.failure_threshold:
             self.state = "OPEN"
-            log.critical(f"🚨 Circuit {self.name} OPENED after {self.failure_count} failures.")
+            log.critical(f"Circuit {self.name} OPENED after {self.failure_count} failures.")
 
     def reset(self):
         self.state = "CLOSED"
         self.failure_count = 0
         log.info(f"Circuit {self.name} CLOSED (Recovered).")
 
-# 3. ✅ خط المعالجة غير المتزامن (Async Pipeline)
+
 class AsyncPipeline:
-    """
-    Executes independent tasks in parallel for maximum throughput.
-    """
     @staticmethod
     async def execute_parallel(tasks: Dict[str, Callable]):
-        """
-        Input: {'user_data': get_user_callable, 'market_data': get_prices_callable}
-        Output: {'user_data': Result1, 'market_data': Result2}
-        """
         keys = list(tasks.keys())
-        # Ensure all callables are awaited if they are coroutines, or run in thread pool
-        coroutines = []
-        for func in tasks.values():
-            if asyncio.iscoroutinefunction(func):
-                coroutines.append(func())
-            else:
-                coroutines.append(asyncio.to_thread(func))
-        
-        # Run all concurrently
+        coroutines = [
+            func() if asyncio.iscoroutinefunction(func) else asyncio.to_thread(func)
+            for func in tasks.values()
+        ]
         results = await asyncio.gather(*coroutines, return_exceptions=True)
-        
         output = {}
         for i, key in enumerate(keys):
             if isinstance(results[i], Exception):
@@ -164,10 +182,10 @@ class AsyncPipeline:
                 output[key] = results[i]
         return output
 
-# --- Global Instances (Singleton Pattern) ---
-# NOTE: In a real app, pass the Redis URL from config (e.g. os.getenv('REDIS_URL'))
-core_cache = AdvancedCacheSystem() 
+
+# ✅ FIX: بدون redis_url — سيقرأ من REDIS_URL في .env عند أول استخدام
+core_cache = AdvancedCacheSystem()
 cb_telegram = CircuitBreaker("telegram_api", failure_threshold=3)
 cb_db = CircuitBreaker("database", failure_threshold=5)
 
-# --- END OF NEW FILE: src/capitalguard/infrastructure/core_engine.py ---
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
