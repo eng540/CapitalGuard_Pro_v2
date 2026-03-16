@@ -1,22 +1,36 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
 # File: src/capitalguard/application/services/alert_service.py
-# Version: v29.1-PRODUCTION
+# Version: v30.0-PARTITIONED
 #
-# ✅ إصلاحات v29.0 (محفوظة بالكامل):
-#   FIX-A: price_queue يُنشأ داخل _bg_runner() — لا خارجه
-#   FIX-B: threading.RLock يحمي active_triggers عبر الـ threads
-#   FIX-C: PriceStreamer يُبنى داخل _bg_runner() بعد إنشاء price_queue
+# ✅ THE UPGRADE — Partitioned Processing (معالجة مُقسَّمة لكل رمز):
 #
-# ✅ THE FIX v29.1 — تحسين _run_index_sync:
-#   كانت المزامنة الدورية كل 60 ثانية = polling مكثف بلا فائدة.
-#   السبب: الصفقات الجديدة تُضاف فوراً عبر add_trigger_data()
-#   من creation_service — لا حاجة لمزامنة متكررة.
+# المشكلة في v29:
+#   queue واحدة + معالج واحد sequential:
+#   BTC يضرب SL → يستغرق 1-2 ثانية (DB + Telegram)
+#   ETH/SOL/XRP تنتظر في الـ queue بلا داعٍ
 #
-#   الإصلاح: interval_seconds = 600 (10 دقائق)
-#   الدور: شبكة أمان فقط لتصحيح أي تعارض في الذاكرة
-#          وليس آلية الاكتشاف الرئيسية.
+# الهيكل الجديد — طبقتان:
 #
-# Reviewed-by: Guardian Protocol v1 — 2026-03-16
+#   الطبقة 1: price_queue (Router)
+#     تستقبل كل التيكات من PriceStreamer
+#     تُوجِّهها فوراً لـ queue الرمز المناسب
+#     لا تقوم بأي معالجة — router فقط
+#
+#   الطبقة 2: _symbol_queues[key] + _symbol_workers[key]
+#     queue منفصلة لكل رمز: "BTCUSDT:Futures", "ETHUSDT:Futures", ...
+#     worker منفصل لكل رمز يعمل باستقلالية تامة
+#     BTC يضرب SL؟ ETH وSOL لا يتأثران أبداً
+#
+# النتيجة:
+#   قبل: 1 queue × N رمز = رمز واحد يحجب الباقين
+#   بعد: N queue × N worker = كل رمز في مساره المستقل
+#
+# ✅ محفوظ من v29.0:
+#   FIX-A, FIX-B, FIX-C (price_queue, triggers_lock, PriceStreamer)
+#   كل منطق evaluation (SL/TP/ENTRY) بدون تغيير
+#   PriceStreamer interface بدون تغيير
+#
+# Reviewed-by: Guardian Protocol v1 — 2026-03-17
 
 import logging
 import asyncio
@@ -50,6 +64,14 @@ if False:
 
 log = logging.getLogger(__name__)
 
+# ── Constants ──────────────────────────────────────────────────────────────
+# حجم الـ routing queue (الطبقة 1)
+ROUTER_QUEUE_SIZE = 5_000
+
+# حجم كل symbol queue (الطبقة 2)
+# كل رمز يحصل على تيك واحد في الثانية → 10 تيكات كافية
+SYMBOL_QUEUE_SIZE = 10
+
 
 def _to_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
     if isinstance(value, Decimal):
@@ -65,20 +87,19 @@ def _to_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
 
 class AlertService:
     """
-    AlertService v29.1 — إشعارات القناة + تتبع دورة حياة الصفقات.
+    AlertService v30 — Partitioned Processing.
 
-    Pipeline:
-      Binance WS → PriceStreamer → price_queue
-        → _process_queue() → StrategyEngine / _evaluate_core_triggers()
-        → LifecycleService → DB update + notify_card_update()
-        → TelegramNotifier.edit_recommendation_card_by_ids()
-        → القناة ترى التحديث
-
-    اكتشاف الصفقات الجديدة:
-      المسار الرئيسي (فوري):
-        creation_service → add_trigger_data() → active_triggers
-      شبكة الأمان (كل 10 دقائق):
-        _run_index_sync() → build_triggers_index() من DB
+    Architecture:
+      Binance WS → PriceStreamer → price_queue (Router)
+          ↓
+      _route_ticks() → symbol_queues["BTCUSDT:Futures"]
+                     → symbol_queues["ETHUSDT:Futures"]
+                     → symbol_queues["SOLUSDT:Futures"]
+          ↓              ↓              ↓
+      worker_BTC     worker_ETH     worker_SOL
+      (مستقل)        (مستقل)        (مستقل)
+          ↓
+      lifecycle → DB + Telegram
     """
 
     def __init__(
@@ -94,32 +115,37 @@ class AlertService:
         self.repo = repo
         self.strategy_engine = strategy_engine
 
-        # ✅ FIX-C: نحتفظ بـ streamer المُمرَّر ونُنشئه داخل _bg_runner إن لم يكن
         self._streamer_arg = streamer
 
-        # ✅ FIX-A: price_queue يُنشأ داخل _bg_runner() — لا خارجه
+        # ── Tier 1: Router Queue ───────────────────────────────────────────
+        # تستقبل كل التيكات — PriceStreamer يكتب هنا (interface بدون تغيير)
         self.price_queue: Optional[asyncio.Queue] = None
 
-        # ✅ FIX-B: threading.RLock لحماية active_triggers من أي thread
-        #           asyncio.Lock للـ bg loop فقط، يُنشأ داخل _bg_runner()
+        # ── Tier 2: Per-Symbol Queues + Workers ────────────────────────────
+        # يُنشأ ديناميكياً عند أول تيك لكل رمز
+        self._symbol_queues: Dict[str, asyncio.Queue] = {}
+        self._symbol_workers: Dict[str, asyncio.Task] = {}
+
+        # ── Thread Safety ─────────────────────────────────────────────────
         self._sync_lock = threading.RLock()
         self._triggers_lock: Optional[asyncio.Lock] = None
+        self._workers_lock: Optional[asyncio.Lock] = None  # لحماية _symbol_workers
 
-        # البيانات المشتركة (محمية بـ _sync_lock)
+        # ── Triggers Index ────────────────────────────────────────────────
         self.active_triggers: Dict[str, List[Dict[str, Any]]] = {}
 
-        self._processing_task: Optional[asyncio.Task] = None
+        # ── Tasks ─────────────────────────────────────────────────────────
+        self._routing_task: Optional[asyncio.Task] = None    # Router (Tier 1)
         self._index_sync_task: Optional[asyncio.Task] = None
         self._bg_thread: Optional[threading.Thread] = None
         self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
         self.streamer: Optional[PriceStreamer] = None
 
-    # ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
     # Background runner
-    # ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def start(self):
-        """يبدأ bg thread مع event loop خاص به."""
+    def start(self) -> None:
         if self._bg_thread and self._bg_thread.is_alive():
             log.warning("AlertService already running.")
             return
@@ -130,24 +156,25 @@ class AlertService:
                 self._bg_loop = loop
                 asyncio.set_event_loop(loop)
 
-                # ✅ FIX-A: إنشاء asyncio primitives داخل الـ loop
-                self.price_queue = asyncio.Queue()
+                # ── Tier 1: Router Queue ───────────────────────────────────
+                self.price_queue = asyncio.Queue(maxsize=ROUTER_QUEUE_SIZE)
                 self._triggers_lock = asyncio.Lock()
-                log.info("AlertService: price_queue and _triggers_lock created.")
+                self._workers_lock = asyncio.Lock()
+                log.info("AlertService: queues and locks created.")
 
-                # ✅ FIX-C: بناء PriceStreamer الآن بعد وجود price_queue
+                # ── PriceStreamer ──────────────────────────────────────────
                 if self._streamer_arg is not None:
                     self.streamer = self._streamer_arg
                 else:
                     self.streamer = PriceStreamer(self.price_queue, self.repo)
                     log.info("AlertService: PriceStreamer created.")
 
-                # بدء مهام المعالجة
-                self._processing_task = loop.create_task(self._process_queue())
-                # ✅ v29.1: شبكة أمان كل 10 دقائق فقط
+                # ── Tasks ──────────────────────────────────────────────────
+                # Router يقرأ من price_queue ويُوجِّه لـ symbol queues
+                self._routing_task   = loop.create_task(self._route_ticks())
                 self._index_sync_task = loop.create_task(self._run_index_sync())
 
-                # بدء PriceStreamer
+                # ── PriceStreamer start ────────────────────────────────────
                 try:
                     self.streamer.start(loop=loop)
                     log.info("AlertService: PriceStreamer started.")
@@ -156,7 +183,7 @@ class AlertService:
                 except Exception as e:
                     log.error("AlertService: PriceStreamer start failed: %s", e)
 
-                # نقل الـ triggers المُحمَّلة مسبقاً إلى الـ bg loop
+                # ── نقل triggers مُحمَّلة مسبقاً ──────────────────────────
                 if self.active_triggers:
                     loaded = sum(len(v) for v in self.active_triggers.values())
                     log.info(
@@ -168,6 +195,10 @@ class AlertService:
                             if t.get("item_type") == "recommendation":
                                 self.strategy_engine.initialize_state_for_recommendation(t)
 
+                log.info(
+                    "AlertService v30 started — "
+                    "Partitioned Processing active."
+                )
                 loop.run_forever()
 
             except Exception:
@@ -185,9 +216,264 @@ class AlertService:
         self._bg_thread.start()
         log.info("AlertService background thread started.")
 
-    # ─────────────────────────────────────────────────────────────
-    # Index builders — thread-safe (يعمل قبل وبعد start())
-    # ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Tier 1 — Router
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _route_ticks(self) -> None:
+        """
+        الطبقة 1: يقرأ من price_queue ويُوجِّه كل تيك
+        لـ queue الرمز المناسب في الطبقة 2.
+        لا يقوم بأي معالجة — router خالص.
+        """
+        log.info("AlertService: Tick Router started.")
+        while True:
+            try:
+                payload = await self.price_queue.get()
+
+                # ── استخراج الرمز ──────────────────────────────────────
+                if isinstance(payload, dict):
+                    symbol = payload.get("symbol", "")
+                    market = payload.get("market", "Futures")
+                elif isinstance(payload, (list, tuple)) and len(payload) >= 2:
+                    symbol = payload[0]
+                    market = payload[1] if len(payload) > 1 else "Futures"
+                else:
+                    self.price_queue.task_done()
+                    continue
+
+                key = f"{(symbol or '').upper()}:{market}"
+
+                # ── تحديث cache للـ WebApp (هنا في Router لا في Worker) ──
+                try:
+                    from capitalguard.infrastructure.core_engine import core_cache
+                    close_raw = (
+                        payload.get("close") if isinstance(payload, dict)
+                        else (payload[4] if len(payload) > 4 else payload[3])
+                    )
+                    if close_raw:
+                        await core_cache.set(
+                            f"price:FUTURES:{symbol}", float(close_raw), ttl=60
+                        )
+                        await core_cache.set(
+                            f"price:SPOT:{symbol}", float(close_raw), ttl=60
+                        )
+                except Exception:
+                    pass
+
+                # ── تحقق من وجود triggers لهذا الرمز ─────────────────
+                async with self._triggers_lock:
+                    has_triggers = bool(self.active_triggers.get(key))
+
+                if not has_triggers:
+                    self.price_queue.task_done()
+                    continue
+
+                # ── توجيه للـ Symbol Worker ────────────────────────────
+                await self._dispatch_to_symbol(key, payload)
+                self.price_queue.task_done()
+
+            except asyncio.CancelledError:
+                log.info("AlertService: Tick Router cancelled.")
+                break
+            except Exception:
+                log.exception("AlertService: Router unexpected error.")
+
+    async def _dispatch_to_symbol(self, key: str, payload: Any) -> None:
+        """
+        يُرسل التيك لـ queue الرمز.
+        إذا لم يوجد worker → يُنشئه.
+        إذا امتلأ الـ queue → يتجاهل التيك القديم ويضع الجديد.
+        """
+        async with self._workers_lock:
+            # إنشاء queue + worker عند الحاجة
+            if key not in self._symbol_queues:
+                q = asyncio.Queue(maxsize=SYMBOL_QUEUE_SIZE)
+                self._symbol_queues[key] = q
+                task = asyncio.ensure_future(self._symbol_worker(key, q))
+                self._symbol_workers[key] = task
+                log.debug("AlertService: created worker for %s", key)
+
+            q = self._symbol_queues[key]
+
+        # ── وضع التيك — non-blocking ────────────────────────────────────
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            # الـ queue ممتلئة → تجاهل أقدم تيك واستبدله بالجديد
+            # التيك القديم بيانات منتهية الصلاحية — الجديد أدق
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                q.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass  # لا يحدث عملياً
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Tier 2 — Per-Symbol Worker
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _symbol_worker(self, key: str, queue: asyncio.Queue) -> None:
+        """
+        الطبقة 2: معالج مستقل لرمز واحد.
+        BTC worker و ETH worker يعملان بالتوازي — لا يحجب أحدهما الآخر.
+        """
+        log.debug("AlertService: worker started for %s", key)
+        while True:
+            try:
+                payload = await queue.get()
+
+                # ── استخراج بيانات التيك ──────────────────────────────
+                if isinstance(payload, (list, tuple)):
+                    if len(payload) == 4:
+                        symbol, market, low_raw, high_raw = payload
+                        close_raw = high_raw
+                    elif len(payload) >= 5:
+                        symbol, market, low_raw, high_raw, close_raw = payload[:5]
+                    else:
+                        queue.task_done()
+                        continue
+                elif isinstance(payload, dict):
+                    symbol    = payload.get("symbol")
+                    market    = payload.get("market", "Futures")
+                    low_raw   = payload.get("low")
+                    high_raw  = payload.get("high")
+                    close_raw = payload.get("close", high_raw)
+                else:
+                    queue.task_done()
+                    continue
+
+                try:
+                    low_price   = Decimal(str(low_raw))
+                    high_price  = Decimal(str(high_raw))
+                    close_price = Decimal(str(close_raw))
+                except Exception:
+                    queue.task_done()
+                    continue
+
+                tick = {
+                    "high":  high_price,
+                    "low":   low_price,
+                    "close": close_price,
+                    "ts":    int(time.time()),
+                }
+
+                # ── snapshot triggers لهذا الرمز ──────────────────────
+                async with self._triggers_lock:
+                    triggers_for_key = list(self.active_triggers.get(key, []))
+
+                if not triggers_for_key:
+                    # لا توصيات نشطة → نظّف الـ worker
+                    queue.task_done()
+                    await self._cleanup_worker(key)
+                    return
+
+                # ── Evaluation ────────────────────────────────────────
+                rec_triggers   = [t for t in triggers_for_key if t.get("item_type") == "recommendation"]
+                other_triggers = [t for t in triggers_for_key if t.get("item_type") != "recommendation"]
+
+                strategy_actions: List[BaseAction] = []
+                if rec_triggers:
+                    try:
+                        batch = await self.strategy_engine.evaluate_batch(rec_triggers, tick)
+                        if batch:
+                            strategy_actions.extend(batch)
+                    except Exception:
+                        log.exception("evaluate_batch failed key=%s", key)
+
+                for trig in other_triggers:
+                    try:
+                        acts = await self.strategy_engine.evaluate(trig, tick)
+                        if acts:
+                            strategy_actions.extend(acts)
+                    except Exception:
+                        log.exception("evaluate failed id=%s", trig.get("id"))
+
+                core_actions: List[BaseAction] = []
+                for trig in triggers_for_key:
+                    try:
+                        acts = await self._evaluate_core_triggers(trig, high_price, low_price)
+                        if acts:
+                            core_actions.extend(acts)
+                    except Exception:
+                        log.exception("core_evaluate failed id=%s", trig.get("id"))
+
+                all_actions = strategy_actions + core_actions
+
+                if not all_actions:
+                    queue.task_done()
+                    continue
+
+                # ── تنفيذ Actions ─────────────────────────────────────
+                close_action = next(
+                    (a for a in all_actions if isinstance(a, CloseAction)), None
+                )
+                if close_action:
+                    try:
+                        await self.lifecycle_service.close_recommendation_async(
+                            rec_id=close_action.rec_id,
+                            user_id=self._find_user_id_for_rec(
+                                close_action.rec_id, triggers_for_key
+                            ),
+                            exit_price=close_action.price,
+                            reason=getattr(close_action, "reason", "CLOSE"),
+                            rebuild_alerts=False,
+                        )
+                    except Exception:
+                        log.exception("close_recommendation_async failed rec=%s", close_action.rec_id)
+                    try:
+                        self.strategy_engine.clear_state(close_action.rec_id)
+                    except Exception:
+                        pass
+                    queue.task_done()
+                    continue
+
+                for act in all_actions:
+                    try:
+                        if isinstance(act, MoveSLAction):
+                            await self.lifecycle_service.update_sl_for_user_async(
+                                rec_id=act.rec_id,
+                                user_id=self._find_user_id_for_rec(
+                                    act.rec_id, triggers_for_key
+                                ),
+                                new_sl=act.new_sl,
+                            )
+                        elif isinstance(act, AlertAction):
+                            if hasattr(self.lifecycle_service, "send_alert_async"):
+                                try:
+                                    await self.lifecycle_service.send_alert_async(
+                                        rec_id=act.rec_id,
+                                        level=getattr(act, "level", "info"),
+                                        message=getattr(act, "message", ""),
+                                        metadata=getattr(act, "metadata", None),
+                                    )
+                                except Exception:
+                                    pass
+                    except Exception:
+                        log.exception("Action %s failed rec=%s", type(act), getattr(act, "rec_id", None))
+
+                queue.task_done()
+
+            except asyncio.CancelledError:
+                log.debug("AlertService: worker cancelled for %s", key)
+                break
+            except Exception:
+                log.exception("AlertService: unexpected error in worker for %s", key)
+
+    async def _cleanup_worker(self, key: str) -> None:
+        """يُزيل worker رمز ليس له triggers نشطة."""
+        async with self._workers_lock:
+            self._symbol_queues.pop(key, None)
+            task = self._symbol_workers.pop(key, None)
+            if task and not task.done():
+                task.cancel()
+        log.debug("AlertService: worker cleaned up for %s", key)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Index builders — thread-safe
+    # ─────────────────────────────────────────────────────────────────────────
 
     def build_trigger_data_from_orm(
         self, item_orm: Union[Recommendation, UserTrade]
@@ -197,7 +483,7 @@ class AlertService:
             if isinstance(item_orm, Recommendation):
                 rec = item_orm
                 entry_dec = _to_decimal(rec.entry)
-                sl_dec = _to_decimal(rec.stop_loss)
+                sl_dec    = _to_decimal(rec.stop_loss)
                 targets_list = [
                     {
                         "price": _to_decimal(t.get("price")),
@@ -224,8 +510,7 @@ class AlertService:
                     "order_type": rec.order_type,
                     "market": rec.market,
                     "processed_events": {
-                        e.event_type
-                        for e in (getattr(rec, "events", []) or [])
+                        e.event_type for e in (getattr(rec, "events", []) or [])
                     },
                     "profit_stop_mode": getattr(rec, "profit_stop_mode", "NONE"),
                     "profit_stop_price": _to_decimal(
@@ -241,7 +526,7 @@ class AlertService:
             elif isinstance(item_orm, UserTrade):
                 trade = item_orm
                 entry_dec = _to_decimal(trade.entry)
-                sl_dec = _to_decimal(trade.stop_loss)
+                sl_dec    = _to_decimal(trade.stop_loss)
                 targets_list = [
                     {
                         "price": _to_decimal(t.get("price")),
@@ -268,8 +553,7 @@ class AlertService:
                     "order_type": OrderTypeEnum.LIMIT,
                     "market": "Futures",
                     "processed_events": {
-                        e.event_type
-                        for e in (getattr(trade, "events", []) or [])
+                        e.event_type for e in (getattr(trade, "events", []) or [])
                     },
                     "profit_stop_mode": "NONE",
                     "profit_stop_price": None,
@@ -281,16 +565,12 @@ class AlertService:
             log.exception("Failed to build trigger data from ORM.")
         return None
 
-    async def add_trigger_data(self, item_data: Dict[str, Any]):
-        """
-        ✅ FIX-B: يعمل من أي thread.
-        المسار الرئيسي لإضافة صفقة جديدة — فوري بدون انتظار.
-        """
+    async def add_trigger_data(self, item_data: Dict[str, Any]) -> None:
         if not item_data:
             return
-        item_id = item_data.get("id")
+        item_id   = item_data.get("id")
         item_type = item_data.get("item_type")
-        asset = item_data.get("asset")
+        asset     = item_data.get("asset")
         if not asset:
             log.error("add_trigger_data: missing asset for item %s", item_id)
             return
@@ -307,15 +587,13 @@ class AlertService:
             log.exception("add_trigger_data failed for %s", item_id)
 
     def _add_trigger_unsafe(self, key, item_data, item_id, item_type):
-        """داخلي — لا يستخدم lock، الـ caller مسؤول."""
         lst = self.active_triggers.setdefault(key, [])
         if not any(t["id"] == item_id and t["item_type"] == item_type for t in lst):
             lst.append(item_data)
             if item_type == "recommendation":
                 self.strategy_engine.initialize_state_for_recommendation(item_data)
 
-    async def remove_single_trigger(self, item_type: str, item_id: int):
-        """✅ FIX-B: يعمل من أي thread."""
+    async def remove_single_trigger(self, item_type: str, item_id: int) -> None:
         try:
             if self._triggers_lock is not None:
                 async with self._triggers_lock:
@@ -341,11 +619,7 @@ class AlertService:
                     del self.active_triggers[key]
                 break
 
-    async def build_triggers_index(self):
-        """
-        ✅ FIX-B: يعمل قبل start() وبعده.
-        يُبني الـ index من DB — يُستدعى عند startup وكل 10 دقائق كشبكة أمان.
-        """
+    async def build_triggers_index(self) -> None:
         log.info("AlertService: Building triggers index from DB...")
         try:
             with session_scope() as session:
@@ -376,11 +650,11 @@ class AlertService:
 
         total = sum(len(v) for v in new_index.values())
         log.info(
-            "AlertService: Trigger index built — %d symbols, %d triggers.",
+            "AlertService: index built — %d symbols, %d triggers.",
             len(new_index), total,
         )
 
-    def _apply_new_index(self, new_index):
+    def _apply_new_index(self, new_index: Dict) -> None:
         self.active_triggers = new_index
         self.strategy_engine.clear_all_states()
         for triggers in new_index.values():
@@ -388,16 +662,8 @@ class AlertService:
                 if t.get("item_type") == "recommendation":
                     self.strategy_engine.initialize_state_for_recommendation(t)
 
-    async def _run_index_sync(self, interval_seconds: int = 600):
-        """
-        ✅ v29.1: شبكة أمان دورية — كل 10 دقائق فقط.
-
-        الصفقات الجديدة تصل فورياً عبر add_trigger_data() من creation_service.
-        هذه الدالة دورها الوحيد: تصحيح أي تعارض في الذاكرة
-        ولا علاقة لها باكتشاف الصفقات الجديدة.
-
-        (كانت 60 ثانية — خُفِّضت لتوفير الموارد)
-        """
+    async def _run_index_sync(self, interval_seconds: int = 600) -> None:
+        """شبكة أمان — كل 10 دقائق فقط."""
         while True:
             await asyncio.sleep(interval_seconds)
             try:
@@ -405,9 +671,9 @@ class AlertService:
             except Exception:
                 log.exception("Index sync iteration failed.")
 
-    # ─────────────────────────────────────────────────────────────
-    # Core evaluation helpers
-    # ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Core evaluation helpers (بدون تغيير)
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _is_price_condition_met(
         self,
@@ -420,19 +686,13 @@ class AlertService:
         side_upper = (side or "").upper()
         cond = (condition_type or "").upper()
         if side_upper == "LONG":
-            if cond.startswith("TP"):
-                return high_price >= target_price
-            if cond == "SL":
-                return low_price <= target_price
-            if cond == "ENTRY":
-                return low_price <= target_price
+            if cond.startswith("TP"):  return high_price >= target_price
+            if cond == "SL":           return low_price  <= target_price
+            if cond == "ENTRY":        return low_price  <= target_price
         elif side_upper == "SHORT":
-            if cond.startswith("TP"):
-                return low_price <= target_price
-            if cond == "SL":
-                return high_price >= target_price
-            if cond == "ENTRY":
-                return high_price >= target_price
+            if cond.startswith("TP"):  return low_price  <= target_price
+            if cond == "SL":           return high_price >= target_price
+            if cond == "ENTRY":        return high_price >= target_price
         return False
 
     async def _evaluate_core_triggers(
@@ -442,17 +702,17 @@ class AlertService:
         low_price: Decimal,
     ) -> List[BaseAction]:
         actions: List[BaseAction] = []
-        item_id = trigger.get("id")
-        status = trigger.get("status")
-        side = trigger.get("side")
-        item_type = trigger.get("item_type", "recommendation")
+        item_id         = trigger.get("id")
+        status          = trigger.get("status")
+        side            = trigger.get("side")
+        item_type       = trigger.get("item_type", "recommendation")
         processed_events = trigger.get("processed_events", set())
 
         try:
             if item_type == "recommendation":
                 if status == RecommendationStatusEnum.PENDING:
                     entry_price = trigger.get("entry")
-                    sl_price = trigger.get("stop_loss")
+                    sl_price    = trigger.get("stop_loss")
                     if "INVALIDATED" not in processed_events and self._is_price_condition_met(
                         side, low_price, high_price, sl_price, "SL"
                     ):
@@ -465,35 +725,21 @@ class AlertService:
                 elif status == RecommendationStatusEnum.ACTIVE:
                     sl_price = trigger.get("stop_loss")
                     if "SL_HIT" not in processed_events and "FINAL_CLOSE" not in processed_events:
-                        if self._is_price_condition_met(
-                            side, low_price, high_price, sl_price, "SL"
-                        ):
-                            actions.append(
-                                CloseAction(
-                                    rec_id=item_id, price=sl_price, reason="SL_HIT"
-                                )
-                            )
+                        if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
+                            actions.append(CloseAction(rec_id=item_id, price=sl_price, reason="SL_HIT"))
                             return actions
 
                     for i, target in enumerate(trigger.get("targets", []) or [], 1):
-                        event_name = f"TP{i}_HIT"
-                        if event_name in processed_events:
+                        if f"TP{i}_HIT" in processed_events:
                             continue
                         tp_price = Decimal(str(target.get("price")))
-                        if self._is_price_condition_met(
-                            side, low_price, high_price, tp_price, "TP"
-                        ):
-                            await self.lifecycle_service.process_tp_hit_event(
-                                item_id, i, tp_price
-                            )
+                        if self._is_price_condition_met(side, low_price, high_price, tp_price, "TP"):
+                            await self.lifecycle_service.process_tp_hit_event(item_id, i, tp_price)
 
             elif item_type == "user_trade":
-                if status in (
-                    UserTradeStatusEnum.WATCHLIST,
-                    UserTradeStatusEnum.PENDING_ACTIVATION,
-                ):
-                    entry_price = trigger.get("entry")
-                    sl_price = trigger.get("stop_loss")
+                if status in (UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION):
+                    entry_price  = trigger.get("entry")
+                    sl_price     = trigger.get("stop_loss")
                     published_at = trigger.get("original_published_at")
                     if published_at and datetime.now(timezone.utc) < published_at:
                         return actions
@@ -501,206 +747,34 @@ class AlertService:
                     if "INVALIDATED" not in processed_events and self._is_price_condition_met(
                         side, low_price, high_price, sl_price, "SL"
                     ):
-                        await self.lifecycle_service.process_user_trade_invalidation_event(
-                            item_id, sl_price
-                        )
+                        await self.lifecycle_service.process_user_trade_invalidation_event(item_id, sl_price)
                     elif "ACTIVATED" not in processed_events and self._is_price_condition_met(
                         side, low_price, high_price, entry_price, "ENTRY"
                     ):
-                        await self.lifecycle_service.process_user_trade_activation_event(
-                            item_id
-                        )
+                        await self.lifecycle_service.process_user_trade_activation_event(item_id)
 
                 elif status == UserTradeStatusEnum.ACTIVATED:
                     sl_price = trigger.get("stop_loss")
                     if "SL_HIT" not in processed_events and "FINAL_CLOSE" not in processed_events:
-                        if self._is_price_condition_met(
-                            side, low_price, high_price, sl_price, "SL"
-                        ):
-                            await self.lifecycle_service.process_user_trade_sl_hit_event(
-                                item_id, sl_price
-                            )
+                        if self._is_price_condition_met(side, low_price, high_price, sl_price, "SL"):
+                            await self.lifecycle_service.process_user_trade_sl_hit_event(item_id, sl_price)
                             return actions
 
                     for i, target in enumerate(trigger.get("targets", []) or [], 1):
-                        event_name = f"TP{i}_HIT"
-                        if event_name in processed_events:
+                        if f"TP{i}_HIT" in processed_events:
                             continue
                         tp_price = Decimal(str(target.get("price")))
-                        if self._is_price_condition_met(
-                            side, low_price, high_price, tp_price, "TP"
-                        ):
-                            await self.lifecycle_service.process_user_trade_tp_hit_event(
-                                item_id, i, tp_price
-                            )
+                        if self._is_price_condition_met(side, low_price, high_price, tp_price, "TP"):
+                            await self.lifecycle_service.process_user_trade_tp_hit_event(item_id, i, tp_price)
 
         except Exception:
-            log.exception(
-                "Error evaluating core trigger for %s id=%s", item_type, item_id
-            )
+            log.exception("Error evaluating trigger for %s id=%s", item_type, item_id)
 
         return actions
 
-    # ─────────────────────────────────────────────────────────────
-    # Main queue processor
-    # ─────────────────────────────────────────────────────────────
-
-    async def _process_queue(self):
-        log.info("AlertService: Queue processor started — waiting for price ticks.")
-        while True:
-            try:
-                payload = await self.price_queue.get()
-
-                if isinstance(payload, (list, tuple)):
-                    if len(payload) == 4:
-                        symbol, market, low_raw, high_raw = payload
-                        close_raw = high_raw
-                    elif len(payload) >= 5:
-                        symbol, market, low_raw, high_raw, close_raw = payload[:5]
-                    else:
-                        self.price_queue.task_done()
-                        continue
-                elif isinstance(payload, dict):
-                    symbol    = payload.get("symbol")
-                    market    = payload.get("market", "Futures")
-                    low_raw   = payload.get("low")
-                    high_raw  = payload.get("high")
-                    close_raw = payload.get("close", high_raw)
-                else:
-                    self.price_queue.task_done()
-                    continue
-
-                try:
-                    low_price   = Decimal(str(low_raw))
-                    high_price  = Decimal(str(high_raw))
-                    close_price = Decimal(str(close_raw))
-                except Exception:
-                    self.price_queue.task_done()
-                    continue
-
-                tick = {
-                    "high":  high_price,
-                    "low":   low_price,
-                    "close": close_price,
-                    "ts":    int(time.time()),
-                }
-                key = f"{(symbol or '').upper()}:{market}"
-
-                async with self._triggers_lock:
-                    triggers_for_key = list(self.active_triggers.get(key, []))
-
-                if not triggers_for_key:
-                    self.price_queue.task_done()
-                    continue
-
-                # تحديث كاش الأسعار للـ WebApp
-                try:
-                    from capitalguard.infrastructure.core_engine import core_cache
-                    await core_cache.set(f"price:FUTURES:{symbol}", float(close_price), ttl=60)
-                    await core_cache.set(f"price:SPOT:{symbol}",    float(close_price), ttl=60)
-                except Exception:
-                    pass
-
-                rec_triggers   = [t for t in triggers_for_key if t.get("item_type") == "recommendation"]
-                other_triggers = [t for t in triggers_for_key if t.get("item_type") != "recommendation"]
-
-                strategy_actions: List[BaseAction] = []
-                if rec_triggers:
-                    try:
-                        batch = await self.strategy_engine.evaluate_batch(rec_triggers, tick)
-                        if batch:
-                            strategy_actions.extend(batch)
-                    except Exception:
-                        log.exception("StrategyEngine.evaluate_batch failed key=%s", key)
-
-                for trig in other_triggers:
-                    try:
-                        acts = await self.strategy_engine.evaluate(trig, tick)
-                        if acts:
-                            strategy_actions.extend(acts)
-                    except Exception:
-                        log.exception("StrategyEngine.evaluate failed id=%s", trig.get("id"))
-
-                core_actions: List[BaseAction] = []
-                for trig in triggers_for_key:
-                    try:
-                        acts = await self._evaluate_core_triggers(trig, high_price, low_price)
-                        if acts:
-                            core_actions.extend(acts)
-                    except Exception:
-                        log.exception("Core evaluate failed id=%s", trig.get("id"))
-
-                all_actions = strategy_actions + core_actions
-
-                if not all_actions:
-                    self.price_queue.task_done()
-                    continue
-
-                close_action = next(
-                    (a for a in all_actions if isinstance(a, CloseAction)), None
-                )
-                if close_action:
-                    try:
-                        await self.lifecycle_service.close_recommendation_async(
-                            rec_id=close_action.rec_id,
-                            user_id=self._find_user_id_for_rec(
-                                close_action.rec_id, triggers_for_key
-                            ),
-                            exit_price=close_action.price,
-                            reason=getattr(close_action, "reason", "CLOSE"),
-                            rebuild_alerts=False,
-                        )
-                    except Exception:
-                        log.exception(
-                            "close_recommendation_async failed rec=%s",
-                            close_action.rec_id,
-                        )
-                    try:
-                        self.strategy_engine.clear_state(close_action.rec_id)
-                    except Exception:
-                        pass
-                    self.price_queue.task_done()
-                    continue
-
-                for act in all_actions:
-                    try:
-                        if isinstance(act, MoveSLAction):
-                            await self.lifecycle_service.update_sl_for_user_async(
-                                rec_id=act.rec_id,
-                                user_id=self._find_user_id_for_rec(
-                                    act.rec_id, triggers_for_key
-                                ),
-                                new_sl=act.new_sl,
-                            )
-                        elif isinstance(act, AlertAction):
-                            if hasattr(self.lifecycle_service, "send_alert_async"):
-                                try:
-                                    await self.lifecycle_service.send_alert_async(
-                                        rec_id=act.rec_id,
-                                        level=getattr(act, "level", "info"),
-                                        message=getattr(act, "message", ""),
-                                        metadata=getattr(act, "metadata", None),
-                                    )
-                                except Exception:
-                                    pass
-                    except Exception:
-                        log.exception(
-                            "Action %s failed rec=%s",
-                            type(act),
-                            getattr(act, "rec_id", None),
-                        )
-
-                self.price_queue.task_done()
-
-            except asyncio.CancelledError:
-                log.info("Queue processor cancelled.")
-                break
-            except Exception:
-                log.exception("Unexpected error in queue processor.")
-
-    # ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
     # Utility
-    # ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _find_user_id_for_rec(
         self, rec_id: int, trig_list: List[Dict[str, Any]]
@@ -710,15 +784,20 @@ class AlertService:
                 return t.get("user_id")
         return None
 
-    def stop(self):
+    def stop(self) -> None:
         try:
             if self.streamer and hasattr(self.streamer, "stop"):
                 self.streamer.stop()
             if self._bg_loop:
-                if self._processing_task:
-                    self._bg_loop.call_soon_threadsafe(self._processing_task.cancel)
+                # إلغاء Router
+                if self._routing_task:
+                    self._bg_loop.call_soon_threadsafe(self._routing_task.cancel)
                 if self._index_sync_task:
                     self._bg_loop.call_soon_threadsafe(self._index_sync_task.cancel)
+                # إلغاء كل symbol workers
+                for task in self._symbol_workers.values():
+                    if not task.done():
+                        self._bg_loop.call_soon_threadsafe(task.cancel)
                 self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
             if self._bg_thread:
                 self._bg_thread.join(timeout=5.0)
