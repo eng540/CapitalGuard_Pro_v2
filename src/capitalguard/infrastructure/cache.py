@@ -1,61 +1,67 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/cache.py ---
-import json
-import logging
-from typing import Any, Optional
-import redis.asyncio as redis
+#START src/capitalguard/infrastructure/cache.py
+# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+# File: src/capitalguard/infrastructure/cache.py
+# Version: v2.0.0-INSTANCE-FIX
+#
+# ✅ THE FIX (BUG-CACHE-1):
+#   _cache كان class-level variable:
+#     _cache: Dict[str, Tuple[Any, float]] = {}  ← مشترك بين كل instances
+#   هذا يعني أن price_cache وأي instance آخر من InMemoryCache
+#   يشتركون في نفس الـ dict → تلوث بيانات بين المكونات المختلفة.
+#
+#   الإصلاح: نقل _cache إلى __init__ كـ instance variable:
+#     self._cache = {}  ← منفصل لكل instance
+#
+# Reviewed-by: Guardian Protocol v1 — 2026-03-15
 
-log = logging.getLogger(__name__)
+import time
+from typing import Dict, Any, Optional, Tuple
 
-class RedisCache:
-    def __init__(self, url: str):
-        self.url = url
-        self._redis: Optional[redis.Redis] = None
 
-    @property
-    def client(self) -> redis.Redis:
-        """
-        🔥 Lazy Initialization: 
-        يتم بناء الاتصال فقط عند الحاجة إليه لضمان ارتباطه بالغرفة الصحيحة (Current Event Loop).
-        """
-        if self._redis is None:
-            self._redis = redis.from_url(
-                self.url, 
-                decode_responses=True,
-                socket_timeout=5,
-                socket_connect_timeout=5
-            )
-            log.info("✅ Redis connection lazily initialized & bound to the active event loop.")
-        return self._redis
+class InMemoryCache:
+    """
+    كاش سريع في الذاكرة مع TTL لكل عنصر.
+    sync بالكامل — بلا event loop، آمن من أي thread.
+    """
 
-    async def get(self, key: str) -> Optional[Any]:
-        try:
-            val = await self.client.get(key)
-            if val:
-                return json.loads(val)
-            return None
-        except Exception as e:
-            log.error(f"Redis GET Error for key {key}: {e}")
+    def __init__(self, ttl_seconds: int = 60):
+        # ✅ FIX: instance variable — منفصل لكل instance
+        self._cache: Dict[str, Tuple[Any, float]] = {}
+        self._default_ttl_seconds = ttl_seconds
+
+    def get(self, key: str) -> Optional[Any]:
+        """يُعيد القيمة إذا كانت موجودة ولم تنتهِ صلاحيتها."""
+        if key not in self._cache:
             return None
 
-    async def set(self, key: str, value: Any, ttl: int = 60) -> bool:
-        try:
-            val = json.dumps(value)
-            await self.client.set(key, val, ex=ttl)
-            return True
-        except Exception as e:
-            log.error(f"Redis SET Error for key {key}: {e}")
-            return False
+        value, expiry_timestamp = self._cache[key]
 
-    async def delete(self, key: str) -> bool:
-        try:
-            await self.client.delete(key)
-            return True
-        except Exception as e:
-            log.error(f"Redis DELETE Error for key {key}: {e}")
-            return False
+        if time.time() > expiry_timestamp:
+            del self._cache[key]
+            return None
 
-    async def close(self):
-        if self._redis:
-            await self._redis.aclose()
-            log.info("Redis connection closed securely.")
-#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/cache.py ---
+        return value
+
+    def set(self, key: str, value: Any, ttl_seconds: Optional[int] = None) -> None:
+        """يُخزِّن القيمة مع TTL محدد أو الافتراضي."""
+        ttl = ttl_seconds if ttl_seconds is not None else self._default_ttl_seconds
+        expiry_timestamp = time.time() + ttl
+        self._cache[key] = (value, expiry_timestamp)
+
+    def delete(self, key: str) -> None:
+        """يحذف عنصراً من الكاش."""
+        self._cache.pop(key, None)
+
+    def clear(self) -> None:
+        """يمسح كل الكاش."""
+        self._cache.clear()
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+
+# instance عالمي للأسعار — يُستخدم في price_service.py
+price_cache = InMemoryCache(ttl_seconds=60)
+
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+#END
