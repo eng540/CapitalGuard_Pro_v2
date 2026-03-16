@@ -1058,7 +1058,7 @@ def register_conversation_handlers(app: Application):
         name="recommendation_creation",
         per_user=True, per_chat=True,
         conversation_timeout=CONVERSATION_TIMEOUT_CREATION,
-        per_message=False
+        per_message=True
     )
     
     # --- 2. Custom Partial Close Conversation (Analyst) ---
@@ -1076,7 +1076,7 @@ def register_conversation_handlers(app: Application):
         per_user=True, per_chat=True,
         conversation_timeout=MANAGEMENT_TIMEOUT,
         persistent=False,
-        per_message=False,
+        per_message=True,
     )
 
     # --- 3. User Trade Closing Conversation (Trader) ---
@@ -1093,7 +1093,7 @@ def register_conversation_handlers(app: Application):
         per_user=True, per_chat=True,
         conversation_timeout=MANAGEMENT_TIMEOUT,
         persistent=False,
-        per_message=False,
+        per_message=True,
     )
 
     # --- 4. Master Reply Handler (Implicit State) ---
