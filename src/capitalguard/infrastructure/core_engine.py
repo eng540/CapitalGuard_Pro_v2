@@ -25,7 +25,7 @@ import time
 import logging
 import json
 import os
-from typing import Any, Callable, Dict, Optional, TypeVar, Set, Union
+from typing import Any, Callable, Dict, Optional, TypeVar, Set, Union, List
 from decimal import Decimal
 from datetime import datetime
 
