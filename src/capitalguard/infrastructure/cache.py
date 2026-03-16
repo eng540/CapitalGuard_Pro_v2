@@ -1,52 +1,61 @@
-#START src/capitalguard/infrastructure/cache.py
-# --- START OF FULL, RE-ARCHITECTED, AND FINAL FILE ---
-import time
-from typing import Dict, Any, Optional, Tuple
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/cache.py ---
+import json
+import logging
+from typing import Any, Optional
+import redis.asyncio as redis
 
-class InMemoryCache:
-    """
-    A simple in-memory cache with item-specific Time-To-Live (TTL) support.
-    """
-    # The cache now stores: { key: (value, expiry_timestamp) }
-    _cache: Dict[str, Tuple[Any, float]] = {}
-    _default_ttl_seconds: int
+log = logging.getLogger(__name__)
 
-    def __init__(self, ttl_seconds: int = 60):
-        """
-        Initializes the cache with a default Time-To-Live.
-        :param ttl_seconds: The default lifespan for an item if not specified otherwise.
-        """
-        self._default_ttl_seconds = ttl_seconds
+class RedisCache:
+    def __init__(self, url: str):
+        self.url = url
+        self._redis: Optional[redis.Redis] = None
 
-    def get(self, key: str) -> Optional[Any]:
+    @property
+    def client(self) -> redis.Redis:
         """
-        Retrieves an item from the cache if it exists and has not expired.
+        🔥 Lazy Initialization: 
+        يتم بناء الاتصال فقط عند الحاجة إليه لضمان ارتباطه بالغرفة الصحيحة (Current Event Loop).
         """
-        if key not in self._cache:
+        if self._redis is None:
+            self._redis = redis.from_url(
+                self.url, 
+                decode_responses=True,
+                socket_timeout=5,
+                socket_connect_timeout=5
+            )
+            log.info("✅ Redis connection lazily initialized & bound to the active event loop.")
+        return self._redis
+
+    async def get(self, key: str) -> Optional[Any]:
+        try:
+            val = await self.client.get(key)
+            if val:
+                return json.loads(val)
             return None
-        
-        value, expiry_timestamp = self._cache[key]
-        
-        if time.time() > expiry_timestamp:
-            # Item has expired, delete it and return None
-            del self._cache[key]
+        except Exception as e:
+            log.error(f"Redis GET Error for key {key}: {e}")
             return None
-            
-        return value
 
-    def set(self, key: str, value: Any, ttl_seconds: Optional[int] = None) -> None:
-        """
-        Adds an item to the cache with a specific or default TTL.
-        :param key: The key for the cache item.
-        :param value: The value to be stored.
-        :param ttl_seconds: Optional. The specific TTL for this item in seconds.
-                            If None, the default TTL is used.
-        """
-        ttl = ttl_seconds if ttl_seconds is not None else self._default_ttl_seconds
-        expiry_timestamp = time.time() + ttl
-        self._cache[key] = (value, expiry_timestamp)
+    async def set(self, key: str, value: Any, ttl: int = 60) -> bool:
+        try:
+            val = json.dumps(value)
+            await self.client.set(key, val, ex=ttl)
+            return True
+        except Exception as e:
+            log.error(f"Redis SET Error for key {key}: {e}")
+            return False
 
-# Create a global instance to be shared across the application
-price_cache = InMemoryCache(ttl_seconds=60)
-# --- END OF FULL, RE-ARCHITECTED, AND FINAL FILE ---
-#END
+    async def delete(self, key: str) -> bool:
+        try:
+            await self.client.delete(key)
+            return True
+        except Exception as e:
+            log.error(f"Redis DELETE Error for key {key}: {e}")
+            return False
+
+    async def close(self):
+        if self._redis:
+            await self._redis.aclose()
+            log.info("Redis connection closed securely.")
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/cache.py ---
