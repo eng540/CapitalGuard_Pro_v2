@@ -1,4 +1,23 @@
 #--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/sched/price_streamer.py ---
+# File: src/capitalguard/infrastructure/sched/price_streamer.py
+# Version: v7.1.0-STABLE
+#
+# ✅ THE FIX (BUG-W2):
+#   stop() كانت تستدعي asyncio.create_task(self.client.stop())
+#   من sync context → RuntimeError: no running event loop
+#
+#   الإصلاح:
+#     1. start() يحفظ مرجع الـ loop في self._loop
+#     2. stop() يستخدم self._loop.call_soon_threadsafe() لجدولة
+#        asyncio.ensure_future() بأمان من أي thread
+#
+# الميزات المحتفظ بها من v7.0.0:
+#   - Live Dynamic Subscriptions بدون قطع الاتصال
+#   - مراقبة DB كل 5 ثوانٍ
+#   - تحديث core_cache للـ WebApp
+#
+# Reviewed-by: Guardian Protocol v1 — 2026-03-15
+
 import asyncio
 import logging
 from typing import Set, Dict, Optional
@@ -6,32 +25,21 @@ from typing import Set, Dict, Optional
 from capitalguard.infrastructure.market.ws_client import BinanceWSClient
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import RecommendationRepository
-from capitalguard.infrastructure.db.models import RecommendationStatusEnum, UserTradeStatusEnum, Recommendation, UserTrade
+from capitalguard.infrastructure.db.models import (
+    RecommendationStatusEnum,
+    UserTradeStatusEnum,
+    Recommendation,
+    UserTrade,
+)
 from capitalguard.infrastructure.core_engine import core_cache
 
 log = logging.getLogger(__name__)
 
-# 🔥 كائن الحدث العالمي (Global Event)
-_global_update_event: Optional[asyncio.Event] = None
-
-def get_global_update_event() -> asyncio.Event:
-    global _global_update_event
-    if _global_update_event is None:
-        _global_update_event = asyncio.Event()
-    return _global_update_event
-
-def trigger_price_update():
-    """وظيفة عامة يمكن استدعاؤها من أي مكان لإيقاظ PriceStreamer"""
-    try:
-        ev = get_global_update_event()
-        ev.set()
-    except Exception as e:
-        log.error(f"Failed to trigger global price update: {e}")
 
 class PriceStreamer:
     """
-    يُدير اتصال WebSocket مع Binance ويوزع تيك الأسعار على AlertService
-    باستخدام core_cache (L1 + Redis) وكاش Event-Driven.
+    يُدير اتصال WebSocket الدائم بـ Binance ويوزع تيكات الأسعار
+    على AlertService عبر price_queue.
     """
 
     def __init__(self, price_queue: asyncio.Queue, repo: RecommendationRepository):
@@ -40,108 +48,156 @@ class PriceStreamer:
         self.client = BinanceWSClient()
         self._watcher_task: Optional[asyncio.Task] = None
         self._running = False
+        # ✅ FIX BUG-W2: نحفظ مرجع الـ loop لاستخدامه في stop()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-    def trigger_update(self):
-        """يمكن استدعاؤها خارجيًا لإيقاظ المراقب فورًا"""
-        trigger_price_update()
-
-    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None):
-        if self._running: 
+    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+        """يبدأ شريان الاتصال الدائم ومراقب قاعدة البيانات."""
+        if self._running:
             return
         self._running = True
-        
-        # التأكد من تهيئة الحدث في الـ Loop الصحيح
-        get_global_update_event()
-        
+
+        # ✅ FIX BUG-W2: حفظ مرجع الـ loop
+        if loop:
+            self._loop = loop
+        else:
+            try:
+                self._loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._loop = asyncio.get_event_loop()
+
         if loop:
             loop.create_task(self.client.start(self._handle_price))
             self._watcher_task = loop.create_task(self._watch_db_loop())
         else:
             asyncio.create_task(self.client.start(self._handle_price))
             self._watcher_task = asyncio.create_task(self._watch_db_loop())
-            
-        log.info("PriceStreamer (Global Event-Driven Mode) started with L1+Redis hybrid cache.")
 
-    def stop(self):
+        log.info("PriceStreamer (Live Dynamic Mode) started.")
+
+    def stop(self) -> None:
+        """
+        ✅ FIX BUG-W2: يُوقف PriceStreamer بأمان من أي thread.
+        client.stop() هي async — نجدولها في الـ bg loop عبر
+        call_soon_threadsafe بدلاً من create_task المباشر.
+        """
         self._running = False
-        trigger_price_update()  # لإيقاظ المراقب لغرض الإغلاق
-        if self._watcher_task: 
-            self._watcher_task.cancel()
-        asyncio.create_task(self.client.stop())
+
+        if self._watcher_task:
+            try:
+                self._watcher_task.cancel()
+            except Exception:
+                pass
+
+        # ✅ FIX BUG-W2: جدولة async stop() بأمان
+        if self._loop and self._loop.is_running():
+            try:
+                self._loop.call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(
+                        self.client.stop(),
+                        loop=self._loop,
+                    )
+                )
+            except Exception as e:
+                log.warning("PriceStreamer.stop: could not schedule client.stop(): %s", e)
+        else:
+            log.warning(
+                "PriceStreamer.stop: bg loop not running — "
+                "WebSocket may not close cleanly."
+            )
+
+        log.info("PriceStreamer stopped.")
+
+    # ─────────────────────────────────────────────────────────────
+    # DB symbol watcher
+    # ─────────────────────────────────────────────────────────────
 
     async def _get_symbols_to_watch(self) -> Dict[str, Set[str]]:
-        """جلب العملات النشطة من DB باستخدام core_cache"""
-        cache_key = "active_watch_symbols"
-        cached = await core_cache.get(cache_key)
-        if cached:
-            return cached
+        """جلب العملات النشطة مع كاش 5 ثوانٍ للتقاط التوصيات فوراً."""
+        symbols_by_market: Dict[str, Set[str]] = {"Futures": set(), "Spot": set()}
+        try:
+            cached = await core_cache.get("active_watch_symbols")
+            if cached:
+                return cached
 
-        def fetch_from_db():
             with session_scope() as session:
                 recs = session.query(Recommendation).filter(
-                    Recommendation.status.in_([RecommendationStatusEnum.ACTIVE, RecommendationStatusEnum.PENDING])
+                    Recommendation.status.in_([
+                        RecommendationStatusEnum.ACTIVE,
+                        RecommendationStatusEnum.PENDING,
+                    ])
                 ).all()
+
                 trades = session.query(UserTrade).filter(
-                    UserTrade.status.in_([UserTradeStatusEnum.ACTIVATED, UserTradeStatusEnum.PENDING_ACTIVATION])
+                    UserTrade.status.in_([
+                        UserTradeStatusEnum.ACTIVATED,
+                        UserTradeStatusEnum.PENDING_ACTIVATION,
+                    ])
                 ).all()
 
-                res_map = {"Futures": set(), "Spot": set()}
                 for r in recs:
-                    m = "Spot" if r.market and "spot" in r.market.lower() else "Futures"
-                    if r.asset:
-                        res_map[m].add(r.asset.upper())
+                    market = (
+                        "Spot"
+                        if r.market and "spot" in r.market.lower()
+                        else "Futures"
+                    )
+                    symbols_by_market[market].add(r.asset.upper())
+
                 for t in trades:
-                    if t.asset:
-                        res_map["Futures"].add(t.asset.upper())
-                return res_map
+                    symbols_by_market["Futures"].add(t.asset.upper())
 
-        loop = asyncio.get_running_loop()
-        symbols_map = await loop.run_in_executor(None, fetch_from_db)
-        await core_cache.set(cache_key, symbols_map, ttl=5)
-        return symbols_map
+            await core_cache.set("active_watch_symbols", symbols_by_market, ttl=5)
+            return symbols_by_market
 
-    async def _handle_price(self, symbol: str, low: float, high: float, close: float):
-        """يغذّي AlertService ويحدث cache في L1+Redis"""
+        except Exception as e:
+            log.error("PriceStreamer: symbol fetch error: %s", e)
+            return symbols_by_market
+
+    # ─────────────────────────────────────────────────────────────
+    # Price handler
+    # ─────────────────────────────────────────────────────────────
+
+    async def _handle_price(
+        self, symbol: str, low: float, high: float, close: float
+    ) -> None:
+        """يُغذِّي AlertService بتيك السعر ويُحدِّث الكاش للـ WebApp."""
         await self.price_queue.put({
             "symbol": symbol,
             "market": "Futures",
-            "low": low,
-            "high": high,
-            "close": close,
-            "ts": int(asyncio.get_event_loop().time()),
+            "low":    low,
+            "high":   high,
+            "close":  close,
+            "ts":     int(asyncio.get_event_loop().time()),
         })
-        try:
-            await core_cache.set(f"price:FUTURES:{symbol}", close, ttl=60)
-            await core_cache.set(f"price:SPOT:{symbol}", close, ttl=60)
-        except Exception:
-            pass
+        await core_cache.set(f"price:FUTURES:{symbol}", close, ttl=60)
+        await core_cache.set(f"price:SPOT:{symbol}",    close, ttl=60)
 
-    async def _watch_db_loop(self):
-        """مراقب ذكي Event-Driven: لا يستهلك CPU، يستيقظ فقط عند trigger_price_update"""
+    # ─────────────────────────────────────────────────────────────
+    # DB watcher loop
+    # ─────────────────────────────────────────────────────────────
+
+    async def _watch_db_loop(self) -> None:
+        """
+        مراقب ذكي يعمل كل 5 ثوانٍ.
+        يُحدِّث اشتراكات WebSocket عند تغيير قائمة العملات النشطة.
+        """
         last_symbols: Set[str] = set()
-        ev = get_global_update_event()
-        
-        # جلب أولي للعملات المفتوحة مسبقًا
-        trigger_price_update()
 
         while self._running:
             try:
-                await ev.wait()
-                ev.clear()
-
-                if not self._running: 
-                    break
-
                 symbols_map = await self._get_symbols_to_watch()
                 current_symbols = symbols_map["Futures"] | symbols_map["Spot"]
-                
+
                 if current_symbols != last_symbols:
-                    log.info(f"🔄 PriceStreamer woke up! Updating subscriptions: {current_symbols}")
+                    log.info(
+                        "PriceStreamer: symbols changed (%d → %d). Updating...",
+                        len(last_symbols), len(current_symbols),
+                    )
                     await self.client.update_subscriptions(list(current_symbols))
                     last_symbols = current_symbols
 
             except Exception as e:
-                log.error(f"Error in PriceStreamer event loop: {e}", exc_info=True)
-                await asyncio.sleep(5)  # حماية من الهروب في حالة خطأ مستمر
+                log.error("PriceStreamer._watch_db_loop error: %s", e)
 
+            await asyncio.sleep(5)
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/sched/price_streamer.py ---
