@@ -172,6 +172,11 @@ async def on_startup():
         log.info("Populating symbol cache (MarketDataService)...")
         await market_data_service.refresh_symbols_cache()
         log.info("Symbol cache population complete.")
+        # ✅ P4-FIX: Circuit Breaker auto-recovery loop
+        # يُعيد محاولة Binance تلقائياً بعد cooldown (30 دقيقة افتراضياً)
+        # لا يستهلك موارد — ينام حتى ينتهي الـ cooldown
+        asyncio.create_task(market_data_service._auto_refresh_loop())
+        log.info("MarketDataService auto-refresh loop started.")
     else:
         log.error("MarketDataService not found, cache will not be populated on startup.")
     # --- End of Fix ---
