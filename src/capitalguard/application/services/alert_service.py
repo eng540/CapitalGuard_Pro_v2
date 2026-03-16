@@ -1,23 +1,22 @@
 # --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
 # File: src/capitalguard/application/services/alert_service.py
-# Version: v29.0-NOTIFICATION-FIX
+# Version: v29.1-PRODUCTION
 #
-# ✅ THE FIX (BUG-10 COMPLETE + NOTIFICATION PIPELINE):
+# ✅ إصلاحات v29.0 (محفوظة بالكامل):
+#   FIX-A: price_queue يُنشأ داخل _bg_runner() — لا خارجه
+#   FIX-B: threading.RLock يحمي active_triggers عبر الـ threads
+#   FIX-C: PriceStreamer يُبنى داخل _bg_runner() بعد إنشاء price_queue
 #
-#   السبب A — price_queue = None عند بدء _process_queue():
-#     الإصلاح: price_queue يُنشأ داخل _bg_runner() قبل إنشاء المهام.
+# ✅ THE FIX v29.1 — تحسين _run_index_sync:
+#   كانت المزامنة الدورية كل 60 ثانية = polling مكثف بلا فائدة.
+#   السبب: الصفقات الجديدة تُضاف فوراً عبر add_trigger_data()
+#   من creation_service — لا حاجة لمزامنة متكررة.
 #
-#   السبب B — _triggers_lock = None عند build_triggers_index() في startup:
-#     الإصلاح: threading.RLock يحمي active_triggers عبر الـ threads.
-#     asyncio.Lock للـ bg loop فقط، يُنشأ داخل _bg_runner().
+#   الإصلاح: interval_seconds = 600 (10 دقائق)
+#   الدور: شبكة أمان فقط لتصحيح أي تعارض في الذاكرة
+#          وليس آلية الاكتشاف الرئيسية.
 #
-#   السبب C — PriceStreamer = None (لم يُبنَ بعد إصلاح BUG-10):
-#     الإصلاح: PriceStreamer يُبنى داخل _bg_runner() بعد إنشاء price_queue.
-#
-#   السبب D — core_cache بدون Redis → أسعار لا تُحفظ:
-#     الإصلاح: core_cache يأخذ REDIS_URL من settings عند الاستدعاء.
-#
-# 🎯 IMPACT: إشعارات القناة + تتبع دورة الحياة + إغلاق تلقائي تعمل.
+# Reviewed-by: Guardian Protocol v1 — 2026-03-16
 
 import logging
 import asyncio
@@ -66,7 +65,7 @@ def _to_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
 
 class AlertService:
     """
-    AlertService v29 — إشعارات القناة + تتبع دورة حياة الصفقات.
+    AlertService v29.1 — إشعارات القناة + تتبع دورة حياة الصفقات.
 
     Pipeline:
       Binance WS → PriceStreamer → price_queue
@@ -74,6 +73,12 @@ class AlertService:
         → LifecycleService → DB update + notify_card_update()
         → TelegramNotifier.edit_recommendation_card_by_ids()
         → القناة ترى التحديث
+
+    اكتشاف الصفقات الجديدة:
+      المسار الرئيسي (فوري):
+        creation_service → add_trigger_data() → active_triggers
+      شبكة الأمان (كل 10 دقائق):
+        _run_index_sync() → build_triggers_index() من DB
     """
 
     def __init__(
@@ -89,7 +94,7 @@ class AlertService:
         self.repo = repo
         self.strategy_engine = strategy_engine
 
-        # ✅ FIX-C: نحتفظ بـ streamer المُمرَّر (إن وُجد) ونُنشئه داخل _bg_runner إن لم يكن
+        # ✅ FIX-C: نحتفظ بـ streamer المُمرَّر ونُنشئه داخل _bg_runner إن لم يكن
         self._streamer_arg = streamer
 
         # ✅ FIX-A: price_queue يُنشأ داخل _bg_runner() — لا خارجه
@@ -109,9 +114,9 @@ class AlertService:
         self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
         self.streamer: Optional[PriceStreamer] = None
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────
     # Background runner
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────
 
     def start(self):
         """يبدأ bg thread مع event loop خاص به."""
@@ -139,6 +144,7 @@ class AlertService:
 
                 # بدء مهام المعالجة
                 self._processing_task = loop.create_task(self._process_queue())
+                # ✅ v29.1: شبكة أمان كل 10 دقائق فقط
                 self._index_sync_task = loop.create_task(self._run_index_sync())
 
                 # بدء PriceStreamer
@@ -148,13 +154,14 @@ class AlertService:
                 except TypeError:
                     self.streamer.start()
                 except Exception as e:
-                    log.error(f"AlertService: PriceStreamer start failed: {e}")
+                    log.error("AlertService: PriceStreamer start failed: %s", e)
 
-                # نقل الـ triggers الموجودة إلى الـ index (إن كانت مُحمَّلة قبل start())
+                # نقل الـ triggers المُحمَّلة مسبقاً إلى الـ bg loop
                 if self.active_triggers:
+                    loaded = sum(len(v) for v in self.active_triggers.values())
                     log.info(
-                        f"AlertService: Loaded {sum(len(v) for v in self.active_triggers.values())} "
-                        "pre-loaded triggers into bg loop."
+                        "AlertService: %d pre-loaded triggers transferred to bg loop.",
+                        loaded,
                     )
                     for triggers in self.active_triggers.values():
                         for t in triggers:
@@ -178,9 +185,9 @@ class AlertService:
         self._bg_thread.start()
         log.info("AlertService background thread started.")
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────
     # Index builders — thread-safe (يعمل قبل وبعد start())
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────
 
     def build_trigger_data_from_orm(
         self, item_orm: Union[Recommendation, UserTrade]
@@ -223,14 +230,10 @@ class AlertService:
                     "profit_stop_mode": getattr(rec, "profit_stop_mode", "NONE"),
                     "profit_stop_price": _to_decimal(
                         getattr(rec, "profit_stop_price", None)
-                    )
-                    if getattr(rec, "profit_stop_price", None) is not None
-                    else None,
+                    ) if getattr(rec, "profit_stop_price", None) is not None else None,
                     "profit_stop_trailing_value": _to_decimal(
                         getattr(rec, "profit_stop_trailing_value", None)
-                    )
-                    if getattr(rec, "profit_stop_trailing_value", None) is not None
-                    else None,
+                    ) if getattr(rec, "profit_stop_trailing_value", None) is not None else None,
                     "profit_stop_active": getattr(rec, "profit_stop_active", False),
                     "original_published_at": None,
                 }
@@ -281,7 +284,7 @@ class AlertService:
     async def add_trigger_data(self, item_data: Dict[str, Any]):
         """
         ✅ FIX-B: يعمل من أي thread.
-        يستخدم _triggers_lock إن كان في الـ bg loop، وإلا _sync_lock.
+        المسار الرئيسي لإضافة صفقة جديدة — فوري بدون انتظار.
         """
         if not item_data:
             return
@@ -295,11 +298,9 @@ class AlertService:
 
         try:
             if self._triggers_lock is not None:
-                # داخل bg loop
                 async with self._triggers_lock:
                     self._add_trigger_unsafe(key, item_data, item_id, item_type)
             else:
-                # قبل start() — نستخدم threading lock
                 with self._sync_lock:
                     self._add_trigger_unsafe(key, item_data, item_id, item_type)
         except Exception:
@@ -343,7 +344,7 @@ class AlertService:
     async def build_triggers_index(self):
         """
         ✅ FIX-B: يعمل قبل start() وبعده.
-        يُبني الـ index من DB ويحمل كل الصفقات النشطة.
+        يُبني الـ index من DB — يُستدعى عند startup وكل 10 دقائق كشبكة أمان.
         """
         log.info("AlertService: Building triggers index from DB...")
         try:
@@ -366,7 +367,6 @@ class AlertService:
             except Exception:
                 log.exception("Failed to process trigger item: %s", d.get("id"))
 
-        # ✅ FIX-B: thread-safe update
         if self._triggers_lock is not None:
             async with self._triggers_lock:
                 self._apply_new_index(new_index)
@@ -376,7 +376,8 @@ class AlertService:
 
         total = sum(len(v) for v in new_index.values())
         log.info(
-            f"AlertService: Trigger index built — {len(new_index)} symbols, {total} triggers."
+            "AlertService: Trigger index built — %d symbols, %d triggers.",
+            len(new_index), total,
         )
 
     def _apply_new_index(self, new_index):
@@ -387,8 +388,16 @@ class AlertService:
                 if t.get("item_type") == "recommendation":
                     self.strategy_engine.initialize_state_for_recommendation(t)
 
-    async def _run_index_sync(self, interval_seconds: int = 60):
-        """مزامنة دورية من DB."""
+    async def _run_index_sync(self, interval_seconds: int = 600):
+        """
+        ✅ v29.1: شبكة أمان دورية — كل 10 دقائق فقط.
+
+        الصفقات الجديدة تصل فورياً عبر add_trigger_data() من creation_service.
+        هذه الدالة دورها الوحيد: تصحيح أي تعارض في الذاكرة
+        ولا علاقة لها باكتشاف الصفقات الجديدة.
+
+        (كانت 60 ثانية — خُفِّضت لتوفير الموارد)
+        """
         while True:
             await asyncio.sleep(interval_seconds)
             try:
@@ -396,9 +405,9 @@ class AlertService:
             except Exception:
                 log.exception("Index sync iteration failed.")
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────
     # Core evaluation helpers
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────
 
     def _is_price_condition_met(
         self,
@@ -532,9 +541,9 @@ class AlertService:
 
         return actions
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────
     # Main queue processor
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────
 
     async def _process_queue(self):
         log.info("AlertService: Queue processor started — waiting for price ticks.")
@@ -552,33 +561,31 @@ class AlertService:
                         self.price_queue.task_done()
                         continue
                 elif isinstance(payload, dict):
-                    symbol = payload.get("symbol")
-                    market = payload.get("market", "Futures")
-                    low_raw = payload.get("low")
-                    high_raw = payload.get("high")
+                    symbol    = payload.get("symbol")
+                    market    = payload.get("market", "Futures")
+                    low_raw   = payload.get("low")
+                    high_raw  = payload.get("high")
                     close_raw = payload.get("close", high_raw)
                 else:
                     self.price_queue.task_done()
                     continue
 
                 try:
-                    low_price = Decimal(str(low_raw))
-                    high_price = Decimal(str(high_raw))
+                    low_price   = Decimal(str(low_raw))
+                    high_price  = Decimal(str(high_raw))
                     close_price = Decimal(str(close_raw))
                 except Exception:
                     self.price_queue.task_done()
                     continue
 
-                tick_ts = int(time.time())
                 tick = {
-                    "high": high_price,
-                    "low": low_price,
+                    "high":  high_price,
+                    "low":   low_price,
                     "close": close_price,
-                    "ts": tick_ts,
+                    "ts":    int(time.time()),
                 }
                 key = f"{(symbol or '').upper()}:{market}"
 
-                # snapshot triggers
                 async with self._triggers_lock:
                     triggers_for_key = list(self.active_triggers.get(key, []))
 
@@ -586,28 +593,21 @@ class AlertService:
                     self.price_queue.task_done()
                     continue
 
-                # تحديث الـ cache بالسعر الحالي للـ WebApp
+                # تحديث كاش الأسعار للـ WebApp
                 try:
                     from capitalguard.infrastructure.core_engine import core_cache
                     await core_cache.set(f"price:FUTURES:{symbol}", float(close_price), ttl=60)
-                    await core_cache.set(f"price:SPOT:{symbol}", float(close_price), ttl=60)
+                    await core_cache.set(f"price:SPOT:{symbol}",    float(close_price), ttl=60)
                 except Exception:
                     pass
 
-                # batch evaluation للـ recommendations
-                rec_triggers = [
-                    t for t in triggers_for_key if t.get("item_type") == "recommendation"
-                ]
-                other_triggers = [
-                    t for t in triggers_for_key if t.get("item_type") != "recommendation"
-                ]
+                rec_triggers   = [t for t in triggers_for_key if t.get("item_type") == "recommendation"]
+                other_triggers = [t for t in triggers_for_key if t.get("item_type") != "recommendation"]
 
                 strategy_actions: List[BaseAction] = []
                 if rec_triggers:
                     try:
-                        batch = await self.strategy_engine.evaluate_batch(
-                            rec_triggers, tick
-                        )
+                        batch = await self.strategy_engine.evaluate_batch(rec_triggers, tick)
                         if batch:
                             strategy_actions.extend(batch)
                     except Exception:
@@ -619,23 +619,16 @@ class AlertService:
                         if acts:
                             strategy_actions.extend(acts)
                     except Exception:
-                        log.exception(
-                            "StrategyEngine.evaluate failed id=%s", trig.get("id")
-                        )
+                        log.exception("StrategyEngine.evaluate failed id=%s", trig.get("id"))
 
-                # core triggers (activation/SL/TP)
                 core_actions: List[BaseAction] = []
                 for trig in triggers_for_key:
                     try:
-                        acts = await self._evaluate_core_triggers(
-                            trig, high_price, low_price
-                        )
+                        acts = await self._evaluate_core_triggers(trig, high_price, low_price)
                         if acts:
                             core_actions.extend(acts)
                     except Exception:
-                        log.exception(
-                            "Core evaluate failed id=%s", trig.get("id")
-                        )
+                        log.exception("Core evaluate failed id=%s", trig.get("id"))
 
                 all_actions = strategy_actions + core_actions
 
@@ -643,7 +636,6 @@ class AlertService:
                     self.price_queue.task_done()
                     continue
 
-                # CloseAction أولاً
                 close_action = next(
                     (a for a in all_actions if isinstance(a, CloseAction)), None
                 )
@@ -670,7 +662,6 @@ class AlertService:
                     self.price_queue.task_done()
                     continue
 
-                # MoveSL / Alert actions
                 for act in all_actions:
                     try:
                         if isinstance(act, MoveSLAction):
@@ -707,9 +698,9 @@ class AlertService:
             except Exception:
                 log.exception("Unexpected error in queue processor.")
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────
     # Utility
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────
 
     def _find_user_id_for_rec(
         self, rec_id: int, trig_list: List[Dict[str, Any]]
