@@ -1,47 +1,41 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
-# File: src/capitalguard/infrastructure/core_engine.py
-# Version: v2.0-REDIS-FIX
-#
-# ✅ THE FIX (السبب D):
-#   core_cache كان يُنشأ بدون redis_url → Redis لا يُستخدم أبداً
-#   → أسعار الـ WebApp تُعرض "Loading..."
-#   الإصلاح: core_cache يقرأ REDIS_URL من settings عند أول استخدام (lazy init).
-
-import asyncio
-import time
-import logging
-import json
+#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/core_engine.py ---
 import os
+import time
+import asyncio
+import json
+import logging
 from typing import Any, Callable, Dict, Optional, TypeVar
 
-try:
-    import redis.asyncio as redis
-    REDIS_AVAILABLE = True
-except ImportError:
-    REDIS_AVAILABLE = False
+from capitalguard.config import settings
+from capitalguard.infrastructure.cache import RedisCache
 
 T = TypeVar("T")
 log = logging.getLogger(__name__)
 
+# -------------------------------
+# إعداد RedisCache الجديد (lazy + loop safe)
+# -------------------------------
+REDIS_URL = getattr(settings, "REDIS_URL", os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
+_global_redis_cache = RedisCache(url=REDIS_URL)
 
+# -------------------------------
+# CacheStats
+# -------------------------------
 class CacheStats:
     l1_hits: int = 0
     l2_hits: int = 0
     misses: int = 0
 
-
+# -------------------------------
+# AdvancedCacheSystem مع دعم RedisCache الجديد
+# -------------------------------
 class AdvancedCacheSystem:
     """
-    Hybrid Cache: L1 (memory) + L2 (Redis).
-    ✅ FIX: redis_url يُقرأ من env عند أول استخدام إن لم يُمرَّر مباشرة.
+    Hybrid Cache: L1 (memory) + L2 (Redis via RedisCache)
     """
-
-    def __init__(self, redis_url: str = None):
+    def __init__(self):
         self.l1_cache: Dict[str, Any] = {}
         self.l1_ttl: Dict[str, float] = {}
-        self._redis_url = redis_url  # قد يكون None — يُحمَّل lazily
-        self._redis: Optional[Any] = None
-        self._redis_initialized = False
         self.stats = CacheStats()
         self._lock = asyncio.Lock() if self._is_in_loop() else None
 
@@ -52,24 +46,9 @@ class AdvancedCacheSystem:
         except RuntimeError:
             return False
 
-    def _get_redis(self):
-        """Lazy init لـ Redis — يقرأ REDIS_URL من env إن لم يُمرَّر."""
-        if self._redis_initialized:
-            return self._redis
-        self._redis_initialized = True
-        if not REDIS_AVAILABLE:
-            return None
-        url = self._redis_url or os.getenv("REDIS_URL")
-        if not url:
-            log.info("core_cache: No REDIS_URL — using memory-only cache.")
-            return None
-        try:
-            self._redis = redis.from_url(url, decode_responses=False)
-            log.info(f"core_cache: Redis connected at {url[:30]}...")
-        except Exception as e:
-            log.warning(f"core_cache: Redis init failed: {e}")
-            self._redis = None
-        return self._redis
+    def _get_redis(self) -> Optional[RedisCache]:
+        """استخدام RedisCache الجديد"""
+        return _global_redis_cache
 
     async def get(self, key: str) -> Any:
         # L1
@@ -85,12 +64,11 @@ class AdvancedCacheSystem:
         if r:
             try:
                 data = await r.get(key)
-                if data:
+                if data is not None:
                     self.stats.l2_hits += 1
-                    decoded = json.loads(data)
-                    self.l1_cache[key] = decoded
+                    self.l1_cache[key] = data
                     self.l1_ttl[key] = time.time() + 10
-                    return decoded
+                    return data
             except Exception as e:
                 log.warning(f"Redis get error: {e}")
 
@@ -101,11 +79,11 @@ class AdvancedCacheSystem:
         # L1
         self.l1_cache[key] = value
         self.l1_ttl[key] = time.time() + ttl
-        # L2
+        # L2 Redis
         r = self._get_redis()
         if r:
             try:
-                await r.setex(key, ttl, json.dumps(value, default=str))
+                await r.set(key, value, ttl)
             except Exception as e:
                 log.warning(f"Redis set error: {e}")
 
@@ -119,10 +97,11 @@ class AdvancedCacheSystem:
             except Exception:
                 pass
 
-
+# -------------------------------
+# Circuit Breaker
+# -------------------------------
 class CircuitBreakerOpenError(Exception):
     pass
-
 
 class CircuitBreaker:
     def __init__(self, name: str, failure_threshold: int = 5, recovery_timeout: int = 30):
@@ -163,7 +142,9 @@ class CircuitBreaker:
         self.failure_count = 0
         log.info(f"Circuit {self.name} CLOSED (Recovered).")
 
-
+# -------------------------------
+# AsyncPipeline
+# -------------------------------
 class AsyncPipeline:
     @staticmethod
     async def execute_parallel(tasks: Dict[str, Callable]):
@@ -182,10 +163,12 @@ class AsyncPipeline:
                 output[key] = results[i]
         return output
 
-
-# ✅ FIX: بدون redis_url — سيقرأ من REDIS_URL في .env عند أول استخدام
+# -------------------------------
+# Core cache and circuit breakers instances
+# -------------------------------
 core_cache = AdvancedCacheSystem()
 cb_telegram = CircuitBreaker("telegram_api", failure_threshold=3)
 cb_db = CircuitBreaker("database", failure_threshold=5)
 
-# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+log.info("Core Engine components initialized with L1+RedisCache hybrid.")
+#--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/infrastructure/core_engine.py ---
