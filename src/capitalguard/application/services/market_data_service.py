@@ -41,7 +41,7 @@ BINANCE_ENDPOINTS = {
 # 429 = Too Many Requests (Railway shared IP)
 # 451 = Geo-Block
 # 403 = Forbidden
-BINANCE_BLOCKED_CODES = {429, 451, 403}
+BINANCE_BLOCKED_CODES = {418, 429, 451, 403}  # 418=IP Ban, 429=Rate Limit, 451=Geo-Block, 403=Forbidden
 
 
 class MarketDataService:
