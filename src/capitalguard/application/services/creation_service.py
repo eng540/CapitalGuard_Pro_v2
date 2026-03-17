@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 import logging
+import json
 import asyncio
 import inspect
 from typing import List, Optional, Tuple, Dict, Any, Set, Union
@@ -67,6 +68,30 @@ def _parse_int_user_id(user_id: Any) -> Optional[int]:
     except: return None
 
 # --- Service Class ---
+
+async def _publish_symbol_event(asset: str, market: str, action: str = "ADD") -> None:
+    """
+    ✅ P1-FIX: يُرسل حدث رمز جديد لـ PriceStreamer عبر Redis Pub/Sub.
+    PriceStreamer يستيقظ فوراً ويُشترك بالرمز دون أي polling.
+    fire-and-forget — لا يُوقف التنفيذ عند الفشل.
+    """
+    try:
+        import os
+        url = os.getenv("REDIS_URL")
+        if not url:
+            return
+        import redis.asyncio as aioredis
+        client = aioredis.from_url(url, decode_responses=True)
+        message = json.dumps({
+            "action": action,
+            "symbol": (asset or "").upper(),
+            "market": market or "Futures",
+        })
+        await client.publish("cg:symbol_update", message)
+        await client.aclose()
+    except Exception:
+        pass  # fire-and-forget — الـ Safety Sweep يُعوِّض أي فشل
+
 
 class CreationService:
     """
@@ -304,6 +329,11 @@ class CreationService:
                         if trigger_data:
                             await self.alert_service.add_trigger_data(trigger_data)
                             logger.info(f"[BG Rec {rec_id}]: Added to Monitoring Index.")
+                            # ✅ P1-FIX: إخبار PriceStreamer بالرمز الجديد فوراً
+                            await _publish_symbol_event(
+                                trigger_data.get("asset", ""),
+                                trigger_data.get("market", "Futures"),
+                            )
                     except Exception as e:
                         logger.error(f"[BG Rec {rec_id}]: Indexing failed (Non-fatal): {e}")
 
@@ -386,6 +416,11 @@ class CreationService:
                 trigger_data = self.alert_service.build_trigger_data_from_orm(new_trade)
                 if trigger_data:
                     await self.alert_service.add_trigger_data(trigger_data)
+                    # ✅ P1-FIX: إخبار PriceStreamer بالرمز الجديد فوراً
+                    await _publish_symbol_event(
+                        trigger_data.get("asset", ""),
+                        trigger_data.get("market", "Futures"),
+                    )
                 else:
                     logger.error(f"Failed to build trigger data for new UserTrade {new_trade.id}")
             
@@ -444,6 +479,11 @@ class CreationService:
                 trigger_data = self.alert_service.build_trigger_data_from_orm(new_trade)
                 if trigger_data:
                     await self.alert_service.add_trigger_data(trigger_data)
+                    # ✅ P1-FIX: إخبار PriceStreamer بالرمز الجديد فوراً
+                    await _publish_symbol_event(
+                        trigger_data.get("asset", ""),
+                        trigger_data.get("market", "Futures"),
+                    )
 
             logger.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id} with status {user_trade_status.value}.")
             return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
