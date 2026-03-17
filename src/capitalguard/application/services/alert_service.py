@@ -169,6 +169,11 @@ class AlertService:
                     self.streamer = PriceStreamer(self.price_queue, self.repo)
                     log.info("AlertService: PriceStreamer created.")
 
+                # ✅ P1-FIX: نُمرِّر مرجع active_triggers للـ PriceStreamer
+                # يُستخدم في Safety Sweep لمعرفة الرموز النشطة بدون DB
+                if hasattr(self.streamer, "set_active_triggers_ref"):
+                    self.streamer.set_active_triggers_ref(self.active_triggers)
+
                 # ── Tasks ──────────────────────────────────────────────────
                 # Router يقرأ من price_queue ويُوجِّه لـ symbol queues
                 self._routing_task   = loop.create_task(self._route_ticks())
