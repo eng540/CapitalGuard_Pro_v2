@@ -118,7 +118,12 @@ class PriceStreamer:
         try:
             cached = await core_cache.get("active_watch_symbols")
             if cached:
-                return cached
+                # ✅ FIX: JSON يُحوِّل set → list عند التخزين في Redis
+                # نُعيد تحويلها لـ set عند القراءة لدعم عملية | (union)
+                return {
+                    "Futures": set(cached.get("Futures", [])),
+                    "Spot":    set(cached.get("Spot",    [])),
+                }
 
             with session_scope() as session:
                 recs = session.query(Recommendation).filter(
