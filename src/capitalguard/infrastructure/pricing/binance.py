@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 BINANCE_SPOT_TICKER = "https://api.binance.com/api/v3/ticker/price"
 BINANCE_FUT_TICKER  = "https://fapi.binance.com/fapi/v1/ticker/price"
 
-BINANCE_BLOCKED_CODES = {429, 451, 403}
+BINANCE_BLOCKED_CODES = {418, 429, 451, 403}  # 418=IP Ban, 429=Rate Limit, 451=Geo-Block, 403=Forbidden
 
 
 class BinancePricing:
