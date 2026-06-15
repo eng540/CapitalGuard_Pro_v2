@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Portfolio</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root { --bg: #000000; --card: #1c1c1e; --text: #fff; --hint: #8e8e93; --green: #32d74b; --red: #ff453a; --blue: #0a84ff; --border: #2c2c2e; }
+        body { background: var(--bg); color: var(--text); font-family: sans-serif; margin: 0; padding: 16px; padding-bottom: 80px; }
+        .stats-header { display: flex; gap: 10px; margin-bottom: 20px; }
+        .stat-card { flex: 1; background: var(--card); padding: 12px; border-radius: 12px; text-align: center; border: 1px solid var(--border); }
+        .stat-label { font-size: 0.7rem; color: var(--hint); font-weight: 700; }
+        .stat-val { font-size: 1.1rem; font-weight: 800; margin-top: 4px; }
+        .stat-val.green { color: var(--green); }
+        .tabs { display: flex; gap: 15px; margin-bottom: 15px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+        .tab { font-weight: bold; color: var(--hint); cursor: pointer; padding-bottom: 4px; }
+        .tab.active { color: var(--text); border-bottom: 2px solid var(--blue); }
+        .pos-card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid var(--border); }
+        .pos-header { display: flex; justify-content: space-between; margin-bottom: 8px; }
+        .pos-symbol { font-size: 1.1rem; font-weight: 900; }
+        .pos-side { font-size: 0.75rem; font-weight: bold; padding: 2px 8px; border-radius: 6px; }
+        .pos-side.LONG { background: rgba(50, 215, 75, 0.15); color: var(--green); }
+        .pos-side.SHORT { background: rgba(255, 69, 58, 0.15); color: var(--red); }
+        .pos-data { display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 12px; }
+        .pos-pnl { font-size: 1.4rem; font-weight: 900; text-align: right; }
+        .pos-pnl.profit { color: var(--green); } .pos-pnl.loss { color: var(--red); }
+        .btn-action { flex: 1; padding: 10px; border-radius: 10px; border: none; font-weight: bold; cursor: pointer; background: rgba(255, 69, 58, 0.15); color: var(--red); width: 100%; }
+        .loader { text-align: center; padding: 40px; color: var(--hint); }
+        .error-box { background: #2c0b0e; border: 1px solid var(--red); color: #ff8a8a; padding: 15px; border-radius: 10px; font-size: 0.8rem; word-break: break-all; }
+    </style>
+</head>
+<body>
+    <div id="mainUI" style="display:none;">
+        <div class="stats-header">
+            <div class="stat-card"><div class="stat-label">Unrealized</div><div class="stat-val" id="uPnl">...</div></div>
+            <div class="stat-card"><div class="stat-label">Total</div><div class="stat-val" id="tPnl">...</div></div>
+            <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-val" id="winRate">...</div></div>
+        </div>
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('active')">Active</div>
+            <div class="tab" onclick="switchTab('watchlist')">Watchlist</div>
+        </div>
+        <div id="positionsList"></div>
+    </div>
+
+    <div id="loader" class="loader">Loading Portfolio...</div>
+    <div id="errorBox" class="error-box" style="display:none;"></div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        let currentTab = 'active';
+        let portfolioData = null;
+
+        // 🔥 ROOT CAUSE FIX: Aggressive Data Extraction
+        function getTelegramData() {
+            // 1. Standard API
+            if (tg.initData) return tg.initData;
+            
+            // 2. Hash Extraction (Android Fix)
+            try {
+                const hash = window.location.hash.substring(1);
+                if (!hash) return null;
+                
+                // Split by & and look for tgWebAppData
+                const pairs = hash.split('&');
+                for (let pair of pairs) {
+                    const [key, value] = pair.split('=');
+                    if (key === 'tgWebAppData') {
+                        return decodeURIComponent(value);
+                    }
+                }
+            } catch (e) { console.error("Hash parse error", e); }
+            return null;
+        }
+
+        async function loadData() {
+            try {
+                // Retry loop (Wait up to 3 seconds)
+                let initData = null;
+                for(let i=0; i<15; i++) {
+                    initData = getTelegramData();
+                    if(initData) break;
+                    await new Promise(r => setTimeout(r, 200));
+                }
+
+                if (!initData) {
+                    // Debug Info
+                    throw new Error(`No Data. Hash: ${window.location.hash.substring(0, 50)}...`);
+                }
+
+                const res = await fetch(`/api/webapp/portfolio?initData=${encodeURIComponent(initData)}`);
+                if (!res.ok) throw new Error(`API Error: ${res.status}`);
+                
+                const data = await res.json();
+                if (!data.ok) throw new Error(data.error);
+
+                portfolioData = data;
+                render();
+            } catch (e) {
+                document.getElementById('loader').style.display = 'none';
+                const errBox = document.getElementById('errorBox');
+                errBox.style.display = 'block';
+                errBox.innerHTML = `⚠️ <b>Error:</b> ${e.message}<br><br><button onclick="location.reload()" style="padding:10px; border-radius:5px;">Retry</button>`;
+            }
+        }
+
+        function render() {
+            document.getElementById('loader').style.display = 'none';
+            document.getElementById('mainUI').style.display = 'block';
+            
+            const stats = portfolioData.stats;
+            const uPnl = document.getElementById('uPnl');
+            uPnl.innerText = stats.unrealized_pnl;
+            uPnl.className = `stat-val ${parseFloat(stats.unrealized_pnl) >= 0 ? 'green' : ''}`;
+            document.getElementById('tPnl').innerText = stats.total_pnl;
+            document.getElementById('winRate').innerText = stats.win_rate;
+
+            const list = document.getElementById('positionsList');
+            list.innerHTML = '';
+            const items = currentTab === 'active' ? portfolioData.active : portfolioData.watchlist;
+
+            if (items.length === 0) {
+                list.innerHTML = '<div class="loader">No positions found.</div>';
+                return;
+            }
+
+            items.forEach(item => {
+                const pnlClass = item.pnl >= 0 ? 'profit' : 'loss';
+                const pnlSign = item.pnl > 0 ? '+' : '';
+                const card = document.createElement('div');
+                card.className = 'pos-card';
+                card.innerHTML = `
+                    <div class="pos-header">
+                        <div class="pos-symbol">${item.asset} <span style="font-size:0.8rem; color:#666;">${item.leverage || ''}</span></div>
+                        <div class="pos-side ${item.side}">${item.side}</div>
+                    </div>
+                    <div class="pos-data">
+                        <div><div class="data-label">Entry</div><div class="data-val">${item.entry}</div></div>
+                        <div><div class="data-label">Mark</div><div class="data-val">${item.live_price}</div></div>
+                        <div class="pos-pnl ${pnlClass}">${pnlSign}${item.pnl}%</div>
+                    </div>
+                    <div class="pos-actions">
+                        <button class="btn-action" onclick="closeTrade(${item.id}, '${item.type}')">Close Market</button>
+                    </div>
+                `;
+                list.appendChild(card);
+            });
+        }
+
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            render();
+        }
+
+        async function closeTrade(id, type) {
+            if(!confirm("Close position?")) return;
+            try {
+                const res = await fetch('/api/webapp/close_trade', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ initData: getTelegramData(), trade_id: id, trade_type: type })
+                });
+                const data = await res.json();
+                if(data.ok) { tg.showAlert("Closed!"); loadData(); }
+                else { tg.showAlert("Error: " + data.error); }
+            } catch(e) { tg.showAlert("Network Error"); }
+        }
+
+        loadData();
+        setInterval(() => { if(portfolioData) loadData(); }, 5000);
+    </script>
+</body>
+</html>

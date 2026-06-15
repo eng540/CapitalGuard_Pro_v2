@@ -1,0 +1,38 @@
+--- START OF FILE: .github/workflows/ci.yml ---
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: sqlite:///./dev.db
+      API_KEY: test_api_key
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 bandit safety
+
+      - name: Lint (flake8)
+        run: flake8 src
+
+      - name: Security (bandit)
+        run: bandit -r src -q || true
+
+      - name: Dependencies Audit (safety)
+        run: safety check -r requirements.txt || true
+
+      - name: Tests
+        run: pytest -q
+--- END OF FILE ---

@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Advanced Analytics</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- Chart Library -->
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+    <style>
+        :root {
+            --bg: #0e1117; --card-bg: #161b22; --text: #e6edf3; --sub-text: #7d8590;
+            --green: #238636; --red: #da3633; --blue: #2f81f7; --orange: #d29922;
+            --border: #30363d;
+        }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 16px; }
+        
+        /* Header */
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .pair { font-size: 1.4rem; font-weight: 900; }
+        .badge { padding: 4px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
+        .long { background: rgba(35, 134, 54, 0.2); color: var(--green); border: 1px solid var(--green); }
+        .short { background: rgba(218, 54, 51, 0.2); color: var(--red); border: 1px solid var(--red); }
+
+        /* Live PnL Card */
+        .pnl-card { background: var(--card-bg); padding: 20px; border-radius: 16px; text-align: center; border: 1px solid var(--border); margin-bottom: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
+        .pnl-title { font-size: 0.8rem; color: var(--sub-text); text-transform: uppercase; letter-spacing: 1px; }
+        .pnl-value { font-size: 2.5rem; font-weight: 900; margin: 10px 0; }
+        .price-sub { font-family: 'Courier New', monospace; font-size: 1rem; color: var(--blue); }
+
+        /* Chart Container */
+        .chart-box { height: 300px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); margin-bottom: 20px; }
+
+        /* Progress Tracker */
+        .tracker-box { background: var(--card-bg); padding: 15px; border-radius: 12px; border: 1px solid var(--border); margin-bottom: 20px; }
+        .tracker-title { font-size: 0.9rem; font-weight: bold; margin-bottom: 15px; display: flex; justify-content: space-between; }
+        
+        .progress-track { position: relative; height: 4px; background: #333; margin: 20px 10px; border-radius: 2px; }
+        .progress-fill { position: absolute; left: 0; top: 0; height: 100%; background: var(--blue); width: 0%; transition: width 0.5s; }
+        
+        .milestone { position: absolute; top: -6px; width: 16px; height: 16px; background: var(--bg); border: 2px solid #555; border-radius: 50%; transform: translateX(-50%); }
+        .milestone.active { background: var(--green); border-color: var(--green); }
+        .milestone.current { background: var(--blue); border-color: var(--blue); box-shadow: 0 0 10px var(--blue); }
+        
+        .m-label { position: absolute; top: 15px; transform: translateX(-50%); font-size: 0.7rem; color: var(--sub-text); white-space: nowrap; }
+
+        /* Calculator */
+        .calc-box { background: var(--card-bg); padding: 15px; border-radius: 12px; border: 1px solid var(--border); }
+        .input-group { display: flex; gap: 10px; margin-top: 10px; }
+        input { background: var(--bg); border: 1px solid var(--border); color: white; padding: 10px; border-radius: 8px; width: 100%; font-size: 1rem; }
+        
+        .profit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; }
+        .pg-item { background: rgba(255,255,255,0.03); padding: 10px; border-radius: 8px; }
+        .pg-head { font-size: 0.7rem; color: var(--sub-text); }
+        .pg-val { font-size: 0.9rem; font-weight: bold; color: var(--green); }
+
+        /* Loading */
+        #loader { position: fixed; top:0; left:0; width:100%; height:100%; background:var(--bg); display:flex; justify-content:center; align-items:center; z-index:999; flex-direction: column; gap: 10px; }
+    </style>
+</head>
+<body>
+
+    <div id="loader">
+        <div style="font-size: 1.5rem;">📊</div>
+        <div>Analyzing Data...</div>
+    </div>
+
+    <div id="app" style="display:none;">
+        <!-- Header -->
+        <div class="header">
+            <div class="pair" id="asset">BTC/USDT</div>
+            <div class="badge" id="side">LONG 20x</div>
+        </div>
+
+        <!-- Main PnL -->
+        <div class="pnl-card">
+            <div class="pnl-title">Unrealized PnL</div>
+            <div class="pnl-value" id="pnl">0.00%</div>
+            <div class="price-sub">Live: <span id="livePrice">0.00</span></div>
+        </div>
+
+        <!-- Visual Progress Tracker -->
+        <div class="tracker-box">
+            <div class="tracker-title">
+                <span>🎯 Target Progress</span>
+                <span id="distText" style="color: var(--blue); font-size: 0.8rem;">On Track</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-fill" id="progressBar"></div>
+                <!-- Milestones will be injected here -->
+                <div id="milestones"></div>
+            </div>
+            <div style="height: 25px;"></div> <!-- Spacer for labels -->
+        </div>
+
+        <!-- TradingView Chart -->
+        <div class="chart-box" id="tv_chart_container"></div>
+
+        <!-- Profit Simulator -->
+        <div class="calc-box">
+            <div class="tracker-title">💰 Profit Simulator</div>
+            <div style="font-size: 0.8rem; color: var(--sub-text);">Calculate potential returns based on your investment.</div>
+            
+            <div class="input-group">
+                <input type="number" id="investAmt" placeholder="Investment ($)" value="100" oninput="calcProfits()">
+            </div>
+
+            <div class="profit-grid" id="profitGrid">
+                <!-- Generated by JS -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        // --- Data ---
+        let signalData = null;
+
+        async function init() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const recId = tg.initDataUnsafe?.start_param || urlParams.get('id');
+
+            if(!recId) { alert("No Signal ID"); return; }
+
+            try {
+                const res = await fetch(`/api/webapp/signal/${recId}`);
+                const json = await res.json();
+                if(json.ok) {
+                    signalData = json.signal;
+                    render();
+                    initChart();
+                    calcProfits();
+                    document.getElementById('loader').style.display = 'none';
+                    document.getElementById('app').style.display = 'block';
+                } else {
+                    alert(json.error);
+                }
+            } catch(e) {
+                console.error(e);
+                alert("Connection Error");
+            }
+        }
+
+        function render() {
+            // 1. Header & PnL
+            document.getElementById('asset').innerText = signalData.asset;
+            const sideEl = document.getElementById('side');
+            sideEl.innerText = `${signalData.side} ${signalData.leverage || '20x'}`;
+            sideEl.className = `badge ${signalData.side.toLowerCase()}`;
+
+            const pnl = parseFloat(signalData.pnl);
+            const pnlEl = document.getElementById('pnl');
+            pnlEl.innerText = (pnl > 0 ? "+" : "") + pnl.toFixed(2) + "%";
+            pnlEl.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
+            
+            document.getElementById('livePrice').innerText = signalData.live_price;
+
+            // 2. Progress Tracker Logic
+            renderTracker();
+        }
+
+        function renderTracker() {
+            const entry = signalData.entry;
+            const lastTp = signalData.targets[signalData.targets.length - 1].price;
+            const live = signalData.live_price;
+            
+            // Calculate progress % (0 to 100) based on price range [Entry -> Final TP]
+            let totalRange = Math.abs(lastTp - entry);
+            let currentDist = Math.abs(live - entry);
+            let progress = (currentDist / totalRange) * 100;
+            
+            // Cap at 0-100
+            if (signalData.side === 'LONG' && live < entry) progress = 0;
+            if (signalData.side === 'SHORT' && live > entry) progress = 0;
+            if (progress > 100) progress = 100;
+
+            document.getElementById('progressBar').style.width = `${progress}%`;
+
+            // Render Milestones
+            const msContainer = document.getElementById('milestones');
+            msContainer.innerHTML = '';
+            
+            // Add Entry Dot
+            createDot(0, "Entry", true);
+
+            // Add TP Dots
+            signalData.targets.forEach((t, i) => {
+                let tpDist = Math.abs(t.price - entry);
+                let pos = (tpDist / totalRange) * 100;
+                let isHit = t.hit;
+                createDot(pos, `TP${i+1}`, isHit);
+            });
+
+            function createDot(left, label, isActive) {
+                const dot = document.createElement('div');
+                dot.className = `milestone ${isActive ? 'active' : ''}`;
+                dot.style.left = `${left}%`;
+                
+                const lbl = document.createElement('div');
+                lbl.className = 'm-label';
+                lbl.innerText = label;
+                lbl.style.left = `${left}%`;
+                
+                msContainer.appendChild(dot);
+                msContainer.appendChild(lbl);
+            }
+        }
+
+        function initChart() {
+            // Convert symbol for TradingView (e.g., BTCUSDT -> BINANCE:BTCUSDT)
+            const symbol = `BINANCE:${signalData.asset.replace('/', '')}`;
+            
+            new TradingView.widget({
+                "container_id": "tv_chart_container",
+                "autosize": true,
+                "symbol": symbol,
+                "interval": "60",
+                "timezone": "Etc/UTC",
+                "theme": "dark",
+                "style": "1",
+                "locale": "en",
+                "toolbar_bg": "#f1f3f6",
+                "enable_publishing": false,
+                "hide_top_toolbar": true,
+                "hide_legend": true,
+                "save_image": false,
+                "backgroundColor": "rgba(22, 27, 34, 1)",
+                "gridColor": "rgba(48, 54, 61, 1)"
+            });
+        }
+
+        function calcProfits() {
+            const investment = parseFloat(document.getElementById('investAmt').value) || 0;
+            const grid = document.getElementById('profitGrid');
+            grid.innerHTML = '';
+            
+            signalData.targets.forEach((t, i) => {
+                // ROI is already calculated in backend relative to entry with leverage
+                // Profit = Investment * (ROI / 100)
+                const profit = investment * (t.roi / 100);
+                
+                const item = document.createElement('div');
+                item.className = 'pg-item';
+                item.innerHTML = `
+                    <div class="pg-head">TP${i+1} (${t.roi}%)</div>
+                    <div class="pg-val">$${profit.toFixed(2)}</div>
+                `;
+                grid.appendChild(item);
+            });
+        }
+
+        // Auto refresh logic could be added here
+        init();
+
+    </script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+#--- START OF FILE CapitalGuard_Pro_v2-main/src/capitalguard/interfaces/formatting/telegram_templates.py
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+from typing import List, Optional
+
+def format_signal(
+    rec_id: int,
+    symbol: str,
+    side: str,
+    entry: float,
+    sl: float,
+    targets: List[float],
+    notes: Optional[str] = None,
+) -> str:
+    def tp_pct(t: float) -> str:
+        try:
+            if side.upper() == "LONG":
+                pct = (t - entry) / entry * 100
+            else:
+                pct = (entry - t) / entry * 100
+            return f"{pct:+.2f}%"
+        except Exception:
+            return "-"
+    targets_with_pct = " • ".join([f"{t:g} ({tp_pct(t)})" for t in targets])
+
+    lines = []
+    lines.append("┌────────────────────────┐")
+    lines.append(f"│ 📣 Trade Signal — #REC{rec_id:04d} │  #{symbol} #Futures #{side.capitalize()}")
+    lines.append("└────────────────────────┘")
+    lines.append(f"💎 Symbol : {symbol}")
+    lines.append(f"📌 Type   : Futures / {side.upper()}")
+    lines.append("────────────────────────")
+    lines.append(f"💰 Entry  : {entry:g}")
+    lines.append(f"🛑 SL     : {sl:g}")
+    lines.append("")
+    lines.append(f"🎯 TPs   : {targets_with_pct}")
+    lines.append("")
+    lines.append("────────────────────────")
+    lines.append("📊 R/R   : -")
+    if notes:
+        lines.append(f"📝 Notes : {notes}")
+        lines.append("")
+    lines.append("(Disclaimer: Not financial advice. Manage your risk.)")
+    return "\n".join(lines)
+
+def format_closed(rec_id: int, symbol: str, exit_price: float) -> str:
+    return f"✅ Closed — #REC{rec_id:04d}\n• {symbol} @ {exit_price:g}"
+
+def format_report(total: int, open_cnt: int, closed_cnt: int, top_asset: str | None) -> str:
+    return (
+        "📈 تقرير مختصر\n"
+        f"• إجمالي التوصيات: {total}\n"
+        f"• المفتوحة: {open_cnt} | المغلقة: {closed_cnt}\n"
+        f"• أكثر أصل تكرارًا: {top_asset or '-'}"
+    )

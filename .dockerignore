@@ -1,0 +1,65 @@
+# .dockerignore — CapitalGuard Pro v2
+# ✅ DF-W4 FIX: يمنع نسخ الملفات غير الضرورية إلى الـ image
+# يُقلل حجم الـ image ويُسرِّع الـ build على Railway
+
+# ── Python cache ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+
+# ── Virtual environments ──────────────────────────────────────────
+.venv/
+venv/
+env/
+.env.local
+
+# ── Tests (لا تُنسخ إلى الإنتاج) ─────────────────────────────────
+tests/
+*.test.py
+test_*.py
+pytest.ini
+.pytest_cache/
+
+# ── Git ───────────────────────────────────────────────────────────
+.git/
+.gitignore
+.github/
+
+# ── IDE / OS ──────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Documentation ─────────────────────────────────────────────────
+*.md
+ARCHITECTURE.md
+ROADMAP.md
+RUNBOOK.md
+docs/
+
+# ── Local backups (لا تُنسخ إلى الـ image) ────────────────────────
+backups/
+
+# ── Development databases ─────────────────────────────────────────
+*.db
+*.sqlite3
+dev.db
+test.db
+
+# ── Logs ──────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Secrets (يجب أن تكون في .gitignore أيضاً) ────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Telegram bot persistence (محلي) ──────────────────────────────
+telegram_bot_persistence*
