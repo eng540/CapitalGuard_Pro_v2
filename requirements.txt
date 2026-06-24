@@ -20,4 +20,5 @@ pytest==8.3.2
 pydantic-settings==2.3.4
 supervisor==4.2.5
 redis==5.0.7
+spacy>=3.7.0
 # --- END of requirements.txt ---
