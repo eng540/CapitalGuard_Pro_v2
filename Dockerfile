@@ -36,9 +36,9 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-# ── تثبيت أدوات النظام + postgresql-client-17 ────────────────────
-# postgresql-client-17 مطلوب لـ pg_dump و psql (backup_service.py)
-# يتطابق مع إصدار Supabase (PostgreSQL 17)
+# ── تثبيت أدوات النظام + postgresql-client-18 ────────────────────
+# postgresql-client-18 مطلوب لمطابقة إصدار خادم Postgres على Railway (18.4)
+# pg_dump يرفض العمل ضد نسخة خادم أحدث منه (server version mismatch)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
@@ -54,7 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
     > /etc/apt/sources.list.d/pgdg.list \
  && apt-get update \
- && apt-get install -y --no-install-recommends postgresql-client-17 \
+ && apt-get install -y --no-install-recommends postgresql-client-18 \
  && rm -rf /var/lib/apt/lists/*
 
 # ── مستخدم التشغيل (بدون root) ───────────────────────────────────
