@@ -59,10 +59,11 @@ class Recommendation:
     entry: Price
     stop_loss: Price
     targets: Targets
-    order_type: OrderType
+    order_type: OrderType = OrderType.LIMIT
     
     id: Optional[int] = None
     analyst_id: Optional[int] = None # Internal DB ID of the analyst user
+    channel_id: Optional[int] = None
 
     market: Optional[str] = "Futures"
     notes: Optional[str] = None

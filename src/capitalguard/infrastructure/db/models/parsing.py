@@ -4,8 +4,7 @@
 import sqlalchemy as sa
 from sqlalchemy import Column, Integer, String, Text, Boolean, Numeric, DateTime, ForeignKey, func
 from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import JSONB
-from .base import Base  # Assuming Base is defined in models/base.py
+from .base import Base, JSON_TYPE  # Shared cross-dialect JSON type
 
 
 class ParsingTemplate(Base):
@@ -25,7 +24,7 @@ class ParsingTemplate(Base):
     # How often users correct its output
     user_correction_rate = Column(Numeric(5, 2), nullable=True)
     # { usage_count: N, success_count: M, last_used: timestamp }
-    stats = Column(JSONB(astext_type=sa.Text()), nullable=True)
+    stats = Column(JSON_TYPE, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -49,13 +48,13 @@ class ParsingAttempt(Base):
     # Which template matched (if any)
     used_template_id = Column(Integer, ForeignKey('parsing_templates.id', ondelete='SET NULL'), nullable=True)
     # The structured data extracted
-    result_data = Column(JSONB(astext_type=sa.Text()), nullable=True)
+    result_data = Column(JSON_TYPE, nullable=True)
     # Did parsing yield required fields?
     was_successful = Column(Boolean, nullable=False, server_default=sa.text('false'), index=True)
     # Did the user modify the result?
     was_corrected = Column(Boolean, nullable=False, server_default=sa.text('false'), index=True)
     # JSON diff showing user changes {field: {old: X, new: Y}}
-    corrections_diff = Column(JSONB(astext_type=sa.Text()), nullable=True)
+    corrections_diff = Column(JSON_TYPE, nullable=True)
     # Time taken for parsing
     latency_ms = Column(Integer, nullable=True)
     # 'regex', 'ner', 'ocr', 'vlm', 'failed'

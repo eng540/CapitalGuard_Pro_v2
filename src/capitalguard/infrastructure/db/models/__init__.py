@@ -26,6 +26,9 @@ from .watched_channel import WatchedChannel
 # ✅ R1-S1 HOTFIX 10: Import the new event model
 from .user_trade_event import UserTradeEvent
 
+# Backward-compatible export used by existing service tests and integrations.
+UserTradeStatus = UserTradeStatusEnum
+
 __all__ = [
     "Base",
     "User",
@@ -41,7 +44,8 @@ __all__ = [
     "RecommendationStatusEnum",
     "OrderTypeEnum",
     "ExitStrategyEnum",
-    "UserTradeStatusEnum", 
+    "UserTradeStatusEnum",
+    "UserTradeStatus",
     "ParsingTemplate", 
     "ParsingAttempt", 
     "WatchedChannel",

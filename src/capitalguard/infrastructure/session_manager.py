@@ -17,6 +17,7 @@ Key features:
 import time
 import hashlib
 import logging
+import secrets
 from typing import Dict, Any, Set, Optional
 
 from telegram.ext import ContextTypes
@@ -76,8 +77,8 @@ class SessionManager:
     
     @staticmethod
     def _generate_session_id() -> str:
-        """Generate a unique session ID"""
-        return hashlib.md5(f"{time.time()}{id(object())}".encode()).hexdigest()[:16]
+        """Generate an unpredictable session ID."""
+        return secrets.token_hex(16)
     
     @staticmethod
     def get_channel_picker_state(context: ContextTypes.DEFAULT_TYPE) -> Set[int]:
@@ -106,14 +107,14 @@ class SessionManager:
         context.user_data[DRAFT_KEY] = draft_data
     
     @staticmethod
-    def _shorten_token(full_token: str, length: int = 8) -> str:
+    def _shorten_token(full_token: str, length: int = 16) -> str:
         """
         Create a shortened token using hashing to comply with Telegram's 64-byte callback data limit
         This is critical for channel picker and recommendation review flows
         """
         if len(full_token) <= length:
             return full_token
-        return hashlib.md5(full_token.encode()).hexdigest()[:length]
+        return hashlib.sha256(full_token.encode("utf-8")).hexdigest()[:length]
     
     @staticmethod
     def get_safe_token(context: ContextTypes.DEFAULT_TYPE, base_token: str) -> str:

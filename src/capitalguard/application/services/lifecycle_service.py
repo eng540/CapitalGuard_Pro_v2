@@ -156,7 +156,7 @@ class LifecycleService:
                 pass  # Object might be deleted or state invalid, safe to ignore
             
             if rebuild_alerts and self.alert_service:
-                await self.alert_service.build_triggers_index()
+                self.alert_service.schedule_rebuild_index()
 
             if isinstance(obj, Recommendation):
                 entity = self.repo._to_entity(obj)

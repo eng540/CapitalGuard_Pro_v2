@@ -10,8 +10,7 @@ from sqlalchemy import (
     ForeignKey, Enum, Text, BigInteger, Numeric, func
 )
 from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import JSONB
-from .base import Base
+from .base import Base, JSON_TYPE
 from capitalguard.domain.entities import (
     RecommendationStatus as RecommendationStatusEnum,
     OrderType as OrderTypeEnum,
@@ -51,7 +50,7 @@ class Recommendation(Base):
     side = Column(String, nullable=False)
     entry = Column(Numeric(20, 8), nullable=False)
     stop_loss = Column(Numeric(20, 8), nullable=False)
-    targets = Column(JSONB, nullable=False)
+    targets = Column(JSON_TYPE, nullable=False)
     status = Column(Enum(RecommendationStatusEnum, name="recommendationstatusenum"), nullable=False, default=RecommendationStatusEnum.PENDING, index=True)
     order_type = Column(Enum(OrderTypeEnum, name="ordertypeenum"), nullable=False, default=OrderTypeEnum.LIMIT)
     exit_strategy = Column(Enum(ExitStrategyEnum, name="exitstrategyenum"), nullable=False, default=ExitStrategyEnum.CLOSE_AT_FINAL_TP)
@@ -89,7 +88,7 @@ class UserTrade(Base):
     side = Column(String, nullable=False)
     entry = Column(Numeric(20, 8), nullable=False)
     stop_loss = Column(Numeric(20, 8), nullable=False)
-    targets = Column(JSONB, nullable=False)
+    targets = Column(JSON_TYPE, nullable=False)
     
     status = Column(Enum(UserTradeStatusEnum, name="usertradestatus"), nullable=False, default=UserTradeStatusEnum.WATCHLIST, index=True)
     
@@ -116,7 +115,7 @@ class RecommendationEvent(Base):
     id = Column(Integer, primary_key=True)
     recommendation_id = Column(Integer, ForeignKey('recommendations.id', ondelete="CASCADE"), nullable=False, index=True)
     event_type = Column(String(50), nullable=False, index=True)
-    event_data = Column(JSONB, nullable=True)
+    event_data = Column(JSON_TYPE, nullable=True)
     event_timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     recommendation = relationship("Recommendation", back_populates="events")
 

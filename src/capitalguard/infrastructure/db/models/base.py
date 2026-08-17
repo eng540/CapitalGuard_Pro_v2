@@ -10,7 +10,8 @@ This is a complete, final, and production-ready file.
 import json
 from decimal import Decimal
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, JSON
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
@@ -28,6 +29,10 @@ def _custom_json_serializer(obj):
         return str(obj)
     # For any other type that the default encoder can't handle, raise the standard error.
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
+# JSON on SQLite, JSONB on PostgreSQL. This keeps local integration tests portable.
+JSON_TYPE = JSON().with_variant(JSONB(), "postgresql")
 
 
 # --- Database Engine Creation ---

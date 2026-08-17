@@ -2,9 +2,8 @@
 from sqlalchemy import (
     Column, Integer, String, DateTime, ForeignKey, func
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-from .base import Base
+from .base import Base, JSON_TYPE
 
 class RecommendationEvent(Base):
     """
@@ -26,7 +25,7 @@ class RecommendationEvent(Base):
 
     # A flexible JSONB field to store data relevant to the event
     # Example for 'SL_UPDATE': {"old_sl": 50000, "new_sl": 51000}
-    event_data = Column(JSONB, nullable=True)
+    event_data = Column(JSON_TYPE, nullable=True)
 
     # Defines the many-to-one relationship back to the RecommendationORM model
     recommendation = relationship("RecommendationORM", back_populates="events")

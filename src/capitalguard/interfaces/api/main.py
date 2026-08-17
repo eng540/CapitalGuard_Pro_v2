@@ -6,7 +6,6 @@
 import logging
 import asyncio
 import os
-import pickle
 import html
 import json
 import traceback
@@ -25,6 +24,8 @@ from capitalguard.interfaces.telegram.handlers import register_all_handlers
 from capitalguard.interfaces.api.routers import auth as auth_router
 from capitalguard.interfaces.api.routers import webapp as webapp_router
 from capitalguard.interfaces.api.metrics import router as metrics_router
+from capitalguard.interfaces.webhook.tradingview import router as tradingview_router
+from capitalguard.interfaces.api.security.auth import validate_security_settings
 from capitalguard.application.services.alert_service import AlertService
 from capitalguard.application.services.market_data_service import MarketDataService
 
@@ -32,6 +33,52 @@ from capitalguard.application.services.market_data_service import MarketDataServ
 from capitalguard.infrastructure.db.backup_service import auto_backup_loop
 
 log = logging.getLogger(__name__)
+
+
+class _PersistenceCodec:
+    """JSON codec for PTB persistence data; deliberately rejects unknown types."""
+
+    @staticmethod
+    def encode(value):
+        if isinstance(value, dict):
+            return {
+                "__type__": "dict",
+                "items": [[_PersistenceCodec.encode(k), _PersistenceCodec.encode(v)] for k, v in value.items()],
+            }
+        if isinstance(value, tuple):
+            return {"__type__": "tuple", "items": [_PersistenceCodec.encode(v) for v in value]}
+        if isinstance(value, set):
+            return {"__type__": "set", "items": [_PersistenceCodec.encode(v) for v in value]}
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        raise TypeError(f"Unsupported persistence type: {type(value).__name__}")
+
+    @staticmethod
+    def decode(value):
+        if isinstance(value, list):
+            return [_PersistenceCodec.decode(v) for v in value]
+        if not isinstance(value, dict):
+            return value
+        marker = value.get("__type__")
+        if marker == "dict":
+            return {
+                _PersistenceCodec.decode(k): _PersistenceCodec.decode(v)
+                for k, v in value.get("items", [])
+            }
+        if marker == "tuple":
+            return tuple(_PersistenceCodec.decode(v) for v in value.get("items", []))
+        if marker == "set":
+            return set(_PersistenceCodec.decode(v) for v in value.get("items", []))
+        raise ValueError("Unknown persistence payload type")
+
+
+def _dump_persistence(value) -> bytes:
+    return json.dumps(_PersistenceCodec.encode(value), separators=(",", ":")).encode("utf-8")
+
+
+def _load_persistence(data: bytes):
+    return _PersistenceCodec.decode(json.loads(data.decode("utf-8")))
+
 
 # --- Redis Persistence Implementation (Complete & Correct) ---
 
@@ -41,36 +88,38 @@ class RedisPersistence(BasePersistence):
     def __init__(self, redis_client: redis.Redis):
         super().__init__()
         self.redis_client = redis_client
-        self.user_data_key = "ptb:user_data"
-        self.chat_data_key = "ptb:chat_data"
-        self.bot_data_key = "ptb:bot_data"
-        self.callback_data_key = "ptb:callback_data"
-        self.conversations_key = "ptb:conversations"
+        # v2 namespace prevents accidentally decoding legacy pickle payloads.
+        prefix = "ptb:v2:"
+        self.user_data_key = f"{prefix}user_data"
+        self.chat_data_key = f"{prefix}chat_data"
+        self.bot_data_key = f"{prefix}bot_data"
+        self.callback_data_key = f"{prefix}callback_data"
+        self.conversations_key = f"{prefix}conversations"
 
     async def get_bot_data(self) -> Dict[str, Any]:
         data = self.redis_client.get(self.bot_data_key)
-        return pickle.loads(data) if data else {}
+        return _load_persistence(data) if data else {}
 
     async def update_bot_data(self, data: Dict[str, Any]) -> None:
-        self.redis_client.set(self.bot_data_key, pickle.dumps(data))
+        self.redis_client.set(self.bot_data_key, _dump_persistence(data))
 
     async def get_chat_data(self) -> Dict[int, Dict[str, Any]]:
         data = self.redis_client.hgetall(self.chat_data_key)
-        return {int(k): pickle.loads(v) for k, v in data.items()}
+        return {int(k): _load_persistence(v) for k, v in data.items()}
 
     async def update_chat_data(self, chat_id: int, data: Dict[str, Any]) -> None:
-        self.redis_client.hset(self.chat_data_key, str(chat_id), pickle.dumps(data))
+        self.redis_client.hset(self.chat_data_key, str(chat_id), _dump_persistence(data))
 
     async def get_user_data(self) -> Dict[int, Dict[str, Any]]:
         data = self.redis_client.hgetall(self.user_data_key)
-        return {int(k): pickle.loads(v) for k, v in data.items()}
+        return {int(k): _load_persistence(v) for k, v in data.items()}
 
     async def update_user_data(self, user_id: int, data: Dict[str, Any]) -> None:
-        self.redis_client.hset(self.user_data_key, str(user_id), pickle.dumps(data))
+        self.redis_client.hset(self.user_data_key, str(user_id), _dump_persistence(data))
 
     async def get_conversations(self, name: str) -> Dict:
         data = self.redis_client.hget(self.conversations_key, name)
-        return pickle.loads(data) if data else {}
+        return _load_persistence(data) if data else {}
 
     async def update_conversation(self, name: str, key: Tuple[int, ...], new_state: Optional[object]) -> None:
         conversations = await self.get_conversations(name)
@@ -78,7 +127,7 @@ class RedisPersistence(BasePersistence):
             conversations.pop(key, None)
         else:
             conversations[key] = new_state
-        self.redis_client.hset(self.conversations_key, name, pickle.dumps(conversations))
+        self.redis_client.hset(self.conversations_key, name, _dump_persistence(conversations))
 
     async def drop_chat_data(self, chat_id: int) -> None:
         self.redis_client.hdel(self.chat_data_key, str(chat_id))
@@ -88,11 +137,11 @@ class RedisPersistence(BasePersistence):
 
     async def get_callback_data(self) -> Optional[Any]:
         data = self.redis_client.get(self.callback_data_key)
-        return pickle.loads(data) if data else None
+        return _load_persistence(data) if data else None
 
     async def update_callback_data(self, data: Any) -> None:
         if data:
-            self.redis_client.set(self.callback_data_key, pickle.dumps(data))
+            self.redis_client.set(self.callback_data_key, _dump_persistence(data))
         else:
             self.redis_client.delete(self.callback_data_key)
 
@@ -103,12 +152,12 @@ class RedisPersistence(BasePersistence):
     async def refresh_chat_data(self, chat_id: int, chat_data: Dict) -> None:
         data = self.redis_client.hget(self.chat_data_key, str(chat_id))
         if data:
-            chat_data.update(pickle.loads(data))
+            chat_data.update(_load_persistence(data))
 
     async def refresh_user_data(self, user_id: int, user_data: Dict) -> None:
         data = self.redis_client.hget(self.user_data_key, str(user_id))
         if data:
-            user_data.update(pickle.loads(data))
+            user_data.update(_load_persistence(data))
 
     async def flush(self) -> None:
         pass
@@ -118,6 +167,8 @@ class RedisPersistence(BasePersistence):
 app = FastAPI(title="CapitalGuard Pro API", version="27.2-webapp") # ✅ Version Bump
 app.state.ptb_app = None
 app.state.services = None
+app.state.background_tasks: set[asyncio.Task] = set()
+app.state.ready = False
 
 # ✅ WEBAPP SUPPORT: Mount static files for WebApp
 app.mount("/static", StaticFiles(directory="src/capitalguard/interfaces/api/static"), name="static")
@@ -129,14 +180,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 async def on_startup():
     log.info("🚀 Application startup sequence initiated...")
 
-    # ✅ START AUTO-BACKUP TASK FOR PRODUCTION
-    log.info("Starting Auto-Backup background task for Production environment...")
-    asyncio.create_task(auto_backup_loop())
+    validate_security_settings()
 
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
-        log.critical("FATAL: REDIS_URL environment variable not found. Startup aborted.")
-        return
+        raise RuntimeError("REDIS_URL is required; refusing to start without Redis.")
 
     try:
         redis_client = redis.from_url(redis_url, decode_responses=False)
@@ -144,8 +192,7 @@ async def on_startup():
         persistence = RedisPersistence(redis_client=redis_client)
         log.info("✅ Connected to Redis for persistence.")
     except Exception as e:
-        log.critical(f"FATAL: Could not connect to Redis: {e}. Startup aborted.")
-        return
+        raise RuntimeError("Could not connect to Redis; refusing to start.") from e
 
     # CRITICAL FIX: Correctly clear all persisted conversation states.
     log.warning("Clearing all persisted conversation states to ensure a clean start...")
@@ -154,8 +201,7 @@ async def on_startup():
 
     ptb_app = bootstrap_app(persistence=persistence)
     if not ptb_app:
-        log.critical("FATAL: Could not create Telegram Application. Startup aborted.")
-        return
+        raise RuntimeError("Could not create Telegram Application; refusing to start.")
 
     app.state.ptb_app = ptb_app
     await ptb_app.initialize()
@@ -182,10 +228,16 @@ async def on_startup():
     # --- End of Fix ---
 
     alert_service: AlertService = app.state.services.get("alert_service")
-    if alert_service:
-        await alert_service.build_triggers_index()
-        alert_service.start()
-        log.info("AlertService background tasks started.")
+    if not alert_service:
+        raise RuntimeError("AlertService is required; refusing to start without it.")
+    await alert_service.build_triggers_index()
+    alert_service.start()
+    log.info("AlertService background tasks started.")
+
+    # Start recurring work only after all critical dependencies are ready.
+    backup_task = asyncio.create_task(auto_backup_loop(), name="auto-backup")
+    app.state.background_tasks.add(backup_task)
+    backup_task.add_done_callback(app.state.background_tasks.discard)
 
     private_commands = [
         BotCommand("newrec", "📊 New Recommendation"),
@@ -204,12 +256,20 @@ async def on_startup():
     if ptb_app.bot:
         log.info(f"✅ Bot is running as @{ptb_app.bot.username}")
 
+    app.state.ready = True
     log.info("🚀 Application startup sequence complete.")
 
 @app.on_event("shutdown")
 async def on_shutdown():
     log.info("🔌 Application shutdown sequence initiated...")
-    alert_service: AlertService = app.state.services.get("alert_service")
+    app.state.ready = False
+    for task in list(app.state.background_tasks):
+        task.cancel()
+    if app.state.background_tasks:
+        await asyncio.gather(*app.state.background_tasks, return_exceptions=True)
+    alert_service: AlertService | None = (
+        app.state.services.get("alert_service") if app.state.services else None
+    )
     if alert_service:
         alert_service.stop()
         log.info("AlertService stopped.")
@@ -237,12 +297,18 @@ def root():
 
 @app.get("/health", status_code=200, tags=["System"])
 def health_check():
+    """Readiness endpoint: never reports healthy before startup is complete."""
+    from fastapi import HTTPException
+
+    if not app.state.ready or not app.state.ptb_app or not app.state.services:
+        raise HTTPException(status_code=503, detail="Service is not ready")
     return {"status": "ok"}
 
 # ✅ WEBAPP SUPPORT: Include WebApp router
 app.include_router(auth_router.router)
 app.include_router(webapp_router.router)
 app.include_router(metrics_router)
+app.include_router(tradingview_router)
 
 @app.get("/dash")
 async def serve_dashboard():

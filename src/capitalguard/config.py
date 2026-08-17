@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     # API / Security
     API_KEY: str | None = None
+    ENABLE_LOCAL_AUTH: bool = False
     CORS_ORIGINS: str = "*"
 
     # External Webhooks

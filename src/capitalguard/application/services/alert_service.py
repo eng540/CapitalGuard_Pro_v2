@@ -624,6 +624,35 @@ class AlertService:
                     del self.active_triggers[key]
                 break
 
+    def _schedule_on_background_loop(self, coroutine_factory, operation: str) -> bool:
+        """Submit work to AlertService's loop without crossing event-loop ownership."""
+        loop = self._bg_loop
+        if loop is None or not loop.is_running():
+            log.warning("Cannot schedule %s: AlertService background loop is not running.", operation)
+            return False
+        future = asyncio.run_coroutine_threadsafe(coroutine_factory(), loop)
+
+        def _report_failure(done_future):
+            try:
+                done_future.result()
+            except Exception:
+                log.exception("Scheduled AlertService operation failed: %s", operation)
+
+        future.add_done_callback(_report_failure)
+        return True
+
+    def schedule_rebuild_index(self) -> bool:
+        """Thread-safe entry point for callers running outside AlertService's loop."""
+        return self._schedule_on_background_loop(
+            lambda: self.build_triggers_index(), "rebuild_triggers_index"
+        )
+
+    def schedule_add_trigger_data(self, item_data: Dict[str, Any]) -> bool:
+        """Thread-safe entry point for adding a trigger from another event loop."""
+        return self._schedule_on_background_loop(
+            lambda: self.add_trigger_data(item_data), "add_trigger_data"
+        )
+
     async def build_triggers_index(self) -> None:
         log.info("AlertService: Building triggers index from DB...")
         try:
