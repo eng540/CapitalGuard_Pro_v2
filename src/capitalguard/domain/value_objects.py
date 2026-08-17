@@ -154,8 +154,13 @@ class Price:
     value: Decimal
 
     def __post_init__(self) -> None:
+        if isinstance(self.value, bool):
+            raise TypeError("Price value must be numeric, not bool.")
         if not isinstance(self.value, Decimal):
-            raise TypeError("Price value must be a Decimal.")
+            try:
+                object.__setattr__(self, "value", Decimal(str(self.value)))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise TypeError("Price value must be a valid number.") from exc
         # Allow price == 0 in certain contexts (e.g., unset), but keep negative check
         if self.value < Decimal(0):
             raise ValueError("Price must be non-negative.")
@@ -180,16 +185,24 @@ class Targets:
 
         self._values: List[Target] = []
         for v in values:
-            if not isinstance(v, dict) or "price" not in v:
-                raise ValueError("Invalid target format. Must be a list of {'price': Decimal|str|float, 'close_percent': float}")
-            price_val = v["price"]
-            if not isinstance(price_val, Decimal):
-                try:
-                    price_val = Decimal(str(price_val))
-                except (InvalidOperation, TypeError, ValueError):
-                    raise ValueError(f"Invalid price value in target: {v.get('price')}")
-            close_pct = float(v.get("close_percent", 0.0))
-            self._values.append(Target(price=Price(price_val), close_percent=close_pct))
+            if isinstance(v, dict):
+                if "price" not in v:
+                    raise ValueError("Invalid target format: missing price")
+                price_val = v["price"]
+                close_pct = float(v.get("close_percent", 0.0))
+            else:
+                # Backward-compatible shorthand: Targets([61000, 62000]).
+                price_val = v
+                close_pct = 0.0
+            try:
+                normalized_price = price_val if isinstance(price_val, Decimal) else Decimal(str(price_val))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid price value in target: {price_val}") from exc
+            self._values.append(Target(price=Price(normalized_price), close_percent=close_pct))
+
+        if self._values and all(target.close_percent == 0.0 for target in self._values):
+            last = self._values[-1]
+            self._values[-1] = Target(price=last.price, close_percent=100.0)
 
         # Empty targets allowed in some flows; keep validation flexible
         # but maintain invariant that _values is a list of Target

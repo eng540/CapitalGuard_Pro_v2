@@ -139,8 +139,8 @@ class TradeService:
             rec_orm = orm_object
             if rebuild_alerts and self.alert_service:
                 try:
-                    logger.info(f"Rebuilding full alert index on request for Rec ID {item_id}...")
-                    await self.alert_service.build_triggers_index()
+                    logger.info(f"Scheduling alert index rebuild for Rec ID {item_id}...")
+                    self.alert_service.schedule_rebuild_index()
                 except Exception as alert_err:
                     logger.exception(f"Alert rebuild fail Rec ID {item_id}: {alert_err}")
 
@@ -153,8 +153,8 @@ class TradeService:
         elif isinstance(orm_object, UserTrade):
              if rebuild_alerts and self.alert_service:
                 try:
-                    logger.info(f"Rebuilding full alert index on request for UserTrade ID {item_id}...")
-                    await self.alert_service.build_triggers_index()
+                    logger.info(f"Scheduling alert index rebuild for UserTrade ID {item_id}...")
+                    self.alert_service.schedule_rebuild_index()
                 except Exception as alert_err:
                     logger.exception(f"Alert rebuild fail UserTrade ID {item_id}: {alert_err}")
 
@@ -284,7 +284,7 @@ class TradeService:
                 trigger_data = self.alert_service.build_trigger_data_from_orm(rec_orm_for_trigger)
 
                 if trigger_data:
-                    await self.alert_service.add_trigger_data(trigger_data)
+                    self.alert_service.schedule_add_trigger_data(trigger_data)
                 else:
                     logger.error(f"[BG Task Rec {rec_id}]: Failed to build trigger data. AlertService will not track this trade!")
 

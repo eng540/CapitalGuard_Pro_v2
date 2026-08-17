@@ -1,6 +1,6 @@
 # Makefile
 
-.PHONY: init dev api watcher bot test migrate fmt rebuild
+.PHONY: init dev api watcher bot test full-test migrate fmt rebuild
 
 init:
 	python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
@@ -13,7 +13,7 @@ api:
 	. .venv/bin/activate && uvicorn capitalguard.interfaces.api.main:app --host 0.0.0.0 --port 8000
 
 watcher:
-	. .venv/bin/activate && python -m capitalguard.infrastructure.sched.watcher_ws
+	@echo "PriceStreamer runs inside the API process; use 'make api' to start it."
 
 bot:
 	. .venv/bin/activate && python -m capitalguard.interfaces.telegram.bot_polling_runner

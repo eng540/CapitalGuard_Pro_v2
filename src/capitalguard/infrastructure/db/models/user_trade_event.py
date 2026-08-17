@@ -9,9 +9,8 @@ preventing duplicate notifications (Spam Bug B).
 from sqlalchemy import (
     Column, Integer, String, DateTime, ForeignKey, func
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-from .base import Base
+from .base import Base, JSON_TYPE
 
 class UserTradeEvent(Base):
     """
@@ -33,7 +32,7 @@ class UserTradeEvent(Base):
 
     # A flexible JSONB field to store data relevant to the event
     # Example for 'TP1_HIT': {"price": 123.45}
-    event_data = Column(JSONB, nullable=True)
+    event_data = Column(JSON_TYPE, nullable=True)
 
     # Defines the many-to-one relationship back to the UserTrade model
     user_trade = relationship("UserTrade", back_populates="events")

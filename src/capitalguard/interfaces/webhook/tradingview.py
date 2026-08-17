@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 import logging
 import asyncio # ✅ Added for background tasks
+import hmac
 from decimal import Decimal
 
 # ✅ Import services and session management
@@ -73,9 +74,13 @@ async def tradingview_webhook(
     background_tasks: BackgroundTasks, # Use FastAPI's background tasks
     trade_service: TradeService = Depends(get_trade_service)
 ):
-    # Security check for the webhook secret
+    # Fail closed: a webhook without a configured secret must never be accepted.
+    configured_secret = settings.TV_WEBHOOK_SECRET
     tv_secret = request.headers.get("X-TV-Secret")
-    if settings.TV_WEBHOOK_SECRET and tv_secret != settings.TV_WEBHOOK_SECRET:
+    if not configured_secret:
+        log.error("TradingView webhook rejected because TV_WEBHOOK_SECRET is not configured.")
+        raise HTTPException(status_code=503, detail="TradingView webhook is not configured")
+    if not tv_secret or not hmac.compare_digest(tv_secret, configured_secret):
         log.warning("Invalid TradingView secret received.")
         raise HTTPException(status_code=401, detail="Invalid TradingView secret")
 

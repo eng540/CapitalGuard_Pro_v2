@@ -75,6 +75,9 @@ def get_analytics_service(request: Request) -> AnalyticsService:
 # --- API Key Dependency ---
 
 def require_api_key(x_api_key: str | None = Header(default=None)):
-    if settings.API_KEY and x_api_key != settings.API_KEY:
+    """Require a configured API key; never allow access when it is missing."""
+    if not settings.API_KEY:
+        raise HTTPException(status_code=503, detail="API authentication is not configured")
+    if x_api_key != settings.API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True

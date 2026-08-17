@@ -3,12 +3,13 @@
 # Version: 2.0.0 (Decoupled)
 # ✅ THE FIX: (Protocol 1) إزالة حزم قاعدة البيانات (SQLAlchemy, psycopg)
 # 🎯 IMPACT: هذه الخدمة لم تعد تحتوي على أي برامج تشغيل لقاعدة البيانات.
-fastapi==0.115.0
+fastapi>=0.141.1,<0.142
+starlette>=1.0.1,<1.7
 uvicorn[standard]==0.30.6
-pydantic==2.8.2
+pydantic>=2.9.0,<3
 # ❌ REMOVED: SQLAlchemy==2.0.32
 # ❌ REMOVED: psycopg[binary]==3.2.1
-python-dotenv==1.0.1
+python-dotenv>=1.2.2,<1.3
 httpx==0.27.2
 
 # مكتبة الذكاء الاصطناعي (مثال باستخدام OpenAI، يمكن تبديلها)
