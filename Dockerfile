@@ -1,4 +1,4 @@
-#--- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: Dockerfile ---
+#---- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: Dockerfile ---
 # File: Dockerfile
 # Version: v2.0.0-RAILWAY-STABLE
 #
