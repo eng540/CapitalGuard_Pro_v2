@@ -103,11 +103,14 @@ class CreationService:
         notifier: Any,
         market_data_service: "MarketDataService",
         price_service: "PriceService",
+        dedup_service: Optional["DedupLedgerService"] = None,
     ):
         self.repo = repo
         self.notifier = notifier
         self.market_data_service = market_data_service
         self.price_service = price_service
+        from .dedup_service import DedupLedgerService
+        self.dedup_service = dedup_service or DedupLedgerService()
         # Circular dependencies injected later via boot.py
         self.alert_service: Optional["AlertService"] = None
         self.lifecycle_service: Optional["LifecycleService"] = None
@@ -260,7 +263,11 @@ class CreationService:
         
         db_session.flush()
         db_session.refresh(rec)
-        return self.repo._to_entity(rec), {}
+        return self.repo._to_entity(rec), {
+            "queued": True,
+            "success": [],
+            "failed": [],
+        }
 
     # --- ROBUST BACKGROUND TASK (The Fix) ---
     async def background_publish_and_index(self, rec_id: int, user_db_id: int, target_channel_ids: Optional[Set[int]] = None):
@@ -376,6 +383,26 @@ class CreationService:
             self._validate_recommendation_data(trade_data['side'], entry_dec, sl_dec, targets_list_validated)
             targets_for_db = [{'price': str(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in targets_list_validated]
 
+            source_channel_id = int((channel_info or {}).get('id') or 0)
+            dedup_decision = self.dedup_service.check_and_record(
+                db_session,
+                user_id=trader_user.id,
+                source_channel_id=source_channel_id,
+                asset=trade_data['asset'],
+                side=trade_data['side'],
+                entry=entry_dec,
+                stop_loss=sl_dec,
+                targets=targets_for_db,
+                source_text=original_text,
+            )
+            if dedup_decision.duplicate:
+                return {
+                    'success': False,
+                    'duplicate': True,
+                    'error': 'Duplicate signal already tracked within deduplication window.',
+                    'fingerprint': dedup_decision.fingerprint,
+                }
+
             watched_channel = None
             if channel_info and channel_info.get('id'):
                 channel_tg_id = channel_info['id']
@@ -410,6 +437,11 @@ class CreationService:
             )
             db_session.add(new_trade)
             db_session.flush()
+            self.dedup_service.mark_entity(
+                dedup_decision.ledger,
+                entity_type='user_trade',
+                entity_id=new_trade.id,
+            )
             
             if self.alert_service:
                 db_session.refresh(new_trade, attribute_names=['user'])

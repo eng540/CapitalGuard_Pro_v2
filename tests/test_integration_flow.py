@@ -70,7 +70,7 @@ async def test_analyst_promotion_and_rec_creation_flow(db_session, trade_service
             **rec_data
         )
         assert created_rec is not None
-        assert report["success"] # Check that publishing was also successful
+        assert report == {"queued": True, "success": [], "failed": []}
     except ValueError as e:
         pytest.fail(f"CRITICAL REGRESSION: Analyst promotion flow failed. "
                     f"create_and_publish_recommendation_async raised an unexpected error: {e}")
@@ -112,3 +112,36 @@ async def test_duplicate_trade_tracking_prevention(db_session, trade_service: Tr
     )
     assert result2["success"] is False
     assert result2["error"] == "You are already tracking this signal."
+
+
+async def test_duplicate_forwarding_is_rejected_by_dedup_ledger(db_session, trade_service: TradeService):
+    user_repo = UserRepository(db_session)
+    trader = user_repo.find_or_create(telegram_id=333, first_name="Forwarder")
+    trader.is_active = True
+    db_session.commit()
+
+    trade_data = {
+        "asset": "BTCUSDT",
+        "side": "LONG",
+        "entry": Decimal("60000"),
+        "stop_loss": Decimal("59000"),
+        "targets": [{"price": Decimal("61000"), "close_percent": 100.0}],
+    }
+    kwargs = {
+        "user_id": str(trader.telegram_user_id),
+        "trade_data": trade_data,
+        "original_text": "BTCUSDT LONG Entry 60000 SL 59000 TP 61000",
+        "db_session": db_session,
+        "status_to_set": "WATCHLIST",
+        "original_published_at": None,
+        "channel_info": {"id": 987654, "title": "Test Channel"},
+    }
+
+    first = await trade_service.create_trade_from_forwarding_async(**kwargs)
+    db_session.commit()
+    second = await trade_service.create_trade_from_forwarding_async(**kwargs)
+
+    assert first["success"] is True
+    assert second["success"] is False
+    assert second["duplicate"] is True
+    assert "Duplicate signal" in second["error"]

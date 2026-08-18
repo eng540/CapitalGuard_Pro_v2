@@ -29,9 +29,11 @@ def parsing_service(mock_parsing_repo):
     # Or pass the mock instance if it expects an instance
     # Based on boot.py, it expects the class
     class MockParsingRepoClass:
-         def __init__(self, session):
-              # Return the mock instance when the service instantiates the repo
-              return mock_parsing_repo
+        def __init__(self, session):
+            self._mock = mock_parsing_repo
+
+        def __getattr__(self, name):
+            return getattr(self._mock, name)
     return ParsingService(parsing_repo_class=MockParsingRepoClass)
 
 

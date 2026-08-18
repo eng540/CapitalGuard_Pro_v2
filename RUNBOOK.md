@@ -37,13 +37,17 @@
 
 تستخدم persistence مساحة مفاتيح `ptb:v2:*` وترميز JSON مقيدًا بالأنواع بدل فك تسلسل `pickle`. بيانات مساحة `ptb:*` القديمة لا تُقرأ تلقائيًا؛ يجب اعتبارها بيانات legacy ونقلها عبر إجراء مراجَع إن كانت مطلوبة.
 
+## DedupLedger
+
+يسجل النظام بصمة حتمية لكل إشارة Forward لكل مستخدم وقناة ضمن نافذة افتراضية مقدارها خمس دقائق. التكرار داخل النافذة يعاد كمرفوض مع `duplicate=true` ولا ينشئ `UserTrade` ثانيًا. يجب تشغيل migration `20251201_add_dedup_ledger` قبل تفعيل مسار Forwarding في بيئة جديدة، ومراجعة سجلات `dedup_ledger` عند التحقيق في تكرار الإشارات. لا ينبغي حذف السجل أثناء التنظيف التشغيلي؛ فهو جزء من أثر التدقيق.
+
 ## المراقبة والإيقاف
 
-راقب readiness، سجلات فشل Redis وTelegram وAlertService، reconnects الخاصة بـ Binance، وأخطاء مهام النسخ الاحتياطي. عند الإيقاف، يلغي التطبيق المهام الخلفية ثم يوقف AlertService وTelegram. لا تعتبر عملية الإقلاع ناجحة إلا بعد ظهور رسالة startup complete.
+راقب readiness، سجلات فشل Redis وTelegram وAlertService، reconnects الخاصة بـ Binance، أخطاء مهام النسخ الاحتياطي، ونسبة رفض Dedup. عند الإيقاف، يلغي التطبيق المهام الخلفية ثم يوقف AlertService وTelegram. لا تعتبر عملية الإقلاع ناجحة إلا بعد ظهور رسالة startup complete.
 
 ## الاختبارات قبل الدمج
 
-شغّل `make test` أو `pytest -q`، ثم `flake8 src` و`bandit -r src -q` و`pip-audit -r requirements.txt`. يجب ألا تُخفى نتائج الفحوص باستخدام `|| true`، ويجب إصلاح أخطاء الجمع والفشل قبل الدمج.
+شغّل `make test` أو `pytest -q`، ثم `python3 -m compileall -q src ai_service`، و`flake8 src`، و`bandit -r src ai_service -q --severity-level high`، و`pip-audit -r requirements.txt`. شغّل `PYTHONPATH=src alembic heads` للتحقق من وجود رأس واحد، واختبر `alembic upgrade head` على PostgreSQL قبل النشر. قد تعرض Bandit تحذيرات منخفضة قديمة؛ لا تُعتبر بوابة الدمج مغلقة إلا عند عدم وجود High، مع بقاء التقرير الكامل محفوظًا للمراجعة. يجب ألا تُخفى نتائج الفحوص باستخدام `|| true`، ويجب إصلاح أخطاء الجمع والفشل قبل الدمج.
 
 ## Metrics
 

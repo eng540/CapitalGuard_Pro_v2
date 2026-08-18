@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime
-from capitalguard.domain.entities import Recommendation
+from capitalguard.domain.entities import Recommendation, RecommendationStatus
 from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
 
 @pytest.fixture
@@ -16,14 +16,14 @@ def sample_recommendation() -> Recommendation:
     )
 
 def test_recommendation_initial_state(sample_recommendation: Recommendation):
-    assert sample_recommendation.status == "OPEN"
+    assert sample_recommendation.status == RecommendationStatus.PENDING
     assert sample_recommendation.exit_price is None
     assert sample_recommendation.closed_at is None
 
 def test_recommendation_close_updates_fields_correctly(sample_recommendation: Recommendation):
     exit_price = 61500.0
     sample_recommendation.close(exit_price)
-    assert sample_recommendation.status == "CLOSED"
+    assert sample_recommendation.status == RecommendationStatus.CLOSED
     assert sample_recommendation.exit_price == exit_price
     assert sample_recommendation.closed_at is not None
     assert isinstance(sample_recommendation.closed_at, datetime)
