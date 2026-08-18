@@ -1,0 +1,21 @@
+name: Railway Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Railway Staging or Production public URL"
+        required: true
+        type: string
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Railway smoke checks
+        env:
+          RAILWAY_STAGING_URL: ${{ inputs.base_url }}
+        run: bash scripts/railway_smoke.sh

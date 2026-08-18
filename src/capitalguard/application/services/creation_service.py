@@ -11,7 +11,7 @@ import logging
 import json
 import asyncio
 import inspect
-from typing import List, Optional, Tuple, Dict, Any, Set, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Dict, Any, Set, Union
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -39,8 +39,9 @@ from capitalguard.domain.entities import (
     UserType as UserTypeEntity
 )
 # Type-only imports
-if False:
+if TYPE_CHECKING:
     from .alert_service import AlertService
+    from .dedup_service import DedupLedgerService
     from .price_service import PriceService
     from .market_data_service import MarketDataService
     from .lifecycle_service import LifecycleService

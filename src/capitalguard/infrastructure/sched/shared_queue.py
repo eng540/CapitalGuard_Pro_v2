@@ -4,8 +4,10 @@ Thread-safe queue for communication between PriceStreamer and AlertService.
 """
 
 import asyncio
-import threading
+import logging
 from typing import Any, Tuple, Optional
+
+log = logging.getLogger(__name__)
 
 class ThreadSafeQueue:
     """Thread-safe queue for inter-thread communication."""
