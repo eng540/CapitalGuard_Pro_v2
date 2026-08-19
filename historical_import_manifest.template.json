@@ -1,0 +1,36 @@
+{
+  "source_kind": "TELEGRAM_EXPORT",
+  "channel": {
+    "telegram_channel_id": -1000000000000,
+    "title": "REPLACE_WITH_CHANNEL_TITLE",
+    "username": "@REPLACE_WITH_USERNAME",
+    "owner_type": "ANALYST",
+    "analyst_code": "AN-000001",
+    "ownership_proof_type": "OWNER_CONFIRMATION",
+    "ownership_proof_ref": "REPLACE_WITH_SAFE_REFERENCE"
+  },
+  "historical_period": {
+    "start": "2026-01-01T00:00:00Z",
+    "end": "2026-01-31T23:59:59Z"
+  },
+  "market": {
+    "venue": "REPLACE_WITH_PROVIDER",
+    "market_type": "Futures",
+    "timezone": "UTC",
+    "interval": "1m"
+  },
+  "records": [
+    {
+      "telegram_channel_id": -1000000000000,
+      "telegram_message_id": 123,
+      "message_revision": 0,
+      "message_timestamp": "2026-01-15T12:00:00Z",
+      "raw_text": "#BTCUSDT LONG Entry: 65000 Stop: 64000 TP1: 66000@50% TP2: 67000@50%",
+      "source_uri": "REPLACE_WITH_EXPORT_REFERENCE",
+      "metadata": {
+        "export_type": "message",
+        "reply_to_message_id": null
+      }
+    }
+  ]
+}
