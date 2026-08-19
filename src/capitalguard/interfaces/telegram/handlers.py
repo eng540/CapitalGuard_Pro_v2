@@ -14,6 +14,7 @@ from .admin_commands import register_admin_commands
 from .channel_linking_handler import register_channel_linking_handler
 from .conversation_handlers import register_conversation_handlers
 from .forward_parsing_handler import register_forward_parsing_handlers
+from .historical_forwarding_handler import register_historical_forwarding_handlers
 from .management_handlers import register_management_handlers
 from .commands import register_commands
 from .log_handler import register_log_handler
@@ -32,6 +33,7 @@ def register_all_handlers(application: Application):
     # --- PRIORITY GROUP 0: CONVERSATIONAL HANDLERS ---
     # (R2): This now registers ALL stateful conversations
     # (Creation, Partial Close, User Close, Reply Handlers)
+    register_historical_forwarding_handlers(application) # (Group 0: historical staging)
     register_conversation_handlers(application) # (Group 0)
     register_log_handler(application) # (Group 0)
     
