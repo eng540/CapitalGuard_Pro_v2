@@ -50,6 +50,7 @@ class TelegramExportAdapter:
                 continue
             text = self._flatten_text(message.get("text"))
             timestamp = message.get("date")
+            edited_date = message.get("edited_date")
             message_id = message.get("id")
             if not text.strip() or not isinstance(timestamp, str) or not isinstance(message_id, int):
                 continue
@@ -57,7 +58,7 @@ class TelegramExportAdapter:
                 {
                     "telegram_channel_id": telegram_channel_id,
                     "telegram_message_id": message_id,
-                    "message_revision": 0,
+                    "message_revision": 1 if isinstance(edited_date, str) and edited_date else 0,
                     "message_timestamp": timestamp,
                     "raw_text": text,
                     "source_uri": source_uri,
@@ -65,6 +66,7 @@ class TelegramExportAdapter:
                         "telegram_export_type": message.get("type"),
                         "from": message.get("from"),
                         "reply_to_message_id": message.get("reply_to_message_id"),
+                        "edited_date": edited_date,
                     },
                 }
             )
