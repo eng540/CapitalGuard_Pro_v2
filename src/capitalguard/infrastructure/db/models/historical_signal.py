@@ -121,6 +121,9 @@ class HistoricalSignalAttribution(Base):
     proof_ref = Column(String(500), nullable=True)
     confidence_score = Column(Numeric(5, 4), nullable=False, server_default="0")
     status = Column(String(24), nullable=False, server_default="PROPOSED", index=True)
+    reviewed_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    review_note = Column(Text, nullable=True)
     dedup_key = Column(String(180), nullable=False, unique=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -128,3 +131,4 @@ class HistoricalSignalAttribution(Base):
     analyst = relationship("User", foreign_keys=[analyst_id])
     channel = relationship("Channel")
     trader_user = relationship("User", foreign_keys=[trader_user_id])
+    reviewed_by = relationship("User", foreign_keys=[reviewed_by_user_id])

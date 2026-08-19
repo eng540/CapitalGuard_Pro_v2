@@ -130,6 +130,9 @@ def upgrade():
         sa.Column("proof_ref", sa.String(length=500), nullable=True),
         sa.Column("confidence_score", sa.Numeric(5, 4), server_default="0", nullable=False),
         sa.Column("status", sa.String(length=24), server_default="PROPOSED", nullable=False),
+        sa.Column("reviewed_by_user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("review_note", sa.Text(), nullable=True),
         sa.Column("dedup_key", sa.String(length=180), nullable=False, unique=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
@@ -139,11 +142,13 @@ def upgrade():
     op.create_index("ix_historical_signal_attributions_channel_id", "historical_signal_attributions", ["channel_id"])
     op.create_index("ix_historical_signal_attributions_trader_user_id", "historical_signal_attributions", ["trader_user_id"])
     op.create_index("ix_historical_signal_attributions_status", "historical_signal_attributions", ["status"])
+    op.create_index("ix_historical_signal_attributions_reviewed_by_user_id", "historical_signal_attributions", ["reviewed_by_user_id"])
 
 
 def downgrade():
     for name in [
         "ix_historical_signal_attributions_status",
+        "ix_historical_signal_attributions_reviewed_by_user_id",
         "ix_historical_signal_attributions_trader_user_id",
         "ix_historical_signal_attributions_channel_id",
         "ix_historical_signal_attributions_analyst_id",

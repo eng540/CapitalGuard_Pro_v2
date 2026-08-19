@@ -233,3 +233,39 @@ def test_historical_reputation_summary_separates_confidence(db_session, historic
     assert summary.rank_eligible_signals == 0
     assert summary.excluded_signals == 1
     assert summary.confidence_weighted_sample == 0
+
+
+def test_historical_attribution_review_is_auditable(db_session, historical_service):
+    evidence = historical_service.ingest_evidence(
+        db_session,
+        source_kind="TELEGRAM_EXPORT",
+        message_timestamp=_timestamp(1),
+        raw_text="#BTCUSDT LONG",
+    )
+    signal = historical_service.create_signal(
+        db_session,
+        evidence_id=evidence.id,
+        decision_timestamp=_timestamp(1),
+        asset="BTCUSDT",
+        side="LONG",
+    )
+    attribution = historical_service.add_attribution(
+        db_session,
+        signal_id=signal.id,
+        attribution_kind="CHANNEL",
+        channel_id=7,
+        proof_type="CHANNEL_ADMIN_CONFIRMATION",
+        dedup_key="review:channel:7:signal:1",
+    )
+    reviewed = historical_service.review_attribution(
+        db_session,
+        attribution_id=attribution.id,
+        reviewer_user_id=900,
+        status="VERIFIED",
+        note="Channel ownership evidence reviewed",
+    )
+
+    assert reviewed.status == "VERIFIED"
+    assert reviewed.reviewed_by_user_id == 900
+    assert reviewed.review_note == "Channel ownership evidence reviewed"
+    assert reviewed.reviewed_at is not None
