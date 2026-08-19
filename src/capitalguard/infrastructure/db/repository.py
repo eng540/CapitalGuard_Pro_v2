@@ -23,6 +23,7 @@ from capitalguard.domain.entities import (
     UserType as UserTypeEntity
 )
 from capitalguard.domain.value_objects import Symbol, Price, Targets, Side
+from capitalguard.application.services.identity_service import IdentityService
 
 # Import ORM models
 from .models import (
@@ -57,8 +58,19 @@ class UserRepository:
         """Finds a user by Telegram ID or creates a new one if not found."""
         user = self.find_by_telegram_id(telegram_id)
         if user:
-            # Update user info if changed
+            # Backfill identity lazily for legacy rows while preserving old IDs.
             updated = False
+            if not user.public_ref:
+                user.public_ref = IdentityService.public_ref('USR')
+                updated = True
+            if not user.user_code:
+                user.user_code = f"USR-{IdentityService._next_value(self.session, 'USER_CODE'):06d}"
+                updated = True
+            requested_type = kwargs.get('user_type')
+            effective_type = requested_type or user.user_type
+            if effective_type == UserTypeEntity.ANALYST and not user.analyst_code:
+                user.analyst_code = IdentityService.analyst_identity(self.session)[1]
+                updated = True
             if kwargs.get("first_name") and user.first_name != kwargs["first_name"]:
                  user.first_name = kwargs["first_name"]
                  updated = True
@@ -66,8 +78,10 @@ class UserRepository:
                 user.username = kwargs["username"]
                 updated = True
             if 'user_type' in kwargs and user.user_type != kwargs['user_type']:
-                 user.user_type = kwargs['user_type']
-                 updated = True
+                user.user_type = kwargs['user_type']
+                if kwargs['user_type'] == UserTypeEntity.ANALYST and not user.analyst_code:
+                    user.analyst_code = IdentityService.analyst_identity(self.session)[1]
+                updated = True
             if 'is_active' in kwargs and user.is_active != kwargs['is_active']:
                 user.is_active = kwargs['is_active']
                 updated = True
@@ -77,8 +91,16 @@ class UserRepository:
             return user
 
         logger.info("Creating new user for telegram_id=%s", telegram_id)
+        public_ref, user_code = IdentityService.user_identity(self.session)
+        analyst_code = None
+        requested_type = kwargs.get("user_type", UserTypeEntity.TRADER)
+        if requested_type == UserTypeEntity.ANALYST:
+            analyst_code = IdentityService.analyst_identity(self.session)[1]
         new_user = User(
             telegram_user_id=telegram_id,
+            public_ref=public_ref,
+            user_code=user_code,
+            analyst_code=analyst_code,
             first_name=kwargs.get("first_name"),
             username=kwargs.get("username"),
             is_active=kwargs.get("is_active", False), # Default to inactive
@@ -112,8 +134,12 @@ class ChannelRepository:
 
     def add(self, analyst_id: int, telegram_channel_id: int, username: Optional[str], title: Optional[str]) -> Channel:
         """Adds a new channel linked to an analyst."""
+        catalog = IdentityService.ensure_channel_catalog(
+            self.session, telegram_channel_id, title=title
+        )
         new_channel = Channel(
             analyst_id=analyst_id,
+            channel_catalog_id=catalog.id,
             telegram_channel_id=telegram_channel_id,
             username=username,
             title=title,
@@ -275,7 +301,21 @@ class RecommendationRepository:
                 exit_strategy=ExitStrategyEntity(row.exit_strategy.value),
             )
             # Presentation/audit metadata used by Telegram UX and exports.
+            analyst = getattr(row, 'analyst', None)
+            analyst_code = getattr(analyst, 'analyst_code', None) or f'AN-{row.analyst_id:06d}'
             setattr(entity, 'record_id', row.id)
+            setattr(entity, 'public_ref', getattr(row, 'public_ref', None))
+            setattr(entity, 'scope_code', analyst_code)
+            setattr(entity, 'scoped_sequence', getattr(row, 'analyst_sequence', None))
+            setattr(entity, 'display_ref', (
+                IdentityService.display_ref(analyst_code, 'R', row.analyst_sequence)
+                if getattr(row, 'analyst_sequence', None) is not None else getattr(row, 'public_ref', None) or f'REC-{row.id}'
+            ))
+            setattr(entity, 'channel_codes', [
+                ref.channel_catalog.channel_code
+                for ref in (getattr(row, 'channel_refs', None) or [])
+                if getattr(ref, 'channel_catalog', None) and ref.channel_catalog.channel_code
+            ])
             setattr(entity, 'source_type', 'ANALYST_RECOMMENDATION')
             setattr(entity, 'is_user_trade', False)
             setattr(entity, 'source_recommendation_id', row.id)
@@ -333,8 +373,20 @@ class RecommendationRepository:
                 analyst_id=trade.user_id
             )
             
+            trader = getattr(trade, 'user', None)
+            trader_code = getattr(trader, 'user_code', None) or f'USR-{trade.user_id:06d}'
             setattr(trade_entity, 'is_user_trade', True)
             setattr(trade_entity, 'record_id', trade.id)
+            setattr(trade_entity, 'public_ref', getattr(trade, 'public_ref', None))
+            setattr(trade_entity, 'scope_code', trader_code)
+            setattr(trade_entity, 'scoped_sequence', getattr(trade, 'trader_sequence', None))
+            setattr(trade_entity, 'display_ref', (
+                IdentityService.display_ref(trader_code, 'T', trade.trader_sequence)
+                if getattr(trade, 'trader_sequence', None) is not None else getattr(trade, 'public_ref', None) or f'TRD-{trade.id}'
+            ))
+            watched_channel = getattr(trade, 'watched_channel', None)
+            watched_catalog = getattr(watched_channel, 'catalog', None)
+            setattr(trade_entity, 'channel_code', getattr(watched_catalog, 'channel_code', None))
             setattr(trade_entity, 'source_type', getattr(trade, 'source_type', None) or (
                 'DIRECT_INPUT' if getattr(trade, 'source_recommendation_id', None) is None else 'TRACKED_RECOMMENDATION'
             ))

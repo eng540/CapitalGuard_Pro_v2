@@ -11,7 +11,7 @@ import logging
 import json
 import asyncio
 import inspect
-from typing import TYPE_CHECKING, List, Optional, Tuple, Dict, Any, Set, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Dict, Any, Set
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -21,7 +21,7 @@ from sqlalchemy import select, text
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.models import (
-    Recommendation, RecommendationEvent, User, UserTradeEvent,
+    Recommendation, RecommendationEvent, UserTradeEvent,
     RecommendationStatusEnum, UserTrade,
     OrderTypeEnum, ExitStrategyEnum,
     UserTradeStatusEnum,
@@ -31,11 +31,9 @@ from capitalguard.infrastructure.db.models import (
 from capitalguard.infrastructure.db.repository import (
     RecommendationRepository, ChannelRepository, UserRepository
 )
+from capitalguard.application.services.identity_service import IdentityService
 from capitalguard.domain.entities import (
     Recommendation as RecommendationEntity,
-    RecommendationStatus as RecommendationStatusEntity,
-    OrderType as OrderTypeEntity,
-    ExitStrategy as ExitStrategyEntity,
     UserType as UserTypeEntity
 )
 # Type-only imports
@@ -278,10 +276,15 @@ class CreationService:
         # تحويل الأهداف لـ JSON
         targets_db = [{'price': str(t['price']), 'close_percent': t['close_percent']} for t in targets]
         
+        # Allocate layered identity before the recommendation is flushed.
+        rec_public_ref, rec_sequence = IdentityService.recommendation_identity(db_session, user.id)
+
         # إنشاء الكائن (OR)
         rec = Recommendation(
-            analyst_id=user.id, asset=asset, side=side, entry=final_entry, stop_loss=sl, 
-            targets=targets_db, order_type=order_type, status=status, market=market, 
+            public_ref=rec_public_ref,
+            analyst_sequence=rec_sequence,
+            analyst_id=user.id, asset=asset, side=side, entry=final_entry, stop_loss=sl,
+            targets=targets_db, order_type=order_type, status=status, market=market,
             notes=kwargs.get('notes'), exit_strategy=ExitStrategyEnum.CLOSE_AT_FINAL_TP,
             activated_at=datetime.now(timezone.utc) if status == RecommendationStatusEnum.ACTIVE else None,
             is_shadow=True # ✅ Start as Shadow (الحفظ كظل)
@@ -448,8 +451,11 @@ class CreationService:
             watched_channel = None
             if channel_info and channel_info.get('id'):
                 channel_tg_id = channel_info['id']
+                channel_catalog = IdentityService.ensure_channel_catalog(
+                    db_session, channel_tg_id, title=channel_info.get('title')
+                )
                 stmt = select(WatchedChannel).filter_by(
-                    user_id=trader_user.id, 
+                    user_id=trader_user.id,
                     telegram_channel_id=channel_tg_id
                 )
                 watched_channel = db_session.execute(stmt).scalar_one_or_none()
@@ -457,14 +463,21 @@ class CreationService:
                     logger.info(f"Creating new WatchedChannel '{channel_info.get('title')}' for user {trader_user.id}")
                     watched_channel = WatchedChannel(
                         user_id=trader_user.id,
+                        channel_catalog_id=channel_catalog.id,
                         telegram_channel_id=channel_tg_id,
                         channel_title=channel_info.get('title'),
                         is_active=True
                     )
                     db_session.add(watched_channel)
-                    db_session.flush() 
+                    db_session.flush()
+                elif watched_channel.channel_catalog_id is None:
+                    watched_channel.channel_catalog_id = channel_catalog.id
+                    db_session.flush()
 
+            trade_public_ref, trade_sequence = IdentityService.trade_identity(db_session, trader_user.id)
             new_trade = UserTrade(
+                public_ref=trade_public_ref,
+                trader_sequence=trade_sequence,
                 user_id=trader_user.id,
                 asset=trade_data['asset'],
                 side=trade_data['side'],
@@ -510,7 +523,13 @@ class CreationService:
                     logger.error(f"Failed to build trigger data for new UserTrade {new_trade.id}")
             
             logger.info(f"UserTrade {new_trade.id} created for user {user_id} with status {status_to_set}.")
-            return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
+            return {
+                'success': True,
+                'trade_id': new_trade.id,
+                'public_ref': new_trade.public_ref,
+                'display_ref': IdentityService.display_ref(trader_user.user_code or f'USR-{trader_user.id:06d}', 'T', new_trade.trader_sequence),
+                'asset': new_trade.asset,
+            }
 
         except ValueError as e:
             logger.warning(f"Validation fail forward trade user {user_id}: {e}")
@@ -544,7 +563,10 @@ class CreationService:
             else: # CLOSED
                 return {'success': False, 'error': 'This signal is already closed.'}
 
+            trade_public_ref, trade_sequence = IdentityService.trade_identity(db_session, trader_user.id)
             new_trade = UserTrade( 
+                public_ref=trade_public_ref,
+                trader_sequence=trade_sequence,
                 user_id=trader_user.id, 
                 asset=rec_orm.asset, 
                 side=rec_orm.side, 
@@ -571,7 +593,14 @@ class CreationService:
                     )
 
             logger.info(f"UserTrade {new_trade.id} created user {user_id} tracking Rec {rec_id} with status {user_trade_status.value}.")
-            return {'success': True, 'trade_id': new_trade.id, 'asset': new_trade.asset}
+            return {
+                'success': True,
+                'trade_id': new_trade.id,
+                'public_ref': new_trade.public_ref,
+                'display_ref': IdentityService.display_ref(trader_user.user_code or f'USR-{trader_user.id:06d}', 'T', new_trade.trader_sequence),
+                'source_recommendation_id': rec_orm.id,
+                'asset': new_trade.asset,
+            }
         
         except Exception as e:
             logger.error(f"Error create trade from rec user {user_id}, rec {rec_id}: {e}", exc_info=True)

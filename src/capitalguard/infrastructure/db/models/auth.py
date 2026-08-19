@@ -5,7 +5,6 @@ This version removes the redundant Enum definition and imports it from the domai
 establishing a single source of truth and fixing the permission bug.
 """
 
-from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum, BigInteger, func
 from sqlalchemy.orm import relationship
 from .base import Base
@@ -17,6 +16,10 @@ class User(Base):
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True, autoincrement=True)
+    # Layered identity: internal id remains the relational key.
+    public_ref = Column(String(40), unique=True, nullable=True, index=True)
+    user_code = Column(String(20), unique=True, nullable=True, index=True)
+    analyst_code = Column(String(20), unique=True, nullable=True, index=True)
     telegram_user_id = Column(BigInteger, unique=True, nullable=False, index=True)
     # ✅ THE DEFINITIVE FIX: Use the imported Enum directly.
     user_type = Column(Enum(UserType), nullable=False, default=UserType.TRADER, server_default='TRADER')

@@ -33,17 +33,21 @@ class Channel(Base):
     __tablename__ = 'channels'
     id = Column(Integer, primary_key=True)
     analyst_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
+    channel_catalog_id = Column(Integer, ForeignKey('channel_catalog.id', ondelete="SET NULL"), nullable=True, index=True)
     telegram_channel_id = Column(BigInteger, unique=True, nullable=False, index=True)
     username = Column(String, nullable=True)
     title = Column(String, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     analyst = relationship("User", back_populates="owned_channels")
+    catalog = relationship("ChannelCatalog")
     recommendations = relationship("Recommendation", back_populates="channel")
 
 class Recommendation(Base):
     __tablename__ = 'recommendations'
     id = Column(Integer, primary_key=True)
+    public_ref = Column(String(40), unique=True, nullable=True, index=True)
+    analyst_sequence = Column(Integer, nullable=True, index=True)
     analyst_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True)
     asset = Column(String, nullable=False, index=True)
@@ -76,10 +80,13 @@ class Recommendation(Base):
     user_trades = relationship("UserTrade", back_populates="source_recommendation")
     published_messages = relationship("PublishedMessage", back_populates="recommendation", cascade="all, delete-orphan")
     publication_deliveries = relationship("PublicationDelivery", back_populates="recommendation", cascade="all, delete-orphan")
+    channel_refs = relationship("RecommendationChannelRef", back_populates="recommendation", cascade="all, delete-orphan")
 
 class UserTrade(Base):
     __tablename__ = 'user_trades'
     id = Column(Integer, primary_key=True)
+    public_ref = Column(String(40), unique=True, nullable=True, index=True)
+    trader_sequence = Column(Integer, nullable=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     source_recommendation_id = Column(Integer, ForeignKey('recommendations.id', ondelete="SET NULL"), nullable=True, index=True)
     

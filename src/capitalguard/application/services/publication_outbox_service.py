@@ -11,7 +11,9 @@ from capitalguard.infrastructure.db.models import (
     PublicationDeliveryOperation,
     PublicationDeliveryStatus,
     PublishedMessage,
+    RecommendationChannelRef,
 )
+from capitalguard.application.services.identity_service import IdentityService
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.observability.metrics import (
     OUTBOX_ATTEMPTS_TOTAL,
@@ -39,6 +41,30 @@ class PublicationOutboxService:
             f"operation:{operation}:event:{event_key}"
         )
 
+    def _ensure_channel_refs(
+        self,
+        session: Session,
+        recommendation_id: int,
+        channel_ids: Iterable[int],
+    ) -> None:
+        """Create one stable local recommendation reference per canonical channel."""
+        for channel_id in sorted({int(value) for value in channel_ids}):
+            catalog = IdentityService.ensure_channel_catalog(session, channel_id)
+            ref = session.query(RecommendationChannelRef).filter_by(
+                recommendation_id=recommendation_id,
+                channel_catalog_id=catalog.id,
+            ).one_or_none()
+            if ref is None:
+                ref = RecommendationChannelRef(
+                    recommendation_id=recommendation_id,
+                    channel_catalog_id=catalog.id,
+                    channel_sequence=IdentityService.channel_recommendation_sequence(
+                        session, catalog.id
+                    ),
+                )
+                session.add(ref)
+                session.flush()
+
     def enqueue_operation(
         self,
         session: Session,
@@ -48,8 +74,10 @@ class PublicationOutboxService:
         event_key: str,
         payload: Optional[Dict[str, Any]] = None,
     ) -> List[PublicationDelivery]:
+        normalized_channel_ids = sorted({int(value) for value in channel_ids})
+        self._ensure_channel_refs(session, recommendation_id, normalized_channel_ids)
         deliveries: List[PublicationDelivery] = []
-        for channel_id in sorted({int(value) for value in channel_ids}):
+        for channel_id in normalized_channel_ids:
             key = self._key(recommendation_id, channel_id, operation, event_key)
             delivery = session.query(PublicationDelivery).filter_by(idempotency_key=key).one_or_none()
             if delivery is None:

@@ -11,21 +11,19 @@ import logging
 import uuid
 import time
 import asyncio
-import re 
 from decimal import Decimal, InvalidOperation
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Any
 
-from telegram import CallbackQuery, Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram import CallbackQuery, Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, ContextTypes, ConversationHandler, CommandHandler,
     CallbackQueryHandler, MessageHandler, filters
 )
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest
 from telegram.constants import ParseMode
 
 # --- Infrastructure ---
 from capitalguard.infrastructure.db.uow import uow_transaction
-from capitalguard.infrastructure.core_engine import core_cache, cb_db, AsyncPipeline
 
 # --- Helpers & UI ---
 from .helpers import get_service, _get_attr, _format_price
@@ -34,9 +32,9 @@ from .keyboards import (
     main_creation_keyboard, asset_choice_keyboard, side_market_keyboard,
     market_choice_keyboard, order_type_keyboard, review_final_keyboard,
     build_channel_picker_keyboard, CallbackBuilder, CallbackNamespace, CallbackAction,
-    ButtonTexts, build_editable_review_card
+    ButtonTexts
 )
-from .auth import require_active_user, require_analyst_user, get_db_user
+from .auth import require_active_user, require_analyst_user
 from .parsers import parse_rec_command, parse_editor_command, parse_number, parse_targets_list
 
 # --- Services ---
@@ -45,12 +43,9 @@ from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.market_data_service import MarketDataService
 from capitalguard.application.services.lifecycle_service import LifecycleService
 from capitalguard.application.services.creation_service import CreationService
-from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository
-from capitalguard.domain.entities import RecommendationStatus, ExitStrategy, UserTradeStatus
+from capitalguard.infrastructure.db.repository import ChannelRepository
+from capitalguard.domain.entities import UserTradeStatus
 from capitalguard.infrastructure.db.models import UserType as UserTypeEntity
-
-# --- Session Management ---
-from capitalguard.interfaces.telegram.session import SessionContext
 
 log = logging.getLogger(__name__)
 loge = logging.getLogger("capitalguard.errors")
@@ -494,7 +489,10 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
                 str(query.from_user.id), db_session, **draft
             )
             
-            msg = f"✅ تم الحفظ! (ID: #{created_rec_entity.id})\n\nجاري النشر الآن في {len(selected_ids)} قناة..."
+            display_ref = getattr(created_rec_entity, "display_ref", None) or f"REC-{created_rec_entity.id}"
+            public_ref = getattr(created_rec_entity, "public_ref", None)
+            identity = f"{display_ref} · {public_ref}" if public_ref and public_ref != display_ref else display_ref
+            msg = f"✅ تم الحفظ! (ID: {identity})\n\nجاري النشر الآن في {len(selected_ids)} قناة..."
             await safe_edit_message(query, text=msg)
 
             asyncio.create_task(
@@ -579,7 +577,10 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
                 str(query.from_user.id), db_session, **draft
             )
             
-            msg = f"✅ تم الحفظ! (ID: #{created_rec_entity.id})\n\nجاري النشر الآن في {len(selected_ids)} قناة..."
+            display_ref = getattr(created_rec_entity, "display_ref", None) or f"REC-{created_rec_entity.id}"
+            public_ref = getattr(created_rec_entity, "public_ref", None)
+            identity = f"{display_ref} · {public_ref}" if public_ref and public_ref != display_ref else display_ref
+            msg = f"✅ تم الحفظ! (ID: {identity})\n\nجاري النشر الآن في {len(selected_ids)} قناة..."
             await safe_edit_message(query, text=msg)
 
             asyncio.create_task(

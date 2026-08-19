@@ -27,6 +27,9 @@ from .watched_channel import WatchedChannel
 from .user_trade_event import UserTradeEvent
 from .dedup import DedupLedger
 from .publication_delivery import PublicationDelivery, PublicationDeliveryOperation, PublicationDeliveryStatus
+from .identity import ScopedIdentityCounter
+from .channel_catalog import ChannelCatalog
+from .recommendation_channel_ref import RecommendationChannelRef
 
 # Backward-compatible export used by existing service tests and integrations.
 UserTradeStatus = UserTradeStatusEnum
@@ -57,5 +60,8 @@ __all__ = [
     "PublicationDelivery",
     "PublicationDeliveryOperation",
     "PublicationDeliveryStatus",
+    "ScopedIdentityCounter",
+    "ChannelCatalog",
+    "RecommendationChannelRef",
 ]
 # --- END of models init ---

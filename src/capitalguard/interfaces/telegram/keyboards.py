@@ -278,6 +278,13 @@ async def build_open_recs_keyboard(
             # Build a compact, source-aware card with a stable ID.
             card_lines = []
             record_id = getattr(item, 'record_id', None) or rec_id
+            display_ref = getattr(item, 'display_ref', None) or f'#{record_id}'
+            public_ref = getattr(item, 'public_ref', None)
+            identity_text = f'{display_ref} · {public_ref}' if public_ref and public_ref != display_ref else display_ref
+            channel_codes = getattr(item, 'channel_codes', None) or []
+            single_channel = getattr(item, 'channel_code', None)
+            channel_text = ', '.join(channel_codes) if channel_codes else single_channel
+            channel_line = f"القناة: {channel_text}" if channel_text else None
             source_type = getattr(item, 'source_type', '')
             if source_type == 'DIRECT_INPUT':
                 source_label = '📝 LOG'
@@ -294,7 +301,8 @@ async def build_open_recs_keyboard(
                 
                 card_lines = [
                     f"{status_icon} {source_label} • {asset} ({side})",
-                    f"ID: #{record_id}",
+                    f"ID: {identity_text}",
+                    *([channel_line] if channel_line else []),
                     pnl_str,
                     f"Entry: {_format_price(entry)}"
                 ]
@@ -304,7 +312,8 @@ async def build_open_recs_keyboard(
                 pnl_str = f"PnL: {float(pnl):+.2f}%" if pnl is not None else "PnL: N/A"
                 card_lines = [
                     f"🏁 {source_label} • {asset} ({side})",
-                    f"ID: #{record_id}",
+                    f"ID: {identity_text}",
+                    *([channel_line] if channel_line else []),
                     pnl_str,
                     f"Entry: {_format_price(entry)} | Exit: {_format_price(exit_price)}",
                 ]
@@ -313,7 +322,8 @@ async def build_open_recs_keyboard(
                 price_str = f"السعر الحالي: {_format_price(live_price)}" if live_price else "السعر: N/A"
                 card_lines = [
                     f"{status_icon} {source_label} • {asset} ({side})",
-                    f"ID: #{record_id}",
+                    f"ID: {identity_text}",
+                    *([channel_line] if channel_line else []),
                     price_str,
                     f"Entry: {_format_price(entry)}"
                 ]
