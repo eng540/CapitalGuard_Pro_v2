@@ -10,6 +10,8 @@
 
 import logging
 import csv
+import html
+import re
 import io
 import time
 from datetime import datetime
@@ -24,6 +26,7 @@ from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.audit_service import AuditService
 from capitalguard.application.services.analyst_discovery_service import AnalystDiscoveryService
+from capitalguard.application.services.analyst_profile_service import AnalystProfileService
 from capitalguard.application.services.analyst_comparison_service import AnalystComparisonService
 from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository
 from capitalguard.infrastructure.db.models import UserType
@@ -210,6 +213,7 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
             "/newrec — إنشاء توصية محلل",
             "/channels — إدارة القنوات",
             "/events &lt;id&gt; — أحداث توصية محددة",
+            "/analyst_profile — عرض/تعديل ملف المحلل",
         ])
     else:
         lines.extend([
@@ -307,6 +311,73 @@ async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
         lines.append(f"• {ch.title} ({'Active' if ch.is_active else 'Inactive'})")
     await update.message.reply_html("\n".join(lines), reply_markup=get_main_menu_keyboard(True))
 
+def _parse_profile_updates(raw: str) -> dict[str, object]:
+    """Parse `key=value | key=value` profile edits without accepting unknown fields."""
+    aliases = {
+        "name": "public_name",
+        "public_name": "public_name",
+        "bio": "bio",
+        "market": "specialty_market",
+        "specialty_market": "specialty_market",
+        "style": "strategy_style",
+        "strategy_style": "strategy_style",
+        "public": "is_public",
+        "is_public": "is_public",
+    }
+    updates: dict[str, object] = {}
+    for part in re.split(r"\s*[|;]\s*", raw.strip()):
+        if not part:
+            continue
+        key, separator, value = part.partition("=")
+        if not separator:
+            key, separator, value = part.partition(":")
+        normalized = aliases.get(key.strip().lower())
+        if not normalized or not value.strip():
+            raise ValueError("استخدم الحقول: name, bio, market, style, public")
+        if normalized == "is_public":
+            flag = value.strip().lower()
+            if flag not in {"yes", "no", "true", "false", "نعم", "لا"}:
+                raise ValueError("public يجب أن تكون yes أو no")
+            updates[normalized] = flag in {"yes", "true", "نعم"}
+        else:
+            updates[normalized] = value.strip()
+    return updates
+
+
+@uow_transaction
+@require_active_user
+@require_analyst_user
+async def analyst_profile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """View or edit the authenticated analyst's public profile."""
+    service = AnalystProfileService()
+    try:
+        raw = " ".join(context.args or []).strip()
+        if raw:
+            updates = _parse_profile_updates(raw)
+            profile = service.update_profile(db_session, db_user, **updates)
+            db_session.commit()
+            prefix = "✅ تم تحديث ملف المحلل."
+        else:
+            profile = service.get_or_create(db_session, db_user)
+            db_session.commit()
+            prefix = "📋 ملف المحلل الحالي"
+        updated_at = profile.profile_updated_at.isoformat() if profile.profile_updated_at else "غير متاح"
+        lines = [
+            f"<b>{prefix}</b>",
+            f"الاسم: <code>{html.escape(profile.public_name or db_user.first_name or db_user.analyst_code or '')}</code>",
+            f"السوق: <code>{html.escape(profile.specialty_market or 'غير محدد')}</code>",
+            f"الأسلوب: <code>{html.escape(profile.strategy_style or 'غير محدد')}</code>",
+            f"عام: <code>{'yes' if profile.is_public else 'no'}</code>",
+            f"آخر تحديث: <code>{html.escape(updated_at)}</code>",
+        ]
+        if profile.bio:
+            lines.append(f"الوصف: {html.escape(profile.bio)}")
+        lines.append("\nالتعديل: <code>/analyst_profile name=... | bio=... | market=... | style=... | public=yes</code>")
+        await update.message.reply_html("\n".join(lines))
+    except ValueError as exc:
+        await update.message.reply_html(f"⚠️ {html.escape(str(exc))}")
+
+
 # ✅ RESTORED: Events Command
 @uow_transaction
 @require_active_user
@@ -341,21 +412,49 @@ async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
 @uow_transaction
 @require_active_user
 async def find_analysts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """Discover public analysts using sample-size-aware performance data."""
-    search = " ".join(context.args or []).strip() or None
+    """Discover public analysts using sample-size-aware, window-aware performance data."""
+    args = context.args or []
+    window_days = None
+    search_tokens = []
+    for token in args:
+        key, separator, value = token.partition("=")
+        if separator and key.strip().lower() == "days":
+            try:
+                window_days = int(value)
+            except ValueError:
+                await update.message.reply_html("⚠️ days يجب أن تكون رقمًا صحيحًا.")
+                return
+        else:
+            search_tokens.append(token)
+    if window_days is not None and not 1 <= window_days <= 3650:
+        await update.message.reply_html("⚠️ days يجب أن تكون بين 1 و3650.")
+        return
+    search = " ".join(search_tokens).strip() or None
     service = AnalystDiscoveryService(minimum_sample_size=5)
-    records = service.find_analysts(db_session, search=search, include_ineligible=True, limit=10)
+    records = service.find_analysts(
+        db_session,
+        search=search,
+        include_ineligible=True,
+        limit=10,
+        window_days=window_days,
+    )
     if not records:
         await update.message.reply_html("📭 لا توجد ملفات محللين مطابقة حاليًا.")
         return
 
-    lines = ["<b>🔎 Analyst Discovery</b>", "<i>الترتيب لا يعتمد على Win Rate وحده، والعينة الصغيرة تظهر كغير مؤهلة.</i>", ""]
+    lines = [
+        "<b>🔎 Analyst Discovery</b>",
+        f"<i>Window: {window_days or 'all'} days · العينة الصغيرة تظهر كغير مؤهلة.</i>",
+        "",
+    ]
     for record in records:
         eligibility = "✅ مؤهل للمقارنة" if record["eligible_for_ranking"] else f"⚠️ عينة غير كافية ({record['sample_size']}/{record['minimum_sample_size']})"
         lines.extend([
             f"<b>{record['public_name']}</b> · <code>{record['analyst_code']}</code>",
             f"Sample: {record['sample_size']} | Win Rate: {record['win_rate_pct']:.2f}% | PnL: {record['total_pnl_pct']:.2f}%",
-            f"Drawdown: {record['max_drawdown_pct']:.2f}% | Active: {record['active_recommendations']} | Exposure proxy: {record['exposure_proxy']}",
+            f"Market: {html.escape(str(record.get('specialty_market') or 'غير محدد'))} | Style: {html.escape(str(record.get('strategy_style') or 'غير محدد'))}",
+            f"Drawdown: {record['max_drawdown_pct']:.2f}% | Risk exposure: {record['risk_exposure_pct']:.2f}% | Active: {record['active_recommendations']}",
+            f"Freshness: {record['freshness_days']:.2f} days" if record.get('freshness_days') is not None else "Freshness: no closed outcome yet",
             eligibility,
             "",
         ])
@@ -364,23 +463,49 @@ async def find_analysts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 @uow_transaction
 @require_active_user
 async def compare_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
-    """Compare an analyst's closed recommendation outcomes by channel."""
-    identity = (context.args or [""])[0].strip()
+    """Compare an analyst's outcomes by channel with optional market/time filters."""
+    args = context.args or []
+    identity = args[0].strip() if args else ""
     if not identity:
-        await update.message.reply_html("الاستخدام: <code>/compare_analyst AN-000001</code>")
+        await update.message.reply_html(
+            "الاستخدام: <code>/compare_analyst AN-000001 days=30 market=Futures asset=BTCUSDT</code>"
+        )
         return
     analyst = UserRepository(db_session).find_analyst_by_identity(identity)
     if analyst is None:
         await update.message.reply_html("❌ لم يتم العثور على محلل بهذا الكود أو المرجع العام.")
         return
 
-    rows = AnalystComparisonService(minimum_sample_size=5).compare_channels(db_session, analyst.id)
+    filters: dict[str, str] = {}
+    for token in args[1:]:
+        key, separator, value = token.partition("=")
+        if not separator:
+            key, separator, value = token.partition(":")
+        if separator and value.strip():
+            filters[key.strip().lower()] = value.strip()
+    try:
+        window_days = int(filters["days"]) if filters.get("days") else None
+        if window_days is not None and not 1 <= window_days <= 3650:
+            raise ValueError("days يجب أن تكون بين 1 و3650")
+    except ValueError as exc:
+        await update.message.reply_html(f"⚠️ {html.escape(str(exc))}")
+        return
+    channel_codes = [filters["channel"]] if filters.get("channel") else None
+    rows = AnalystComparisonService(minimum_sample_size=5).compare_channels(
+        db_session,
+        analyst.id,
+        channel_codes=channel_codes,
+        asset=filters.get("asset"),
+        market=filters.get("market"),
+        window_days=window_days,
+    )
     if not rows:
         await update.message.reply_html("📭 لا توجد نتائج مغلقة مرتبطة بقنوات هذا المحلل بعد.")
         return
 
     lines = [
         f"<b>📊 مقارنة قنوات {analyst.analyst_code}</b>",
+        f"<i>النطاق: days={filters.get('days', 'all')} · market={filters.get('market', 'all')} · asset={filters.get('asset', 'all')}</i>",
         "<i>المقارنة وصفية وليست توصية استثمارية؛ لا تُؤهل العينة الصغيرة للترتيب.</i>",
         "",
     ]
@@ -448,6 +573,7 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("portfolio", portfolio_webapp_handler))
     app.add_handler(CommandHandler("channels", channels_cmd))
     app.add_handler(CommandHandler("events", events_cmd))
+    app.add_handler(CommandHandler("analyst_profile", analyst_profile_cmd))
     app.add_handler(CommandHandler("find_analysts", find_analysts_cmd))
     app.add_handler(CommandHandler("compare_analyst", compare_analyst_cmd))
     app.add_handler(CommandHandler("export", export_cmd))

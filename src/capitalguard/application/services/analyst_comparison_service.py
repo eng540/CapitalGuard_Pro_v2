@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable
 
@@ -44,6 +44,7 @@ class AnalystComparisonService:
         market: str | None = None,
         created_from: datetime | None = None,
         created_to: datetime | None = None,
+        window_days: int | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         query = (
@@ -63,6 +64,9 @@ class AnalystComparisonService:
             query = query.where(Recommendation.asset == asset.strip().upper())
         if market:
             query = query.where(Recommendation.market == market.strip())
+        effective_to = created_to or datetime.now(timezone.utc)
+        if window_days and not created_from:
+            created_from = effective_to - timedelta(days=max(1, int(window_days)))
         if created_from:
             query = query.where(Recommendation.created_at >= created_from)
         if created_to:
@@ -77,6 +81,9 @@ class AnalystComparisonService:
                     "channel_code": channel.channel_code,
                     "channel_public_ref": channel.public_ref,
                     "channel_title": channel.title,
+                    "market_filter": market,
+                    "asset_filter": asset,
+                    "window_days": window_days,
                     "pnls": [],
                     "active_assets": set(),
                 },
@@ -114,6 +121,9 @@ class AnalystComparisonService:
                     "max_drawdown_pct": max_drawdown,
                     "eligible_for_comparison": sample_size >= self.minimum_sample_size,
                     "minimum_sample_size": self.minimum_sample_size,
+                    "market_filter": group["market_filter"],
+                    "asset_filter": group["asset_filter"],
+                    "window_days": group["window_days"],
                 }
             )
 

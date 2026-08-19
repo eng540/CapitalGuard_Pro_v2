@@ -58,3 +58,50 @@ def test_analyst_metrics_include_drawdown_and_active_exposure(db_session):
     assert record["active_recommendations"] == 1
     assert record["max_drawdown_pct"] > Decimal("0")
     assert record["exposure_proxy"] == 1
+
+
+def test_discovery_supports_window_and_risk_exposure(db_session):
+    analyst = UserRepository(db_session).find_or_create(
+        telegram_id=4103,
+        user_type=UserType.ANALYST,
+        first_name="Windowed Analyst",
+    )
+    db_session.add(AnalystProfile(user_id=analyst.id, public_name="Windowed", is_public=True))
+    active = _recommendation(analyst.id, 100, None, status=RecommendationStatus.ACTIVE)
+    active.stop_loss = Decimal("95")
+    db_session.add(active)
+    db_session.flush()
+
+    record = AnalystDiscoveryService(minimum_sample_size=1).get_analyst(
+        db_session, analyst.id, window_days=30
+    )
+
+    assert record["window_days"] == 30
+    assert record["activated_recommendations"] == 1
+    assert record["risk_exposure_pct"] == Decimal("5")
+    assert record["latest_data_at"] is None
+
+
+def test_profile_update_is_scoped_to_analyst_owner(db_session):
+    from capitalguard.application.services.analyst_profile_service import AnalystProfileService
+
+    analyst = UserRepository(db_session).find_or_create(
+        telegram_id=4104,
+        user_type=UserType.ANALYST,
+        first_name="Profile Owner",
+    )
+    profile = AnalystProfileService().update_profile(
+        db_session,
+        analyst,
+        public_name="Public Owner",
+        bio="BTC specialist",
+        specialty_market="Crypto",
+        strategy_style="Swing",
+        is_public=True,
+    )
+
+    assert profile.user_id == analyst.id
+    assert profile.public_name == "Public Owner"
+    assert profile.specialty_market == "Crypto"
+    assert profile.strategy_style == "Swing"
+    assert profile.is_public is True
