@@ -54,6 +54,16 @@ class UserRepository:
         """Finds a user by their internal database ID."""
         return self.session.query(User).filter(User.id == user_id).first()
 
+    def find_analyst_by_identity(self, identity: str) -> Optional[User]:
+        """Find an analyst by scoped code or opaque public reference."""
+        value = str(identity or "").strip()
+        if not value:
+            return None
+        return self.session.query(User).filter(
+            User.user_type == UserTypeEntity.ANALYST,
+            sa.or_(User.analyst_code == value.upper(), User.public_ref == value.upper()),
+        ).first()
+
     def find_or_create(self, telegram_id: int, **kwargs) -> User:
         """Finds a user by Telegram ID or creates a new one if not found."""
         user = self.find_by_telegram_id(telegram_id)
