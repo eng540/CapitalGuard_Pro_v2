@@ -1,0 +1,51 @@
+name: Railway Manual Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: "Railway project ID"
+        required: true
+        type: string
+      environment_name:
+        description: "Railway environment name, for example production"
+        required: true
+        default: production
+        type: string
+      service_name:
+        description: "Railway service name"
+        required: true
+        default: CapitalGuard_Pro_v2
+        type: string
+      public_url:
+        description: "Public Railway URL for post-deploy smoke"
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    container: ghcr.io/railwayapp/cli:latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      PROJECT_ID: ${{ inputs.project_id }}
+      ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+      SERVICE_NAME: ${{ inputs.service_name }}
+      PUBLIC_URL: ${{ inputs.public_url }}
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@v4
+
+      - name: Deploy current checkout to Railway
+        run: |
+          set -eu
+          test -n "$RAILWAY_TOKEN"
+          railway up --ci --project "$PROJECT_ID" --environment "$ENVIRONMENT_NAME" --service "$SERVICE_NAME" --message "manual deploy from GitHub Actions"
+
+      - name: Wait for routing and run smoke
+        run: |
+          set -eu
+          sleep 30
+          curl -fsS "$PUBLIC_URL/health"
+          curl -fsS "$PUBLIC_URL/metrics" >/tmp/metrics.txt
+          echo "Railway manual deployment smoke passed for $PUBLIC_URL"
