@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from .price_service import PriceService
     from .market_data_service import MarketDataService
     from .lifecycle_service import LifecycleService
+    from .publication_outbox_service import PublicationOutboxService
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,7 @@ class CreationService:
         market_data_service: "MarketDataService",
         price_service: "PriceService",
         dedup_service: Optional["DedupLedgerService"] = None,
+        outbox_service: Optional["PublicationOutboxService"] = None,
     ):
         self.repo = repo
         self.notifier = notifier
@@ -115,6 +117,7 @@ class CreationService:
         # Serializes publication retries within the active process; the DB ledger
         # remains the source of truth for already published channel messages.
         self._publication_lock = asyncio.Lock()
+        self.outbox_service = outbox_service
         # Circular dependencies injected later via boot.py
         self.alert_service: Optional["AlertService"] = None
         self.lifecycle_service: Optional["LifecycleService"] = None
@@ -179,6 +182,13 @@ class CreationService:
                 if not published_channel_ids:
                     report["failed"].append({"reason": "No active channels linked/selected."})
                 return rec_entity, report
+
+            if self.outbox_service:
+                return rec_entity, await self.outbox_service.publish_for_recommendation(
+                    session,
+                    rec_entity,
+                    [channel.telegram_channel_id for channel in channels],
+                )
 
             try:
                 from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
@@ -282,7 +292,15 @@ class CreationService:
         
         # تسجيل حدث الإنشاء
         db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="CREATED_ACTIVE" if status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING", event_data={'entry': str(final_entry)}))
-        
+
+        target_channel_ids = kwargs.get("target_channel_ids") or set()
+        if self.outbox_service and target_channel_ids:
+            self.outbox_service.enqueue_create_deliveries(
+                db_session,
+                rec.id,
+                target_channel_ids,
+            )
+
         db_session.flush()
         db_session.refresh(rec)
         return self.repo._to_entity(rec), {

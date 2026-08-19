@@ -26,6 +26,7 @@ from .watched_channel import WatchedChannel
 # ✅ R1-S1 HOTFIX 10: Import the new event model
 from .user_trade_event import UserTradeEvent
 from .dedup import DedupLedger
+from .publication_delivery import PublicationDelivery, PublicationDeliveryOperation, PublicationDeliveryStatus
 
 # Backward-compatible export used by existing service tests and integrations.
 UserTradeStatus = UserTradeStatusEnum
@@ -53,5 +54,8 @@ __all__ = [
     # ✅ R1-S1 HOTFIX 10: Export the new event model
     "UserTradeEvent",
     "DedupLedger",
+    "PublicationDelivery",
+    "PublicationDeliveryOperation",
+    "PublicationDeliveryStatus",
 ]
 # --- END of models init ---

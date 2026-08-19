@@ -234,6 +234,11 @@ async def on_startup():
     alert_service.start()
     log.info("AlertService background tasks started.")
 
+    publication_outbox = app.state.services.get("publication_outbox_service")
+    if publication_outbox:
+        await publication_outbox.start()
+        log.info("PublicationOutbox worker started.")
+
     # Start recurring work only after all critical dependencies are ready.
     backup_task = asyncio.create_task(auto_backup_loop(), name="auto-backup")
     app.state.background_tasks.add(backup_task)
@@ -273,6 +278,10 @@ async def on_shutdown():
     if alert_service:
         alert_service.stop()
         log.info("AlertService stopped.")
+    publication_outbox = app.state.services.get("publication_outbox_service") if app.state.services else None
+    if publication_outbox:
+        await publication_outbox.stop()
+        log.info("PublicationOutbox worker stopped.")
     if app.state.ptb_app:
         await app.state.ptb_app.stop()
         await app.state.ptb_app.shutdown()
