@@ -35,6 +35,7 @@ from telegram.ext import (
 from capitalguard.infrastructure.db.uow import uow_transaction
 from capitalguard.infrastructure.db.repository import UserRepository
 from capitalguard.infrastructure.db.models import UserType
+from capitalguard.application.services.entitlement_service import EntitlementService
 from capitalguard.infrastructure.db.backup_service import BackupService
 from capitalguard.config import settings
 
@@ -65,7 +66,8 @@ async def admin_panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "<b>Users & Roles</b>\n"
         "<code>/grantaccess &lt;telegram_user_id&gt;</code> — منح الوصول\n"
         "<code>/revokeaccess &lt;telegram_user_id&gt;</code> — سحب الوصول\n"
-        "<code>/makeanalyst &lt;telegram_user_id&gt;</code> — ترقية إلى محلل\n\n"
+        "<code>/makeanalyst &lt;telegram_user_id&gt;</code> — ترقية إلى محلل\n"
+        "<code>/grantalpha &lt;telegram_user_id&gt; &lt;FEATURES&gt;</code> — منح Alpha مجاني\n\n"
         "<b>Operations</b>\n"
         "<code>/backup</code> — إنشاء وإرسال نسخة احتياطية\n"
         "إرسال ملف <code>.sql</code> — بدء الاسترجاع بعد تأكيد مزدوج\n\n"
@@ -174,6 +176,51 @@ async def revoke_access_cmd(
     except Exception as e:
         log.error(f"revoke_access_cmd: {e}", exc_info=True)
         await update.message.reply_text("An error occurred.")
+
+
+@uow_transaction
+async def grant_alpha_cmd(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    db_session,
+    db_user=None,
+    **kwargs,
+):
+    """Grant zero-cost Alpha features; never charges and remains idempotent."""
+    if not _is_admin(update.effective_chat.id):
+        return
+    if len(context.args or []) < 2:
+        await update.message.reply_text("Usage: /grantalpha <telegram_user_id> <FEATURE1,FEATURE2> [key=...]")
+        return
+    try:
+        target_telegram_id = int(context.args[0])
+        features = [feature for feature in context.args[1].split(",") if feature.strip()]
+        custom_key = next(
+            (token.split("=", 1)[1].strip() for token in context.args[2:] if token.startswith("key=")),
+            None,
+        )
+        target = UserRepository(db_session).find_by_telegram_id(target_telegram_id)
+        if target is None:
+            await update.message.reply_text("❌ المستخدم غير موجود في قاعدة البيانات.")
+            return
+        actor = UserRepository(db_session).find_by_telegram_id(update.effective_user.id)
+        key = custom_key or f"alpha:{target_telegram_id}:{','.join(sorted(features)).upper()}"
+        grants = EntitlementService(billing_enabled=False).grant_alpha(
+            db_session,
+            target.id,
+            features,
+            idempotency_key=key,
+            actor_user_id=actor.id if actor else None,
+            metadata={"channel": "telegram_admin", "target_telegram_id": target_telegram_id},
+        )
+        await update.message.reply_text(
+            f"✅ Alpha grant recorded (zero cost).\nFeatures: {', '.join(grant.feature_code for grant in grants)}"
+        )
+    except (ValueError, IndexError) as exc:
+        await update.message.reply_text(f"⚠️ Invalid Alpha grant: {exc}")
+    except Exception as exc:
+        log.error("grant_alpha_cmd failed", exc_info=True)
+        await update.message.reply_text("❌ تعذر تسجيل منح Alpha. لم يتم تحصيل أي مبلغ.")
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -365,6 +412,7 @@ def register_admin_commands(app: Application) -> None:
     app.add_handler(CommandHandler("grantaccess", grant_access_cmd, filters=admin_filter))
     app.add_handler(CommandHandler("makeanalyst", make_analyst_cmd, filters=admin_filter))
     app.add_handler(CommandHandler("revokeaccess", revoke_access_cmd, filters=admin_filter))
+    app.add_handler(CommandHandler("grantalpha", grant_alpha_cmd, filters=admin_filter))
 
     # أوامر النسخ الاحتياطي
     app.add_handler(CommandHandler("backup", cmd_backup, filters=admin_filter))

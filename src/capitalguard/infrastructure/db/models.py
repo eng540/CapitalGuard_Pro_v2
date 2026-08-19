@@ -28,6 +28,7 @@ from .models.publication_delivery import PublicationDelivery, PublicationDeliver
 from .models.identity import ScopedIdentityCounter
 from .models.channel_catalog import ChannelCatalog
 from .models.recommendation_channel_ref import RecommendationChannelRef
+from .models.entitlement import EntitlementGrant, SubscriptionLedgerEntry
 from .models.parsing import ParsingTemplate, ParsingAttempt
 
 # The old Role and UserRole are deprecated and no longer exported.
@@ -57,4 +58,6 @@ __all__ = [
     "ScopedIdentityCounter",
     "ChannelCatalog",
     "RecommendationChannelRef",
+    "EntitlementGrant",
+    "SubscriptionLedgerEntry",
 ]

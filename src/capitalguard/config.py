@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     SENTRY_DSN: str | None = None
     METRICS_ENABLED: bool = True
 
+    # R3 commercial gate: keep billing/charging disabled until Alpha retention approval.
+    BILLING_ENABLED: bool = False
+
 
 settings = Settings()
 
