@@ -23,6 +23,7 @@ from .helpers import get_service
 from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.audit_service import AuditService
+from capitalguard.application.services.analyst_discovery_service import AnalystDiscoveryService
 from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository
 from capitalguard.infrastructure.db.models import UserType
 from capitalguard.config import settings
@@ -186,6 +187,8 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
         "/portfolio — Web Portfolio",
         "/export — تصدير CSV",
         "/help — مساعدة مختصرة",
+        "/find_analysts — اكتشاف المحللين ومقارنة المؤهلين",
+
     ]
     if is_analyst:
         lines.extend([
@@ -313,6 +316,29 @@ async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
 # ✅ IMPLEMENTED: Real CSV Export
 @uow_transaction
 @require_active_user
+async def find_analysts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Discover public analysts using sample-size-aware performance data."""
+    search = " ".join(context.args or []).strip() or None
+    service = AnalystDiscoveryService(minimum_sample_size=5)
+    records = service.find_analysts(db_session, search=search, include_ineligible=True, limit=10)
+    if not records:
+        await update.message.reply_html("📭 لا توجد ملفات محللين مطابقة حاليًا.")
+        return
+
+    lines = ["<b>🔎 Analyst Discovery</b>", "<i>الترتيب لا يعتمد على Win Rate وحده، والعينة الصغيرة تظهر كغير مؤهلة.</i>", ""]
+    for record in records:
+        eligibility = "✅ مؤهل للمقارنة" if record["eligible_for_ranking"] else f"⚠️ عينة غير كافية ({record['sample_size']}/{record['minimum_sample_size']})"
+        lines.extend([
+            f"<b>{record['public_name']}</b> · <code>{record['analyst_code']}</code>",
+            f"Sample: {record['sample_size']} | Win Rate: {record['win_rate_pct']:.2f}% | PnL: {record['total_pnl_pct']:.2f}%",
+            f"Drawdown: {record['max_drawdown_pct']:.2f}% | Active: {record['active_recommendations']} | Exposure proxy: {record['exposure_proxy']}",
+            eligibility,
+            "",
+        ])
+    await update.message.reply_html("\n".join(lines))
+
+@uow_transaction
+@require_active_user
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     status_msg = await update.message.reply_text("⏳ Generating report...")
     
@@ -365,6 +391,7 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("portfolio", portfolio_webapp_handler))
     app.add_handler(CommandHandler("channels", channels_cmd))
     app.add_handler(CommandHandler("events", events_cmd))
+    app.add_handler(CommandHandler("find_analysts", find_analysts_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
     
     app.add_handler(CallbackQueryHandler(verify_subscription_callback, pattern="^verify_sub$"))
