@@ -75,6 +75,7 @@ class Recommendation(Base):
     events = relationship("RecommendationEvent", back_populates="recommendation", cascade="all, delete-orphan", lazy="selectin")
     user_trades = relationship("UserTrade", back_populates="source_recommendation")
     published_messages = relationship("PublishedMessage", back_populates="recommendation", cascade="all, delete-orphan")
+    publication_deliveries = relationship("PublicationDelivery", back_populates="recommendation", cascade="all, delete-orphan")
 
 class UserTrade(Base):
     __tablename__ = 'user_trades'

@@ -21,6 +21,7 @@ from .performance_service import PerformanceService
 from .creation_service import CreationService
 from .lifecycle_service import LifecycleService
 from .dedup_service import DedupLedgerService
+from .publication_outbox_service import PublicationOutboxService
 
 __all__ = [
     "TradeService",
@@ -38,4 +39,5 @@ __all__ = [
     "CreationService",
     "LifecycleService",
     "DedupLedgerService",
+    "PublicationOutboxService",
 ]
