@@ -1,4 +1,10 @@
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+
+from capitalguard.infrastructure.observability.metrics import (
+    OUTBOX_ATTEMPTS_TOTAL,
+    OUTBOX_DELIVERIES_TOTAL,
+    OUTBOX_QUEUE_SIZE,
+)
 from fastapi import APIRouter, Response
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])

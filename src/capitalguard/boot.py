@@ -112,6 +112,7 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         lifecycle_service = LifecycleService(
             repo=recommendation_repo,
             notifier=notifier,
+            outbox_service=publication_outbox_service,
         )
 
         # --- Strategy Engine v4 ---

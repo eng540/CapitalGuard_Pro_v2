@@ -13,6 +13,7 @@
 #    9. ✅ ADDED: Improved user_id parsing for performance from v200
 
 from __future__ import annotations
+import hashlib
 import logging
 import asyncio
 import inspect
@@ -47,6 +48,7 @@ from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
 # Type-only imports
 if False:
     from .alert_service import AlertService
+    from .publication_outbox_service import PublicationOutboxService
 
 logger = logging.getLogger(__name__)
 
@@ -138,10 +140,23 @@ def _validate_recommendation_data(side: str, entry: Decimal, stop_loss: Decimal,
 # --- Main Service Class ---
 
 class LifecycleService:
-    def __init__(self, repo: RecommendationRepository, notifier: Any):
+    def __init__(
+        self,
+        repo: RecommendationRepository,
+        notifier: Any,
+        outbox_service: Optional["PublicationOutboxService"] = None,
+    ):
         self.repo = repo
         self.notifier = notifier
+        self.outbox_service = outbox_service
         self.alert_service: Optional["AlertService"] = None
+
+    @staticmethod
+    def _event_key(session: Session, recommendation_id: int, fallback: str) -> str:
+        event = session.query(RecommendationEvent).filter_by(
+            recommendation_id=recommendation_id,
+        ).order_by(RecommendationEvent.id.desc()).first()
+        return f"event:{event.id}" if event else fallback
 
     # --- Internal Core Methods ---
     async def _commit_and_dispatch(self, session: Session, obj: Any, rebuild_alerts: bool = True):
@@ -186,6 +201,23 @@ class LifecycleService:
 
         bot_username = getattr(self.notifier, "bot_username", "CapitalGuardBot")
         
+        if self.outbox_service:
+            channel_ids = [m.telegram_channel_id for m in msgs]
+            event_key = self._event_key(
+                session,
+                rec_entity.id,
+                fallback=f"updated:{rec_entity.id}:{getattr(rec_entity, 'updated_at', None)}",
+            )
+            self.outbox_service.enqueue_operation(
+                session,
+                rec_entity.id,
+                channel_ids,
+                "UPDATE",
+                event_key,
+            )
+            session.commit()
+            return
+
         async def _upd(ch_id, msg_id):
             if inspect.iscoroutinefunction(self.notifier.edit_recommendation_card_by_ids):
                 await self.notifier.edit_recommendation_card_by_ids(ch_id, msg_id, rec_entity, bot_username)
@@ -195,9 +227,28 @@ class LifecycleService:
 
         await asyncio.gather(*[_upd(m.telegram_channel_id, m.telegram_message_id) for m in msgs], return_exceptions=True)
 
-    async def notify_reply(self, rec_id: int, text: str, db_session: Session):
-        """✅ FIXED: Added proper exception handling for async tasks."""
+    async def notify_reply(
+        self,
+        rec_id: int,
+        text: str,
+        db_session: Session,
+        operation: str = "REPLY",
+    ):
+        """Queue or send a lifecycle reply with durable idempotency."""
         msgs = self.repo.get_published_messages(db_session, rec_id)
+        if self.outbox_service:
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+            event_key = self._event_key(db_session, rec_id, fallback=f"text:{digest}")
+            self.outbox_service.enqueue_operation(
+                db_session,
+                rec_id,
+                [m.telegram_channel_id for m in msgs],
+                operation,
+                event_key,
+                payload={"text": text},
+            )
+            db_session.commit()
+            return
         
         def _handle_task_error(task):
             try:
@@ -277,7 +328,12 @@ class LifecycleService:
             await self.alert_service.remove_single_trigger("recommendation", rec.id)
 
         # ✅ FIXED: Added await (from v106)
-        await self.notify_reply(rec.id, f"✅ Signal Closed at {_format_price(exit_price)}", db_session)
+        await self.notify_reply(
+            rec.id,
+            f"✅ Signal Closed at {_format_price(exit_price)}",
+            db_session,
+            operation="CLOSE",
+        )
         await self._commit_and_dispatch(db_session, rec, rebuild_alerts=rebuild_alerts)
         return self.repo._to_entity(rec)
 
