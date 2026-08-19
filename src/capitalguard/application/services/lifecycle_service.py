@@ -17,33 +17,26 @@ import hashlib
 import logging
 import asyncio
 import inspect
-from typing import List, Optional, Tuple, Dict, Any, Set, Union
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session
-from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.models import (
-    PublishedMessage, Recommendation, RecommendationEvent, User,
-    RecommendationStatusEnum, UserTrade, 
-    OrderTypeEnum, ExitStrategyEnum,
+    Recommendation, RecommendationEvent, User,
+    RecommendationStatusEnum, UserTrade,
+    ExitStrategyEnum,
     UserTradeStatusEnum, 
     UserTradeEvent
 )
-from capitalguard.infrastructure.db.repository import (
-    RecommendationRepository, ChannelRepository, UserRepository
-)
+from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository
 from capitalguard.domain.entities import (
     Recommendation as RecommendationEntity,
-    RecommendationStatus as RecommendationStatusEntity,
-    OrderType as OrderTypeEntity,
-    ExitStrategy as ExitStrategyEntity,
-    UserType as UserTypeEntity
 )
-from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
+from capitalguard.application.services.identity_service import IdentityService
 
 # Type-only imports
 if False:
@@ -235,6 +228,14 @@ class LifecycleService:
         operation: str = "REPLY",
     ):
         """Queue or send a lifecycle reply with durable idempotency."""
+        rec = self.repo.get(db_session, rec_id)
+        if rec and "Recommendation:" not in text and "🆔" not in text:
+            rec_ref = rec.public_ref or f"REC-{rec.id}"
+            analyst_code = getattr(getattr(rec, "analyst", None), "analyst_code", None)
+            suffix = f"\n🆔 Recommendation: <code>{rec_ref}</code>"
+            if analyst_code:
+                suffix += f" · {analyst_code}"
+            text = f"{text}{suffix}"
         msgs = self.repo.get_published_messages(db_session, rec_id)
         if self.outbox_service:
             digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
@@ -271,19 +272,133 @@ class LifecycleService:
         except Exception as e:
             logger.error(f"Failed to send reply to channel {ch}, message {msg}: {e}")
 
-    async def _notify_user_trade_update(self, user_id: int, text: str):
+    async def _notify_user_trade_update(self, user_id: int, text: str, session: Optional[Session] = None):
         try:
-            with session_scope() as session:
+            if session is not None:
                 user = UserRepository(session).find_by_id(user_id)
-                if user:
-                    chat_id = user.telegram_user_id
-                    if inspect.iscoroutinefunction(self.notifier.send_private_text):
-                        await self.notifier.send_private_text(chat_id, text)
-                    else:
-                        loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, self.notifier.send_private_text, chat_id, text)
+                await self._send_private_to_user(user, text)
+                return
+            with session_scope() as owned_session:
+                user = UserRepository(owned_session).find_by_id(user_id)
+                await self._send_private_to_user(user, text)
         except Exception as e:
-            logger.error(f"Failed to notify user {user_id}: {e}")
+            logger.error(f"Failed to notify user {user_id}: {e}", exc_info=True)
+
+    async def _send_private_to_user(self, user: Optional[User], text: str):
+        if not user:
+            return
+        chat_id = user.telegram_user_id
+        if inspect.iscoroutinefunction(self.notifier.send_private_text):
+            await self.notifier.send_private_text(chat_id, text)
+        else:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self.notifier.send_private_text, chat_id, text)
+
+    def _trade_identity_context(self, session: Session, trade: UserTrade) -> Dict[str, Any]:
+        trader = getattr(trade, "user", None) or UserRepository(session).find_by_id(trade.user_id)
+        trader_code = getattr(trader, "user_code", None) or f"USR-{trade.user_id:06d}"
+        display_ref = (
+            IdentityService.display_ref(trader_code, "T", trade.trader_sequence)
+            if trade.trader_sequence is not None
+            else trade.public_ref or f"TRD-{trade.id}"
+        )
+        source = None
+        if trade.source_recommendation_id:
+            source = self.repo.get(session, trade.source_recommendation_id)
+        source_ref = None
+        analyst_code = None
+        channel_code = None
+        if source:
+            source_ref = source.public_ref or f"REC-{source.id}"
+            analyst_code = getattr(getattr(source, "analyst", None), "analyst_code", None)
+            channel_code = getattr(getattr(getattr(source, "channel", None), "catalog", None), "channel_code", None)
+        if not channel_code:
+            watched_channel = getattr(trade, "watched_channel", None)
+            channel_code = getattr(getattr(watched_channel, "catalog", None), "channel_code", None)
+        return {
+            "trade_ref": display_ref,
+            "trade_public_ref": trade.public_ref or f"TRD-{trade.id}",
+            "source_ref": source_ref,
+            "analyst_code": analyst_code,
+            "channel_code": channel_code,
+            "source_type": trade.source_type or ("TRACKED_RECOMMENDATION" if source else "DIRECT_INPUT"),
+        }
+
+    async def _notify_trade_event(
+        self,
+        session: Session,
+        trade: UserTrade,
+        title: str,
+        detail: str,
+        mode: str = "AUTO",
+    ):
+        identity = self._trade_identity_context(session, trade)
+        source_line = "📝 Trader Log"
+        if identity["source_type"] == "TRACKED_RECOMMENDATION":
+            source_line = f"📡 Tracked Signal · {identity['analyst_code'] or 'Analyst'} · {identity['channel_code'] or 'Channel'}"
+        text = (
+            f"{title}\n"
+            f"🆔 UserTrade: <code>{identity['trade_ref']}</code> · {identity['trade_public_ref']}\n"
+            f"{source_line}\n"
+            + (f"🔗 Recommendation: <code>{identity['source_ref']}</code>\n" if identity["source_ref"] else "")
+            + f"⚙️ Source: <b>{mode}</b>\n"
+            f"{detail}"
+        )
+        await self._notify_user_trade_update(trade.user_id, text, session=session)
+
+    async def _sync_tracked_trades_from_recommendation(
+        self,
+        session: Session,
+        recommendation: Recommendation,
+        event_type: str,
+        event_data: Optional[Dict[str, Any]] = None,
+        mode: str = "AUTO",
+        title: str = "🔄 Source Recommendation Updated",
+    ):
+        """Mirror source lifecycle changes into open tracked UserTrade rows."""
+        event_data = event_data or {}
+        followers = session.query(UserTrade).options(
+            selectinload(UserTrade.events),
+            selectinload(UserTrade.user),
+            selectinload(UserTrade.watched_channel),
+        ).filter(
+            UserTrade.source_recommendation_id == recommendation.id,
+            UserTrade.source_type == "TRACKED_RECOMMENDATION",
+            UserTrade.status != UserTradeStatusEnum.CLOSED,
+        ).with_for_update().all()
+        for trade in followers:
+            if event_type == "SOURCE_CLOSED":
+                pnl = _pct(trade.entry, event_data.get("price"), trade.side) if trade.activated_at else 0.0
+                trade.status = UserTradeStatusEnum.CLOSED
+                trade.close_price = _to_decimal(event_data.get("price"))
+                trade.pnl_percentage = Decimal(str(pnl))
+                trade.open_size_percent = Decimal("0")
+                trade.closed_at = datetime.now(timezone.utc)
+                notification_title = "🏁 Source Recommendation Closed"
+                detail = f"Exit: <code>{_format_price(event_data.get('price'))}</code> · PnL: <b>{pnl:.2f}%</b>"
+                if self.alert_service:
+                    await self.alert_service.remove_single_trigger("user_trade", trade.id)
+            else:
+                if "stop_loss" in event_data:
+                    trade.stop_loss = event_data["stop_loss"]
+                if "targets" in event_data:
+                    trade.targets = event_data["targets"]
+                if "entry" in event_data and trade.status != UserTradeStatusEnum.ACTIVATED:
+                    trade.entry = event_data["entry"]
+                if event_type == "SOURCE_PARTIAL":
+                    amount = _to_decimal(event_data.get("amount"))
+                    trade.open_size_percent = max(Decimal("0"), _to_decimal(trade.open_size_percent) - amount)
+                    notification_title = "💰 Source Partial Close"
+                    detail = f"Closed: <b>{amount:g}%</b> at <code>{_format_price(event_data.get('price'))}</code>"
+                else:
+                    notification_title = title
+                    detail = f"Event: <b>{event_type}</b>"
+            session.add(UserTradeEvent(
+                user_trade_id=trade.id,
+                event_type=event_type,
+                event_data={"source_recommendation_id": recommendation.id, "mode": mode, **event_data},
+            ))
+            await self._notify_trade_event(session, trade, notification_title, detail, mode=mode)
 
     # --- Recommendation Lifecycle Actions ---
 
@@ -305,8 +420,7 @@ class LifecycleService:
         if not exit_price.is_finite() or exit_price <= 0:
             raise ValueError("Exit price invalid.")
 
-        is_system = reason in ["SL_HIT", "TP_HIT", "PARTIAL_FINAL", "AUTO_CLOSE_FINAL_TP", 
-                               "WEB_CLOSE", "WEB_PARTIAL", "MANUAL_PRICE_CLOSE"]
+        is_system = reason in ["SL_HIT", "TP_HIT", "PARTIAL_FINAL", "AUTO_CLOSE_FINAL_TP"]
         if user_id and not is_system:
              user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
              if not user or rec.analyst_id != user.id: 
@@ -318,11 +432,24 @@ class LifecycleService:
         rec.open_size_percent = Decimal(0)
         rec.profit_stop_active = False
 
+        close_event_data = {
+            "price": float(exit_price),
+            "reason": reason,
+            "mode": "AUTO" if is_system else "MANUAL",
+        }
         db_session.add(RecommendationEvent(
-            recommendation_id=rec.id, 
-            event_type="FINAL_CLOSE", 
-            event_data={"price": float(exit_price), "reason": reason}
+            recommendation_id=rec.id,
+            event_type="FINAL_CLOSE",
+            event_data=close_event_data,
         ))
+        await self._sync_tracked_trades_from_recommendation(
+            db_session,
+            rec,
+            "SOURCE_CLOSED",
+            close_event_data,
+            mode="AUTO" if is_system else "MANUAL",
+            title="🏁 Source Recommendation Closed",
+        )
         
         if self.alert_service:
             await self.alert_service.remove_single_trigger("recommendation", rec.id)
@@ -360,11 +487,25 @@ class LifecycleService:
         rec.open_size_percent = curr_pct - actual_close
         pnl = _pct(rec.entry, price, rec.side)
         
+        partial_event_data = {
+            "price": float(price),
+            "amount": float(actual_close),
+            "pnl": pnl,
+            "mode": triggered_by,
+        }
         db_session.add(RecommendationEvent(
-            recommendation_id=rec.id, 
-            event_type="PARTIAL", 
-            event_data={"price": float(price), "amount": float(actual_close), "pnl": pnl}
+            recommendation_id=rec.id,
+            event_type="PARTIAL",
+            event_data=partial_event_data,
         ))
+        await self._sync_tracked_trades_from_recommendation(
+            db_session,
+            rec,
+            "SOURCE_PARTIAL",
+            partial_event_data,
+            mode=triggered_by,
+            title="💰 Source Partial Close",
+        )
         
         # ✅ FIXED: Added await (from v106)
         await self.notify_reply(
@@ -410,11 +551,19 @@ class LifecycleService:
             raise ValueError(f"Invalid SL: {e}")
 
         rec.stop_loss = new_sl
+        sl_event_data = {"new": str(new_sl)}
         db_session.add(RecommendationEvent(
-            recommendation_id=rec.id, 
-            event_type="SL_UPDATED", 
-            event_data={"new": str(new_sl)}
+            recommendation_id=rec.id,
+            event_type="SL_UPDATED",
+            event_data={**sl_event_data, "mode": "MANUAL"},
         ))
+        await self._sync_tracked_trades_from_recommendation(
+            db_session,
+            rec,
+            "SOURCE_SL_UPDATED",
+            {"stop_loss": new_sl, **sl_event_data},
+            mode="MANUAL",
+        )
         
         # ✅ FIXED: Added await (from v106)
         await self.notify_reply(rec.id, f"⚠️ SL Updated to {_format_price(new_sl)}", db_session)
@@ -445,15 +594,24 @@ class LifecycleService:
             raise ValueError(f"Invalid Targets: {e}")
              
         rec.targets = [
-            {'price': str(t['price']), 'close_percent': t['close_percent']} 
+            {'price': str(t['price']), 'close_percent': t['close_percent']}
             for t in targets_validated
         ]
         db_session.add(RecommendationEvent(
-            recommendation_id=rec.id, 
-            event_type="TP_UPDATED"
+            recommendation_id=rec.id,
+            event_type="TP_UPDATED",
+            event_data={"mode": "MANUAL"},
         ))
+        await self._sync_tracked_trades_from_recommendation(
+            db_session,
+            rec,
+            "SOURCE_TARGETS_UPDATED",
+            {"targets": rec.targets},
+            mode="MANUAL",
+        )
         
         # ✅ FIXED: Added await (from v106)
+
         await self.notify_reply(rec.id, "🎯 Targets Updated", db_session)
         await self._commit_and_dispatch(db_session, rec, rebuild_alerts=True)
         return self.repo._to_entity(rec)
@@ -546,7 +704,7 @@ class LifecycleService:
         db_session.add(RecommendationEvent(
             recommendation_id=rec.id, 
             event_type="SL_UPDATED", 
-            event_data={"reason": "BreakEven", "new": str(new_sl)}
+            event_data={"reason": "BreakEven", "new": str(new_sl), "mode": "MANUAL"}
         ))
         
         # ✅ FIXED: Added await (from v106)
@@ -568,8 +726,8 @@ class LifecycleService:
             
             s.add(RecommendationEvent(
                 recommendation_id=rec_orm.id, 
-                event_type=event_type, 
-                event_data={"price": float(price)}
+                event_type=event_type,
+                event_data={"price": float(price), "mode": "AUTO"},
             ))
             
             # ✅ FIXED: Added await (from v106)
@@ -623,9 +781,10 @@ class LifecycleService:
                  rec.activated_at = datetime.now(timezone.utc)
                  s.add(RecommendationEvent(
                      recommendation_id=rec.id, 
-                     event_type="ACTIVATED"
-                 ))
-                 
+                         event_type="ACTIVATED",
+                         event_data={"mode": "AUTO"},
+                     ))
+
                  # ✅ FIXED: Added await (from v106)
                  await self.notify_reply(rec.id, f"▶️ ACTIVE!", db_session=s)
                  await self._commit_and_dispatch(s, rec, rebuild_alerts=True)
@@ -638,7 +797,8 @@ class LifecycleService:
                  rec.closed_at = datetime.now(timezone.utc)
                  s.add(RecommendationEvent(
                      recommendation_id=rec.id, 
-                     event_type="INVALIDATED"
+                     event_type="INVALIDATED",
+                     event_data={"mode": "AUTO"},
                  ))
                  
                  # ✅ FIXED: Added await (from v106)
@@ -664,12 +824,16 @@ class LifecycleService:
                 trade.status = UserTradeStatusEnum.ACTIVATED
                 trade.activated_at = datetime.now(timezone.utc)
                 s.add(UserTradeEvent(
-                    user_trade_id=trade.id, 
-                    event_type="ACTIVATED"
+                    user_trade_id=trade.id,
+                    event_type="ACTIVATED",
+                    event_data={"mode": "AUTO"},
                 ))
-                await self._notify_user_trade_update(
-                    trade.user_id, 
-                    f"▶️ Trade #{trade.asset} Activated!"
+                await self._notify_trade_event(
+                    s,
+                    trade,
+                    "▶️ Trade Activated",
+                    f"Asset: <b>#{trade.asset}</b>",
+                    mode="AUTO",
                 )
                 await self._commit_and_dispatch(s, trade, rebuild_alerts=True)
 
@@ -679,19 +843,23 @@ class LifecycleService:
             if trade and trade.status in [UserTradeStatusEnum.PENDING_ACTIVATION, UserTradeStatusEnum.WATCHLIST]:
                 trade.status = UserTradeStatusEnum.CLOSED
                 trade.close_price = price
+                trade.open_size_percent = Decimal("0")
                 trade.closed_at = datetime.now(timezone.utc)
                 s.add(UserTradeEvent(
-                    user_trade_id=trade.id, 
-                    event_type="INVALIDATED", 
-                    event_data={"price": str(price)}
+                    user_trade_id=trade.id,
+                    event_type="INVALIDATED",
+                    event_data={"price": str(price), "mode": "AUTO"}
                 ))
                 
                 if self.alert_service: 
                     await self.alert_service.remove_single_trigger("user_trade", item_id)
                 
-                await self._notify_user_trade_update(
-                    trade.user_id, 
-                    f"❌ Trade #{trade.asset} Invalidated"
+                await self._notify_trade_event(
+                    s,
+                    trade,
+                    "❌ Trade Invalidated",
+                    f"Price: <code>{_format_price(price)}</code>",
+                    mode="AUTO",
                 )
                 await self._commit_and_dispatch(s, trade, rebuild_alerts=False)
 
@@ -703,19 +871,23 @@ class LifecycleService:
                 trade.status = UserTradeStatusEnum.CLOSED
                 trade.close_price = price
                 trade.pnl_percentage = Decimal(str(pnl))
+                trade.open_size_percent = Decimal("0")
                 trade.closed_at = datetime.now(timezone.utc)
                 s.add(UserTradeEvent(
-                    user_trade_id=trade.id, 
-                    event_type="SL_HIT", 
-                    event_data={"price": str(price), "pnl": pnl}
+                    user_trade_id=trade.id,
+                    event_type="SL_HIT",
+                    event_data={"price": str(price), "pnl": pnl, "mode": "AUTO"}
                 ))
                 
                 if self.alert_service: 
                     await self.alert_service.remove_single_trigger("user_trade", item_id)
                 
-                await self._notify_user_trade_update(
-                    trade.user_id, 
-                    f"🛑 SL Hit #{trade.asset} @ {_format_price(price)} (PnL: {pnl:.2f}%)"
+                await self._notify_trade_event(
+                    s,
+                    trade,
+                    "🛑 Stop Loss Hit",
+                    f"Asset: <b>#{trade.asset}</b> · Price: <code>{_format_price(price)}</code> · PnL: <b>{pnl:.2f}%</b>",
+                    mode="AUTO",
                 )
                 await self._commit_and_dispatch(s, trade, rebuild_alerts=False)
 
@@ -732,30 +904,50 @@ class LifecycleService:
             if any(e.event_type == event_type for e in (trade.events or [])): 
                 return
             
+            try:
+                target_info = trade.targets[target_index - 1]
+            except (IndexError, TypeError):
+                target_info = {}
+            close_percent = _to_decimal(target_info.get("close_percent", 0))
+            trade.open_size_percent = max(
+                Decimal("0"),
+                _to_decimal(trade.open_size_percent) - close_percent,
+            )
             s.add(UserTradeEvent(
-                user_trade_id=trade.id, 
-                event_type=event_type, 
-                event_data={"price": str(price)}
+                user_trade_id=trade.id,
+                event_type=event_type,
+                event_data={
+                    "price": str(price),
+                    "amount": float(close_percent),
+                    "mode": "AUTO",
+                },
             ))
             
-            await self._notify_user_trade_update(
-                trade.user_id, 
-                f"🎯 TP{target_index} Hit #{trade.asset}"
+            await self._notify_trade_event(
+                s,
+                trade,
+                f"🎯 TP{target_index} Hit",
+                f"Asset: <b>#{trade.asset}</b> · Price: <code>{_format_price(price)}</code> · Closed: <b>{close_percent:g}%</b>",
+                mode="AUTO",
             )
             
-            if target_index == len(trade.targets or []):
+            if target_index == len(trade.targets or []) or trade.open_size_percent < Decimal("0.1"):
                 pnl = _pct(trade.entry, price, trade.side)
                 trade.status = UserTradeStatusEnum.CLOSED
                 trade.close_price = price
                 trade.pnl_percentage = Decimal(str(pnl))
+                trade.open_size_percent = Decimal("0")
                 trade.closed_at = datetime.now(timezone.utc)
                 
-                if self.alert_service: 
+                if self.alert_service:
                     await self.alert_service.remove_single_trigger("user_trade", item_id)
                 
-                await self._notify_user_trade_update(
-                    trade.user_id, 
-                    f"🏆 Final Target Hit! PnL: {pnl:.2f}%"
+                await self._notify_trade_event(
+                    s,
+                    trade,
+                    "🏆 Final Target Hit",
+                    f"Asset: <b>#{trade.asset}</b> · Price: <code>{_format_price(price)}</code> · PnL: <b>{pnl:.2f}%</b>",
+                    mode="AUTO",
                 )
                 await self._commit_and_dispatch(s, trade, rebuild_alerts=False)
             else:
@@ -785,17 +977,25 @@ class LifecycleService:
         trade.status = UserTradeStatusEnum.CLOSED
         trade.close_price = exit_price
         trade.pnl_percentage = Decimal(str(pnl))
+        trade.open_size_percent = Decimal("0")
         trade.closed_at = datetime.now(timezone.utc)
         
         db_session.add(UserTradeEvent(
             user_trade_id=trade.id, 
-            event_type="MANUAL_CLOSE", 
-            event_data={"price": str(exit_price), "pnl": pnl}
+            event_type="MANUAL_CLOSE",
+            event_data={"price": str(exit_price), "pnl": pnl, "mode": "MANUAL"}
         ))
         
         if self.alert_service:
             await self.alert_service.remove_single_trigger("user_trade", trade.id)
             
+        await self._notify_trade_event(
+            db_session,
+            trade,
+            "✋ Trade Closed Manually",
+            f"Asset: <b>#{trade.asset}</b> · Exit: <code>{_format_price(exit_price)}</code> · PnL: <b>{pnl:.2f}%</b>",
+            mode="MANUAL",
+        )
         await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
         return trade
 

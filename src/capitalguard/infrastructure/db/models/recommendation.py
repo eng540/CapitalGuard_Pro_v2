@@ -102,6 +102,7 @@ class UserTrade(Base):
     
     close_price = Column(Numeric(20, 8), nullable=True)
     pnl_percentage = Column(Numeric(10, 4), nullable=True)
+    open_size_percent = Column(Numeric(5, 2), nullable=False, server_default='100.00')
     source_forwarded_text = Column(Text, nullable=True)
     source_type = Column(String(32), nullable=False, server_default="FORWARD", index=True)
     

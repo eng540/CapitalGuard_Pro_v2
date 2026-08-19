@@ -297,13 +297,16 @@ def _build_clean_timeline(rec: Recommendation) -> str:
         for event in events:
             ts = getattr(event, 'event_timestamp', datetime.now()).strftime("%H:%M")
             e_type = getattr(event, 'event_type', '').replace("_", " ").title()
+            event_data = getattr(event, 'event_data', {}) or {}
+            mode = event_data.get('mode')
+            mode_suffix = f" · {mode}" if mode else ""
             
             # Simplify event names
             if "Tp" in e_type: e_type = e_type.replace("Hit", "✅")
             elif "Sl" in e_type: e_type = "🛑 Stop Loss"
             elif "Partial" in e_type: e_type = "💰 Partial Exit"
             
-            lines.append(f"▪️ `{ts}` {e_type}")
+            lines.append(f"▪️ `{ts}` {e_type}{mode_suffix}")
         return "\n".join(lines)
     except Exception: return ""
 
@@ -329,6 +332,14 @@ async def build_trade_card_text(rec: Recommendation, bot_username: str, is_initi
         parts.append(_build_header(rec, bot_username))
         source_badge, record_label = _record_identity(rec)
         parts.append(f"{source_badge}  •  {record_label}")
+        if getattr(rec, "source_type", "") == "TRACKED_RECOMMENDATION":
+            source_ref = getattr(rec, "source_public_ref", None)
+            analyst_code = getattr(rec, "source_analyst_code", None) or "Analyst"
+            channel_code = getattr(rec, "channel_code", None) or "Channel"
+            if source_ref:
+                parts.append(
+                    f"🔗 <b>Source Recommendation:</b> <code>{source_ref}</code> · {analyst_code} · {channel_code}"
+                )
         parts.append("")
         
         # 2. Dashboard (Live Price + PnL)
@@ -430,6 +441,11 @@ class PortfolioViews:
                 keyboard.append([InlineKeyboardButton("📈 Analyst Panel", callback_data=CallbackBuilder.create(ns, "show_list", "analyst", 1))])
             keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data=CallbackBuilder.create(ns, "hub"))])
             text = f"{header}\n\n{stats_card}"
+            if tracked_active_count + tracked_watchlist_count:
+                text += (
+                    "\n\n<i>📡 Tracked Signals = توصيات محلل متتبعة؛ "
+                    "قد تكون حالتها Watchlist أو Active.</i>"
+                )
             
             if update.callback_query:
                 await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)

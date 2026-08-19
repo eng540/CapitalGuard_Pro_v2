@@ -186,3 +186,79 @@ async def test_direct_input_log_creates_watchlist_and_source_type(db_session, tr
     duplicate = await trade_service.create_trade_from_forwarding_async(**kwargs)
     assert duplicate["success"] is False
     assert duplicate["duplicate"] is True
+
+
+async def test_tracking_sets_source_identity_and_initial_event(db_session, trade_service: TradeService):
+    user_repo = UserRepository(db_session)
+    analyst = user_repo.find_or_create(telegram_id=5111, first_name="Analyst", user_type=UserType.ANALYST)
+    trader = user_repo.find_or_create(telegram_id=5222, first_name="Trader")
+    db_session.commit()
+
+    rec_data = {
+        "asset": "BTCUSDT", "side": "LONG", "order_type": "LIMIT",
+        "entry": Decimal("60000"), "stop_loss": Decimal("59000"),
+        "targets": [{"price": Decimal("61000"), "close_percent": 100.0}],
+    }
+    source_rec, _ = await trade_service.create_and_publish_recommendation_async(
+        user_id=str(analyst.telegram_user_id), db_session=db_session, **rec_data
+    )
+    db_session.commit()
+
+    result = await trade_service.create_trade_from_recommendation(
+        user_id=str(trader.telegram_user_id), rec_id=source_rec.id, db_session=db_session
+    )
+    db_session.commit()
+
+    from capitalguard.infrastructure.db.models import UserTrade, UserTradeEvent
+    trade = db_session.query(UserTrade).filter(UserTrade.id == result["trade_id"]).one()
+    events = db_session.query(UserTradeEvent).filter(
+        UserTradeEvent.user_trade_id == trade.id,
+        UserTradeEvent.event_type == "TRACKING_STARTED",
+    ).all()
+
+    assert result["success"] is True
+    assert trade.source_type == "TRACKED_RECOMMENDATION"
+    assert trade.source_recommendation_id == source_rec.id
+    assert len(events) == 1
+
+
+async def test_source_manual_close_mirrors_to_open_tracked_trade(db_session, trade_service: TradeService):
+    user_repo = UserRepository(db_session)
+    analyst = user_repo.find_or_create(telegram_id=5333, first_name="Analyst", user_type=UserType.ANALYST)
+    trader = user_repo.find_or_create(telegram_id=5444, first_name="Trader")
+    db_session.commit()
+
+    rec_data = {
+        "asset": "ETHUSDT", "side": "LONG", "order_type": "LIMIT",
+        "entry": Decimal("3000"), "stop_loss": Decimal("2900"),
+        "targets": [{"price": Decimal("3200"), "close_percent": 100.0}],
+    }
+    source_rec, _ = await trade_service.create_and_publish_recommendation_async(
+        user_id=str(analyst.telegram_user_id), db_session=db_session, **rec_data
+    )
+    db_session.commit()
+    tracked = await trade_service.create_trade_from_recommendation(
+        user_id=str(trader.telegram_user_id), rec_id=source_rec.id, db_session=db_session
+    )
+    db_session.commit()
+
+    await trade_service.close_recommendation_async(
+        rec_id=source_rec.id,
+        user_id=str(analyst.telegram_user_id),
+        exit_price=Decimal("3150"),
+        db_session=db_session,
+        reason="MANUAL_PRICE_CLOSE",
+        rebuild_alerts=False,
+    )
+    db_session.commit()
+
+    from capitalguard.infrastructure.db.models import UserTrade, UserTradeEvent, UserTradeStatusEnum
+    trade = db_session.query(UserTrade).filter(UserTrade.id == tracked["trade_id"]).one()
+    event = db_session.query(UserTradeEvent).filter(
+        UserTradeEvent.user_trade_id == trade.id,
+        UserTradeEvent.event_type == "SOURCE_CLOSED",
+    ).one()
+
+    assert trade.status == UserTradeStatusEnum.CLOSED
+    assert trade.close_price == Decimal("3150")
+    assert event.event_data["mode"] == "MANUAL"

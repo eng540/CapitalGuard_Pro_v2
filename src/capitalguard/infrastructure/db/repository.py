@@ -396,10 +396,16 @@ class RecommendationRepository:
             ))
             watched_channel = getattr(trade, 'watched_channel', None)
             watched_catalog = getattr(watched_channel, 'catalog', None)
-            setattr(trade_entity, 'channel_code', getattr(watched_catalog, 'channel_code', None))
-            setattr(trade_entity, 'source_type', getattr(trade, 'source_type', None) or (
-                'DIRECT_INPUT' if getattr(trade, 'source_recommendation_id', None) is None else 'TRACKED_RECOMMENDATION'
-            ))
+            source_recommendation = getattr(trade, 'source_recommendation', None)
+            source_channel = getattr(source_recommendation, 'channel', None)
+            source_catalog = getattr(source_channel, 'catalog', None)
+            setattr(trade_entity, 'channel_code', getattr(watched_catalog, 'channel_code', None) or getattr(source_catalog, 'channel_code', None))
+            setattr(trade_entity, 'source_public_ref', getattr(source_recommendation, 'public_ref', None))
+            setattr(trade_entity, 'source_analyst_code', getattr(getattr(source_recommendation, 'analyst', None), 'analyst_code', None))
+            stored_source_type = getattr(trade, 'source_type', None)
+            if getattr(trade, 'source_recommendation_id', None) is not None and stored_source_type in (None, 'FORWARD'):
+                stored_source_type = 'TRACKED_RECOMMENDATION'
+            setattr(trade_entity, 'source_type', stored_source_type or 'DIRECT_INPUT')
             setattr(trade_entity, 'source_recommendation_id', trade.source_recommendation_id)
             setattr(trade_entity, 'orm_status_value', safe_trade_status.value) # Use normalized value
             if trade.pnl_percentage is not None:

@@ -154,7 +154,18 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
             
             is_analyst = (db_user.user_type == UserType.ANALYST)
             if result.get('success'):
-                await update.message.reply_html(f"✅ <b>Tracking Started:</b> {result['asset']}", reply_markup=get_main_menu_keyboard(is_analyst))
+                source_ref = result.get('source_public_ref') or f"REC-{result.get('source_recommendation_id', rec_id)}"
+                source_label = result.get('source_analyst_code') or "Analyst Signal"
+                channel_label = result.get('channel_code') or "Channel not resolved"
+                status_label = result.get('status') or "WATCHLIST"
+                confirmation = (
+                    "✅ <b>Tracking Started</b>\n"
+                    f"📡 <b>Source:</b> {source_label} · {channel_label}\n"
+                    f"🆔 <b>UserTrade:</b> <code>{result.get('display_ref') or result.get('public_ref')}</code>\n"
+                    f"🔗 <b>Recommendation:</b> <code>{source_ref}</code>\n"
+                    f"📌 <b>Asset:</b> #{result['asset']} · <b>Status:</b> {status_label}"
+                )
+                await update.message.reply_html(confirmation, reply_markup=get_main_menu_keyboard(is_analyst))
             else:
                 await update.message.reply_html(f"⚠️ {result.get('error')}", reply_markup=get_main_menu_keyboard(is_analyst))
         except Exception:
@@ -207,6 +218,7 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
             "/log — تسجيل صفقة شخصية",
             "My Logs — صفقات الإدخال المباشر",
             "Tracked Signals — توصيات المحللين المتابعة",
+            "/events &lt;UserTrade ID&gt; — سجل أحداث صفقة المتداول",
         ])
     if is_admin:
         lines.extend([
@@ -298,22 +310,32 @@ async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
 # ✅ RESTORED: Events Command
 @uow_transaction
 @require_active_user
-@require_analyst_user
 async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     if not context.args or not context.args[0].isdigit():
-        await update.message.reply_html("Usage: /events <id>")
+        await update.message.reply_html("الاستخدام: <code>/events &lt;Recommendation/UserTrade ID&gt;</code>")
         return
-    rec_id = int(context.args[0])
+    record_id = int(context.args[0])
     audit_service = get_service(context, "audit_service", AuditService)
     try:
-        events = audit_service.get_recommendation_events_for_user(rec_id, str(db_user.telegram_user_id))
+        if db_user.user_type == UserType.ANALYST:
+            events = audit_service.get_recommendation_events_for_user(record_id, str(db_user.telegram_user_id))
+            title = f"📜 Recommendation #{record_id} Events"
+        else:
+            events = audit_service.get_user_trade_events_for_user(record_id, str(db_user.telegram_user_id))
+            title = f"📜 UserTrade #{record_id} Events"
         if not events:
-            await update.message.reply_html("No events found.")
+            await update.message.reply_html(f"{title}\nلا توجد أحداث مسجلة بعد.")
             return
-        msg = "\n".join([f"• {e['type']} at {e['timestamp']}" for e in events])
-        await update.message.reply_text(msg[:4000])
-    except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        lines = [f"<b>{title}</b>"]
+        for event in events:
+            mode = (event.get("data") or {}).get("mode") or "SYSTEM"
+            lines.append(f"• <b>{event['type']}</b> · {mode} · {event['timestamp']}")
+        await update.message.reply_html("\n".join(lines)[:4000])
+    except ValueError as exc:
+        await update.message.reply_html(f"⚠️ {exc}")
+    except Exception:
+        log.exception("Events command failed for user %s", db_user.id)
+        await update.message.reply_html("⚠️ تعذر تحميل سجل الأحداث الآن. حاول مرة أخرى بعد لحظات.")
 
 # ✅ IMPLEMENTED: Real CSV Export
 @uow_transaction
