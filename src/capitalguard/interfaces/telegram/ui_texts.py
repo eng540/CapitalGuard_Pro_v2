@@ -96,6 +96,7 @@ def calculate_real_pnl(rec: Recommendation) -> Dict[str, Any]:
         entry = _to_decimal(_get_attr(rec, 'entry', 0))
         side = _get_attr(rec.side, 'value', 'LONG')
         status = _get_attr(rec, 'status')
+        status_value = getattr(status, 'value', status)
         
         partial_closes = []
         total_closed_pct = 0.0
@@ -113,14 +114,18 @@ def calculate_real_pnl(rec: Recommendation) -> Dict[str, Any]:
                         total_closed_pct += float(close_pct)
         
         realized_pnl = sum(c['profit'] * c['percentage'] / 100 for c in partial_closes)
-        is_closed = (status == RecommendationStatus.CLOSED)
+        is_closed = str(status_value) == RecommendationStatus.CLOSED.value
         weighted_exit_price = None
         final_pnl = realized_pnl
         
         if is_closed:
+            stored_pnl = _get_attr(rec, 'final_pnl_percentage', None)
             exit_price = _to_decimal(_get_attr(rec, 'exit_price', 0))
             remaining_pct = 100.0 - total_closed_pct
-            if remaining_pct > 0.1:
+            if stored_pnl is not None and not partial_closes:
+                # UserTrade carries the authoritative PnL calculated at close.
+                final_pnl = float(stored_pnl)
+            elif remaining_pct > 0.1:
                 remaining_pnl = _pct(entry, exit_price, side)
                 final_pnl += (remaining_pnl * remaining_pct / 100)
             
