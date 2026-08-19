@@ -601,7 +601,10 @@ class LifecycleService:
                 UserTrade.id == item_id
             ).with_for_update().first()
             
-            if trade and trade.status == UserTradeStatusEnum.PENDING_ACTIVATION:
+            if trade and trade.status in (
+                UserTradeStatusEnum.PENDING_ACTIVATION,
+                UserTradeStatusEnum.WATCHLIST,
+            ):
                 trade.status = UserTradeStatusEnum.ACTIVATED
                 trade.activated_at = datetime.now(timezone.utc)
                 s.add(UserTradeEvent(
@@ -643,6 +646,7 @@ class LifecycleService:
                 pnl = _pct(trade.entry, price, trade.side)
                 trade.status = UserTradeStatusEnum.CLOSED
                 trade.close_price = price
+                trade.pnl_percentage = Decimal(str(pnl))
                 trade.closed_at = datetime.now(timezone.utc)
                 s.add(UserTradeEvent(
                     user_trade_id=trade.id, 
@@ -687,6 +691,7 @@ class LifecycleService:
                 pnl = _pct(trade.entry, price, trade.side)
                 trade.status = UserTradeStatusEnum.CLOSED
                 trade.close_price = price
+                trade.pnl_percentage = Decimal(str(pnl))
                 trade.closed_at = datetime.now(timezone.utc)
                 
                 if self.alert_service: 
