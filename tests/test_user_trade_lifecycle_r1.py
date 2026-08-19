@@ -127,3 +127,37 @@ async def test_final_tp_close_persists_pnl_and_is_idempotent(
     assert saved.close_price == Decimal("105")
     assert saved.pnl_percentage == Decimal("5.0")
     assert len(events) == 1
+
+
+async def test_partial_tp_updates_open_size_before_final_close(
+    db_session, lifecycle_service, monkeypatch
+):
+    user = UserRepository(db_session).find_or_create(telegram_id=92104, first_name="Partial")
+    user.is_active = True
+    trade = UserTrade(
+        user_id=user.id,
+        asset="BTCUSDT",
+        side="LONG",
+        entry=Decimal("100"),
+        stop_loss=Decimal("95"),
+        targets=[
+            {"price": "105", "close_percent": 50.0},
+            {"price": "110", "close_percent": 50.0},
+        ],
+        status=UserTradeStatus.ACTIVATED,
+    )
+    db_session.add(trade)
+    db_session.commit()
+    _patch_session_scope(monkeypatch, db_session)
+
+    await lifecycle_service.process_user_trade_tp_hit_event(trade.id, 1, Decimal("105"))
+    db_session.expire_all()
+    after_tp1 = db_session.query(UserTrade).filter(UserTrade.id == trade.id).one()
+    assert after_tp1.status == UserTradeStatus.ACTIVATED
+    assert after_tp1.open_size_percent == Decimal("50.00")
+
+    await lifecycle_service.process_user_trade_tp_hit_event(trade.id, 2, Decimal("110"))
+    db_session.expire_all()
+    after_tp2 = db_session.query(UserTrade).filter(UserTrade.id == trade.id).one()
+    assert after_tp2.status == UserTradeStatus.CLOSED
+    assert after_tp2.open_size_percent == Decimal("0.00")

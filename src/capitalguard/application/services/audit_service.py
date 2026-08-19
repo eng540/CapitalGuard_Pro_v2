@@ -13,7 +13,8 @@ It provides read-only access to system events.
 
 from typing import List, Dict, Any
 from capitalguard.infrastructure.db.uow import session_scope
-from capitalguard.infrastructure.db.repository import RecommendationRepository, UserRepository
+from capitalguard.infrastructure.db.repository import UserRepository
+from capitalguard.infrastructure.db.models import UserTrade, UserTradeEvent
 from capitalguard.domain.ports import RecommendationRepoPort
 
 class AuditService:
@@ -54,4 +55,28 @@ class AuditService:
                     "data": event.event_data or {}
                 })
             return formatted_events
+
+    def get_user_trade_events_for_user(self, trade_id: int, user_telegram_id: str) -> List[Dict[str, Any]]:
+        """Retrieve a trader's own UserTrade event history for transparent tracking."""
+        with session_scope() as session:
+            user = self.user_repo_class(session).find_by_telegram_id(int(user_telegram_id))
+            if not user:
+                raise ValueError("User not found.")
+            trade = session.query(UserTrade).filter(
+                UserTrade.id == trade_id,
+                UserTrade.user_id == user.id,
+            ).first()
+            if not trade:
+                raise ValueError(f"UserTrade #{trade_id} not found.")
+            events = session.query(UserTradeEvent).filter(
+                UserTradeEvent.user_trade_id == trade.id,
+            ).order_by(UserTradeEvent.event_timestamp.asc(), UserTradeEvent.id.asc()).all()
+            return [
+                {
+                    "timestamp": event.event_timestamp.strftime("%Y-%m-%d %H:%M:%S") if event.event_timestamp else "N/A",
+                    "type": event.event_type,
+                    "data": event.event_data or {},
+                }
+                for event in events
+            ]
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: src/capitalguard/application/services/audit_service.py ---

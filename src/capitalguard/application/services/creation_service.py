@@ -22,6 +22,7 @@ from sqlalchemy import select, text
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.models import (
     Recommendation, RecommendationEvent, UserTradeEvent,
+    Channel,
     RecommendationStatusEnum, UserTrade,
     OrderTypeEnum, ExitStrategyEnum,
     UserTradeStatusEnum,
@@ -563,6 +564,34 @@ class CreationService:
             else: # CLOSED
                 return {'success': False, 'error': 'This signal is already closed.'}
 
+            watched_channel = None
+            source_channel = None
+            if rec_orm.channel_id:
+                source_channel = db_session.query(Channel).filter(Channel.id == rec_orm.channel_id).first()
+            if source_channel and source_channel.telegram_channel_id:
+                channel_catalog = IdentityService.ensure_channel_catalog(
+                    db_session, source_channel.telegram_channel_id, title=source_channel.title
+                )
+                watched_channel = db_session.execute(
+                    select(WatchedChannel).filter_by(
+                        user_id=trader_user.id,
+                        telegram_channel_id=source_channel.telegram_channel_id,
+                    )
+                ).scalar_one_or_none()
+                if not watched_channel:
+                    watched_channel = WatchedChannel(
+                        user_id=trader_user.id,
+                        channel_catalog_id=channel_catalog.id,
+                        telegram_channel_id=source_channel.telegram_channel_id,
+                        channel_title=source_channel.title,
+                        is_active=True,
+                    )
+                    db_session.add(watched_channel)
+                    db_session.flush()
+                elif watched_channel.channel_catalog_id is None:
+                    watched_channel.channel_catalog_id = channel_catalog.id
+                    db_session.flush()
+
             trade_public_ref, trade_sequence = IdentityService.trade_identity(db_session, trader_user.id)
             new_trade = UserTrade( 
                 public_ref=trade_public_ref,
@@ -575,10 +604,26 @@ class CreationService:
                 targets=rec_orm.targets, 
                 status=user_trade_status, 
                 activated_at=user_trade_activated_at, 
-                original_published_at=rec_orm.created_at, 
-                source_recommendation_id=rec_orm.id 
+                original_published_at=rec_orm.created_at,
+                source_recommendation_id=rec_orm.id,
+                source_type="TRACKED_RECOMMENDATION",
+                watched_channel_id=watched_channel.id if watched_channel else None,
+                open_size_percent=getattr(rec_orm, "open_size_percent", Decimal("100.00")),
             )
             db_session.add(new_trade)
+            db_session.flush()
+            db_session.add(UserTradeEvent(
+                user_trade_id=new_trade.id,
+                event_type="TRACKING_STARTED",
+                event_data={
+                    "source_type": "TRACKED_RECOMMENDATION",
+                    "mode": "MANUAL",
+                    "source_recommendation_id": rec_orm.id,
+                    "source_public_ref": rec_orm.public_ref,
+                    "source_status": rec_status.value,
+                    "channel_code": getattr(getattr(source_channel, "catalog", None), "channel_code", None),
+                },
+            ))
             db_session.flush()
             
             if self.alert_service:
@@ -599,6 +644,10 @@ class CreationService:
                 'public_ref': new_trade.public_ref,
                 'display_ref': IdentityService.display_ref(trader_user.user_code or f'USR-{trader_user.id:06d}', 'T', new_trade.trader_sequence),
                 'source_recommendation_id': rec_orm.id,
+                'source_public_ref': rec_orm.public_ref,
+                'source_analyst_code': getattr(getattr(rec_orm, 'analyst', None), 'analyst_code', None),
+                'channel_code': getattr(getattr(source_channel, 'catalog', None), 'channel_code', None),
+                'status': new_trade.status.value,
                 'asset': new_trade.asset,
             }
         

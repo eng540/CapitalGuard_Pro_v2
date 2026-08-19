@@ -219,8 +219,13 @@ async def log_confirmation_handler(
         source_type=draft["trade_data"].get("source_type", "DIRECT_INPUT"),
     )
     if result.get("success"):
+        display_ref = result.get("display_ref") or f"TRD-{result['trade_id']}"
+        public_ref = result.get("public_ref") or f"TRD-{result['trade_id']}"
         await query.edit_message_text(
-            f"✅ تم تسجيل الصفقة في قائمة المتابعة.\nرقم الصفقة: <b>#{result['trade_id']}</b>",
+            "✅ <b>تم تسجيل الصفقة في قائمة المتابعة.</b>\n"
+            f"📝 <b>UserTrade:</b> <code>{html.escape(str(display_ref))}</code>\n"
+            f"🆔 <b>Global Ref:</b> <code>{html.escape(str(public_ref))}</code>\n"
+            "📌 <b>Source:</b> DIRECT_INPUT · <b>Status:</b> WATCHLIST",
             parse_mode=ParseMode.HTML,
         )
     elif result.get("duplicate"):
