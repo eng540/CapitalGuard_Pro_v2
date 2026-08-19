@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .authorized_history_connector import AuthorizedHistoryConnector, HistoryCheckpoint
+
 from sqlalchemy.orm import Session
 
 from capitalguard.infrastructure.db.models import HistoricalImportBatch
@@ -18,6 +20,36 @@ class HistoricalImportService:
 
     def dry_run(self, payload: dict[str, Any]) -> ManifestValidationReport:
         return self.manifest_service.validate(payload)
+
+    def dry_run_authorized_page(
+        self,
+        connector: AuthorizedHistoryConnector,
+        *,
+        channel_id: int,
+        from_message_id: int = 0,
+        max_pages: int = 1,
+    ) -> tuple[ManifestValidationReport, HistoryCheckpoint, dict[str, Any]]:
+        payload, checkpoint = connector.fetch_manifest_page(
+            channel_id=channel_id,
+            from_message_id=from_message_id,
+            max_pages=max_pages,
+        )
+        return self.dry_run(payload), checkpoint, payload
+
+    async def dry_run_authorized_page_async(
+        self,
+        connector: AuthorizedHistoryConnector,
+        *,
+        channel_id: int,
+        from_message_id: int = 0,
+        max_pages: int = 1,
+    ) -> tuple[ManifestValidationReport, HistoryCheckpoint, dict[str, Any]]:
+        payload, checkpoint = await connector.fetch_manifest_page_async(
+            channel_id=channel_id,
+            from_message_id=from_message_id,
+            max_pages=max_pages,
+        )
+        return self.dry_run(payload), checkpoint, payload
 
     def register_validated_batch(
         self,

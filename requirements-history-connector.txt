@@ -1,0 +1,5 @@
+# Optional dependency for the authorized historical Telegram worker.
+# Kept separate from the live bot image until Historical Connector Gate approval.
+Telethon==1.44.0
+# Optional acceleration for MTProto encryption/decryption:
+# cryptg>=0.5.1
