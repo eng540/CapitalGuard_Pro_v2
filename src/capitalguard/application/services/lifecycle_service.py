@@ -723,6 +723,7 @@ class LifecycleService:
         
         trade.status = UserTradeStatusEnum.CLOSED
         trade.close_price = exit_price
+        trade.pnl_percentage = Decimal(str(pnl))
         trade.closed_at = datetime.now(timezone.utc)
         
         db_session.add(UserTradeEvent(

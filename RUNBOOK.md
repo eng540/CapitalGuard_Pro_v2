@@ -37,13 +37,25 @@
 
 تستخدم persistence مساحة مفاتيح `ptb:v2:*` وترميز JSON مقيدًا بالأنواع بدل فك تسلسل `pickle`. بيانات مساحة `ptb:*` القديمة لا تُقرأ تلقائيًا؛ يجب اعتبارها بيانات legacy ونقلها عبر إجراء مراجَع إن كانت مطلوبة.
 
+## DedupLedger
+
+يسجل النظام بصمة حتمية لكل إشارة Forward لكل مستخدم وقناة ضمن نافذة افتراضية مقدارها خمس دقائق. التكرار داخل النافذة يعاد كمرفوض مع `duplicate=true` ولا ينشئ `UserTrade` ثانيًا. يجب تشغيل migration `20251201_add_dedup_ledger` قبل تفعيل مسار Forwarding في بيئة جديدة، ومراجعة سجلات `dedup_ledger` عند التحقيق في تكرار الإشارات. لا ينبغي حذف السجل أثناء التنظيف التشغيلي؛ فهو جزء من أثر التدقيق.
+
+## Railway Deployment
+
+يستخدم Railway ملف `railway.toml` مع Dockerfile المشروع. ينفذ `entrypoint.sh` الأمر `alembic upgrade head` مرة واحدة وبشكل blocking قبل تشغيل Supervisor، ثم يبدأ Supervisor خدمة FastAPI على `0.0.0.0` مع احترام متغير Railway `PORT`. يضبط `railway.toml` المسار `/health` كـ healthcheck وسياسة restart، ولا يعتبر Railway deployment جاهزًا قبل نجاح healthcheck.
+
+يجب ضبط `DATABASE_URL` و`REDIS_URL` و`TELEGRAM_BOT_TOKEN` و`AI_SERVICE_URL` و`JWT_SECRET` و`API_KEY` و`TV_WEBHOOK_SECRET` في Railway Variables/Secrets، وليس في Git. بعد كل deployment شغّل `bash scripts/railway_smoke.sh https://<railway-domain>` أو workflow `Railway Smoke`. تحقق من logs التي تظهر migration complete وstartup complete، ثم راقب `/health` و`/metrics` وRedis reconnects لمدة 30 دقيقة. عند الفشل استخدم Railway Rollback إلى آخر deployment ناجح، ولا تعيد تشغيل migration يدويًا من shell الإنتاج.
+
+يجب أن تكون قاعدة PostgreSQL هي المرجع في Railway؛ لا تستخدم SQLite للتحقق من migration الإنتاجية. قبل أي migration حساسة نفّذ backup واحتفظ برقم deployment وmigration head ودليل restore.
+
 ## المراقبة والإيقاف
 
-راقب readiness، سجلات فشل Redis وTelegram وAlertService، reconnects الخاصة بـ Binance، وأخطاء مهام النسخ الاحتياطي. عند الإيقاف، يلغي التطبيق المهام الخلفية ثم يوقف AlertService وTelegram. لا تعتبر عملية الإقلاع ناجحة إلا بعد ظهور رسالة startup complete.
+راقب readiness، سجلات فشل Redis وTelegram وAlertService، reconnects الخاصة بـ Binance، أخطاء مهام النسخ الاحتياطي، ونسبة رفض Dedup. عند الإيقاف، يلغي التطبيق المهام الخلفية ثم يوقف AlertService وTelegram. لا تعتبر عملية الإقلاع ناجحة إلا بعد ظهور رسالة startup complete.
 
 ## الاختبارات قبل الدمج
 
-شغّل `make test` أو `pytest -q`، ثم `flake8 src` و`bandit -r src -q` و`pip-audit -r requirements.txt`. يجب ألا تُخفى نتائج الفحوص باستخدام `|| true`، ويجب إصلاح أخطاء الجمع والفشل قبل الدمج.
+شغّل `make test` أو `pytest -q`، ثم `python3 -m compileall -q src ai_service`، و`bandit -r src ai_service -q --severity-level high`، و`pip-audit -r requirements.txt`، و`PYTHONPATH=src alembic heads`. يعمل CI على lint للملفات Python المتغيرة في PR حتى تُغلق المخالفات الجديدة دون إخفاء المخالفات التاريخية. قبل Railway deploy اختبر `alembic upgrade head` على PostgreSQL، وبعده شغّل `bash scripts/railway_smoke.sh` واحفظ النتيجة. يجب ألا تُخفى نتائج الفحوص باستخدام `|| true`.
 
 ## Metrics
 

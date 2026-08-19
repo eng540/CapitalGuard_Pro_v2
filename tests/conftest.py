@@ -38,7 +38,8 @@ def db_session(db_engine):
     yield session
     
     session.close()
-    transaction.rollback()
+    if transaction.is_active:
+        transaction.rollback()
     connection.close()
 
 @pytest.fixture(scope="function")

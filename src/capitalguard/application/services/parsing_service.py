@@ -101,7 +101,9 @@ class ParsingService:
     def _parse_one_number(self, token: str) -> Optional[Decimal]:
         if token is None: return None
         try:
-            t = str(token).strip().replace(",", "").upper()
+            t = unicodedata.normalize("NFKC", str(token)).strip().replace(",", "")
+            t = t.translate(self._AR_TO_EN_DIGITS).upper()
+            t = t.translate(str.maketrans({"ك": "K", "م": "M", "ب": "B"}))
             if not t:
                 return None
             multiplier = Decimal("1")
@@ -117,31 +119,69 @@ class ParsingService:
             return None
 
     def _parse_targets_list(self, tokens: List[str]) -> List[Dict[str, Any]]:
-        parsed_targets = []
+        parsed_targets: List[Dict[str, Any]] = []
         if not tokens:
             return parsed_targets
-        for token in tokens:
-            if not token: continue
+
+        normalized_tokens = [str(token).strip() for token in tokens if token]
+        has_marker = any("@" in token for token in normalized_tokens)
+        missing_indexes: List[int] = []
+
+        for token in normalized_tokens:
             try:
                 price_str = token
                 pct_str = ""
-                if '@' in token:
-                    parts = token.split('@', 1)
-                    if len(parts) != 2:
-                        price_str = parts[0].strip()
-                        pct_str = ""
-                    else:
-                        price_str, pct_str = parts[0].strip(), parts[1].strip().replace('%','')
-                price = self._parse_one_number(price_str)
-                pct = self._parse_one_number(pct_str) if pct_str else Decimal("0")
+                marker_present = "@" in token
+                if marker_present:
+                    price_str, pct_str = token.split("@", 1)
+                    pct_str = pct_str.strip().replace("%", "")
+                price = self._parse_one_number(price_str.strip())
+                pct = self._parse_one_number(pct_str) if pct_str else None
                 pct_f = float(pct) if pct is not None and 0 <= pct <= 100 else 0.0
                 if price is not None:
                     parsed_targets.append({"price": price, "close_percent": pct_f})
+                    if not pct_str and marker_present:
+                        # An explicit empty marker such as `50k@` means 0%,
+                        # not an implicit 100% final target.
+                        continue
+                    if not marker_present or pct is None:
+                        missing_indexes.append(len(parsed_targets) - 1)
             except Exception:
                 continue
-        if parsed_targets and all(t["close_percent"] == 0.0 for t in parsed_targets):
+
+        if not parsed_targets:
+            return parsed_targets
+
+        explicit_total = sum(
+            target["close_percent"]
+            for index, target in enumerate(parsed_targets)
+            if index not in missing_indexes
+        )
+        if missing_indexes and has_marker and explicit_total < 100.0:
+            # Only carry forward the remaining percentage to bare targets
+            # appearing after an explicit percentage. A bare target before
+            # the first explicit percentage remains 0% by design.
+            explicit_indexes = [
+                index for index, token in enumerate(normalized_tokens)
+                if "@" in token and token.split("@", 1)[1].strip().replace("%", "")
+            ]
+            last_explicit = max(explicit_indexes, default=-1)
+            trailing_missing = [index for index in missing_indexes if index > last_explicit]
+            if trailing_missing:
+                remaining = max(0.0, 100.0 - explicit_total)
+                share = remaining / len(trailing_missing)
+                for index in trailing_missing:
+                    parsed_targets[index]["close_percent"] = share
+        elif not has_marker:
+            # Preserve the established convention for bare target lists:
+            # the final target closes the remaining position.
             parsed_targets[-1]["close_percent"] = 100.0
+
         return parsed_targets
+
+    def _clean_text(self, text: str) -> str:
+        """Backward-compatible name for the canonical text normalizer."""
+        return self._normalize_text(text)
 
     def _find_asset_and_side(self, text: str) -> Tuple[Optional[str], Optional[str]]:
         asset, side = None, None
@@ -205,8 +245,9 @@ class ParsingService:
             return None
 
     def _apply_ner_fallback(self, text: str) -> Optional[Dict[str, Any]]:
-        if not _NLP_MODEL:
-            return None
+        # The fallback is intentionally deterministic and regex-based. The
+        # optional spaCy model can enrich parsing when present, but must not be
+        # a hard dependency for the core ingestion path.
         try:
             parsed = {}
             parsed['asset'], parsed['side'] = self._find_asset_and_side(text)
@@ -216,7 +257,7 @@ class ParsingService:
             if em: parsed['entry'] = self._parse_one_number(em.group(1))
             sm = re.search(r'(?:STOP|SL|STOPLOSS|وقف)\s*[:=>]?\s*([\d.,]+[KMB]?)', text, re.IGNORECASE)
             if sm: parsed['stop_loss'] = self._parse_one_number(sm.group(1))
-            tpat = r'(?:TARGETS?|TPS?|هدف|اهداف)\s*\d*\s*[:=>]?\s*((?:[\d.,]+[KMB]?\s*(?:@\d+%?)?\s*[\s,\n]*)+)'
+            tpat = r'(?:TARGETS?|TPS?|هدف|اهداف)\s*(?:(?:\d+)\s*[:=>]\s*)?((?:[\d.,]+[KMB]?\s*(?:@\d+%?)?\s*[\s,\n]*)+)'
             tm = re.search(tpat, text, re.IGNORECASE)
             if tm:
                 tokens = [t for t in re.split(r'[\s,\n,]+', tm.group(1)) if t]
@@ -313,7 +354,13 @@ class ParsingService:
                     attempt_id = pa.id
         except Exception as e:
             log.error("DB error creating attempt record: %s", e, exc_info=True)
-            return ParsingResult(success=False, error_message="Database error creating attempt record.")
+            return ParsingResult(
+                success=False,
+                error_message="Database error during initialization.",
+                parser_path_used="failed",
+                attempt_id=None,
+                idempotency_hint=hint_hash,
+            )
 
         # Step 2: load templates and apply them INSIDE a session (snapshot to avoid DetachedInstance)
         try:
@@ -345,7 +392,7 @@ class ParsingService:
                             break
 
             # Step 3: NER fallback outside DB session (no ORM access required)
-            if not success and _NLP_MODEL:
+            if not success:
                 parsed = self._apply_ner_fallback(cleaned)
                 if parsed:
                     success = True

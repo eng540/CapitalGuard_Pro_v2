@@ -25,6 +25,7 @@ from .parsing import ParsingTemplate, ParsingAttempt
 from .watched_channel import WatchedChannel
 # ✅ R1-S1 HOTFIX 10: Import the new event model
 from .user_trade_event import UserTradeEvent
+from .dedup import DedupLedger
 
 # Backward-compatible export used by existing service tests and integrations.
 UserTradeStatus = UserTradeStatusEnum
@@ -51,5 +52,6 @@ __all__ = [
     "WatchedChannel",
     # ✅ R1-S1 HOTFIX 10: Export the new event model
     "UserTradeEvent",
+    "DedupLedger",
 ]
 # --- END of models init ---

@@ -25,6 +25,7 @@ from capitalguard.application.services import (
     PerformanceService,
     CreationService,
     LifecycleService,
+    DedupLedgerService,
 )
 from capitalguard.application.services.parsing_service import ParsingService
 
@@ -90,11 +91,15 @@ def build_services(ptb_app: Optional[Application] = None) -> Dict[str, Any]:
         services["image_parsing_service"] = ImageParsingService()
 
         # --- R3 Specialized Services ---
+        dedup_service = DedupLedgerService()
+        services["dedup_service"] = dedup_service
+
         creation_service = CreationService(
             repo=recommendation_repo,
             notifier=notifier,
             market_data_service=services["market_data_service"],
             price_service=services["price_service"],
+            dedup_service=dedup_service,
         )
 
         lifecycle_service = LifecycleService(

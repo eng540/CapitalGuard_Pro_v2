@@ -20,6 +20,7 @@ from .image_parsing_service import ImageParsingService
 from .performance_service import PerformanceService
 from .creation_service import CreationService
 from .lifecycle_service import LifecycleService
+from .dedup_service import DedupLedgerService
 
 __all__ = [
     "TradeService",
@@ -36,4 +37,5 @@ __all__ = [
     "PerformanceService",
     "CreationService",
     "LifecycleService",
+    "DedupLedgerService",
 ]

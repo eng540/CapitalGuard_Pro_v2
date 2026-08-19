@@ -16,7 +16,7 @@ from decimal import Decimal
 from telegram import Update
 from telegram.ext import (
     Application, MessageHandler, CallbackQueryHandler, ContextTypes, filters,
-    ConversationHandler
+    ConversationHandler, CommandHandler
 )
 from telegram.constants import ParseMode
 
@@ -32,6 +32,7 @@ from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets
 # Import states and helpers from the main forward parsing handler
 from .forward_parsing_handler import (
     AWAIT_REVIEW,
+    AWAIT_CORRECTION_VALUE,
     clean_parsing_conversation_state,
     smart_safe_edit,
     PARSING_ATTEMPT_ID_KEY,

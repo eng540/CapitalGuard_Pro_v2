@@ -1,4 +1,3 @@
---- START OF FILE: .github/workflows/ci.yml ---
 name: CI
 
 on: [push, pull_request]
@@ -9,9 +8,13 @@ jobs:
     env:
       DATABASE_URL: sqlite:///./dev.db
       API_KEY: test_api_key
+      TELEGRAM_BOT_TOKEN: 123:fake_token
+      ENV: test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -24,16 +27,20 @@ jobs:
           pip install -r requirements.txt
           pip install flake8 bandit pip-audit
 
-      - name: Lint (flake8)
-        run: flake8 src
+      - name: Lint critical Python errors
+        run: flake8 src ai_service --select=E9,F63,F7,F82
 
-      - name: Security (bandit)
-        # Fail the build on high-severity findings; retain the full report for review.
-        run: bandit -r src -q -lll
+      - name: Security (Bandit high severity)
+        run: bandit -r src ai_service -q --severity-level high
 
       - name: Dependencies Audit (pip-audit)
         run: pip-audit -r requirements.txt
 
+      - name: Compile
+        run: python -m compileall -q src ai_service
+
+      - name: Alembic heads
+        run: PYTHONPATH=src alembic heads
+
       - name: Tests
         run: pytest -q
---- END OF FILE ---

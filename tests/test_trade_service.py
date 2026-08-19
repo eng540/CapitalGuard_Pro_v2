@@ -6,9 +6,15 @@ from datetime import datetime
 
 # Application specific imports
 from capitalguard.application.services.trade_service import TradeService
+from capitalguard.application.services.creation_service import CreationService
+from capitalguard.application.services.lifecycle_service import LifecycleService
 from capitalguard.infrastructure.db.repository import UserRepository, RecommendationRepository # Needed for setup/verification
 from capitalguard.infrastructure.db.models import User, UserTrade, UserTradeStatus, Recommendation, RecommendationStatusEnum # Import ORM models
-from capitalguard.domain.entities import UserType, Recommendation as RecommendationEntity # Import domain enums/entities
+from capitalguard.domain.entities import (
+    UserType,
+    Recommendation as RecommendationEntity,
+    RecommendationStatus as RecommendationStatusEntity,
+)
 from capitalguard.domain.value_objects import Symbol, Side, Price, Targets # Import Value Objects
 
 # Mark tests as async
@@ -55,15 +61,29 @@ def trade_service_real_db(
     # Instantiate the real repository using the test session
     repo = RecommendationRepository()
     # Instantiate TradeService with real repo and mock externals
+    creation_service = CreationService(
+        repo=repo,
+        notifier=mock_notifier,
+        market_data_service=mock_market_data_service,
+        price_service=mock_price_service,
+    )
+    lifecycle_service = LifecycleService(repo=repo, notifier=mock_notifier)
     service = TradeService(
         repo=repo,
         notifier=mock_notifier,
         market_data_service=mock_market_data_service,
-        price_service=mock_price_service
+        price_service=mock_price_service,
+        creation_service=creation_service,
+        lifecycle_service=lifecycle_service,
     )
-    # Mock alert_service if needed, or set to None
-    service.alert_service = AsyncMock()
+    service.alert_service = MagicMock()
     service.alert_service.build_triggers_index = AsyncMock()
+    service.alert_service.build_trigger_data_from_orm.return_value = None
+    service.alert_service.add_trigger_data = AsyncMock()
+    service.alert_service.remove_single_trigger = AsyncMock()
+    creation_service.alert_service = service.alert_service
+    creation_service.lifecycle_service = lifecycle_service
+    lifecycle_service.alert_service = service.alert_service
     return service
 
 # --- Test Cases ---
@@ -88,7 +108,10 @@ async def test_create_trade_from_forwarding_success(trade_service_real_db: Trade
         user_id=str(user.telegram_user_id),
         trade_data=trade_data,
         original_text=original_text,
-        db_session=db_session
+        db_session=db_session,
+        status_to_set="WATCHLIST",
+        original_published_at=None,
+        channel_info=None,
     )
 
     # Assert
@@ -102,7 +125,7 @@ async def test_create_trade_from_forwarding_success(trade_service_real_db: Trade
     assert saved_trade.user_id == user.id
     assert saved_trade.asset == "ADAUSDT"
     assert saved_trade.entry == Decimal("1.5")
-    assert saved_trade.status == UserTradeStatus.OPEN
+    assert saved_trade.status == UserTradeStatus.WATCHLIST
     assert saved_trade.source_forwarded_text == original_text
     assert len(saved_trade.targets) == 2
     assert saved_trade.targets[0]['price'] == '1.6' # Stored as string
@@ -114,6 +137,7 @@ async def test_create_trade_from_forwarding_validation_fail(trade_service_real_d
     user = user_repo.find_or_create(telegram_id=998, first_name="ForwardFail")
     user.is_active = True
     db_session.commit()
+    user_db_id = user.id
 
     invalid_trade_data = {
         "asset": "SOLUSDT", "side": "LONG",
@@ -126,14 +150,17 @@ async def test_create_trade_from_forwarding_validation_fail(trade_service_real_d
         user_id=str(user.telegram_user_id),
         trade_data=invalid_trade_data,
         original_text="Some text",
-        db_session=db_session
+        db_session=db_session,
+        status_to_set="WATCHLIST",
+        original_published_at=None,
+        channel_info=None,
     )
 
     # Assert
     assert result['success'] is False
-    assert "Stop Loss must be less than Entry" in result['error']
+    assert "LONG SL must be < Entry" in result['error']
     # Verify no trade was saved
-    count = db_session.query(UserTrade).filter(UserTrade.user_id == user.id).count()
+    count = db_session.query(UserTrade).filter(UserTrade.user_id == user_db_id).count()
     assert count == 0
 
 
@@ -149,7 +176,7 @@ async def test_close_user_trade_success(trade_service_real_db: TradeService, db_
         user_id=user.id, asset="DOTUSDT", side="SHORT",
         entry=Decimal("30"), stop_loss=Decimal("31"),
         targets=[{"price": "29", "close_percent": 100.0}], # Stored as string in DB
-        status=UserTradeStatus.OPEN
+        status=UserTradeStatus.ACTIVATED
     )
     db_session.add(open_trade)
     db_session.commit()
@@ -192,12 +219,12 @@ async def test_close_user_trade_unauthorized(trade_service_real_db: TradeService
     user_a.is_active = True; user_b.is_active = True
     db_session.commit()
 
-    trade_a = UserTrade(user_id=user_a.id, asset="LINKUSDT", side="LONG", entry=Decimal("20"), stop_loss=Decimal("19"), targets=[{"price":"21"}], status=UserTradeStatus.OPEN)
+    trade_a = UserTrade(user_id=user_a.id, asset="LINKUSDT", side="LONG", entry=Decimal("20"), stop_loss=Decimal("19"), targets=[{"price":"21"}], status=UserTradeStatus.ACTIVATED)
     db_session.add(trade_a)
     db_session.commit()
 
     # Act & Assert: User B attempts to close User A's trade
-    with pytest.raises(ValueError, match="Access denied"):
+    with pytest.raises(ValueError, match="Trade #.* not found"):
         await trade_service_real_db.close_user_trade_async(
             user_id=str(user_b.telegram_user_id), # User B's ID
             trade_id=trade_a.id,
@@ -207,7 +234,7 @@ async def test_close_user_trade_unauthorized(trade_service_real_db: TradeService
     # Verify trade A is still open
     db_session.expire(trade_a)
     reloaded_trade_a = db_session.query(UserTrade).filter(UserTrade.id == trade_a.id).first()
-    assert reloaded_trade_a.status == UserTradeStatus.OPEN
+    assert reloaded_trade_a.status == UserTradeStatus.ACTIVATED
 
 async def test_close_already_closed_user_trade(trade_service_real_db: TradeService, db_session):
     """Tests that closing an already closed trade is idempotent."""
@@ -272,10 +299,8 @@ async def test_create_and_publish_recommendation_success(trade_service_real_db: 
     assert created_rec_entity.status == RecommendationStatusEntity.PENDING # Limit order starts pending
     assert created_rec_entity.analyst_id == analyst.id
 
-    # Check that notifier was called (assuming mock setup implies channel linking)
-    # Depending on _publish_recommendation logic, check call count or specific calls
-    # For now, just check if it was called at least once
-    mock_notifier.post_to_channel.assert_called() # Check if post was attempted
+    # Publishing is intentionally queued for the background worker.
+    assert report == {"queued": True, "success": [], "failed": []}
 
     # Verify DB state
     saved_rec_orm = db_session.query(Recommendation).filter(Recommendation.id == created_rec_entity.id).first()
