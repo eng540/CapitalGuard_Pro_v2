@@ -10,9 +10,8 @@
 #    6. DEEP LINK TRACKING: Tracks subscription source for analytics.
 
 import logging
-import asyncio
-from decimal import Decimal, InvalidOperation
-from typing import Optional, Any, Union, List, Dict
+from decimal import Decimal
+from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.constants import ParseMode
@@ -29,7 +28,7 @@ from telegram.ext import (
 # --- INFRASTRUCTURE ---
 from capitalguard.infrastructure.db.uow import uow_transaction
 from capitalguard.infrastructure.core_engine import core_cache
-from capitalguard.interfaces.telegram.schemas import TypedCallback, ManagementAction, ManagementNamespace
+from capitalguard.interfaces.telegram.schemas import TypedCallback, ManagementAction
 from capitalguard.interfaces.telegram.session import SessionContext
 from capitalguard.interfaces.telegram.helpers import get_service
 from capitalguard.interfaces.telegram.keyboards import (
@@ -102,7 +101,19 @@ class PortfolioController:
             items = trade.get_open_positions_for_user(db_session, tg_id) or []
             active_count = sum(1 for i in items if getattr(i, 'unified_status', None) == "ACTIVE")
             watchlist_count = sum(1 for i in items if getattr(i, 'unified_status', None) == "WATCHLIST")
-            data = {"user_name": db_user.username, "report": report, "active_count": active_count, "watchlist_count": watchlist_count, "is_analyst": db_user.user_type == UserTypeEntity.ANALYST}
+            direct_items = [i for i in items if getattr(i, 'source_type', '') == 'DIRECT_INPUT']
+            tracked_items = [i for i in items if getattr(i, 'source_type', '') == 'TRACKED_RECOMMENDATION']
+            data = {
+                "user_name": db_user.username,
+                "report": report,
+                "active_count": active_count,
+                "watchlist_count": watchlist_count,
+                "direct_active_count": sum(1 for i in direct_items if getattr(i, 'unified_status', None) == 'ACTIVE'),
+                "direct_watchlist_count": sum(1 for i in direct_items if getattr(i, 'unified_status', None) == 'WATCHLIST'),
+                "tracked_active_count": sum(1 for i in tracked_items if getattr(i, 'unified_status', None) == 'ACTIVE'),
+                "tracked_watchlist_count": sum(1 for i in tracked_items if getattr(i, 'unified_status', None) == 'WATCHLIST'),
+                "is_analyst": db_user.user_type == UserTypeEntity.ANALYST,
+            }
             await PortfolioViews.render_hub(update, **data)
             await core_cache.set(cache_key, data, ttl=30)
         except Exception as e:
@@ -133,12 +144,30 @@ class PortfolioController:
             return
         trade = get_service(context, "trade_service", TradeService)
         price_svc = get_service(context, "price_service", PriceService)
-        if list_type == "history": items = trade.get_history_for_user(db_session, str(db_user.telegram_user_id))
-        else: items = trade.get_open_positions_for_user(db_session, str(db_user.telegram_user_id))
-        target = {"activated": "ACTIVE", "watchlist": "WATCHLIST", "history": "CLOSED"}.get(list_type, "ACTIVE")
-        filtered = [i for i in items if getattr(i, 'unified_status', None) == target]
+        if list_type == "history":
+            items = trade.get_history_for_user(db_session, str(db_user.telegram_user_id))
+            target = "CLOSED"
+            filtered = [i for i in items if getattr(i, 'unified_status', None) == target]
+        else:
+            items = trade.get_open_positions_for_user(db_session, str(db_user.telegram_user_id))
+            target = {"activated": "ACTIVE", "watchlist": "WATCHLIST"}.get(list_type)
+            filtered = [i for i in items if getattr(i, 'unified_status', None) == target]
+            if list_type in {"direct", "tracked"}:
+                filtered = [
+                    i for i in items
+                    if getattr(i, 'source_type', '') == (
+                        'DIRECT_INPUT' if list_type == 'direct' else 'TRACKED_RECOMMENDATION'
+                    )
+                ]
         kb = await build_open_recs_keyboard(filtered, page, price_svc, list_type)
-        header = f"📋 <b>{list_type.title()} Trades</b>"
+        header_titles = {
+            "activated": "🚀 Active Trades",
+            "watchlist": "👁️ Watchlist",
+            "history": "📜 Closed History",
+            "direct": "📝 My Trader Logs",
+            "tracked": "📡 Tracked Analyst Signals",
+        }
+        header = f"📋 <b>{header_titles.get(list_type, list_type.title())}</b>"
         await safe_edit_message(context.bot, update.callback_query.message.chat_id, update.callback_query.message.message_id, header, kb)
 
     @staticmethod

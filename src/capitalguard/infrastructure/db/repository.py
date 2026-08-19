@@ -8,12 +8,11 @@
 
 import logging
 from typing import List, Optional, Any, Dict
-from decimal import Decimal, InvalidOperation
-from datetime import datetime 
+from decimal import Decimal
 
 from sqlalchemy.orm import Session, joinedload, selectinload
 import sqlalchemy as sa
-from sqlalchemy import and_, or_, func, select, case
+from sqlalchemy import func, select
 
 # Import domain entities and value objects
 from capitalguard.domain.entities import (
@@ -275,6 +274,12 @@ class RecommendationRepository:
                 events=list(row.events or []),
                 exit_strategy=ExitStrategyEntity(row.exit_strategy.value),
             )
+            # Presentation/audit metadata used by Telegram UX and exports.
+            setattr(entity, 'record_id', row.id)
+            setattr(entity, 'source_type', 'ANALYST_RECOMMENDATION')
+            setattr(entity, 'is_user_trade', False)
+            setattr(entity, 'source_recommendation_id', row.id)
+
             # Attach extra fields for logic
             if hasattr(row, 'profit_stop_active'):
                  setattr(entity, 'profit_stop_active', row.profit_stop_active)
@@ -329,6 +334,11 @@ class RecommendationRepository:
             )
             
             setattr(trade_entity, 'is_user_trade', True)
+            setattr(trade_entity, 'record_id', trade.id)
+            setattr(trade_entity, 'source_type', getattr(trade, 'source_type', None) or (
+                'DIRECT_INPUT' if getattr(trade, 'source_recommendation_id', None) is None else 'TRACKED_RECOMMENDATION'
+            ))
+            setattr(trade_entity, 'source_recommendation_id', trade.source_recommendation_id)
             setattr(trade_entity, 'orm_status_value', safe_trade_status.value) # Use normalized value
             if trade.pnl_percentage is not None:
                 setattr(trade_entity, 'final_pnl_percentage', float(trade.pnl_percentage))
