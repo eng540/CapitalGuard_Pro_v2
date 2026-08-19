@@ -41,6 +41,16 @@ class HistoricalSignalService:
     RANKABLE_TRUST_TIERS = {"VERIFIED_LIVE", "VERIFIED_HISTORY", "RECONSTRUCTED"}
 
     @staticmethod
+    def _json_safe(value: Any):
+        if isinstance(value, Decimal):
+            return str(value)
+        if isinstance(value, dict):
+            return {key: HistoricalSignalService._json_safe(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [HistoricalSignalService._json_safe(item) for item in value]
+        return value
+
+    @staticmethod
     def _utc(value: datetime) -> datetime:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
@@ -227,7 +237,7 @@ class HistoricalSignalService:
             side=side,
             entry=entry,
             stop_loss=stop_loss,
-            targets=targets,
+            targets=self._json_safe(targets),
             market=market,
             decision_timestamp=decision_time,
             status="PARSED",
@@ -389,11 +399,21 @@ class HistoricalSignalService:
         verified_events = bool(events) and all(
             event.replay_status in self.VERIFIED_REPLAY_STATUSES for event in events
         )
+        event_types = {event.event_type for event in events}
+        target_count = len(signal.targets) if isinstance(signal.targets, list) else 0
+        hit_target_count = len({
+            event.event_type for event in events
+            if event.event_type.startswith("TP")
+        })
+        has_activation = "ACTIVATED" in event_types
+        has_terminal_outcome = "SL" in event_types or (target_count > 0 and hit_target_count >= target_count)
         eligible = (
             signal.analyst_id is not None
             and signal.trust_tier in self.RANKABLE_TRUST_TIERS
             and Decimal(str(signal.confidence_score or 0)) >= Decimal("0.8000")
             and verified_events
+            and has_activation
+            and has_terminal_outcome
         )
         signal.eligible_for_ranking = eligible
         signal.status = "REPLAYED" if verified_events else signal.status

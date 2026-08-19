@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from capitalguard.application.services.financial_consistency_service import FinancialConsistencyService
 from capitalguard.application.services.parsing_service import ParsingService
 
 
@@ -23,8 +24,13 @@ class HistoricalParserService:
 
     _NUMBER = r"[0-9٠-٩][0-9٠-٩,]*(?:\.[0-9٠-٩]+)?[KkMmBb]?"
 
-    def __init__(self, parsing_service: ParsingService):
+    def __init__(
+        self,
+        parsing_service: ParsingService,
+        consistency_service: FinancialConsistencyService | None = None,
+    ):
         self.parsing_service = parsing_service
+        self.consistency_service = consistency_service or FinancialConsistencyService()
 
     def _number_after(self, text: str, labels: str) -> Decimal | None:
         match = re.search(rf"(?:{labels})\s*[:=\-]?\s*({self._NUMBER})", text, re.IGNORECASE)
@@ -59,9 +65,16 @@ class HistoricalParserService:
         if not targets:
             errors.append("TARGETS_NOT_FOUND")
 
+        consistency = self.consistency_service.check(
+            side=side,
+            entry=entry,
+            stop_loss=stop_loss,
+            targets=targets,
+        )
+        errors.extend(consistency.errors)
         fields_present = int(bool(asset and side)) + int(entry is not None) + int(stop_loss is not None) + int(bool(targets))
         confidence = Decimal(str(min(1.0, fields_present / 4))).quantize(Decimal("0.0001"))
-        if asset and side and entry is not None and stop_loss is not None and targets:
+        if asset and side and entry is not None and stop_loss is not None and targets and consistency.is_consistent:
             status = "PARSED"
         elif fields_present:
             status = "PARTIAL"
@@ -78,6 +91,11 @@ class HistoricalParserService:
                 "stop_loss": stop_loss,
                 "targets": targets,
                 "raw_text": raw_text,
+                "financial_consistency": {
+                    "is_consistent": consistency.is_consistent,
+                    "errors": list(consistency.errors),
+                    "warnings": list(consistency.warnings),
+                },
             },
             errors=tuple(errors),
         )

@@ -1,0 +1,18 @@
+{
+  "provider": "DEMO_MARKET_FIXTURE",
+  "market": "Spot",
+  "timezone": "UTC",
+  "interval": "1m",
+  "candles": [
+    {"asset":"BTCUSDT","open_time":"2025-01-01T10:00:00+00:00","open":99.5,"high":100.2,"low":99.4,"close":100.0,"volume":1200},
+    {"asset":"BTCUSDT","open_time":"2025-01-01T10:01:00+00:00","open":100.0,"high":106.0,"low":100.0,"close":105.5,"volume":1500},
+    {"asset":"BTCUSDT","open_time":"2025-01-01T10:02:00+00:00","open":105.5,"high":111.0,"low":104.0,"close":110.5,"volume":1800},
+    {"asset":"ETHUSDT","open_time":"2025-01-01T10:10:00+00:00","open":201.0,"high":202.0,"low":199.0,"close":200.0,"volume":900},
+    {"asset":"ETHUSDT","open_time":"2025-01-01T10:11:00+00:00","open":200.0,"high":201.0,"low":189.0,"close":190.0,"volume":1100},
+    {"asset":"ETHUSDT","open_time":"2025-01-01T10:12:00+00:00","open":190.0,"high":191.0,"low":179.0,"close":180.0,"volume":1300},
+    {"asset":"SOLUSDT","open_time":"2025-01-01T10:20:00+00:00","open":49.5,"high":50.5,"low":49.0,"close":50.0,"volume":700},
+    {"asset":"SOLUSDT","open_time":"2025-01-01T10:21:00+00:00","open":50.0,"high":55.0,"low":46.0,"close":48.0,"volume":1600},
+    {"asset":"XRPUSDT","open_time":"2025-01-01T10:30:00+00:00","open":0.98,"high":0.99,"low":0.96,"close":0.97,"volume":500},
+    {"asset":"XRPUSDT","open_time":"2025-01-01T10:31:00+00:00","open":0.97,"high":0.995,"low":0.95,"close":0.96,"volume":550}
+  ]
+}

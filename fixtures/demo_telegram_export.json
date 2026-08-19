@@ -1,0 +1,96 @@
+{
+  "name": "CapitalGuard Historical Reconstruction Demo",
+  "type": "public_channel",
+  "id": 1001234567890,
+  "messages": [
+    {
+      "id": 1,
+      "type": "message",
+      "date": "2025-01-01T10:00:00+00:00",
+      "from": "DemoAnalyst",
+      "text": "#BTCUSDT LONG\nEntry: 100\nSL: 95\nTP1: 105@50%\nTP2: 110@50%"
+    },
+    {
+      "id": 2,
+      "type": "message",
+      "date": "2025-01-01T10:01:00+00:00",
+      "from": "DemoAnalyst",
+      "reply_to_message_id": 1,
+      "text": "Update: move stop to entry 100"
+    },
+    {
+      "id": 3,
+      "type": "message",
+      "date": "2025-01-01T10:02:00+00:00",
+      "from": "DemoAnalyst",
+      "reply_to_message_id": 1,
+      "text": "TP1 hit BTCUSDT 105"
+    },
+    {
+      "id": 4,
+      "type": "message",
+      "date": "2025-01-01T10:10:00+00:00",
+      "edited_date": "2025-01-01T10:11:30+00:00",
+      "from": "DemoAnalyst",
+      "text": "#ETHUSDT SHORT\nEntry: 200\nSL: 210\nTP1: 190@50%\nTP2: 180@50%"
+    },
+    {
+      "id": 5,
+      "type": "message",
+      "date": "2025-01-01T10:12:00+00:00",
+      "from": "DemoAnalyst",
+      "reply_to_message_id": 4,
+      "text": "Final target hit; close ETHUSDT short"
+    },
+    {
+      "id": 6,
+      "type": "message",
+      "date": "2025-01-01T10:20:00+00:00",
+      "from": "DemoAnalyst",
+      "text": "#SOLUSDT LONG\nEntry: 50\nSL: 47\nTP1: 54@50%\nTP2: 58@50%"
+    },
+    {
+      "id": 7,
+      "type": "message",
+      "date": "2025-01-01T10:30:00+00:00",
+      "from": "DemoAnalyst",
+      "text": "#XRPUSDT LONG\nEntry: 1.00\nSL: 0.95\nTP1: 1.05@50%\nTP2: 1.10@50%"
+    },
+    {
+      "id": 8,
+      "type": "message",
+      "date": "2025-01-01T10:31:00+00:00",
+      "from": "DemoAnalyst",
+      "reply_to_message_id": 6,
+      "text": "Manual close SOLUSDT before target"
+    },
+    {
+      "id": 9,
+      "type": "message",
+      "date": "2025-01-01T10:40:00+00:00",
+      "from": "DemoAnalyst",
+      "text": "Market commentary: volatility is elevated; watch liquidity and funding rates."
+    },
+    {
+      "id": 10,
+      "type": "message",
+      "date": "2025-01-01T10:45:00+00:00",
+      "from": "DemoAnalyst",
+      "text": "إشارة BTCUSDT لونج دخول 100 وقف 95"
+    },
+    {
+      "id": 11,
+      "type": "message",
+      "date": "2025-01-01T10:50:00+00:00",
+      "from": "DemoAnalyst",
+      "text": "Announcement: maintenance window, no trade instruction."
+    },
+    {
+      "id": 12,
+      "type": "service",
+      "date": "2025-01-01T10:55:00+00:00",
+      "from": "Telegram",
+      "text": "Channel photo updated"
+    }
+  ]
+}
