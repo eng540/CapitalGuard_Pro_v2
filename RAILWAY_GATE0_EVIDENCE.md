@@ -25,10 +25,20 @@
 | Manual Railway smoke workflow | IMPLEMENTED |
 | GitHub Actions CI on PR 179 | PASS; run `32199424084` |
 | Critical lint (`E9,F63,F7,F82`) | PASS |
+| External `/health` | PASS; HTTP 200 with `{"status":"ok"}` |
+| External `/metrics` | PASS; HTTP 200 Prometheus output |
+| External invalid Telegram initData | PASS; rejected with HTTP 200 payload `ok=false` and 403 auth detail |
+| External TradingView missing secret | PASS; HTTP 401 `Invalid TradingView secret` |
+
+## External smoke evidence
+
+Target URL: `https://capitalguardprov2-production-b4ea.up.railway.app/`
+Run date: 2026-08-19
+The smoke script passed with `health=200 metrics=200 invalid_initData=rejected`. Detailed checks returned `GET /health` with `{"status":"ok"}`, Prometheus output from `/metrics`, an invalid Telegram initData response with `ok=false`, and a complete invalid TradingView payload without `X-TV-Secret` returning HTTP 401.
 
 ## Not externally verified
 
-No Railway connector, Railway public URL, deployment ID, or staging secrets are available in this session. Therefore this run did not execute `scripts/railway_smoke.sh` against the running service, did not read Railway logs, and did not perform PostgreSQL fresh/existing migration or backup/restore against the real Railway database.
+This public URL does not expose a deployment ID, migration head, Railway logs, PostgreSQL access, or backup/restore evidence. Therefore this run did not perform PostgreSQL fresh/existing migration verification or backup/restore against the Railway database.
 
 ## Required Railway run
 
@@ -42,4 +52,4 @@ Then record the Railway deployment ID, commit SHA, `/health` response, `/metrics
 
 ## Current decision
 
-`CONDITIONAL GO` for merging Railway configuration and CI hardening into the implementation branch; PR 179 is open as Draft and CI run `32199424084` passed. `NO-GO` for merging into `main`, Alpha, public launch, payment activation, or Copy Trading until the external Railway smoke and database/recovery evidence are attached.
+`GO` for the external HTTP smoke and CI/config hardening evidence. `CONDITIONAL GO` for merging PR 179 into `main` after the owner reviews the deployment impact. `NO-GO` remains for Alpha, public launch, payment activation, and Copy Trading until PostgreSQL migration, backup/restore, and RTO/RPO evidence are attached.
