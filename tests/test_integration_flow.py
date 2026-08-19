@@ -145,3 +145,44 @@ async def test_duplicate_forwarding_is_rejected_by_dedup_ledger(db_session, trad
     assert second["success"] is False
     assert second["duplicate"] is True
     assert "Duplicate signal" in second["error"]
+
+
+async def test_direct_input_log_creates_watchlist_and_source_type(db_session, trade_service: TradeService):
+    user_repo = UserRepository(db_session)
+    trader = user_repo.find_or_create(telegram_id=444, first_name="DirectLogger")
+    trader.is_active = True
+    db_session.commit()
+
+    trade_data = {
+        "asset": "SOLUSDT",
+        "side": "LONG",
+        "entry": Decimal("150"),
+        "stop_loss": Decimal("140"),
+        "targets": [{"price": Decimal("160"), "close_percent": 100.0}],
+        "source_type": "DIRECT_INPUT",
+    }
+    kwargs = {
+        "user_id": str(trader.telegram_user_id),
+        "trade_data": trade_data,
+        "original_text": "SOLUSDT LONG 150 140 160",
+        "db_session": db_session,
+        "status_to_set": "WATCHLIST",
+        "original_published_at": None,
+        "channel_info": None,
+    }
+
+    result = await trade_service.create_trade_from_forwarding_async(**kwargs)
+    db_session.commit()
+    assert result["success"] is True
+
+    from capitalguard.infrastructure.db.models import UserTrade
+    saved = db_session.get(UserTrade, result["trade_id"])
+    assert saved is not None
+    assert saved.source_type == "DIRECT_INPUT"
+    assert any(event.event_type == "LOGGED_DIRECT_INPUT" for event in saved.events)
+    assert saved.status.value == "WATCHLIST"
+    assert saved.watched_channel_id is None
+
+    duplicate = await trade_service.create_trade_from_forwarding_async(**kwargs)
+    assert duplicate["success"] is False
+    assert duplicate["duplicate"] is True

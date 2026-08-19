@@ -24,6 +24,7 @@ from capitalguard.interfaces.telegram.parsers import parse_targets_list
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.lifecycle_service import LifecycleService
+from capitalguard.application.services.performance_service import PerformanceService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
 from capitalguard.infrastructure.db.models import RecommendationStatusEnum
 
@@ -163,6 +164,44 @@ async def get_user_portfolio(initData: str, request: Request):
     except Exception as e:
         log.error(f"Portfolio Error: {e}")
         return {"ok": False, "error": str(e)}
+
+@router.get("/performance")
+async def get_user_performance(initData: str, request: Request):
+    """Return Activated-only closed-trade performance for the authenticated user."""
+    try:
+        user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
+        service = request.app.state.services.get("performance_service")
+        if not service:
+            return {"ok": False, "error": "Performance service unavailable"}
+        with session_scope() as session:
+            user = UserRepository(session).find_by_telegram_id(user_data["id"])
+            if not user:
+                return {"ok": False, "error": "User not found"}
+            report = service.get_trader_performance_report(session, user.id)
+            return {"ok": "error" not in report, "report": report}
+    except Exception as e:
+        log.error(f"Performance Error: {e}", exc_info=True)
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/funnel")
+async def get_user_funnel(initData: str, request: Request):
+    """Return lifecycle conversion metrics for the authenticated user."""
+    try:
+        user_data = validate_telegram_data(initData, settings.TELEGRAM_BOT_TOKEN)
+        service = request.app.state.services.get("performance_service")
+        if not service:
+            return {"ok": False, "error": "Performance service unavailable"}
+        with session_scope() as session:
+            user = UserRepository(session).find_by_telegram_id(user_data["id"])
+            if not user:
+                return {"ok": False, "error": "User not found"}
+            metrics = service.get_trader_funnel_metrics(session, user.id)
+            return {"ok": "error" not in metrics, "metrics": metrics}
+    except Exception as e:
+        log.error(f"Funnel Error: {e}", exc_info=True)
+        return {"ok": False, "error": str(e)}
+
 
 @router.post("/action")
 async def handle_trade_action(payload: TradeAction, request: Request):

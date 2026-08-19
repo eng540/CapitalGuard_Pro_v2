@@ -74,6 +74,22 @@ class PerformanceService:
         
         return report
 
+    def get_trader_funnel_metrics(self, session: Session, user_id: int) -> Dict[str, Any]:
+        """Build R1 lifecycle funnel metrics for the authenticated trader."""
+        metrics = self.repo_class(session).get_trader_funnel_metrics(user_id)
+        if metrics.get("error"):
+            return {"error": "Failed to calculate funnel metrics."}
+
+        total = metrics["total_logged"]
+        activated = metrics["activated"]
+        closed = metrics["closed_activated"]
+        return {
+            **metrics,
+            "watchlist_to_activated_rate_pct": round((activated / total) * 100, 2) if total else 0.0,
+            "activated_to_closed_rate_pct": round((closed / activated) * 100, 2) if activated else 0.0,
+            "data_source": "UserTrade lifecycle; performance remains Activated Portfolio Only",
+        }
+
     # ... يمكن إضافة وظائف لحساب أداء المحلل هنا في المستقبل ...
     # def get_analyst_performance_report(self, session: Session, analyst_id: int) -> Dict[str, Any]:
     #    ...
