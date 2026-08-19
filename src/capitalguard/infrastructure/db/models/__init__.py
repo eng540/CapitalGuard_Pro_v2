@@ -30,6 +30,7 @@ from .publication_delivery import PublicationDelivery, PublicationDeliveryOperat
 from .identity import ScopedIdentityCounter
 from .channel_catalog import ChannelCatalog
 from .recommendation_channel_ref import RecommendationChannelRef
+from .entitlement import EntitlementGrant, SubscriptionLedgerEntry
 
 # Backward-compatible export used by existing service tests and integrations.
 UserTradeStatus = UserTradeStatusEnum
@@ -63,5 +64,7 @@ __all__ = [
     "ScopedIdentityCounter",
     "ChannelCatalog",
     "RecommendationChannelRef",
+    "EntitlementGrant",
+    "SubscriptionLedgerEntry",
 ]
 # --- END of models init ---
