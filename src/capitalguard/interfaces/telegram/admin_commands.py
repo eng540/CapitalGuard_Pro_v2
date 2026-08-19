@@ -33,7 +33,6 @@ from telegram.ext import (
 )
 
 from capitalguard.infrastructure.db.uow import uow_transaction
-from .helpers import get_service
 from capitalguard.infrastructure.db.repository import UserRepository
 from capitalguard.infrastructure.db.models import UserType
 from capitalguard.infrastructure.db.backup_service import BackupService
@@ -52,6 +51,30 @@ admin_filter = filters.User(username=ADMIN_USERNAMES)
 _CB_CONFIRM_RESTORE = "admin:confirm_restore"
 _CB_CANCEL_RESTORE  = "admin:cancel_restore"
 
+
+# ─────────────────────────────────────────────────────────────────
+# Discoverable administration panel
+# ─────────────────────────────────────────────────────────────────
+
+async def admin_panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the complete administrator command surface in one place."""
+    if not _is_admin(update.effective_chat.id):
+        return
+    text = (
+        "<b>🛠️ CapitalGuard Admin Panel</b>\n\n"
+        "<b>Users & Roles</b>\n"
+        "<code>/grantaccess &lt;telegram_user_id&gt;</code> — منح الوصول\n"
+        "<code>/revokeaccess &lt;telegram_user_id&gt;</code> — سحب الوصول\n"
+        "<code>/makeanalyst &lt;telegram_user_id&gt;</code> — ترقية إلى محلل\n\n"
+        "<b>Operations</b>\n"
+        "<code>/backup</code> — إنشاء وإرسال نسخة احتياطية\n"
+        "إرسال ملف <code>.sql</code> — بدء الاسترجاع بعد تأكيد مزدوج\n\n"
+        "<b>Safety</b>\n"
+        "الاسترجاع لا يبدأ قبل زر التأكيد، ويجب إيقاف الخدمات قبل استرجاع قاعدة الإنتاج.\n\n"
+        "<b>Audit</b>\n"
+        "راجع Railway Deploy Logs وHealth وMetrics بعد أي عملية حساسة."
+    )
+    await update.message.reply_html(text)
 
 # ─────────────────────────────────────────────────────────────────
 # Existing admin commands (unchanged)
@@ -334,6 +357,9 @@ def register_admin_commands(app: Application) -> None:
     if not ADMIN_USERNAMES:
         log.warning("ADMIN_USERNAMES not set. Admin commands unavailable.")
         return
+
+    # لوحة الإدارة — نقطة دخول واحدة قابلة للاكتشاف
+    app.add_handler(CommandHandler("admin", admin_panel_cmd, filters=admin_filter))
 
     # أوامر إدارة المستخدمين
     app.add_handler(CommandHandler("grantaccess", grant_access_cmd, filters=admin_filter))

@@ -9,7 +9,7 @@
 from __future__ import annotations
 import logging
 import re
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any
 from decimal import Decimal
 from datetime import datetime
 
@@ -20,7 +20,7 @@ from telegram.error import BadRequest
 
 # --- Internal Imports ---
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
-from capitalguard.interfaces.telegram.helpers import _get_attr, _to_decimal, _pct, _format_price
+from capitalguard.interfaces.telegram.helpers import _get_attr, _to_decimal, _pct
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +52,17 @@ def _extract_leverage_str(notes: str) -> str:
     if not notes: return ""
     match = re.search(r'Lev:?\s*(\d+x?)', notes, re.IGNORECASE)
     return f" • <b>{match.group(1)}</b>" if match else ""
+
+
+def _record_identity(rec: Any) -> tuple[str, str]:
+    """Return a human-readable source badge and stable record identifier."""
+    record_id = getattr(rec, "record_id", None) or getattr(rec, "id", 0)
+    source_type = str(getattr(rec, "source_type", "ANALYST_RECOMMENDATION") or "ANALYST_RECOMMENDATION")
+    if source_type == "DIRECT_INPUT":
+        return "📝 <b>Trader Log</b>", f"🆔 <b>UserTrade #{record_id}</b>"
+    if source_type == "TRACKED_RECOMMENDATION":
+        return "📡 <b>Tracked Signal</b>", f"🆔 <b>UserTrade #{record_id}</b>"
+    return "🧠 <b>Analyst Recommendation</b>", f"🆔 <b>Recommendation #{record_id}</b>"
 
 def _get_target_icon(target_index: int, hit_targets: set, total_targets: int) -> str:
     if target_index in hit_targets: return "✅"
@@ -306,6 +317,8 @@ async def build_trade_card_text(rec: Recommendation, bot_username: str, is_initi
         
         # 1. Header (Symbol + Side + Leverage)
         parts.append(_build_header(rec, bot_username))
+        source_badge, record_label = _record_identity(rec)
+        parts.append(f"{source_badge}  •  {record_label}")
         parts.append("")
         
         # 2. Dashboard (Live Price + PnL)
@@ -377,8 +390,10 @@ def build_review_text_with_price(draft: Dict[str, Any], preview_price: Optional[
 # --- PortfolioViews (Unchanged) ---
 class PortfolioViews:
     @staticmethod
-    async def render_hub(update: Update, user_name: str, report: Dict[str, Any], 
-                        active_count: int, watchlist_count: int, is_analyst: bool):
+    async def render_hub(update: Update, user_name: str, report: Dict[str, Any],
+                        active_count: int, watchlist_count: int, is_analyst: bool,
+                        direct_active_count: int = 0, tracked_active_count: int = 0,
+                        direct_watchlist_count: int = 0, tracked_watchlist_count: int = 0):
         try:
             from capitalguard.interfaces.telegram.keyboards import CallbackBuilder, CallbackNamespace
             header = f"📊 <b>CapitalGuard Portfolio</b>\nWelcome, {user_name}."
@@ -397,6 +412,8 @@ class PortfolioViews:
             keyboard = [
                 [InlineKeyboardButton(f"🚀 Active ({active_count})", callback_data=CallbackBuilder.create(ns, "show_list", "activated", 1))],
                 [InlineKeyboardButton(f"👁️ Watchlist ({watchlist_count})", callback_data=CallbackBuilder.create(ns, "show_list", "watchlist", 1))],
+                [InlineKeyboardButton(f"📝 My Logs ({direct_active_count + direct_watchlist_count})", callback_data=CallbackBuilder.create(ns, "show_list", "direct", 1))],
+                [InlineKeyboardButton(f"📡 Tracked Signals ({tracked_active_count + tracked_watchlist_count})", callback_data=CallbackBuilder.create(ns, "show_list", "tracked", 1))],
                 [InlineKeyboardButton("📜 History", callback_data=CallbackBuilder.create(ns, "show_list", "history", 1))]
             ]
             if is_analyst:

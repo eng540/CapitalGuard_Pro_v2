@@ -9,7 +9,6 @@
 #    5. Added friendly error messages for permission denial.
 
 import logging
-import os
 import csv
 import io
 import time
@@ -34,7 +33,7 @@ from .management_handlers import portfolio_command_entry
 log = logging.getLogger(__name__)
 
 # --- Keyboards Helper ---
-def get_main_menu_keyboard(is_analyst: bool = False) -> ReplyKeyboardMarkup:
+def get_main_menu_keyboard(is_analyst: bool = False, is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Creates the persistent bottom keyboard."""
     raw_url = settings.TELEGRAM_WEBHOOK_URL
     if raw_url:
@@ -56,8 +55,10 @@ def get_main_menu_keyboard(is_analyst: bool = False) -> ReplyKeyboardMarkup:
         keyboard.append([KeyboardButton("📂 My Portfolio"), KeyboardButton("📱 Web Portfolio")])
         keyboard.append([KeyboardButton("💎 ترقية لمحلل (Upgrade)")])
     
-    keyboard.append([KeyboardButton("/help")])
-    
+    keyboard.append([KeyboardButton("📚 /commands"), KeyboardButton("/help")])
+    if is_admin:
+        keyboard.append([KeyboardButton("🛠️ /admin")])
+
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_portfolio_inline_keyboard() -> InlineKeyboardMarkup:
@@ -160,6 +161,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
 
     # 5. Welcome Message
     is_analyst = (db_user.user_type == UserType.ANALYST)
+    is_admin = str(user.id) == str(getattr(settings, "TELEGRAM_ADMIN_CHAT_ID", ""))
     role_title = "Analyst 🎓" if is_analyst else "Trader 💼"
     welcome = (
         f"✅ <b>Access Granted</b>\n"
@@ -167,7 +169,52 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sessi
         f"🔰 Role: <b>{role_title}</b>\n\n"
         "Ready to manage your portfolio."
     )
-    await update.message.reply_html(welcome, reply_markup=get_main_menu_keyboard(is_analyst))
+    await update.message.reply_html(welcome, reply_markup=get_main_menu_keyboard(is_analyst, is_admin))
+
+@uow_transaction
+@require_active_user
+async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Discoverable role-based command directory; users do not need to memorize commands."""
+    is_analyst = db_user.user_type == UserType.ANALYST
+    is_admin = str(db_user.telegram_user_id) == str(getattr(settings, "TELEGRAM_ADMIN_CHAT_ID", ""))
+    lines = [
+        "<b>📚 CapitalGuard Command Directory</b>",
+        "",
+        "<b>Common</b>",
+        "/start — إعادة التشغيل والتحقق",
+        "/myportfolio — المحفظة",
+        "/portfolio — Web Portfolio",
+        "/export — تصدير CSV",
+        "/help — مساعدة مختصرة",
+    ]
+    if is_analyst:
+        lines.extend([
+            "",
+            "<b>Analyst</b>",
+            "/newrec — إنشاء توصية محلل",
+            "/channels — إدارة القنوات",
+            "/events &lt;id&gt; — أحداث توصية محددة",
+        ])
+    else:
+        lines.extend([
+            "",
+            "<b>Trader</b>",
+            "/log — تسجيل صفقة شخصية",
+            "My Logs — صفقات الإدخال المباشر",
+            "Tracked Signals — توصيات المحللين المتابعة",
+        ])
+    if is_admin:
+        lines.extend([
+            "",
+            "<b>Administration</b>",
+            "/admin — لوحة الإدارة",
+            "/grantaccess &lt;user_id&gt;",
+            "/revokeaccess &lt;user_id&gt;",
+            "/makeanalyst &lt;user_id&gt;",
+            "/backup — نسخة احتياطية",
+            "إرسال ملف SQL — استرجاع بعد تأكيد مزدوج",
+        ])
+    await update.message.reply_html("\n".join(lines))
 
 @uow_transaction
 async def verify_subscription_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, **kwargs):
@@ -313,6 +360,7 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_sess
 def register_commands(app: Application):
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("commands", commands_cmd))
     app.add_handler(CommandHandler("myportfolio", portfolio_command_entry))
     app.add_handler(CommandHandler("portfolio", portfolio_webapp_handler))
     app.add_handler(CommandHandler("channels", channels_cmd))
@@ -321,6 +369,7 @@ def register_commands(app: Application):
     
     app.add_handler(CallbackQueryHandler(verify_subscription_callback, pattern="^verify_sub$"))
 
+    app.add_handler(MessageHandler(filters.Regex(r"^📚 /commands$"), commands_cmd))
     app.add_handler(MessageHandler(filters.Regex(r"^📂 My Portfolio$"), portfolio_command_entry))
     app.add_handler(MessageHandler(filters.Regex(r"^📱 Web Portfolio$"), portfolio_webapp_handler))
     app.add_handler(MessageHandler(filters.Regex(r"^💎 ترقية لمحلل \(Upgrade\)$"), request_analyst_upgrade))

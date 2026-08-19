@@ -14,7 +14,7 @@ from enum import Enum
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from capitalguard.config import settings
 
-from capitalguard.domain.entities import Recommendation as RecommendationEntity, RecommendationStatus, ExitStrategy
+from capitalguard.domain.entities import Recommendation as RecommendationEntity, RecommendationStatus
 from capitalguard.domain.entities import UserTradeStatus
 
 # ✅ R2: Import PriceService for type hinting
@@ -275,9 +275,17 @@ async def build_open_recs_keyboard(
             status_icon = StatusDeterminer.determine_icon(item, live_price)
             item_type_str = 'trade' if getattr(item, 'is_user_trade', False) else 'rec'
 
-            # Build the card text (Design 2 / Design 4)
+            # Build a compact, source-aware card with a stable ID.
             card_lines = []
-            
+            record_id = getattr(item, 'record_id', None) or rec_id
+            source_type = getattr(item, 'source_type', '')
+            if source_type == 'DIRECT_INPUT':
+                source_label = '📝 LOG'
+            elif source_type == 'TRACKED_RECOMMENDATION':
+                source_label = '📡 TRACKED'
+            else:
+                source_label = '🧠 ANALYST'
+
             if list_type == "activated":
                 pnl_str = "PnL: N/A"
                 if live_price is not None:
@@ -285,7 +293,8 @@ async def build_open_recs_keyboard(
                     pnl_str = f"PnL: {pnl:+.2f}%"
                 
                 card_lines = [
-                    f"{status_icon} {asset} ({side})",
+                    f"{status_icon} {source_label} • {asset} ({side})",
+                    f"ID: #{record_id}",
                     pnl_str,
                     f"Entry: {_format_price(entry)}"
                 ]
@@ -294,15 +303,17 @@ async def build_open_recs_keyboard(
                 exit_price = _get_attr(item, "exit_price")
                 pnl_str = f"PnL: {float(pnl):+.2f}%" if pnl is not None else "PnL: N/A"
                 card_lines = [
-                    f"🏁 {asset} ({side})",
+                    f"🏁 {source_label} • {asset} ({side})",
+                    f"ID: #{record_id}",
                     pnl_str,
                     f"Entry: {_format_price(entry)} | Exit: {_format_price(exit_price)}",
                 ]
-            else: # Watchlist (Design 4)
-                status_icon = StatusIcons.WATCHLIST
+            else: # Watchlist or source-separated lists.
+                status_icon = StatusIcons.ACTIVE if getattr(item, 'unified_status', '') == 'ACTIVE' else StatusIcons.WATCHLIST
                 price_str = f"السعر الحالي: {_format_price(live_price)}" if live_price else "السعر: N/A"
                 card_lines = [
-                    f"{status_icon} {asset} ({side})",
+                    f"{status_icon} {source_label} • {asset} ({side})",
+                    f"ID: #{record_id}",
                     price_str,
                     f"Entry: {_format_price(entry)}"
                 ]
