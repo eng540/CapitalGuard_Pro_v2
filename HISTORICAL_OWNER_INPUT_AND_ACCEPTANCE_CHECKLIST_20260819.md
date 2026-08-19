@@ -113,3 +113,18 @@ historical_period_end: YYYY-MM-DD
 بعد استلام عينة Export وبيانات القناة، يتم تنفيذ dry-run محليًا، ثم تقرير قبول، ثم PR صغير منفصل إذا احتاج parser أو adapter إلى تعديل. لا يتم نشر أي تاريخ فعلي إلى Railway قبل موافقة المالك على نتيجة dry-run.
 
 > لا تحتاج إلى تشغيل أوامر Git أو Railway. المطلوب منك هو توفير العينة المصرح بها، تعريف القناة والمحلل، تحديد مصدر السوق، واعتماد تقرير dry-run. بقية التحقق والترحيل والاختبارات والدمج يتولاها مسار التنفيذ الهندسي.
+
+## 8. Authorized user-account dry-run
+
+The owner may run the first read-only test from a controlled workstation after installing the optional connector requirements. Do not place the phone number, login code, 2FA password, API hash, or session contents in Git or chat.
+
+```bash
+pip install -r requirements-history-connector.txt
+export TELEGRAM_HISTORY_API_ID='provided-by-my.telegram.org'
+export TELEGRAM_HISTORY_API_HASH='provided-by-my.telegram.org'
+export TELEGRAM_HISTORY_SESSION_PATH='/secure/path/capitalguard-history-reader.session'
+export HISTORY_READER_ACCOUNT_ALIAS='owner-history-reader'
+python scripts/telegram_history_dry_run.py --channel-id '-1001234567890' --max-pages 2 --page-size 100
+```
+
+The first authorization may request the phone, Telegram login code, and 2FA password interactively in the controlled terminal. The command prints counts, issues, manifest hash, and checkpoint only; it does not persist evidence and does not create live recommendations. After reviewing the report, the owner provides the report and confirms that the account is authorized to read the channel. The session file remains local and is never uploaded as an ordinary attachment.

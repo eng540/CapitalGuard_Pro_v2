@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     # R3 commercial gate: keep billing/charging disabled until Alpha retention approval.
     BILLING_ENABLED: bool = False
 
+    # Historical connector gate: disabled until owner approval and connector acceptance.
+    HISTORY_CONNECTOR_ENABLED: bool = False
+    HISTORY_READER_ACCOUNT_ALIAS: str | None = None
+    HISTORY_SESSION_SECRET_REF: str | None = None
+    HISTORY_ALLOWED_CHANNEL_IDS: str = ""
+
 
 settings = Settings()
 
