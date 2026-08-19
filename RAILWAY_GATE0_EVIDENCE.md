@@ -23,6 +23,8 @@
 | Dynamic `PORT` in `__main__` | IMPLEMENTED |
 | Railway `/health` config | IMPLEMENTED in `railway.toml` |
 | Manual Railway smoke workflow | IMPLEMENTED |
+| GitHub Actions CI on PR 179 | PASS; run `32199424084` |
+| Critical lint (`E9,F63,F7,F82`) | PASS |
 
 ## Not externally verified
 
@@ -40,4 +42,4 @@ Then record the Railway deployment ID, commit SHA, `/health` response, `/metrics
 
 ## Current decision
 
-`CONDITIONAL GO` for merging Railway configuration and CI hardening into the implementation branch. `NO-GO` for merging into `main`, Alpha, public launch, payment activation, or Copy Trading until the external Railway smoke and database/recovery evidence are attached.
+`CONDITIONAL GO` for merging Railway configuration and CI hardening into the implementation branch; PR 179 is open as Draft and CI run `32199424084` passed. `NO-GO` for merging into `main`, Alpha, public launch, payment activation, or Copy Trading until the external Railway smoke and database/recovery evidence are attached.
