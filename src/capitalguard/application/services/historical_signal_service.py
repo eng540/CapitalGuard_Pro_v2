@@ -29,12 +29,14 @@ class HistoricalSignalService:
         "LIVE_BOT_UPDATE": Decimal("1.0000"),
         "AUTHORIZED_USER_HISTORY": Decimal("0.9500"),
         "TELEGRAM_EXPORT": Decimal("0.9000"),
+        "TELEGRAM_FORWARD": Decimal("0.8500"),
         "MANUAL_ADMIN_IMPORT": Decimal("0.4000"),
     }
     TRUST_TIER = {
         "LIVE_BOT_UPDATE": "VERIFIED_LIVE",
         "AUTHORIZED_USER_HISTORY": "VERIFIED_HISTORY",
         "TELEGRAM_EXPORT": "VERIFIED_HISTORY",
+        "TELEGRAM_FORWARD": "VERIFIED_HISTORY",
         "MANUAL_ADMIN_IMPORT": "MANUAL_ATTESTED",
     }
     VERIFIED_REPLAY_STATUSES = {"VERIFIED"}

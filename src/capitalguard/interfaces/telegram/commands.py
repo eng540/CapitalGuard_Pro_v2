@@ -204,6 +204,7 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
         "/help — مساعدة مختصرة",
         "/find_analysts — اكتشاف المحللين ومقارنة المؤهلين",
         "/compare_analyst CODE — مقارنة المحلل حسب القناة",
+        "/historical_forward_start CODE — استيراد تاريخ قناة بإعادة التوجيه",
 
     ]
     if is_analyst:
@@ -214,6 +215,9 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
             "/channels — إدارة القنوات",
             "/events &lt;id&gt; — أحداث توصية محددة",
             "/analyst_profile — عرض/تعديل ملف المحلل",
+            "/historical_forward_start CODE — بدء دفعة تاريخية",
+            "/historical_forward_one CODE — استقبال رسالة واحدة",
+            "/historical_forward_finish — إنشاء Dry-Run",
         ])
     else:
         lines.extend([

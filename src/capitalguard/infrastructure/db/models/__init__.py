@@ -38,6 +38,7 @@ from .historical_signal import (
     HistoricalSignalEvent,
     HistoricalSignalAttribution,
 )
+from .historical_forwarding import HistoricalForwardReceipt
 
 # Backward-compatible export used by existing service tests and integrations.
 UserTradeStatus = UserTradeStatusEnum
@@ -78,5 +79,6 @@ __all__ = [
     "HistoricalSignal",
     "HistoricalSignalEvent",
     "HistoricalSignalAttribution",
+    "HistoricalForwardReceipt",
 ]
 # --- END of models init ---

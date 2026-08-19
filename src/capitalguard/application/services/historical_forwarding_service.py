@@ -1,0 +1,276 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch
+
+from .historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
+
+
+@dataclass(frozen=True)
+class ForwardedMessageInput:
+    receiver_chat_id: int
+    receiver_message_id: int
+    forwarding_user_id: int | None
+    source_chat_id: int | None
+    source_message_id: int | None
+    source_origin_type: str
+    source_message_timestamp: datetime | None
+    raw_text: str | None
+    source_message_revision: int = 0
+    source_edit_date: datetime | None = None
+    source_reply_to_message_id: int | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ForwardingPreview:
+    batch_id: int
+    total_records: int
+    accepted_records: int
+    rejected_records: int
+    duplicate_records: int
+    hidden_origin_records: int
+    manifest: dict[str, Any]
+
+
+class HistoricalForwardingService:
+    """Stages user-forwarded Telegram messages for historical review only."""
+
+    SOURCE_KIND = "TELEGRAM_FORWARD"
+    VALID_ORIGIN_TYPES = {"CHANNEL", "MESSAGE_ORIGIN_CHANNEL"}
+
+    def __init__(self, signal_service: HistoricalSignalService | None = None):
+        self.signal_service = signal_service or HistoricalSignalService()
+
+    @staticmethod
+    def _utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _validate_positive(value: int, field: str) -> None:
+        if not isinstance(value, int) or value <= 0:
+            raise HistoricalSignalValidationError(f"{field} must be a positive integer")
+
+    def start_batch(
+        self,
+        session: Session,
+        *,
+        channel_catalog_id: int,
+        requested_by_user_id: int,
+        expected_source_chat_id: int,
+        mode: str = "BATCH",
+        max_records: int = 500,
+    ) -> HistoricalImportBatch:
+        self._validate_positive(channel_catalog_id, "channel_catalog_id")
+        self._validate_positive(requested_by_user_id, "requested_by_user_id")
+        if not isinstance(expected_source_chat_id, int) or expected_source_chat_id == 0:
+            raise HistoricalSignalValidationError("expected_source_chat_id must be non-zero")
+        if mode not in {"SINGLE", "BATCH"}:
+            raise HistoricalSignalValidationError("Unsupported forwarding mode")
+        if not 1 <= max_records <= 5000:
+            raise HistoricalSignalValidationError("max_records must be between 1 and 5000")
+        batch = self.signal_service.create_import_batch(
+            session,
+            source_kind=self.SOURCE_KIND,
+            manifest=[],
+            channel_catalog_id=channel_catalog_id,
+            requested_by_user_id=requested_by_user_id,
+            metadata={
+                "mode": mode,
+                "expected_source_chat_id": expected_source_chat_id,
+                "max_records": max_records,
+                "intake_status": "STAGING",
+            },
+        )
+        batch.status = "STAGING"
+        session.flush()
+        return batch
+
+    def stage_message(
+        self,
+        session: Session,
+        *,
+        batch_id: int,
+        message: ForwardedMessageInput,
+    ) -> HistoricalForwardReceipt:
+        batch = session.get(HistoricalImportBatch, batch_id)
+        if batch is None:
+            raise HistoricalSignalValidationError("Forwarding batch does not exist")
+        if batch.status != "STAGING":
+            raise HistoricalSignalValidationError("Forwarding batch is not open for staging")
+        self._validate_positive(message.receiver_chat_id, "receiver_chat_id")
+        self._validate_positive(message.receiver_message_id, "receiver_message_id")
+        metadata = dict(message.metadata or {})
+        expected_source_chat_id = (batch.metadata_json or {}).get("expected_source_chat_id")
+        max_records = int((batch.metadata_json or {}).get("max_records") or 500)
+
+        existing_receiver = session.execute(
+            select(HistoricalForwardReceipt).where(
+                HistoricalForwardReceipt.receiver_chat_id == message.receiver_chat_id,
+                HistoricalForwardReceipt.receiver_message_id == message.receiver_message_id,
+            )
+        ).scalar_one_or_none()
+        if existing_receiver is not None:
+            return existing_receiver
+
+        source_timestamp = self._utc(message.source_message_timestamp)
+        edit_date = self._utc(message.source_edit_date)
+        source_revision = max(0, int(message.source_message_revision or 0))
+        content_hash = self.signal_service._content_hash(message.raw_text)
+        rejection_reason = None
+        validation_status = "STAGED"
+        origin_type = str(message.source_origin_type or "UNKNOWN").upper()
+        if len([item for item in session.execute(
+            select(HistoricalForwardReceipt).where(HistoricalForwardReceipt.batch_id == batch_id)
+        ).scalars().all()]) >= max_records:
+            raise HistoricalSignalValidationError("Forwarding batch max_records exceeded")
+        if origin_type not in self.VALID_ORIGIN_TYPES or message.source_chat_id is None or message.source_message_id is None:
+            validation_status = "REJECTED_ORIGIN"
+            rejection_reason = "Missing or hidden channel origin"
+        elif message.source_chat_id != expected_source_chat_id:
+            validation_status = "REJECTED_CHANNEL"
+            rejection_reason = "Forwarded source channel is not allow-listed"
+        elif source_timestamp is None:
+            validation_status = "REJECTED_TIMESTAMP"
+            rejection_reason = "Source message timestamp is required"
+        elif source_timestamp > datetime.now(timezone.utc):
+            validation_status = "REJECTED_TIMESTAMP"
+            rejection_reason = "Source message timestamp is in the future"
+
+        existing_source = None
+        if message.source_chat_id is not None and message.source_message_id is not None:
+            existing_source = session.execute(
+                select(HistoricalForwardReceipt).where(
+                    HistoricalForwardReceipt.source_chat_id == message.source_chat_id,
+                    HistoricalForwardReceipt.source_message_id == message.source_message_id,
+                    HistoricalForwardReceipt.source_message_revision == source_revision,
+                )
+            ).scalar_one_or_none()
+        if existing_source is not None:
+            return existing_source
+
+        receipt = HistoricalForwardReceipt(
+            batch_id=batch_id,
+            forwarding_user_id=message.forwarding_user_id,
+            receiver_chat_id=message.receiver_chat_id,
+            receiver_message_id=message.receiver_message_id,
+            source_chat_id=message.source_chat_id,
+            source_message_id=message.source_message_id,
+            source_message_revision=source_revision,
+            source_origin_type=origin_type,
+            source_message_timestamp=source_timestamp,
+            source_edit_date=edit_date,
+            source_reply_to_message_id=message.source_reply_to_message_id,
+            raw_text=message.raw_text,
+            content_hash=content_hash,
+            validation_status=validation_status,
+            rejection_reason=rejection_reason,
+            metadata_json=metadata,
+        )
+        session.add(receipt)
+        session.flush()
+        return receipt
+
+    def preview_batch(self, session: Session, *, batch_id: int) -> ForwardingPreview:
+        batch = session.get(HistoricalImportBatch, batch_id)
+        if batch is None:
+            raise HistoricalSignalValidationError("Forwarding batch does not exist")
+        receipts = list(session.execute(
+            select(HistoricalForwardReceipt).where(HistoricalForwardReceipt.batch_id == batch_id)
+        ).scalars().all())
+        accepted = [receipt for receipt in receipts if receipt.validation_status == "STAGED"]
+        rejected = [receipt for receipt in receipts if receipt.validation_status.startswith("REJECTED")]
+        hidden = [receipt for receipt in receipts if receipt.validation_status == "REJECTED_ORIGIN"]
+        duplicates = [receipt for receipt in receipts if receipt.validation_status == "DUPLICATE"]
+        manifest = {
+            "source_kind": self.SOURCE_KIND,
+            "records": [
+                {
+                    "telegram_channel_id": receipt.source_chat_id,
+                    "telegram_message_id": receipt.source_message_id,
+                    "message_revision": receipt.source_message_revision,
+                    "message_timestamp": receipt.source_message_timestamp.isoformat() if receipt.source_message_timestamp else None,
+                    "raw_text": receipt.raw_text,
+                    "source_uri": f"telegram-forward://{receipt.receiver_chat_id}/{receipt.receiver_message_id}",
+                    "metadata": {
+                        **(receipt.metadata_json or {}),
+                        "receiver_chat_id": receipt.receiver_chat_id,
+                        "receiver_message_id": receipt.receiver_message_id,
+                        "source_origin_type": receipt.source_origin_type,
+                        "source_edit_date": receipt.source_edit_date.isoformat() if receipt.source_edit_date else None,
+                        "source_reply_to_message_id": receipt.source_reply_to_message_id,
+                        "forwarding_receipt_id": receipt.id,
+                    },
+                }
+                for receipt in accepted
+            ],
+        }
+        batch.total_records = len(receipts)
+        batch.accepted_records = len(accepted)
+        batch.rejected_records = len(rejected)
+        batch.metadata_json = {**(batch.metadata_json or {}), "intake_status": "DRY_RUN"}
+        session.flush()
+        return ForwardingPreview(
+            batch_id=batch_id,
+            total_records=len(receipts),
+            accepted_records=len(accepted),
+            rejected_records=len(rejected),
+            duplicate_records=len(duplicates),
+            hidden_origin_records=len(hidden),
+            manifest=manifest,
+        )
+
+    def validate_batch(self, session: Session, *, batch_id: int, owner_note: str) -> HistoricalImportBatch:
+        preview = self.preview_batch(session, batch_id=batch_id)
+        if not owner_note.strip():
+            raise HistoricalSignalValidationError("Owner approval note is required")
+        batch = self.signal_service.validate_import_batch(
+            session,
+            batch_id=batch_id,
+            accepted_records=preview.accepted_records,
+            rejected_records=preview.rejected_records,
+        )
+        batch.metadata_json = {**(batch.metadata_json or {}), "owner_approval_note": owner_note.strip()}
+        session.flush()
+        return batch
+
+    def ingest_validated_batch(self, session: Session, *, batch_id: int) -> list[Any]:
+        batch = session.get(HistoricalImportBatch, batch_id)
+        if batch is None or batch.status != "VALIDATED":
+            raise HistoricalSignalValidationError("Only VALIDATED forwarding batches can ingest evidence")
+        receipts = list(session.execute(
+            select(HistoricalForwardReceipt).where(
+                HistoricalForwardReceipt.batch_id == batch_id,
+                HistoricalForwardReceipt.validation_status == "STAGED",
+            )
+        ).scalars().all())
+        evidence = []
+        for receipt in receipts:
+            item = self.signal_service.ingest_evidence(
+                session,
+                batch_id=batch.id,
+                source_kind=self.SOURCE_KIND,
+                channel_catalog_id=batch.channel_catalog_id,
+                telegram_channel_id=receipt.source_chat_id,
+                telegram_message_id=receipt.source_message_id,
+                message_revision=receipt.source_message_revision,
+                message_timestamp=receipt.source_message_timestamp,
+                raw_text=receipt.raw_text,
+                source_uri=f"telegram-forward://{receipt.receiver_chat_id}/{receipt.receiver_message_id}",
+                metadata=receipt.metadata_json,
+            )
+            receipt.evidence_id = item.id
+            receipt.validation_status = "INGESTED"
+            evidence.append(item)
+        session.flush()
+        return evidence
