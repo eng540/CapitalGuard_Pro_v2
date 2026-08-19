@@ -31,6 +31,13 @@ from .identity import ScopedIdentityCounter
 from .channel_catalog import ChannelCatalog
 from .recommendation_channel_ref import RecommendationChannelRef
 from .entitlement import EntitlementGrant, SubscriptionLedgerEntry
+from .historical_signal import (
+    HistoricalImportBatch,
+    HistoricalSignalEvidence,
+    HistoricalSignal,
+    HistoricalSignalEvent,
+    HistoricalSignalAttribution,
+)
 
 # Backward-compatible export used by existing service tests and integrations.
 UserTradeStatus = UserTradeStatusEnum
@@ -66,5 +73,10 @@ __all__ = [
     "RecommendationChannelRef",
     "EntitlementGrant",
     "SubscriptionLedgerEntry",
+    "HistoricalImportBatch",
+    "HistoricalSignalEvidence",
+    "HistoricalSignal",
+    "HistoricalSignalEvent",
+    "HistoricalSignalAttribution",
 ]
 # --- END of models init ---

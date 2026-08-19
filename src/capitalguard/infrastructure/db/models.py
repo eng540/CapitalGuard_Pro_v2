@@ -29,6 +29,13 @@ from .models.identity import ScopedIdentityCounter
 from .models.channel_catalog import ChannelCatalog
 from .models.recommendation_channel_ref import RecommendationChannelRef
 from .models.entitlement import EntitlementGrant, SubscriptionLedgerEntry
+from .models.historical_signal import (
+    HistoricalImportBatch,
+    HistoricalSignalEvidence,
+    HistoricalSignal,
+    HistoricalSignalEvent,
+    HistoricalSignalAttribution,
+)
 from .models.parsing import ParsingTemplate, ParsingAttempt
 
 # The old Role and UserRole are deprecated and no longer exported.
@@ -60,4 +67,9 @@ __all__ = [
     "RecommendationChannelRef",
     "EntitlementGrant",
     "SubscriptionLedgerEntry",
+    "HistoricalImportBatch",
+    "HistoricalSignalEvidence",
+    "HistoricalSignal",
+    "HistoricalSignalEvent",
+    "HistoricalSignalAttribution",
 ]
