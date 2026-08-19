@@ -289,13 +289,22 @@ async def build_open_recs_keyboard(
                     pnl_str,
                     f"Entry: {_format_price(entry)}"
                 ]
+            elif list_type == "history":
+                pnl = getattr(item, "final_pnl_percentage", None)
+                exit_price = _get_attr(item, "exit_price")
+                pnl_str = f"PnL: {float(pnl):+.2f}%" if pnl is not None else "PnL: N/A"
+                card_lines = [
+                    f"🏁 {asset} ({side})",
+                    pnl_str,
+                    f"Entry: {_format_price(entry)} | Exit: {_format_price(exit_price)}",
+                ]
             else: # Watchlist (Design 4)
                 status_icon = StatusIcons.WATCHLIST
                 price_str = f"السعر الحالي: {_format_price(live_price)}" if live_price else "السعر: N/A"
                 card_lines = [
                     f"{status_icon} {asset} ({side})",
                     price_str,
-                    f"Entry: {_format_price(entry)}" # Show planned entry
+                    f"Entry: {_format_price(entry)}"
                 ]
 
             card_text = "\n".join(card_lines)

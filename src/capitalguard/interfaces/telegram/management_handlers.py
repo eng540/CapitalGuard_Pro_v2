@@ -133,7 +133,7 @@ class PortfolioController:
             return
         trade = get_service(context, "trade_service", TradeService)
         price_svc = get_service(context, "price_service", PriceService)
-        if list_type == "history": items = trade.get_analyst_history_for_user(db_session, str(db_user.telegram_user_id))
+        if list_type == "history": items = trade.get_history_for_user(db_session, str(db_user.telegram_user_id))
         else: items = trade.get_open_positions_for_user(db_session, str(db_user.telegram_user_id))
         target = {"activated": "ACTIVE", "watchlist": "WATCHLIST", "history": "CLOSED"}.get(list_type, "ACTIVE")
         filtered = [i for i in items if getattr(i, 'unified_status', None) == target]
