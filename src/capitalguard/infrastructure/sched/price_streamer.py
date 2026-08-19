@@ -181,7 +181,8 @@ class PriceStreamer:
 
     async def _load_initial_symbols(self) -> None:
         """
-        يجلب كل الرموز النشطة من DB مرة واحدة عند startup.
+        يجلب كل الرموز التي لديها دورة متابعة مفتوحة من DB مرة واحدة عند startup،
+        بما فيها WATCHLIST التي تنتظر سعر الدخول.
         بعد هذه اللحظة لا توجد DB queries دورية.
         """
         symbols: Set[str] = set()
@@ -195,8 +196,9 @@ class PriceStreamer:
                 ).all()
                 trades = session.query(UserTrade).filter(
                     UserTrade.status.in_([
-                        UserTradeStatusEnum.ACTIVATED,
+                        UserTradeStatusEnum.WATCHLIST,
                         UserTradeStatusEnum.PENDING_ACTIVATION,
+                        UserTradeStatusEnum.ACTIVATED,
                     ])
                 ).all()
 
