@@ -24,6 +24,7 @@ from .auth import require_active_user, require_analyst_user
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.audit_service import AuditService
 from capitalguard.application.services.analyst_discovery_service import AnalystDiscoveryService
+from capitalguard.application.services.analyst_comparison_service import AnalystComparisonService
 from capitalguard.infrastructure.db.repository import ChannelRepository, UserRepository
 from capitalguard.infrastructure.db.models import UserType
 from capitalguard.config import settings
@@ -188,6 +189,7 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
         "/export — تصدير CSV",
         "/help — مساعدة مختصرة",
         "/find_analysts — اكتشاف المحللين ومقارنة المؤهلين",
+        "/compare_analyst CODE — مقارنة المحلل حسب القناة",
 
     ]
     if is_analyst:
@@ -339,6 +341,39 @@ async def find_analysts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 @uow_transaction
 @require_active_user
+async def compare_analyst_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Compare an analyst's closed recommendation outcomes by channel."""
+    identity = (context.args or [""])[0].strip()
+    if not identity:
+        await update.message.reply_html("الاستخدام: <code>/compare_analyst AN-000001</code>")
+        return
+    analyst = UserRepository(db_session).find_analyst_by_identity(identity)
+    if analyst is None:
+        await update.message.reply_html("❌ لم يتم العثور على محلل بهذا الكود أو المرجع العام.")
+        return
+
+    rows = AnalystComparisonService(minimum_sample_size=5).compare_channels(db_session, analyst.id)
+    if not rows:
+        await update.message.reply_html("📭 لا توجد نتائج مغلقة مرتبطة بقنوات هذا المحلل بعد.")
+        return
+
+    lines = [
+        f"<b>📊 مقارنة قنوات {analyst.analyst_code}</b>",
+        "<i>المقارنة وصفية وليست توصية استثمارية؛ لا تُؤهل العينة الصغيرة للترتيب.</i>",
+        "",
+    ]
+    for row in rows:
+        eligibility = "✅ مؤهلة" if row["eligible_for_comparison"] else f"⚠️ غير كافية ({row['sample_size']}/{row['minimum_sample_size']})"
+        lines.extend([
+            f"<b>{row['channel_code']}</b> · {row['channel_title'] or 'بدون عنوان'}",
+            f"Sample: {row['sample_size']} | Win Rate: {row['win_rate_pct']:.2f}% | PnL: {row['total_pnl_pct']:.2f}%",
+            f"Drawdown: {row['max_drawdown_pct']:.2f}% | {eligibility}",
+            "",
+        ])
+    await update.message.reply_html("\n".join(lines))
+
+@uow_transaction
+@require_active_user
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     status_msg = await update.message.reply_text("⏳ Generating report...")
     
@@ -392,6 +427,7 @@ def register_commands(app: Application):
     app.add_handler(CommandHandler("channels", channels_cmd))
     app.add_handler(CommandHandler("events", events_cmd))
     app.add_handler(CommandHandler("find_analysts", find_analysts_cmd))
+    app.add_handler(CommandHandler("compare_analyst", compare_analyst_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
     
     app.add_handler(CallbackQueryHandler(verify_subscription_callback, pattern="^verify_sub$"))
