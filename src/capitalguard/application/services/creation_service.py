@@ -112,6 +112,9 @@ class CreationService:
         self.price_service = price_service
         from .dedup_service import DedupLedgerService
         self.dedup_service = dedup_service or DedupLedgerService()
+        # Serializes publication retries within the active process; the DB ledger
+        # remains the source of truth for already published channel messages.
+        self._publication_lock = asyncio.Lock()
         # Circular dependencies injected later via boot.py
         self.alert_service: Optional["AlertService"] = None
         self.lifecycle_service: Optional["LifecycleService"] = None
@@ -149,48 +152,66 @@ class CreationService:
             raise ValueError("Entry and SL cannot be equal.")
 
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_db_id: int, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
-        """نشر التوصية إلى قنوات تليجرام."""
-        report = {"success": [], "failed": []}
-        
-        # جلب القنوات المرتبطة بالمحلل
-        channels = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True)
-        if target_channel_ids: 
-            channels = [c for c in channels if c.telegram_channel_id in target_channel_ids]
-        
-        if not channels:
-            report["failed"].append({"reason": "No active channels linked/selected."})
-            return rec_entity, report
+        """Publish once per channel; retries skip channels with a saved message row."""
+        report = {"success": [], "failed": [], "skipped": []}
+        async with self._publication_lock:
+            channels = ChannelRepository(session).list_by_analyst(user_db_id, only_active=True)
+            if target_channel_ids:
+                channels = [c for c in channels if c.telegram_channel_id in target_channel_ids]
 
-        # استيراد الكيبورد ديناميكياً لتجنب مشاكل التبعية
-        try:
-            from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
-        except ImportError:
-            public_channel_keyboard = lambda *_: None
-        
-        keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None))
-        
-        # دالة داخلية للنشر الآمن
-        async def _send(ch_id):
+            published_channel_ids = {
+                row[0]
+                for row in session.query(PublishedMessage.telegram_channel_id)
+                .filter(PublishedMessage.recommendation_id == rec_entity.id)
+                .all()
+            }
+            if published_channel_ids:
+                report["skipped"].extend(
+                    {"channel_id": channel_id, "reason": "Already published"}
+                    for channel_id in published_channel_ids
+                )
+            channels = [
+                channel for channel in channels
+                if channel.telegram_channel_id not in published_channel_ids
+            ]
+
+            if not channels:
+                if not published_channel_ids:
+                    report["failed"].append({"reason": "No active channels linked/selected."})
+                return rec_entity, report
+
             try:
-                return await self._call_notifier_maybe_async(self.notifier.post_to_channel, ch_id, rec_entity, keyboard)
-            except Exception as e: 
-                return e
+                from capitalguard.interfaces.telegram.keyboards import public_channel_keyboard
+            except ImportError:
+                public_channel_keyboard = lambda *_: None
 
-        # النشر المتوازي لجميع القنوات
-        tasks = [asyncio.create_task(_send(ch.telegram_channel_id)) for ch in channels]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for i, ch in enumerate(channels):
-            res = results[i]
-            if isinstance(res, tuple) and len(res) == 2:
-                # حفظ رسالة القناة في قاعدة البيانات للرجوع إليها لاحقاً (للتعديل/الإغلاق)
-                session.add(PublishedMessage(recommendation_id=rec_entity.id, telegram_channel_id=res[0], telegram_message_id=res[1]))
-                report["success"].append({"channel_id": ch.telegram_channel_id})
-            else:
-                report["failed"].append({"channel_id": ch.telegram_channel_id, "error": str(res)})
-        
-        session.flush()
-        return rec_entity, report
+            keyboard = public_channel_keyboard(rec_entity.id, getattr(self.notifier, "bot_username", None))
+
+            async def _send(ch_id):
+                try:
+                    return await self._call_notifier_maybe_async(
+                        self.notifier.post_to_channel, ch_id, rec_entity, keyboard
+                    )
+                except Exception as e:
+                    return e
+
+            tasks = [asyncio.create_task(_send(ch.telegram_channel_id)) for ch in channels]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for i, ch in enumerate(channels):
+                res = results[i]
+                if isinstance(res, tuple) and len(res) == 2:
+                    session.add(PublishedMessage(
+                        recommendation_id=rec_entity.id,
+                        telegram_channel_id=res[0],
+                        telegram_message_id=res[1],
+                    ))
+                    report["success"].append({"channel_id": ch.telegram_channel_id})
+                else:
+                    report["failed"].append({"channel_id": ch.telegram_channel_id, "error": str(res)})
+
+            session.flush()
+            return rec_entity, report
 
     async def _call_notifier_maybe_async(self, fn, *args, **kwargs):
         """استدعاء دالة الإشعار سواء كانت متزامنة أو غير متزامنة."""
