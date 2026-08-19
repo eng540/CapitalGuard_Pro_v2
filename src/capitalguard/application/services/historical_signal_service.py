@@ -331,6 +331,32 @@ class HistoricalSignalService:
         session.flush()
         return attribution
 
+    def review_attribution(
+        self,
+        session: Session,
+        *,
+        attribution_id: int,
+        reviewer_user_id: int,
+        status: str,
+        note: str | None = None,
+    ) -> HistoricalSignalAttribution:
+        attribution = session.get(HistoricalSignalAttribution, attribution_id)
+        if attribution is None:
+            raise HistoricalSignalValidationError("Historical attribution does not exist")
+        normalized_status = status.strip().upper()
+        if normalized_status not in {"VERIFIED", "REJECTED"}:
+            raise HistoricalSignalValidationError("Attribution review status must be VERIFIED or REJECTED")
+        if reviewer_user_id is None:
+            raise HistoricalSignalValidationError("reviewer_user_id is required")
+        from datetime import datetime, timezone
+
+        attribution.status = normalized_status
+        attribution.reviewed_by_user_id = reviewer_user_id
+        attribution.reviewed_at = datetime.now(timezone.utc)
+        attribution.review_note = note
+        session.flush()
+        return attribution
+
     def record_trader_follow(
         self,
         session: Session,
