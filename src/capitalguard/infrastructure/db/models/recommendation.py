@@ -23,8 +23,11 @@ class AnalystProfile(Base):
     __tablename__ = 'analyst_profiles'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, unique=True)
-    public_name = Column(String, nullable=True)
+    public_name = Column(String(120), nullable=True)
     bio = Column(Text, nullable=True)
+    specialty_market = Column(String(80), nullable=True)
+    strategy_style = Column(String(80), nullable=True)
+    profile_updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     is_public = Column(Boolean, default=False, server_default='false', nullable=False)
     user = relationship("User", back_populates="analyst_profile")
     stats = relationship("AnalystStats", back_populates="analyst_profile", uselist=False, cascade="all, delete-orphan")

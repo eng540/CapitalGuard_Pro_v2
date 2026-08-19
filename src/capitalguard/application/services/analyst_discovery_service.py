@@ -1,6 +1,7 @@
 """R2 analyst discovery and sample-aware performance calculations."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -29,7 +30,13 @@ class AnalystDiscoveryService:
             return (entry - exit_price) / entry * Decimal("100")
         return (exit_price - entry) / entry * Decimal("100")
 
-    def _stats(self, recommendations: list[Recommendation]) -> dict[str, Any]:
+    def _stats(
+        self,
+        recommendations: list[Recommendation],
+        *,
+        window_days: int | None = None,
+        as_of: datetime | None = None,
+    ) -> dict[str, Any]:
         closed = [
             (recommendation, self._pnl_pct(recommendation))
             for recommendation in recommendations
@@ -55,6 +62,35 @@ class AnalystDiscoveryService:
             if recommendation.status in {RecommendationStatus.PENDING, RecommendationStatus.ACTIVE}
             and not recommendation.is_shadow
         ]
+        activated = [
+            recommendation
+            for recommendation in active
+            if recommendation.status == RecommendationStatus.ACTIVE
+        ]
+        risk_exposure_pct = Decimal("0")
+        for recommendation in activated:
+            entry = Decimal(str(recommendation.entry or 0))
+            stop_loss = Decimal(str(recommendation.stop_loss or 0))
+            if entry > 0:
+                risk_exposure_pct += abs(entry - stop_loss) / entry * Decimal("100")
+
+        freshness_source = [
+            timestamp
+            for recommendation, _ in valid
+            for timestamp in (recommendation.closed_at, recommendation.created_at)
+            if timestamp is not None
+        ]
+        latest_data_at = max(freshness_source) if freshness_source else None
+        effective_as_of = as_of or datetime.now(timezone.utc)
+        if latest_data_at is not None and latest_data_at.tzinfo is None:
+            latest_data_at = latest_data_at.replace(tzinfo=timezone.utc)
+        freshness_days = None
+        if latest_data_at is not None:
+            freshness_days = max(
+                Decimal("0"),
+                Decimal(str((effective_as_of - latest_data_at).total_seconds())) / Decimal("86400"),
+            )
+
         assets = sorted({recommendation.asset for recommendation in active})
         return {
             "sample_size": sample_size,
@@ -62,23 +98,50 @@ class AnalystDiscoveryService:
             "total_pnl_pct": total_pnl,
             "max_drawdown_pct": max_drawdown,
             "active_recommendations": len(active),
+            "activated_recommendations": len(activated),
             "active_assets": assets,
+            # Kept for compatibility; consumers should prefer risk_exposure_pct.
             "exposure_proxy": len(active),
+            "risk_exposure_pct": risk_exposure_pct,
+            "window_days": window_days,
+            "as_of": effective_as_of,
+            "latest_data_at": latest_data_at,
+            "freshness_days": freshness_days,
             "eligible_for_ranking": sample_size >= self.minimum_sample_size,
             "minimum_sample_size": self.minimum_sample_size,
         }
 
-    def _recommendations_for(self, session: Session, analyst_id: int) -> list[Recommendation]:
-        return session.execute(
+    def _recommendations_for(
+        self,
+        session: Session,
+        analyst_id: int,
+        *,
+        window_days: int | None = None,
+        as_of: datetime | None = None,
+    ) -> list[Recommendation]:
+        query = (
             select(Recommendation)
             .where(
                 Recommendation.analyst_id == analyst_id,
                 Recommendation.is_shadow.is_(False),
             )
             .order_by(Recommendation.created_at.asc(), Recommendation.id.asc())
-        ).scalars().all()
+        )
+        if window_days:
+            effective_as_of = as_of or datetime.now(timezone.utc)
+            query = query.where(
+                Recommendation.created_at >= effective_as_of - timedelta(days=max(1, int(window_days)))
+            )
+        return session.execute(query).scalars().all()
 
-    def get_analyst(self, session: Session, analyst_id: int) -> dict[str, Any] | None:
+    def get_analyst(
+        self,
+        session: Session,
+        analyst_id: int,
+        *,
+        window_days: int | None = None,
+        as_of: datetime | None = None,
+    ) -> dict[str, Any] | None:
         row = session.execute(
             select(User, AnalystProfile)
             .outerjoin(AnalystProfile, AnalystProfile.user_id == User.id)
@@ -87,13 +150,19 @@ class AnalystDiscoveryService:
         if row is None:
             return None
         user, profile = row
-        stats = self._stats(self._recommendations_for(session, analyst_id))
+        stats = self._stats(
+            self._recommendations_for(session, analyst_id, window_days=window_days, as_of=as_of),
+            window_days=window_days,
+            as_of=as_of,
+        )
         return {
             "analyst_id": user.id,
             "analyst_code": user.analyst_code,
             "public_ref": user.public_ref,
             "public_name": (profile.public_name if profile else None) or user.first_name or user.username or user.analyst_code,
             "bio": profile.bio if profile else None,
+            "specialty_market": profile.specialty_market if profile else None,
+            "strategy_style": profile.strategy_style if profile else None,
             "is_public": bool(profile and profile.is_public),
             **stats,
         }
@@ -104,6 +173,7 @@ class AnalystDiscoveryService:
         search: str | None = None,
         include_ineligible: bool = False,
         limit: int = 20,
+        window_days: int | None = None,
     ) -> list[dict[str, Any]]:
         query = (
             select(User.id)
@@ -116,12 +186,19 @@ class AnalystDiscoveryService:
         results = []
         needle = search.strip().lower() if search else None
         for analyst_id in candidate_ids:
-            record = self.get_analyst(session, analyst_id)
+            record = self.get_analyst(session, analyst_id, window_days=window_days)
             if record is None:
                 continue
             haystack = " ".join(
                 str(record.get(key) or "")
-                for key in ("analyst_code", "public_ref", "public_name", "bio")
+                for key in (
+                    "analyst_code",
+                    "public_ref",
+                    "public_name",
+                    "bio",
+                    "specialty_market",
+                    "strategy_style",
+                )
             ).lower()
             if needle and needle not in haystack:
                 continue
