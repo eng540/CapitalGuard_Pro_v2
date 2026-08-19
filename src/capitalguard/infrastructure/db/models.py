@@ -25,6 +25,9 @@ from .models.recommendation import (
 # ✅ R1-S1: Import the new model
 from .models.watched_channel import WatchedChannel
 from .models.publication_delivery import PublicationDelivery, PublicationDeliveryOperation, PublicationDeliveryStatus
+from .models.identity import ScopedIdentityCounter
+from .models.channel_catalog import ChannelCatalog
+from .models.recommendation_channel_ref import RecommendationChannelRef
 from .models.parsing import ParsingTemplate, ParsingAttempt
 
 # The old Role and UserRole are deprecated and no longer exported.
@@ -51,4 +54,7 @@ __all__ = [
     "PublicationDelivery",
     "PublicationDeliveryOperation",
     "PublicationDeliveryStatus",
+    "ScopedIdentityCounter",
+    "ChannelCatalog",
+    "RecommendationChannelRef",
 ]

@@ -55,14 +55,24 @@ def _extract_leverage_str(notes: str) -> str:
 
 
 def _record_identity(rec: Any) -> tuple[str, str]:
-    """Return a human-readable source badge and stable record identifier."""
+    """Return a source badge plus scoped and global identifiers when available."""
     record_id = getattr(rec, "record_id", None) or getattr(rec, "id", 0)
+    public_ref = getattr(rec, "public_ref", None)
+    display_ref = getattr(rec, "display_ref", None)
     source_type = str(getattr(rec, "source_type", "ANALYST_RECOMMENDATION") or "ANALYST_RECOMMENDATION")
     if source_type == "DIRECT_INPUT":
-        return "📝 <b>Trader Log</b>", f"🆔 <b>UserTrade #{record_id}</b>"
-    if source_type == "TRACKED_RECOMMENDATION":
-        return "📡 <b>Tracked Signal</b>", f"🆔 <b>UserTrade #{record_id}</b>"
-    return "🧠 <b>Analyst Recommendation</b>", f"🆔 <b>Recommendation #{record_id}</b>"
+        label = "📝 <b>Trader Log</b>"
+        legacy = f"UserTrade #{record_id}"
+    elif source_type == "TRACKED_RECOMMENDATION":
+        label = "📡 <b>Tracked Signal</b>"
+        legacy = f"UserTrade #{record_id}"
+    else:
+        label = "🧠 <b>Analyst Recommendation</b>"
+        legacy = f"Recommendation #{record_id}"
+    identity = display_ref or legacy
+    if public_ref:
+        identity = f"{identity} · {public_ref}"
+    return label, f"🆔 <b>{identity}</b>"
 
 def _get_target_icon(target_index: int, hit_targets: set, total_targets: int) -> str:
     if target_index in hit_targets: return "✅"

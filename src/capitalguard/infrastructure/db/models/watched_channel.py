@@ -4,7 +4,6 @@ SQLAlchemy ORM model for Watched Channels.
 This table links a User to a Telegram Channel they are auditing via Smart Forwarding.
 """
 
-import sqlalchemy as sa
 from sqlalchemy import (
     Column, Integer, String, DateTime, Boolean,
     ForeignKey, BigInteger, func, UniqueConstraint
@@ -20,6 +19,8 @@ class WatchedChannel(Base):
     # The user who is doing the watching
     user_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False, index=True)
     
+    # Canonical channel identity plus the original Telegram platform key.
+    channel_catalog_id = Column(Integer, ForeignKey('channel_catalog.id', ondelete="SET NULL"), nullable=True, index=True)
     # The Telegram Channel ID being watched (e.g., -100123456789)
     telegram_channel_id = Column(BigInteger, nullable=False, index=True)
     
@@ -39,6 +40,7 @@ class WatchedChannel(Base):
 
     # Relationships
     user = relationship("User")
+    catalog = relationship("ChannelCatalog")
     
     # One WatchedChannel (by a specific user) can have many UserTrades sourced from it
     user_trades = relationship("UserTrade", back_populates="watched_channel")
