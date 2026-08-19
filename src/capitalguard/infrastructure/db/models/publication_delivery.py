@@ -3,7 +3,7 @@ from enum import Enum
 from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import relationship
 
-from .base import Base
+from .base import Base, JSON_TYPE
 
 
 class PublicationDeliveryStatus(str, Enum):
@@ -39,6 +39,7 @@ class PublicationDelivery(Base):
     attempts = Column(Integer, nullable=False, default=0, server_default="0")
     next_attempt_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
     last_error = Column(Text, nullable=True)
+    payload_json = Column(JSON_TYPE, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     sent_at = Column(DateTime(timezone=True), nullable=True)
@@ -46,12 +47,6 @@ class PublicationDelivery(Base):
     recommendation = relationship("Recommendation", back_populates="publication_deliveries")
 
     __table_args__ = (
-        UniqueConstraint(
-            "recommendation_id",
-            "telegram_channel_id",
-            "operation",
-            name="uq_publication_delivery_target_operation",
-        ),
         Index(
             "ix_publication_deliveries_retry_queue",
             "status",
