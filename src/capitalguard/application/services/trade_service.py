@@ -438,6 +438,53 @@ class TradeService:
         all_items.sort(key=lambda x: x.created_at, reverse=True)
         return all_items
 
+    def get_history_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 20) -> List[RecommendationEntity]:
+        """Return closed personal trades and, for analysts, closed own recommendations."""
+        user_id_int = self._parse_user_id(user_telegram_id)
+        if not user_id_int:
+            return []
+        user = UserRepository(db_session).find_by_telegram_id(user_id_int)
+        if not user:
+            return []
+
+        entities: List[RecommendationEntity] = []
+        closed_trades = (
+            db_session.query(UserTrade)
+            .filter(
+                UserTrade.user_id == user.id,
+                UserTrade.status == UserTradeStatusEnum.CLOSED,
+            )
+            .order_by(UserTrade.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        for trade in closed_trades:
+            entity = self.repo._to_entity_from_user_trade(trade)
+            if entity:
+                self._enrich_entity(entity, is_trade=True, orm_status=trade.status)
+                entities.append(entity)
+
+        if user.user_type == UserTypeEntity.ANALYST:
+            closed_recs = (
+                db_session.query(Recommendation)
+                .filter(
+                    Recommendation.analyst_id == user.id,
+                    Recommendation.status == RecommendationStatusEnum.CLOSED,
+                )
+                .order_by(Recommendation.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            for rec in closed_recs:
+                entity = self.repo._to_entity(rec)
+                if entity:
+                    safe_channel_id = self._resolve_channel_id(rec)
+                    self._enrich_entity(entity, is_trade=False, orm_status=rec.status, channel_id=safe_channel_id)
+                    entities.append(entity)
+
+        entities.sort(key=lambda item: item.created_at, reverse=True)
+        return entities[:limit]
+
     def get_analyst_history_for_user(self, db_session: Session, user_telegram_id: str, limit: int = 20) -> List[RecommendationEntity]:
         user_id_int = self._parse_user_id(user_telegram_id)
         if not user_id_int: return []

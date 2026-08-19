@@ -310,3 +310,33 @@ async def test_create_and_publish_recommendation_success(trade_service_real_db: 
 
 
 # --- END of test_trade_service.py update ---
+
+
+async def test_trader_history_includes_closed_user_trade(trade_service_real_db: TradeService, db_session):
+    user = UserRepository(db_session).find_or_create(telegram_id=92301, first_name="HistoryTrader")
+    user.is_active = True
+    closed_trade = UserTrade(
+        user_id=user.id,
+        asset="SOLUSDT",
+        side="LONG",
+        entry=Decimal("100"),
+        stop_loss=Decimal("95"),
+        targets=[{"price": "105", "close_percent": 100.0}],
+        status=UserTradeStatus.CLOSED,
+        close_price=Decimal("105"),
+        pnl_percentage=Decimal("5.0"),
+    )
+    db_session.add(closed_trade)
+    db_session.commit()
+
+    history = trade_service_real_db.get_history_for_user(
+        db_session,
+        str(user.telegram_user_id),
+    )
+
+    assert len(history) == 1
+    item = history[0]
+    assert item.is_user_trade is True
+    assert item.unified_status == "CLOSED"
+    assert item.exit_price == 105.0
+    assert item.final_pnl_percentage == 5.0
