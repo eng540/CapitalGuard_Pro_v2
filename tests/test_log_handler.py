@@ -1,6 +1,9 @@
 from decimal import Decimal
 
-from capitalguard.interfaces.telegram.log_handler import _parse_log_text
+from capitalguard.interfaces.telegram.log_handler import (
+    _contains_multiple_log_commands,
+    _parse_log_text,
+)
 
 
 def test_log_parser_accepts_quick_command_and_marks_direct_source():
@@ -28,3 +31,9 @@ def test_log_parser_accepts_editor_command_with_arabic_digits():
 
 def test_log_parser_rejects_incomplete_input():
     assert _parse_log_text("BTCUSDT LONG 90000") is None
+
+
+def test_log_parser_rejects_pasted_batch_of_commands():
+    batch = "/log BTCUSDT LONG 64270 64180 64335 64400\n/log ETHUSDT SHORT 1913 1917 1910 1905"
+    assert _contains_multiple_log_commands(batch) is True
+    assert _parse_log_text(batch) is None
