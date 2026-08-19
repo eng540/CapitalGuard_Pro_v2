@@ -42,10 +42,16 @@ def _clear_log_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(LOG_DRAFT_KEY, None)
 
 
+def _contains_multiple_log_commands(raw_text: str) -> bool:
+    """Detect pasted batches so one Telegram message cannot be parsed as one trade."""
+    lines = [line.strip() for line in (raw_text or "").splitlines() if line.strip()]
+    return sum(line.startswith("/log") for line in lines) > 1 or (raw_text or "").count("/log") > 1
+
+
 def _parse_log_text(raw_text: str) -> Optional[Dict[str, Any]]:
     """Parse direct input using the same quick/editor contracts as /rec."""
     text = (raw_text or "").strip()
-    if not text:
+    if not text or _contains_multiple_log_commands(text):
         return None
     parser = parse_editor_command if ":" in text or "\n" in text else parse_rec_command
     parsed = parser(text)
@@ -107,6 +113,12 @@ async def _show_log_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def _accept_log_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     raw_text = (update.message.text or "").strip()
+    if _contains_multiple_log_commands(raw_text):
+        await update.message.reply_html(
+            "⚠️ أرسل أمر <b>/log</b> واحدًا فقط في كل رسالة. "
+            "لا تلصق عدة عينات دفعة واحدة؛ أرسل العينة التالية بعد تأكيد السابقة."
+        )
+        return LOG_AWAIT_INPUT
     parsed = _parse_log_text(raw_text)
     if not parsed:
         await update.message.reply_html(
@@ -142,6 +154,11 @@ async def log_entrypoint(
     _clear_log_state(context)
     raw_text = " ".join(context.args or []).strip()
     if raw_text:
+        if _contains_multiple_log_commands(raw_text):
+            await update.effective_message.reply_html(
+                "⚠️ أرسل أمر <b>/log</b> واحدًا فقط في كل رسالة."
+            )
+            return LOG_AWAIT_INPUT
         parsed = _parse_log_text(raw_text)
         if parsed:
             context.user_data[LOG_DRAFT_KEY] = {
