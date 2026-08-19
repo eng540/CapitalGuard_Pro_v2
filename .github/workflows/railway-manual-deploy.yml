@@ -36,6 +36,11 @@ jobs:
       - name: Checkout exact main commit
         uses: actions/checkout@v4
 
+      - name: Validate Railway config types
+        run: |
+          set -eu
+          python3 scripts/validate_railway_config.py
+
       - name: Deploy current checkout to Railway
         run: |
           set -eu
