@@ -95,6 +95,7 @@ class UserTrade(Base):
     close_price = Column(Numeric(20, 8), nullable=True)
     pnl_percentage = Column(Numeric(10, 4), nullable=True)
     source_forwarded_text = Column(Text, nullable=True)
+    source_type = Column(String(32), nullable=False, server_default="FORWARD", index=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     

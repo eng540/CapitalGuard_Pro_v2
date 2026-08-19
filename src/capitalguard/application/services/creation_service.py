@@ -21,7 +21,7 @@ from sqlalchemy import select, text
 # Infrastructure & Domain Imports
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.models import (
-    Recommendation, RecommendationEvent, User,
+    Recommendation, RecommendationEvent, User, UserTradeEvent,
     RecommendationStatusEnum, UserTrade,
     OrderTypeEnum, ExitStrategyEnum,
     UserTradeStatusEnum,
@@ -370,9 +370,11 @@ class CreationService:
         db_session: Session,
         status_to_set: str, 
         original_published_at: Optional[datetime],
-        channel_info: Optional[Dict[str, Any]]
+        channel_info: Optional[Dict[str, Any]],
+        source_type: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Core Algorithm - R1: Trader Copy/Forward"""
+        """Core Algorithm - R1: Trader Copy/Forward or direct input."""
+        source_type = source_type or trade_data.get("source_type") or "FORWARD"
         trader_user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
         if not trader_user:
             return {'success': False, 'error': 'User not found'}
@@ -432,11 +434,22 @@ class CreationService:
                 targets=targets_for_db,
                 status=UserTradeStatusEnum[status_to_set],
                 source_forwarded_text=original_text,
+                source_type=source_type,
                 original_published_at=original_published_at,
                 watched_channel_id=watched_channel.id if watched_channel else None,
                 activated_at=None 
             )
             db_session.add(new_trade)
+            db_session.flush()
+            db_session.add(UserTradeEvent(
+                user_trade_id=new_trade.id,
+                event_type="LOGGED_DIRECT_INPUT" if source_type == "DIRECT_INPUT" else "FORWARDED",
+                event_data={
+                    "source_type": source_type,
+                    "status": status_to_set,
+                    "asset": new_trade.asset,
+                },
+            ))
             db_session.flush()
             self.dedup_service.mark_entity(
                 dedup_decision.ledger,
