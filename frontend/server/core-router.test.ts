@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { telegramIdFromWebSession } from "./capitalguard";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
@@ -19,5 +20,10 @@ describe("CapitalGuard Core tRPC routes", () => {
   it("rejects malformed symbols before any request is sent to Core", async () => {
     const caller = appRouter.createCaller(coreContext());
     await expect(caller.capitalguard.core.price({ symbol: "BTC/USDT" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("derives the Core identity only from a signed Telegram Web session", () => {
+    expect(telegramIdFromWebSession("telegram:123456")).toBe(123456);
+    expect(() => telegramIdFromWebSession("core-route-test")).toThrow("CAPITALGUARD_TMA_SESSION_REQUIRED");
   });
 });

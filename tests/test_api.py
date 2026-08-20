@@ -42,6 +42,19 @@ def test_webapp_rejects_invalid_telegram_init_data(client: TestClient):
     assert "error" in response.json()
 
 
+def test_core_read_model_requires_a_server_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "test-service-key")
+    path = "/api/webapp/read-models/trader/123456"
+
+    missing = client.get(path)
+    rejected = client.get(path, headers={"Authorization": "Bearer wrong-key"})
+
+    assert missing.status_code == 401
+    assert rejected.status_code == 403
+
+
 def test_removed_legacy_recommendations_surface_is_not_accidentally_reintroduced(client: TestClient):
     response = client.get("/recommendations")
     assert response.status_code == 404
