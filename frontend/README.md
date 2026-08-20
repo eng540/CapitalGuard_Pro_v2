@@ -27,12 +27,14 @@ The application already binds to Railway's assigned `PORT`; no custom Dockerfile
 
 The initial template still includes Manus OAuth variables: `VITE_APP_ID`, `OAUTH_SERVER_URL`, and `VITE_OAUTH_PORTAL_URL`. They are valid only when deploying through the Manus environment. For an independent Railway/Vercel release, replace the template OAuth adapter with a CapitalGuard-owned login provider or Telegram Mini App `initData` verification before going live.
 
+Use `environment.template.txt` for a copyable list of variables and `ENVIRONMENT_VARIABLES.md` for scope and deployment notes. Both files are visible in GitHub and contain no real secret.
+
 ## Core integration safety
 
 The Web service calls Core from the server only. The browser never receives `CAPITALGUARD_CORE_API_KEY`, Telegram tokens, exchange secrets, or direct PostgreSQL access. Current Web routes are read-only (`health`, price, signal details, and TMA portfolio); they do not create a recommendation, user trade, publication outbox message, or copy-trading order.
 
 ## Vercel deployment
 
-Vercel support is included through `api/[...path].ts` and `vercel.json`. The Vite client is generated into `dist/public`, while the Express/tRPC application is exposed through a Node 22 serverless Function. The apparently relative `../dist/public` line printed by Vite is relative to Vite's `client/` root; it resolves to `frontend/dist/public`, matching `vercel.json`. Import the repository in Vercel, set the **Root Directory** to `frontend`, and use the environment variables in `.env.example`.
+Vercel support is included through `api/[...path].ts` and `vercel.json`. The Vite client is generated into `dist/public`, while the Express/tRPC application is exposed through a Node 22 serverless Function. The apparently relative `../dist/public` line printed by Vite is relative to Vite's `client/` root; it resolves to `frontend/dist/public`, matching `vercel.json`. Import the repository in Vercel, set the **Root Directory** to `frontend`, and use `environment.template.txt` and `ENVIRONMENT_VARIABLES.md` for the variables.
 
 The rewrite sends `/api/*` traffic to the serverless handler so the protected tRPC layer remains server-side. Do not configure this deployment as a static-only Vite site: that would remove the API, authentication, and Core Adapter layers.
