@@ -10,6 +10,7 @@ from capitalguard.infrastructure.db.models import (
     HistoricalShadowChannel,
     PublicationDelivery,
     Recommendation,
+    TemporalForwardDecision,
     UserTrade,
 )
 from capitalguard.infrastructure.db.repository import UserRepository
@@ -86,6 +87,13 @@ def test_frictionless_discovers_shadow_and_reuses_auto_batch(db_session):
     assert db_session.query(Recommendation).count() == 0
     assert db_session.query(UserTrade).count() == 0
     assert db_session.query(PublicationDelivery).count() == 0
+    decision = db_session.query(TemporalForwardDecision).filter_by(
+        receiver_chat_id=reviewer.telegram_user_id,
+        receiver_message_id=reviewer.telegram_user_id + 44,
+    ).one()
+    assert decision.mode == "HISTORICAL_RECONSTRUCTION"
+    assert decision.route == "HISTORICAL_CANDIDATE"
+    assert decision.age_seconds is not None
 
 
 def test_frictionless_attaches_existing_canonical_channel_without_creating_shadow(db_session):
