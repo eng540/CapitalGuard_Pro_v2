@@ -12,6 +12,7 @@ from capitalguard.application.services.frictionless_ingestion_service import (
     FrictionlessIngestionService,
 )
 from capitalguard.application.services.historical_parser_service import HistoricalParserService
+from capitalguard.application.services.historical_replay_gate_service import HistoricalReplayGateService
 from capitalguard.application.services.parsing_service import ParsingService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.historical_forwarding_service import (
@@ -106,6 +107,11 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             temporal_routes = Counter()
             temporal_reasons = Counter()
             temporal_ages = []
+            financial_outcome_status = Counter()
+            financial_outcome_warnings = Counter()
+            replay_gate_status = Counter()
+            replay_gate_reasons = Counter()
+            replay_gate = HistoricalReplayGateService()
             for record in preview.manifest.get("records", []):
                 temporal_decision = (record.get("metadata") or {}).get("temporal_decision") or {}
                 if temporal_decision.get("mode"):
@@ -118,6 +124,17 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 parsed = parser.parse(record.get("raw_text"))
                 if parsed.parse_status == "PARSED":
                     parsed_count += 1
+                    outcome = (parsed.data or {}).get("financial_outcome") or {}
+                    if outcome.get("status"):
+                        financial_outcome_status[outcome["status"]] += 1
+                    financial_outcome_warnings.update(outcome.get("warnings") or [])
+                    gate = replay_gate.assess(
+                        parse_status=parsed.parse_status,
+                        financial_outcome=outcome,
+                        market_data_available=False,
+                    )
+                    replay_gate_status[gate.status] += 1
+                    replay_gate_reasons.update(gate.reason_codes)
                     asset = (parsed.data or {}).get("asset")
                     if asset:
                         parsed_assets.append(str(asset))
@@ -130,6 +147,10 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 "partial_count": partial_count,
                 "assets": parsed_assets,
                 "replay_status": "REPLAY_PENDING" if parsed_count else "NOT_PARSED",
+                "financial_outcome_status": dict(financial_outcome_status),
+                "financial_outcome_warnings": dict(financial_outcome_warnings),
+                "replay_gate_status": dict(replay_gate_status),
+                "replay_gate_reasons": dict(replay_gate_reasons),
             }
             metadata["temporal_summary"] = {
                 "modes": dict(temporal_modes),
@@ -160,6 +181,10 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 f"temporal_route={dict(temporal_routes) or {'HISTORICAL_CANDIDATE': preview.total_records}}\n"
                 f"temporal_age_seconds={min(temporal_ages) if temporal_ages else 'N/A'}..{max(temporal_ages) if temporal_ages else 'N/A'}\n"
                 f"temporal_reasons={', '.join(temporal_reasons.keys()) or 'N/A'}\n"
+                f"financial_outcome={dict(financial_outcome_status) or 'UNVERIFIABLE'}\n"
+                f"financial_warnings={', '.join(financial_outcome_warnings.keys()) or 'N/A'}\n"
+                f"replay_gate={dict(replay_gate_status) or 'NOT_ASSESSED'}\n"
+                f"replay_gate_reasons={', '.join(replay_gate_reasons.keys()) or 'N/A'}\n"
                 f"replay_status={'REPLAY_PENDING' if parsed_count else 'NOT_PARSED'}\n"
                 "No live recommendation or trader position was created."
             )

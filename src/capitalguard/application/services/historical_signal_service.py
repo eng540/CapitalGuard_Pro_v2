@@ -401,6 +401,14 @@ class HistoricalSignalService:
         verified_events = bool(events) and all(
             event.replay_status in self.VERIFIED_REPLAY_STATUSES for event in events
         )
+        evidence = session.get(HistoricalSignalEvidence, signal.evidence_id)
+        evidence_metadata = (evidence.metadata_json or {}) if evidence else {}
+        financial_outcome = evidence_metadata.get("financial_outcome") or {}
+        timeline_reconciliation = evidence_metadata.get("timeline_reconciliation") or {}
+        review_blocked = (
+            financial_outcome.get("status") == "MISMATCH"
+            or timeline_reconciliation.get("is_consistent") is False
+        )
         event_types = {event.event_type for event in events}
         target_count = len(signal.targets) if isinstance(signal.targets, list) else 0
         hit_target_count = len({
@@ -416,6 +424,7 @@ class HistoricalSignalService:
             and verified_events
             and has_activation
             and has_terminal_outcome
+            and not review_blocked
         )
         signal.eligible_for_ranking = eligible
         signal.status = "REPLAYED" if verified_events else signal.status
