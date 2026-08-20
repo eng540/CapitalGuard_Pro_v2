@@ -27,6 +27,17 @@ export type CoreTraderReadModel = {
   performance: Record<string, unknown>;
   funnel: Record<string, unknown>;
 };
+export type CoreOwnerReviewBatch = {
+  id: number;
+  ref: string;
+  status: string;
+  source_kind: string;
+  total_records: number;
+  accepted_records: number;
+  rejected_records: number;
+  created_at: string | null;
+  owner_review: { approved?: boolean; note?: string; reviewed_at?: string } | null;
+};
 
 export function getCoreConfig(env = process.env): CoreConfig {
   const rawUrl = env.CAPITALGUARD_CORE_BASE_URL?.trim();
@@ -86,6 +97,43 @@ export async function coreGetTraderReadModel(telegramId: number, fetchImpl: type
     throw new Error("CAPITALGUARD_CORE_READ_MODEL_INVALID");
   }
   return payload as CoreTraderReadModel;
+}
+
+async function coreCommand(path: string, payload: Record<string, unknown>, fetchImpl: typeof fetch = fetch, env = process.env) {
+  const result = await coreReadOnlyFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true) throw new Error("CAPITALGUARD_CORE_COMMAND_INVALID");
+  return result as Record<string, unknown>;
+}
+
+export async function coreListOwnerReviewBatches(actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreOwnerReviewBatch[]> {
+  if (!Number.isSafeInteger(actorTelegramId) || actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const result = await coreReadOnlyFetch(query("/api/webapp/owner/review-batches", { actor_telegram_id: String(actorTelegramId) }), {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { batches?: unknown }).batches)) {
+    throw new Error("CAPITALGUARD_CORE_OWNER_BATCHES_INVALID");
+  }
+  return (result as { batches: CoreOwnerReviewBatch[] }).batches;
+}
+
+export async function coreReviewHistoricalBatch(input: { actorTelegramId: number; batchId: number; approved: boolean; note?: string; idempotencyKey: string }, fetchImpl: typeof fetch = fetch, env = process.env) {
+  return coreCommand("/api/webapp/owner/review-batches", {
+    actor_telegram_id: input.actorTelegramId,
+    batch_id: input.batchId,
+    approved: input.approved,
+    note: input.note,
+    idempotency_key: input.idempotencyKey,
+  }, fetchImpl, env);
+}
+
+export async function coreIngestHistoricalEvidence(input: { actorTelegramId: number; batchId: number; idempotencyKey: string }, fetchImpl: typeof fetch = fetch, env = process.env) {
+  return coreCommand(`/api/webapp/owner/review-batches/${input.batchId}/ingest-evidence`, {
+    actor_telegram_id: input.actorTelegramId,
+    batch_id: input.batchId,
+    idempotency_key: input.idempotencyKey,
+  }, fetchImpl, env);
 }
 
 export async function coreGetTmaPortfolio(initData: string, fetchImpl: typeof fetch = fetch, env = process.env) {

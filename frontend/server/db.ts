@@ -26,6 +26,11 @@ function normalizedRole(role: InsertUser["role"] | "user" | undefined): "trader"
   return role === "analyst" || role === "admin" ? role : "trader";
 }
 
+function isConfiguredOwner(openId: string): boolean {
+  return openId === ENV.ownerOpenId
+    || (Boolean(ENV.ownerTelegramId) && openId === `telegram:${ENV.ownerTelegramId}`);
+}
+
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) throw new Error("User openId is required for upsert");
   const database = await getDb();
@@ -33,7 +38,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     console.warn("[Web Database] Cannot upsert user: database not available");
     return;
   }
-  const role = user.openId === ENV.ownerOpenId ? "admin" : normalizedRole(user.role);
+  const role = isConfiguredOwner(user.openId) ? "admin" : normalizedRole(user.role);
   const now = new Date();
   await database.insert(users).values({
     openId: user.openId,

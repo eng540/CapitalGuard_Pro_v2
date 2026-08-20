@@ -55,6 +55,15 @@ def test_core_read_model_requires_a_server_service_key(client: TestClient, monke
     assert rejected.status_code == 403
 
 
+def test_owner_command_surface_requires_the_core_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "test-service-key")
+    response = client.get("/api/webapp/owner/review-batches", params={"actor_telegram_id": 123456})
+
+    assert response.status_code == 401
+
+
 def test_removed_legacy_recommendations_surface_is_not_accidentally_reintroduced(client: TestClient):
     response = client.get("/recommendations")
     assert response.status_code == 404

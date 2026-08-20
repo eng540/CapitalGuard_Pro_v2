@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreGetPrice, coreGetSignal, coreGetTmaPortfolio, coreGetTraderReadModel, probeCoreHealth } from "./core-adapter";
+import { coreGetPrice, coreGetSignal, coreGetTmaPortfolio, coreGetTraderReadModel, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -63,5 +64,18 @@ export const capitalguardRouter = router({
   analyst: router({ dashboard: analystProcedure.query(() => ({ profile: null, recommendations: [] })) }),
   admin: router({
     overview: adminProcedure.query(async () => ({ connection: "web_db", users: await getWebUserCount(), channels: 0, pendingReviews: 0 })),
+    historicalReviewBatches: adminProcedure.query(({ ctx }) => coreListOwnerReviewBatches(telegramIdFromWebSession(ctx.user.openId))),
+    reviewHistoricalBatch: adminProcedure.input(z.object({ batchId: z.number().int().positive(), approved: z.boolean(), note: z.string().trim().max(1_000).optional() })).mutation(({ ctx, input }) => coreReviewHistoricalBatch({
+      actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
+      batchId: input.batchId,
+      approved: input.approved,
+      note: input.note,
+      idempotencyKey: randomUUID(),
+    })),
+    ingestHistoricalEvidence: adminProcedure.input(z.object({ batchId: z.number().int().positive() })).mutation(({ ctx, input }) => coreIngestHistoricalEvidence({
+      actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
+      batchId: input.batchId,
+      idempotencyKey: randomUUID(),
+    })),
   }),
 });

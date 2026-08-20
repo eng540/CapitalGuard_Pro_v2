@@ -25,6 +25,7 @@ from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.lifecycle_service import LifecycleService
 from capitalguard.application.services.performance_service import PerformanceService
+from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
 from capitalguard.infrastructure.db.models import RecommendationStatusEnum
 
@@ -50,6 +51,20 @@ class TradeAction(BaseModel):
     action: str
     trade_id: int
     value: Optional[str] = None
+
+
+class OwnerReviewCommand(BaseModel):
+    actor_telegram_id: int
+    batch_id: int
+    approved: bool
+    note: Optional[str] = None
+    idempotency_key: str
+
+
+class EvidenceIngestCommand(BaseModel):
+    actor_telegram_id: int
+    batch_id: int
+    idempotency_key: str
 
 # --- Helpers ---
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
@@ -258,6 +273,53 @@ async def get_trader_read_model(telegram_id: int, request: Request):
             "performance": performance,
             "funnel": funnel,
         }
+
+
+@router.get("/owner/review-batches")
+async def list_owner_review_batches(actor_telegram_id: int, request: Request):
+    require_core_service_key(request.headers.get("authorization"))
+    try:
+        with session_scope() as session:
+            batches = WebCommandService().list_reviewable_batches(session, actor_telegram_id=actor_telegram_id)
+            return {"ok": True, "batches": batches}
+    except WebCommandError as exc:
+        raise HTTPException(status_code=403, detail="Owner command rejected") from exc
+
+
+@router.post("/owner/review-batches")
+async def execute_owner_review(command: OwnerReviewCommand, request: Request):
+    require_core_service_key(request.headers.get("authorization"))
+    if len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Idempotency key is required")
+    try:
+        with session_scope() as session:
+            return WebCommandService().review_batch(
+                session,
+                actor_telegram_id=command.actor_telegram_id,
+                batch_id=command.batch_id,
+                approved=command.approved,
+                note=command.note,
+                idempotency_key=command.idempotency_key,
+            )
+    except WebCommandError as exc:
+        raise HTTPException(status_code=403, detail="Owner command rejected") from exc
+
+
+@router.post("/owner/review-batches/{batch_id}/ingest-evidence")
+async def execute_evidence_ingestion(batch_id: int, command: EvidenceIngestCommand, request: Request):
+    require_core_service_key(request.headers.get("authorization"))
+    if batch_id != command.batch_id or len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Invalid evidence ingestion command")
+    try:
+        with session_scope() as session:
+            return WebCommandService().ingest_evidence(
+                session,
+                actor_telegram_id=command.actor_telegram_id,
+                batch_id=command.batch_id,
+                idempotency_key=command.idempotency_key,
+            )
+    except WebCommandError as exc:
+        raise HTTPException(status_code=403, detail="Owner command rejected") from exc
 
 @router.get("/performance")
 async def get_user_performance(initData: str, request: Request):
