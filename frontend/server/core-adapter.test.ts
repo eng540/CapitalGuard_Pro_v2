@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreGetPrice, coreGetTraderReadModel, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreGetOperationsFeed, coreGetPrice, coreGetTraderReadModel, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -81,5 +81,16 @@ describe("CapitalGuard Core adapter", () => {
     });
     expect(requestUrl).toBe("https://core.example/api/webapp/owner/review-batches");
     expect(JSON.parse(requestBody)).toMatchObject({ actor_telegram_id: 123456, batch_id: 9, approved: true, idempotency_key: "command-key-123456" });
+  });
+
+  it("retrieves operations telemetry only through the server-side Core adapter", async () => {
+    let requestUrl = "";
+    const fakeFetch = async (input: string | URL | Request) => {
+      requestUrl = String(input);
+      return new Response(JSON.stringify({ ok: true, events: [], summary: { critical: 0, warning: 0, total: 0 } }), { status: 200 });
+    };
+    const result = await coreGetOperationsFeed(123456, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
+    expect(requestUrl).toBe("https://core.example/api/webapp/owner/operations-feed?actor_telegram_id=123456");
+    expect(result.summary.total).toBe(0);
   });
 });

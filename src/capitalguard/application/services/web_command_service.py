@@ -31,6 +31,10 @@ class WebCommandService:
             raise WebCommandError("Owner identity does not exist in Core")
         return user
 
+    def require_owner(self, session: Session, actor_telegram_id: int):
+        """Public owner assertion for read-only operations telemetry endpoints."""
+        return self._require_owner(session, actor_telegram_id)
+
     @staticmethod
     def _fingerprint(command_type: str, actor_telegram_id: int, batch_id: int, payload: dict) -> str:
         raw = json.dumps({"command_type": command_type, "actor": actor_telegram_id, "batch": batch_id, "payload": payload}, sort_keys=True, separators=(",", ":"))

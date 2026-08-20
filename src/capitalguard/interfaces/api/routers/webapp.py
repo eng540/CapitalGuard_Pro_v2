@@ -16,6 +16,7 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Header
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from capitalguard.config import settings
 from capitalguard.infrastructure.db.uow import session_scope
@@ -27,7 +28,7 @@ from capitalguard.application.services.lifecycle_service import LifecycleService
 from capitalguard.application.services.performance_service import PerformanceService
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
-from capitalguard.infrastructure.db.models import RecommendationStatusEnum
+from capitalguard.infrastructure.db.models import PublicationDelivery, RecommendationEvent, RecommendationStatusEnum, WebCommandAudit
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
@@ -318,6 +319,31 @@ async def execute_evidence_ingestion(batch_id: int, command: EvidenceIngestComma
                 batch_id=command.batch_id,
                 idempotency_key=command.idempotency_key,
             )
+    except WebCommandError as exc:
+        raise HTTPException(status_code=403, detail="Owner command rejected") from exc
+
+
+@router.get("/owner/operations-feed")
+async def get_operations_feed(actor_telegram_id: int, request: Request):
+    """Owner-only merged operations feed; financial payloads stay inside Core."""
+    require_core_service_key(request.headers.get("authorization"))
+    try:
+        with session_scope() as session:
+            WebCommandService().require_owner(session, actor_telegram_id)
+            deliveries = session.execute(select(PublicationDelivery).order_by(PublicationDelivery.updated_at.desc()).limit(50)).scalars().all()
+            lifecycle_events = session.execute(select(RecommendationEvent).order_by(RecommendationEvent.event_timestamp.desc()).limit(50)).scalars().all()
+            commands = session.execute(select(WebCommandAudit).order_by(WebCommandAudit.created_at.desc()).limit(50)).scalars().all()
+            events = []
+            for delivery in deliveries:
+                severity = "critical" if delivery.status == "FAILED" else "warning" if delivery.status == "RETRY" else "info"
+                events.append({"id": f"delivery:{delivery.id}", "category": "PUBLICATION", "code": f"{delivery.operation}:{delivery.status}", "severity": severity, "record_ref": f"REC-{delivery.recommendation_id}", "occurred_at": (delivery.updated_at or delivery.created_at).isoformat()})
+            for event in lifecycle_events:
+                events.append({"id": f"recommendation:{event.id}", "category": "LIFECYCLE", "code": event.event_type, "severity": "info", "record_ref": f"REC-{event.recommendation_id}", "occurred_at": event.event_timestamp.isoformat()})
+            for command_audit in commands:
+                events.append({"id": f"command:{command_audit.id}", "category": "AUDIT", "code": command_audit.command_type, "severity": "info", "record_ref": f"BATCH-{command_audit.target_id}", "occurred_at": command_audit.created_at.isoformat()})
+            events.sort(key=lambda event: event["occurred_at"], reverse=True)
+            trimmed = events[:100]
+            return {"ok": True, "events": trimmed, "summary": {"critical": sum(event["severity"] == "critical" for event in trimmed), "warning": sum(event["severity"] == "warning" for event in trimmed), "total": len(trimmed)}}
     except WebCommandError as exc:
         raise HTTPException(status_code=403, detail="Owner command rejected") from exc
 

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreGetPrice, coreGetSignal, coreGetTmaPortfolio, coreGetTraderReadModel, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
+import { coreGetOperationsFeed, coreGetPrice, coreGetSignal, coreGetTmaPortfolio, coreGetTraderReadModel, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -81,6 +81,14 @@ export const capitalguardRouter = router({
       } catch (error) {
         console.warn("[CapitalGuard Admin] Owner review queue unavailable", error instanceof Error ? error.message : "unknown");
         throw new Error("CAPITALGUARD_OWNER_REVIEW_QUEUE_UNAVAILABLE");
+      }
+    }),
+    operationsFeed: adminProcedure.query(async ({ ctx }) => {
+      try {
+        return await coreGetOperationsFeed(telegramIdFromWebSession(ctx.user.openId));
+      } catch (error) {
+        console.warn("[CapitalGuard Admin] Operations feed unavailable", error instanceof Error ? error.message : "unknown");
+        throw new Error("CAPITALGUARD_OPERATIONS_FEED_UNAVAILABLE");
       }
     }),
     reviewHistoricalBatch: adminProcedure.input(z.object({ batchId: z.number().int().positive(), approved: z.boolean(), note: z.string().trim().max(1_000).optional() })).mutation(({ ctx, input }) => coreReviewHistoricalBatch({
