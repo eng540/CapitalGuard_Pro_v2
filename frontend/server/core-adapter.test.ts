@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreGetPrice, coreGetTraderReadModel, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreGetPrice, coreGetTraderReadModel, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -65,5 +65,21 @@ describe("CapitalGuard Core adapter", () => {
     expect(authorization).toBe("Bearer private-service-key");
     expect(result.portfolio.open_position_count).toBe(0);
     await expect(coreGetTraderReadModel(0, fakeFetch as typeof fetch)).rejects.toThrow("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  });
+
+  it("sends owner review commands server-to-server with an idempotency key", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    const fakeFetch = async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body);
+      return new Response(JSON.stringify({ ok: true, batch_id: 9, status: "VALIDATED" }), { status: 200 });
+    };
+    await coreReviewHistoricalBatch({ actorTelegramId: 123456, batchId: 9, approved: true, note: "Evidence reviewed", idempotencyKey: "command-key-123456" }, fakeFetch as typeof fetch, {
+      CAPITALGUARD_CORE_BASE_URL: "https://core.example",
+      CAPITALGUARD_CORE_API_KEY: "private-service-key",
+    });
+    expect(requestUrl).toBe("https://core.example/api/webapp/owner/review-batches");
+    expect(JSON.parse(requestBody)).toMatchObject({ actor_telegram_id: 123456, batch_id: 9, approved: true, idempotency_key: "command-key-123456" });
   });
 });

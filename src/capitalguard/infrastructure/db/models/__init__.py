@@ -41,6 +41,7 @@ from .historical_signal import (
 from .historical_forwarding import HistoricalForwardReceipt
 from .historical_shadow_channel import HistoricalShadowChannel
 from .temporal_forward_decision import TemporalForwardDecision
+from .web_command_audit import WebCommandAudit
 
 # Backward-compatible export used by existing service tests and integrations.
 UserTradeStatus = UserTradeStatusEnum
@@ -84,5 +85,6 @@ __all__ = [
     "HistoricalForwardReceipt",
     "HistoricalShadowChannel",
     "TemporalForwardDecision",
+    "WebCommandAudit",
 ]
 # --- END of models init ---
