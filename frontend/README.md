@@ -31,6 +31,8 @@ The initial template still includes Manus OAuth variables: `VITE_APP_ID`, `OAUTH
 
 The Web service calls Core from the server only. The browser never receives `CAPITALGUARD_CORE_API_KEY`, Telegram tokens, exchange secrets, or direct PostgreSQL access. Current Web routes are read-only (`health`, price, signal details, and TMA portfolio); they do not create a recommendation, user trade, publication outbox message, or copy-trading order.
 
-## Vercel note
+## Vercel deployment
 
-This directory is currently packaged as an Express/tRPC Node service. The included Railway configuration is the supported deployment path. A Vercel deployment requires a separate conversion of the Express entrypoint to Vercel Functions before it can safely serve authenticated tRPC operations; deploying it as a static Vite site would disable the protected API layer.
+Vercel support is included through `api/[...path].ts` and `vercel.json`. The Vite client is generated into `dist/public`, while the Express/tRPC application is exposed through a Node 22 serverless Function. Import the repository in Vercel, set the **Root Directory** to `frontend`, and use the environment variables in `.env.example`.
+
+The rewrite sends `/api/*` traffic to the serverless handler so the protected tRPC layer remains server-side. Do not configure this deployment as a static-only Vite site: that would remove the API, authentication, and Core Adapter layers.
