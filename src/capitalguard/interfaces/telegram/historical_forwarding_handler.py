@@ -81,8 +81,8 @@ def _forwarded_input(message, *, user_id: int, details: dict) -> ForwardedMessag
     )
 
 
-def _auto_job_name(chat_id: int) -> str:
-    return f"{AUTO_JOB_PREFIX}:{chat_id}"
+def _auto_job_name(chat_id: int, batch_id: int) -> str:
+    return f"{AUTO_JOB_PREFIX}:{chat_id}:{batch_id}"
 
 
 async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
@@ -161,13 +161,14 @@ async def direct_historical_forward_handler(
     )
     context.user_data[AUTO_BATCH_KEY] = batch.id
 
-    for job in context.job_queue.get_jobs_by_name(_auto_job_name(message.chat_id)):
+    job_name = _auto_job_name(message.chat_id, batch.id)
+    for job in context.job_queue.get_jobs_by_name(job_name):
         job.schedule_removal()
     context.job_queue.run_once(
         _finalize_auto_batch_job,
         when=AUTO_DEBOUNCE_SECONDS,
         data={"batch_id": batch.id, "chat_id": message.chat_id},
-        name=_auto_job_name(message.chat_id),
+        name=job_name,
         chat_id=message.chat_id,
         user_id=message.from_user.id if message.from_user else None,
     )
