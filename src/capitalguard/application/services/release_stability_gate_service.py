@@ -37,6 +37,8 @@ class ReleaseStabilityGateService:
             reasons.append("LIVE_ENTITY_LEAK_DETECTED")
         if snapshot.unreviewed_financial_conflicts > 0:
             reasons.append("FINANCIAL_CONFLICT_REVIEW_BACKLOG")
+        if snapshot.replay_pending_records > 0:
+            reasons.append("REPLAY_PENDING_BACKLOG")
         status = "PASS" if not reasons else "HOLD"
         return StabilityGateReport(
             status=status,
