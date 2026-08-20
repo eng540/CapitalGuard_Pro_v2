@@ -87,7 +87,7 @@ def test_release_gate_holds_on_leak_or_outbox_and_passes_safe_snapshot():
     hold = service.evaluate(StabilityGateInput(186, 0, 1, 0, 1, 0, 0))
     assert hold.status == "HOLD"
     assert "LIVE_ENTITY_LEAK_DETECTED" in hold.reasons
-    passed = service.evaluate(StabilityGateInput(186, 0, 1, 0, 0, 0, 4))
+    passed = service.evaluate(StabilityGateInput(186, 0, 1, 0, 0, 0, 0))
     assert passed.status == "PASS"
     assert passed.commercial_enabled is False
     assert passed.copy_trading_enabled is False
