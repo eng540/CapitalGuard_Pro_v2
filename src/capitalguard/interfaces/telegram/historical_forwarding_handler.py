@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from datetime import timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from telegram import Update
@@ -13,6 +13,7 @@ from capitalguard.application.services.frictionless_ingestion_service import (
 )
 from capitalguard.application.services.historical_parser_service import HistoricalParserService
 from capitalguard.application.services.parsing_service import ParsingService
+from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.historical_forwarding_service import (
     ForwardedMessageInput,
     HistoricalForwardingService,
@@ -203,10 +204,37 @@ async def direct_historical_forward_handler(
         requested_by_user_id=db_user.id,
         existing_batch_id=context.user_data.get(AUTO_BATCH_KEY),
     )
+    forwarded_input = _forwarded_input(message, user_id=db_user.id, details=details)
+    parsed_payload = None
+    current_price = None
+    market_data_available = False
+    market_snapshot_time = None
+    if forwarded_input.raw_text:
+        parser = HistoricalParserService(ParsingService(ParsingRepository))
+        parsed = parser.parse(forwarded_input.raw_text)
+        parsed_payload = parsed.data or {}
+        source_time = forwarded_input.source_message_timestamp
+        age_seconds = (
+            max(0, int((datetime.now(timezone.utc) - source_time).total_seconds()))
+            if source_time
+            else None
+        )
+        if parsed.parse_status == "PARSED" and parsed_payload.get("asset") and age_seconds is not None and age_seconds <= 180:
+            current_price = await PriceService().get_cached_price(
+                str(parsed_payload["asset"]),
+                "Futures",
+                force_refresh=True,
+            )
+            market_data_available = current_price is not None
+            market_snapshot_time = datetime.now(timezone.utc)
     receipt = service.stage_direct_message(
         db_session,
         batch_id=batch.id,
-        message=_forwarded_input(message, user_id=db_user.id, details=details),
+        message=forwarded_input,
+        parsed_payload=parsed_payload,
+        current_price=current_price,
+        market_data_available=market_data_available,
+        market_snapshot_time=market_snapshot_time,
     )
     context.user_data[AUTO_BATCH_KEY] = batch.id
 

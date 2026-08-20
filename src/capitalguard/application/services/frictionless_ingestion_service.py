@@ -188,7 +188,15 @@ class FrictionlessIngestionService:
             return None
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
-    def temporal_metadata_for_message(self, message: ForwardedMessageInput) -> dict[str, Any]:
+    def temporal_metadata_for_message(
+        self,
+        message: ForwardedMessageInput,
+        *,
+        parsed_payload: dict[str, Any] | None = None,
+        current_price: Any = None,
+        market_data_available: bool = False,
+        market_snapshot_time: datetime | None = None,
+    ) -> dict[str, Any]:
         relation_name, event_kind = self._event_relation(message.raw_text)
         metadata = dict(message.metadata or {})
         received_time = self._metadata_time(metadata, "receiver_date") or datetime.now(timezone.utc)
@@ -204,11 +212,14 @@ class FrictionlessIngestionService:
             source_message_revision=message.source_message_revision,
         )
         relation = relation_name
+        payload = parsed_payload or {}
         plan = self.forward_router.plan(
             temporal=temporal,
+            parsed_payload=payload,
+            current_price=current_price,
             event_kind=event_kind,
             timeline_relation=relation,
-            market_data_available=False,
+            market_data_available=market_data_available,
             edited_after_market=bool(
                 temporal.edit_time
                 and temporal.event_time
@@ -227,6 +238,11 @@ class FrictionlessIngestionService:
             "market_as_of": temporal.effective_market_as_of.isoformat()
             if temporal.effective_market_as_of
             else None,
+            "market_snapshot": {
+                "available": bool(market_data_available and current_price is not None),
+                "current_price": str(current_price) if current_price is not None else None,
+                "captured_at": (market_snapshot_time or datetime.now(timezone.utc)).isoformat(),
+            },
         }
 
     def record_temporal_decision(
@@ -282,6 +298,7 @@ class FrictionlessIngestionService:
             metadata_json={
                 "event_kind": temporal_metadata.get("event_kind"),
                 "market_as_of": temporal_metadata.get("market_as_of"),
+                "market_snapshot": temporal_metadata.get("market_snapshot"),
                 "source_origin_type": message.source_origin_type,
             },
         )
@@ -295,6 +312,10 @@ class FrictionlessIngestionService:
         *,
         batch_id: int,
         message: ForwardedMessageInput,
+        parsed_payload: dict[str, Any] | None = None,
+        current_price: Any = None,
+        market_data_available: bool = False,
+        market_snapshot_time: datetime | None = None,
     ):
         batch = session.get(HistoricalImportBatch, batch_id)
         if batch is None:
@@ -302,7 +323,13 @@ class FrictionlessIngestionService:
         metadata = dict(batch.metadata_json or {})
         metadata["expected_source_chat_id"] = metadata.get("source_chat_id")
         metadata["max_records"] = metadata.get("max_records", 500)
-        temporal_metadata = self.temporal_metadata_for_message(message)
+        temporal_metadata = self.temporal_metadata_for_message(
+            message,
+            parsed_payload=parsed_payload,
+            current_price=current_price,
+            market_data_available=market_data_available,
+            market_snapshot_time=market_snapshot_time,
+        )
         metadata.update(temporal_metadata)
         message = replace(message, metadata={**(message.metadata or {}), **metadata})
         batch.metadata_json = metadata
