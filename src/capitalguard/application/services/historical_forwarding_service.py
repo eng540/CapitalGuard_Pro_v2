@@ -49,6 +49,15 @@ class HistoricalForwardingService:
         self.signal_service = signal_service or HistoricalSignalService()
 
     @staticmethod
+    def _normalize_chat_id(value: Any) -> int | None:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _utc(value: datetime | None) -> datetime | None:
         if value is None:
             return None
@@ -73,8 +82,9 @@ class HistoricalForwardingService:
     ) -> HistoricalImportBatch:
         self._validate_positive(channel_catalog_id, "channel_catalog_id")
         self._validate_positive(requested_by_user_id, "requested_by_user_id")
-        if not isinstance(expected_source_chat_id, int) or expected_source_chat_id == 0:
-            raise HistoricalSignalValidationError("expected_source_chat_id must be non-zero")
+        expected_source_chat_id = self._normalize_chat_id(expected_source_chat_id)
+        if expected_source_chat_id in (None, 0):
+            raise HistoricalSignalValidationError("expected_source_chat_id must be a non-zero integer")
         if mode not in {"SINGLE", "BATCH"}:
             raise HistoricalSignalValidationError("Unsupported forwarding mode")
         if not 1 <= max_records <= 5000:
@@ -111,7 +121,10 @@ class HistoricalForwardingService:
         self._validate_positive(message.receiver_chat_id, "receiver_chat_id")
         self._validate_positive(message.receiver_message_id, "receiver_message_id")
         metadata = dict(message.metadata or {})
-        expected_source_chat_id = (batch.metadata_json or {}).get("expected_source_chat_id")
+        expected_source_chat_id = self._normalize_chat_id(
+            (batch.metadata_json or {}).get("expected_source_chat_id")
+        )
+        source_chat_id = self._normalize_chat_id(message.source_chat_id)
         max_records = int((batch.metadata_json or {}).get("max_records") or 500)
 
         existing_receiver = session.execute(
@@ -134,10 +147,10 @@ class HistoricalForwardingService:
             select(HistoricalForwardReceipt).where(HistoricalForwardReceipt.batch_id == batch_id)
         ).scalars().all()]) >= max_records:
             raise HistoricalSignalValidationError("Forwarding batch max_records exceeded")
-        if origin_type not in self.VALID_ORIGIN_TYPES or message.source_chat_id is None or message.source_message_id is None:
+        if origin_type not in self.VALID_ORIGIN_TYPES or source_chat_id is None or message.source_message_id is None:
             validation_status = "REJECTED_ORIGIN"
             rejection_reason = "Missing or hidden channel origin"
-        elif message.source_chat_id != expected_source_chat_id:
+        elif expected_source_chat_id is None or source_chat_id != expected_source_chat_id:
             validation_status = "REJECTED_CHANNEL"
             rejection_reason = "Forwarded source channel is not allow-listed"
         elif source_timestamp is None:
@@ -148,10 +161,11 @@ class HistoricalForwardingService:
             rejection_reason = "Source message timestamp is in the future"
 
         existing_source = None
-        if message.source_chat_id is not None and message.source_message_id is not None:
+        if source_chat_id is not None and message.source_message_id is not None:
             existing_source = session.execute(
                 select(HistoricalForwardReceipt).where(
-                    HistoricalForwardReceipt.source_chat_id == message.source_chat_id,
+                    HistoricalForwardReceipt.batch_id == batch_id,
+                    HistoricalForwardReceipt.source_chat_id == source_chat_id,
                     HistoricalForwardReceipt.source_message_id == message.source_message_id,
                     HistoricalForwardReceipt.source_message_revision == source_revision,
                 )
@@ -164,7 +178,7 @@ class HistoricalForwardingService:
             forwarding_user_id=message.forwarding_user_id,
             receiver_chat_id=message.receiver_chat_id,
             receiver_message_id=message.receiver_message_id,
-            source_chat_id=message.source_chat_id,
+            source_chat_id=source_chat_id,
             source_message_id=message.source_message_id,
             source_message_revision=source_revision,
             source_origin_type=origin_type,
