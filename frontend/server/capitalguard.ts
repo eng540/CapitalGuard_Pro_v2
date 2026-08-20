@@ -2,7 +2,7 @@ import { z } from "zod";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreGetPrice, coreGetSignal, coreGetTmaPortfolio, probeCoreHealth } from "./core-adapter";
+import { coreGetPrice, coreGetSignal, coreGetTmaPortfolio, coreGetTraderReadModel, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -36,6 +36,13 @@ function coreOwnedSnapshot() {
   return { connection: "core_api_required", portfolio: null, trades: [], recommendations: [], analyst: null, historical: [] };
 }
 
+export function telegramIdFromWebSession(openId: string): number {
+  const match = /^telegram:(\d+)$/.exec(openId);
+  const telegramId = match ? Number(match[1]) : Number.NaN;
+  if (!Number.isSafeInteger(telegramId) || telegramId <= 0) throw new Error("CAPITALGUARD_TMA_SESSION_REQUIRED");
+  return telegramId;
+}
+
 export const capitalguardRouter = router({
   workspace: protectedProcedure.query(() => coreOwnedSnapshot()),
   recommendations: protectedProcedure.query(() => []),
@@ -49,6 +56,7 @@ export const capitalguardRouter = router({
     price: protectedProcedure.input(z.object({ symbol: z.string().trim().min(3).max(24).regex(/^[A-Z0-9]+$/) })).query(({ input }) => coreGetPrice(input.symbol)),
     signal: protectedProcedure.input(z.object({ recId: z.number().int().positive() })).query(({ input }) => coreGetSignal(input.recId)),
     tmaPortfolio: protectedProcedure.input(z.object({ initData: z.string().trim().min(20).max(10_000) })).query(({ input }) => coreGetTmaPortfolio(input.initData)),
+    traderSnapshot: protectedProcedure.query(({ ctx }) => coreGetTraderReadModel(telegramIdFromWebSession(ctx.user.openId))),
   }),
   riskPlan: protectedProcedure.input(riskInput).mutation(({ input }) => calculateRiskPlan(input)),
   trader: router({ portfolio: traderProcedure.query(() => coreOwnedSnapshot()) }),

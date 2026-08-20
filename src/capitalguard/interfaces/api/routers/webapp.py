@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import List, Optional, Dict, Any
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Header
 from pydantic import BaseModel
 
 from capitalguard.config import settings
@@ -67,6 +67,49 @@ def validate_telegram_data(init_data: str, bot_token: str) -> dict:
     except Exception as e:
         log.warning(f"Auth Error: {e}")
         raise HTTPException(status_code=403, detail="Authentication Failed")
+
+
+def require_core_service_key(authorization: str | None = Header(default=None)) -> None:
+    """Authorize server-to-server Web reads; never expose this key to a browser."""
+    configured_key = settings.API_KEY
+    if not configured_key:
+        raise HTTPException(status_code=503, detail="Core service API key is not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Core service authorization required")
+    supplied_key = authorization.removeprefix("Bearer ").strip()
+    if not supplied_key or not hmac.compare_digest(supplied_key, configured_key):
+        raise HTTPException(status_code=403, detail="Core service authorization rejected")
+
+
+def _serialize_live_position(entity: Any, live_price: float | None) -> dict[str, Any]:
+    asset = getattr(getattr(entity, "asset", None), "value", getattr(entity, "asset", ""))
+    side = getattr(getattr(entity, "side", None), "value", getattr(entity, "side", ""))
+    entry = _to_decimal(getattr(getattr(entity, "entry", None), "value", 0))
+    stop_loss = _to_decimal(getattr(getattr(entity, "stop_loss", None), "value", 0))
+    targets = []
+    for target in getattr(getattr(entity, "targets", None), "values", []) or []:
+        target_price = _to_decimal(getattr(target, "price", 0))
+        targets.append({
+            "price": float(target_price),
+            "percent": getattr(target, "close_percent", 0),
+            "hit": (side == "LONG" and live_price is not None and live_price >= float(target_price))
+            or (side == "SHORT" and live_price is not None and live_price <= float(target_price)),
+        })
+    created_at = getattr(entity, "created_at", None)
+    return {
+        "id": int(getattr(entity, "id")),
+        "asset": str(asset),
+        "side": str(side),
+        "market": str(getattr(entity, "market", "Futures")),
+        "entry": float(entry),
+        "stop_loss": float(stop_loss),
+        "live_price": live_price,
+        "pnl_live_pct": _pct(entry, live_price, side) if live_price is not None else 0.0,
+        "status": str(getattr(entity, "unified_status", "WATCHLIST")),
+        "source_type": "TRADER_LOG" if getattr(entity, "is_user_trade", False) else "ANALYST_RECOMMENDATION",
+        "targets": targets,
+        "created_at": created_at.isoformat() if created_at else None,
+    }
 
 # --- Endpoints ---
 
@@ -164,6 +207,57 @@ async def get_user_portfolio(initData: str, request: Request):
     except Exception as e:
         log.error(f"Portfolio Error: {e}")
         return {"ok": False, "error": str(e)}
+
+
+@router.get("/read-models/trader/{telegram_id}")
+async def get_trader_read_model(telegram_id: int, request: Request):
+    """Return a versioned, Core-owned read model for one authenticated Web user.
+
+    The actual service authorization is evaluated explicitly to keep the endpoint
+    inaccessible from browsers while allowing Web to keep its own session model.
+    """
+    require_core_service_key(request.headers.get("authorization"))
+    trade_service = request.app.state.services.get("trade_service") if request.app.state.services else None
+    price_service = request.app.state.services.get("price_service") if request.app.state.services else None
+    performance_service = request.app.state.services.get("performance_service") if request.app.state.services else None
+    if not trade_service or not price_service or not performance_service:
+        raise HTTPException(status_code=503, detail="Core read model is unavailable")
+
+    with session_scope() as session:
+        user = UserRepository(session).find_by_telegram_id(telegram_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Trader identity was not found")
+
+        positions = trade_service.get_open_positions_for_user(session, str(telegram_id))
+        price_requests = [
+            price_service.get_cached_price(
+                getattr(getattr(position, "asset", None), "value", ""),
+                getattr(position, "market", "Futures"),
+            )
+            for position in positions
+        ]
+        prices = await asyncio.gather(*price_requests, return_exceptions=True)
+        serialized_positions = [
+            _serialize_live_position(position, price if isinstance(price, (int, float)) else None)
+            for position, price in zip(positions, prices)
+        ]
+        performance = performance_service.get_trader_performance_report(session, user.id)
+        funnel = performance_service.get_trader_funnel_metrics(session, user.id)
+        return {
+            "ok": True,
+            "schema_version": "2026-08-20.1",
+            "as_of": datetime.utcnow().isoformat() + "Z",
+            "user": {
+                "telegram_id": telegram_id,
+                "role": getattr(getattr(user, "user_type", None), "value", "TRADER"),
+            },
+            "portfolio": {
+                "open_position_count": len(serialized_positions),
+                "positions": serialized_positions,
+            },
+            "performance": performance,
+            "funnel": funnel,
+        }
 
 @router.get("/performance")
 async def get_user_performance(initData: str, request: Request):

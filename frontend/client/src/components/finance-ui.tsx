@@ -33,6 +33,9 @@ export function StatusPill({ value }: { value: string }) {
   return <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ring-1", state.className)}>{state.icon}{value.replaceAll("_", " ")}</span>;
 }
 
-export function PreviewNotice() {
-  return <div className="mb-6 flex items-center gap-3 rounded-2xl border border-cyan-400/15 bg-cyan-400/[.06] px-4 py-3 text-xs text-cyan-100"><Sparkles className="h-4 w-4 shrink-0 text-cyan-300" /><span>هذه معاينة واجهة. عند ربط CapitalGuard Core ستظهر بياناتك المعزولة فعليًا بدل بيانات العرض.</span></div>;
+export function PreviewNotice({ isLive = false }: { isLive?: boolean }) {
+  const message = isLive
+    ? "هذه قراءة حية من CapitalGuard Core. لا تحفظ المنصة أي توصيات أو PnL محلياً."
+    : "هذه معاينة واجهة. عند ربط CapitalGuard Core ستظهر بياناتك المعزولة فعليًا بدل بيانات العرض.";
+  return <div className="mb-6 flex items-center gap-3 rounded-2xl border border-cyan-400/15 bg-cyan-400/[.06] px-4 py-3 text-xs text-cyan-100"><Sparkles className="h-4 w-4 shrink-0 text-cyan-300" /><span>{message}</span></div>;
 }

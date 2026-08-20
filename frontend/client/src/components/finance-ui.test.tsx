@@ -1,7 +1,7 @@
 import React from "react";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { KpiCard, StatusPill } from "./finance-ui";
+import { KpiCard, PreviewNotice, StatusPill } from "./finance-ui";
 
 describe("CapitalGuard finance UI", () => {
   it("renders a financial KPI without hiding its numeric context", () => {
@@ -14,5 +14,10 @@ describe("CapitalGuard finance UI", () => {
   it("shows a readable temporal safety state", () => {
     render(<StatusPill value="OWNER_REVIEW_REQUIRED" />);
     expect(screen.getByText("OWNER REVIEW REQUIRED")).toBeTruthy();
+  });
+
+  it("distinguishes a live Core read model from preview data", () => {
+    render(<PreviewNotice isLive />);
+    expect(screen.getByText(/قراءة حية من CapitalGuard Core/)).toBeTruthy();
   });
 });

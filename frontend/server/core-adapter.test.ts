@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreGetPrice, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreGetPrice, coreGetTraderReadModel, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -39,5 +39,31 @@ describe("CapitalGuard Core adapter", () => {
       CAPITALGUARD_CORE_BASE_URL: "https://core.example",
       CAPITALGUARD_CORE_API_KEY: "private-service-key",
     })).resolves.toMatchObject({ ok: true });
+  });
+
+  it("requests a trader read model only through the server-side Core adapter", async () => {
+    let requestUrl = "";
+    let authorization = "";
+    const fakeFetch = async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      authorization = String((init?.headers as Record<string, string>).Authorization);
+      return new Response(JSON.stringify({
+        ok: true,
+        schema_version: "2026-08-20.1",
+        as_of: "2026-08-20T00:00:00Z",
+        user: { telegram_id: 123456, role: "TRADER" },
+        portfolio: { open_position_count: 0, positions: [] },
+        performance: {},
+        funnel: {},
+      }), { status: 200 });
+    };
+    const result = await coreGetTraderReadModel(123456, fakeFetch as typeof fetch, {
+      CAPITALGUARD_CORE_BASE_URL: "https://core.example",
+      CAPITALGUARD_CORE_API_KEY: "private-service-key",
+    });
+    expect(requestUrl).toBe("https://core.example/api/webapp/read-models/trader/123456");
+    expect(authorization).toBe("Bearer private-service-key");
+    expect(result.portfolio.open_position_count).toBe(0);
+    await expect(coreGetTraderReadModel(0, fakeFetch as typeof fetch)).rejects.toThrow("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
   });
 });
