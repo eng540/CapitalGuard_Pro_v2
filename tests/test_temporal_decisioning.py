@@ -114,6 +114,32 @@ def test_frictionless_temporal_metadata_classifies_close_as_timeline_event():
     assert metadata["temporal_decision"]["reason_codes"] == ["TERMINAL_EVENT", "APPEND_ONLY_TIMELINE"]
 
 
+def test_frictionless_temporal_metadata_marks_fresh_signal_live_eligible_with_snapshot():
+    service = FrictionlessIngestionService()
+    message = ForwardedMessageInput(
+        receiver_chat_id=10,
+        receiver_message_id=22,
+        forwarding_user_id=1,
+        source_chat_id=-100123,
+        source_message_id=79,
+        source_origin_type="CHANNEL",
+        source_message_timestamp=BASE,
+        raw_text="#BTCUSDT LONG Entry 70000 Stop 69000 TP1 71000",
+        metadata={"receiver_date": (BASE + timedelta(seconds=1)).isoformat()},
+    )
+    metadata = service.temporal_metadata_for_message(
+        message,
+        parsed_payload=PAYLOAD,
+        current_price="70050",
+        market_data_available=True,
+        market_snapshot_time=BASE + timedelta(seconds=1),
+    )
+    assert metadata["temporal_decision"]["mode"] == "LIVE_ELIGIBLE"
+    assert metadata["temporal_decision"]["route"] == "LIVE_REVIEW"
+    assert metadata["temporal_decision"]["price_validity"] is not None
+    assert metadata["market_snapshot"]["available"] is True
+
+
 def test_frictionless_temporal_metadata_routes_initial_forward_to_historical_without_price():
     service = FrictionlessIngestionService()
     message = ForwardedMessageInput(
