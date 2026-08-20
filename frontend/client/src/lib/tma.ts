@@ -4,6 +4,7 @@ type TelegramWebApp = {
   colorScheme?: "light" | "dark";
   expand?: () => void;
   ready?: () => void;
+  close?: () => void;
 };
 
 declare global {

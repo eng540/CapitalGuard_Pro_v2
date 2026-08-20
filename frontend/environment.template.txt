@@ -4,8 +4,11 @@ DATABASE_URL=postgresql://WEB_USER:WEB_PASSWORD@WEB_POSTGRES_HOST:5432/capitalgu
 JWT_SECRET=REPLACE_WITH_A_LONG_RANDOM_SECRET
 CAPITALGUARD_CORE_BASE_URL=https://capitalguardprov2-production-b4ea.up.railway.app
 CAPITALGUARD_CORE_API_KEY=REPLACE_WITH_CORE_SERVICE_KEY
-VITE_APP_ID=REPLACE_WITH_OAUTH_APP_ID
-OAUTH_SERVER_URL=https://api.manus.im
-VITE_OAUTH_PORTAL_URL=https://manus.im
+CAPITALGUARD_WEB_APP_ID=capitalguard-web
 VITE_APP_TITLE=CapitalGuard Web SaaS
 VITE_APP_LOGO=
+
+# Telegram-first: do not set VITE_APP_ID, OAUTH_SERVER_URL, or VITE_OAUTH_PORTAL_URL
+# on Railway. Telegram initData is verified server-to-server by Core, which owns
+# the bot token. No Telegram Bot Token belongs in this service.
+# CAPITALGUARD_ENABLE_LEGACY_OAUTH=false

@@ -58,3 +58,16 @@ export async function coreGetTmaPortfolio(initData: string, fetchImpl: typeof fe
   if (!initData.trim()) throw new Error("CAPITALGUARD_TMA_INITDATA_REQUIRED");
   return coreReadOnlyFetch(query("/api/webapp/portfolio", { initData }), {}, fetchImpl, env);
 }
+
+/**
+ * Core owns the Telegram bot secret and validates the initData HMAC. Web never
+ * receives or stores a bot token; it accepts identity data only after this
+ * server-to-server check succeeds.
+ */
+export async function coreVerifyTelegramInitData(initData: string, fetchImpl: typeof fetch = fetch, env = process.env) {
+  const payload = await coreGetTmaPortfolio(initData, fetchImpl, env);
+  if (!payload || typeof payload !== "object" || (payload as { ok?: unknown }).ok !== true) {
+    throw new Error("CAPITALGUARD_TMA_INITDATA_INVALID");
+  }
+  return payload as { ok: true } & Record<string, unknown>;
+}
