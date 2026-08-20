@@ -33,6 +33,6 @@ The Web service calls Core from the server only. The browser never receives `CAP
 
 ## Vercel deployment
 
-Vercel support is included through `api/[...path].ts` and `vercel.json`. The Vite client is generated into `dist/public`, while the Express/tRPC application is exposed through a Node 22 serverless Function. Import the repository in Vercel, set the **Root Directory** to `frontend`, and use the environment variables in `.env.example`.
+Vercel support is included through `api/[...path].ts` and `vercel.json`. The Vite client is generated into `dist/public`, while the Express/tRPC application is exposed through a Node 22 serverless Function. The apparently relative `../dist/public` line printed by Vite is relative to Vite's `client/` root; it resolves to `frontend/dist/public`, matching `vercel.json`. Import the repository in Vercel, set the **Root Directory** to `frontend`, and use the environment variables in `.env.example`.
 
 The rewrite sends `/api/*` traffic to the serverless handler so the protected tRPC layer remains server-side. Do not configure this deployment as a static-only Vite site: that would remove the API, authentication, and Core Adapter layers.
