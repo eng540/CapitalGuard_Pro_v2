@@ -64,6 +64,15 @@ def test_owner_command_surface_requires_the_core_service_key(client: TestClient,
     assert response.status_code == 401
 
 
+def test_operations_feed_requires_the_core_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "test-service-key")
+    response = client.get("/api/webapp/owner/operations-feed", params={"actor_telegram_id": 123456})
+
+    assert response.status_code == 401
+
+
 def test_removed_legacy_recommendations_surface_is_not_accidentally_reintroduced(client: TestClient):
     response = client.get("/recommendations")
     assert response.status_code == 404

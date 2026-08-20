@@ -38,6 +38,8 @@ export type CoreOwnerReviewBatch = {
   created_at: string | null;
   owner_review: { approved?: boolean; note?: string; reviewed_at?: string } | null;
 };
+export type CoreOperationsEvent = { id: string; category: "PUBLICATION" | "LIFECYCLE" | "AUDIT"; code: string; severity: "info" | "warning" | "critical"; record_ref: string; occurred_at: string };
+export type CoreOperationsFeed = { events: CoreOperationsEvent[]; summary: { critical: number; warning: number; total: number } };
 
 export function getCoreConfig(env = process.env): CoreConfig {
   const rawUrl = env.CAPITALGUARD_CORE_BASE_URL?.trim();
@@ -116,6 +118,13 @@ export async function coreListOwnerReviewBatches(actorTelegramId: number, fetchI
     throw new Error("CAPITALGUARD_CORE_OWNER_BATCHES_INVALID");
   }
   return (result as { batches: CoreOwnerReviewBatch[] }).batches;
+}
+
+export async function coreGetOperationsFeed(actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreOperationsFeed> {
+  if (!Number.isSafeInteger(actorTelegramId) || actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const result = await coreReadOnlyFetch(query("/api/webapp/owner/operations-feed", { actor_telegram_id: String(actorTelegramId) }), {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { events?: unknown }).events)) throw new Error("CAPITALGUARD_CORE_OPERATIONS_FEED_INVALID");
+  return result as CoreOperationsFeed;
 }
 
 export async function coreReviewHistoricalBatch(input: { actorTelegramId: number; batchId: number; approved: boolean; note?: string; idempotencyKey: string }, fetchImpl: typeof fetch = fetch, env = process.env) {
