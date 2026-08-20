@@ -11,6 +11,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, Conversation
 from capitalguard.application.services.frictionless_ingestion_service import (
     FrictionlessIngestionService,
 )
+from capitalguard.application.services.historical_parser_service import HistoricalParserService
 from capitalguard.application.services.historical_forwarding_service import (
     ForwardedMessageInput,
     HistoricalForwardingService,
@@ -94,8 +95,27 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         with session_scope() as session:
             preview = FrictionlessIngestionService().preview(session, batch_id=batch_id)
+            parser = HistoricalParserService()
+            parsed_count = 0
+            partial_count = 0
+            parsed_assets = []
+            for record in preview.manifest.get("records", []):
+                parsed = parser.parse(record.get("raw_text"))
+                if parsed.parse_status == "PARSED":
+                    parsed_count += 1
+                    asset = (parsed.data or {}).get("asset")
+                    if asset:
+                        parsed_assets.append(str(asset))
+                else:
+                    partial_count += 1
             batch = session.get(HistoricalImportBatch, batch_id)
             metadata = dict(batch.metadata_json or {}) if batch else {}
+            metadata["parser_preview"] = {
+                "parsed_count": parsed_count,
+                "partial_count": partial_count,
+                "assets": parsed_assets,
+                "replay_status": "REPLAY_PENDING" if parsed_count else "NOT_PARSED",
+            }
             metadata["intake_status"] = "DRY_RUN"
             metadata["auto_batch_finalized"] = True
             if batch:
@@ -111,6 +131,10 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 f"accepted={preview.accepted_records}\n"
                 f"rejected={preview.rejected_records}\n"
                 f"hidden_origin={preview.hidden_origin_records}\n"
+                f"parsed={parsed_count}\n"
+                f"partial_or_unparsed={partial_count}\n"
+                f"assets={', '.join(parsed_assets) or 'N/A'}\n"
+                f"replay_status={'REPLAY_PENDING' if parsed_count else 'NOT_PARSED'}\n"
                 "No live recommendation or trader position was created."
             )
         await context.bot.send_message(chat_id=chat_id, text=text)
