@@ -70,9 +70,18 @@ def test_frictionless_discovers_shadow_and_reuses_auto_batch(db_session):
         requested_by_user_id=reviewer.id,
         existing_batch_id=batch.id,
     )
+    second = service.stage_direct_message(
+        db_session,
+        batch_id=reused.id,
+        message=_message(reviewer.telegram_user_id, message_id=45),
+    )
+    preview = service.preview(db_session, batch_id=reused.id)
 
     assert receipt.validation_status == "STAGED"
     assert reused.id == batch.id
+    assert second.validation_status == "STAGED"
+    assert preview.total_records == 2
+    assert preview.accepted_records == 2
     assert db_session.scalar(select(HistoricalShadowChannel.sample_count).where(HistoricalShadowChannel.id == source.shadow_channel_id)) == 2
     assert db_session.query(Recommendation).count() == 0
     assert db_session.query(UserTrade).count() == 0
