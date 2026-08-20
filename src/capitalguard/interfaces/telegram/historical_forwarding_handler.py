@@ -12,6 +12,7 @@ from capitalguard.application.services.frictionless_ingestion_service import (
     FrictionlessIngestionService,
 )
 from capitalguard.application.services.historical_parser_service import HistoricalParserService
+from capitalguard.application.services.parsing_service import ParsingService
 from capitalguard.application.services.historical_forwarding_service import (
     ForwardedMessageInput,
     HistoricalForwardingService,
@@ -23,6 +24,7 @@ from capitalguard.infrastructure.db.models import (
     HistoricalShadowChannel,
     UserType,
 )
+from capitalguard.infrastructure.db.repository import ParsingRepository
 from capitalguard.infrastructure.db.uow import session_scope, uow_transaction
 from capitalguard.interfaces.telegram.admin_commands import _is_admin
 from capitalguard.interfaces.telegram.auth import require_active_user
@@ -95,7 +97,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         with session_scope() as session:
             preview = FrictionlessIngestionService().preview(session, batch_id=batch_id)
-            parser = HistoricalParserService()
+            parser = HistoricalParserService(ParsingService(ParsingRepository))
             parsed_count = 0
             partial_count = 0
             parsed_assets = []
