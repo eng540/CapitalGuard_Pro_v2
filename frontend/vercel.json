@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npx --yes pnpm@10.4.1 vercel-build",
+  "outputDirectory": "dist/public",
+  "functions": {
+    "api/[...path].ts": { "runtime": "nodejs22.x" }
+  }
+}
