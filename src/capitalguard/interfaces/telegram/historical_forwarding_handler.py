@@ -13,6 +13,7 @@ from capitalguard.application.services.frictionless_ingestion_service import (
 )
 from capitalguard.application.services.historical_parser_service import HistoricalParserService
 from capitalguard.application.services.historical_replay_gate_service import HistoricalReplayGateService
+from capitalguard.application.services.live_review_service import LiveReviewService
 from capitalguard.application.services.historical_owner_review_service import (
     HistoricalOwnerReviewError,
     HistoricalOwnerReviewService,
@@ -115,13 +116,19 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             financial_outcome_warnings = Counter()
             replay_gate_status = Counter()
             replay_gate_reasons = Counter()
+            review_actions_by_mode = {}
             replay_gate = HistoricalReplayGateService()
+            live_review = LiveReviewService()
             for record in preview.manifest.get("records", []):
                 temporal_decision = (record.get("metadata") or {}).get("temporal_decision") or {}
                 if temporal_decision.get("mode"):
                     temporal_modes[temporal_decision["mode"]] += 1
                 if temporal_decision.get("route"):
                     temporal_routes[temporal_decision["route"]] += 1
+                if temporal_decision.get("mode"):
+                    review_actions_by_mode[temporal_decision["mode"]] = list(
+                        live_review.prepare(temporal_decision).allowed_actions
+                    )
                 temporal_reasons.update(temporal_decision.get("reason_codes") or [])
                 if temporal_decision.get("age_seconds") is not None:
                     temporal_ages.append(temporal_decision["age_seconds"])
@@ -155,6 +162,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 "financial_outcome_warnings": dict(financial_outcome_warnings),
                 "replay_gate_status": dict(replay_gate_status),
                 "replay_gate_reasons": dict(replay_gate_reasons),
+                "review_actions_by_mode": review_actions_by_mode,
             }
             metadata["temporal_summary"] = {
                 "modes": dict(temporal_modes),
@@ -189,6 +197,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 f"financial_warnings={', '.join(financial_outcome_warnings.keys()) or 'N/A'}\n"
                 f"replay_gate={dict(replay_gate_status) or 'NOT_ASSESSED'}\n"
                 f"replay_gate_reasons={', '.join(replay_gate_reasons.keys()) or 'N/A'}\n"
+                f"review_actions={review_actions_by_mode or 'N/A'}\n"
                 f"replay_status={'REPLAY_PENDING' if parsed_count else 'NOT_PARSED'}\n"
                 "No live recommendation or trader position was created."
             )
