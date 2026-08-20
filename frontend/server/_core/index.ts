@@ -14,6 +14,11 @@ export function createCapitalGuardApp() {
   const app = express();
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // Liveness only: Railway can verify that Web is running without needing a
+  // user session, Core key, or any financial data.
+  app.get("/health", (_req, res) => {
+    res.status(200).json({ status: "ok", service: "capitalguard-web" });
+  });
   registerStorageProxy(app);
   // Railway runs Telegram-first authentication. Legacy OAuth remains opt-in for
   // controlled preview environments only and is never enabled by a placeholder.
