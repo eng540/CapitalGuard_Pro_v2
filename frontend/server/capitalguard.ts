@@ -37,6 +37,17 @@ function coreOwnedSnapshot() {
   return { connection: "core_api_required", portfolio: null, trades: [], recommendations: [], analyst: null, historical: [] };
 }
 
+async function adminOverview() {
+  let connection: "ready" | "degraded" = "degraded";
+  try {
+    await probeCoreHealth();
+    connection = "ready";
+  } catch (error) {
+    console.warn("[CapitalGuard Admin] Core health unavailable", error instanceof Error ? error.message : "unknown");
+  }
+  return { connection, users: await getWebUserCount(), channels: 0, pendingReviews: 0 };
+}
+
 export function telegramIdFromWebSession(openId: string): number {
   const match = /^telegram:(\d+)$/.exec(openId);
   const telegramId = match ? Number(match[1]) : Number.NaN;
@@ -63,8 +74,15 @@ export const capitalguardRouter = router({
   trader: router({ portfolio: traderProcedure.query(() => coreOwnedSnapshot()) }),
   analyst: router({ dashboard: analystProcedure.query(() => ({ profile: null, recommendations: [] })) }),
   admin: router({
-    overview: adminProcedure.query(async () => ({ connection: "web_db", users: await getWebUserCount(), channels: 0, pendingReviews: 0 })),
-    historicalReviewBatches: adminProcedure.query(({ ctx }) => coreListOwnerReviewBatches(telegramIdFromWebSession(ctx.user.openId))),
+    overview: adminProcedure.query(adminOverview),
+    historicalReviewBatches: adminProcedure.query(async ({ ctx }) => {
+      try {
+        return await coreListOwnerReviewBatches(telegramIdFromWebSession(ctx.user.openId));
+      } catch (error) {
+        console.warn("[CapitalGuard Admin] Owner review queue unavailable", error instanceof Error ? error.message : "unknown");
+        throw new Error("CAPITALGUARD_OWNER_REVIEW_QUEUE_UNAVAILABLE");
+      }
+    }),
     reviewHistoricalBatch: adminProcedure.input(z.object({ batchId: z.number().int().positive(), approved: z.boolean(), note: z.string().trim().max(1_000).optional() })).mutation(({ ctx, input }) => coreReviewHistoricalBatch({
       actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
       batchId: input.batchId,
