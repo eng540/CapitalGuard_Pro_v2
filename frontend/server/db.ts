@@ -1,92 +1,70 @@
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
 import { InsertUser, users } from "../drizzle/schema";
-import { ENV } from './_core/env';
+import { ENV } from "./_core/env";
 
-let _db: ReturnType<typeof drizzle> | null = null;
+let pool: Pool | null = null;
+let db: ReturnType<typeof drizzle> | null = null;
 
-// Lazily create the drizzle instance so local tooling can run without a DB.
+/** Web-owned PostgreSQL only. Never point DATABASE_URL to the Core PostgreSQL service. */
 export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
+  if (!db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5, idleTimeoutMillis: 30_000 });
+      db = drizzle(pool);
     } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
+      console.warn("[Web Database] Failed to create PostgreSQL pool:", error);
+      pool = null;
+      db = null;
     }
   }
-  return _db;
+  return db;
+}
+
+function normalizedRole(role: InsertUser["role"] | "user" | undefined): "trader" | "analyst" | "admin" {
+  return role === "analyst" || role === "admin" ? role : "trader";
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
-
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
+  if (!user.openId) throw new Error("User openId is required for upsert");
+  const database = await getDb();
+  if (!database) {
+    console.warn("[Web Database] Cannot upsert user: database not available");
     return;
   }
-
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
+  const role = user.openId === ENV.ownerOpenId ? "admin" : normalizedRole(user.role);
+  const now = new Date();
+  await database.insert(users).values({
+    openId: user.openId,
+    name: user.name ?? null,
+    email: user.email ?? null,
+    loginMethod: user.loginMethod ?? null,
+    role,
+    lastSignedIn: user.lastSignedIn ?? now,
+    updatedAt: now,
+  }).onConflictDoUpdate({
+    target: users.openId,
+    set: {
+      name: user.name ?? null,
+      email: user.email ?? null,
+      loginMethod: user.loginMethod ?? null,
+      role,
+      lastSignedIn: now,
+      updatedAt: now,
+    },
+  });
 }
 
 export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
-  return result.length > 0 ? result[0] : undefined;
+  const database = await getDb();
+  if (!database) return undefined;
+  const result = await database.select().from(users).where(eq(users.openId, openId)).limit(1);
+  return result[0];
 }
 
-// TODO: add feature queries here as your schema grows.
+export async function getWebUserCount() {
+  const database = await getDb();
+  if (!database) return 0;
+  return (await database.select().from(users)).length;
+}

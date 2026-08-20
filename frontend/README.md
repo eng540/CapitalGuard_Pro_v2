@@ -8,10 +8,12 @@ Create a **second Railway service** from this repository and set its **Root Dire
 
 ```text
 npx --yes pnpm@10.4.1 install --frozen-lockfile && npx --yes pnpm@10.4.1 build
-node dist/index.js
+npx --yes pnpm@10.4.1 exec drizzle-kit migrate && node dist/index.js
 ```
 
 The pinned `npx` invocation intentionally avoids a Corepack signature issue observed during the verified export build. The runtime starts the already-built Node entrypoint directly and does not require package installation on every request.
+
+The Railway start command runs `db:migrate` only; it never generates a schema at runtime. Every migration is reviewed and committed under `frontend/drizzle/` before deployment. Use one replica during the initial migration deployment.
 
 The application already binds to Railway's assigned `PORT`; no custom Dockerfile is needed for this ordinary Node service. Do **not** replace the existing Core service or deploy this directory over the Telegram Bot service.
 
@@ -19,7 +21,7 @@ The application already binds to Railway's assigned `PORT`; no custom Dockerfile
 
 | Variable | Scope | Purpose |
 |---|---|---|
-| `DATABASE_URL` | Server only | Dedicated MySQL/TiDB database for Web SaaS users, roles, UI projections, and audit views. It must not be the Core PostgreSQL connection string. |
+| `DATABASE_URL` | Server only | Dedicated PostgreSQL database for Web SaaS users, roles, preferences, and audit views. It must not be the Core PostgreSQL connection string. |
 | `JWT_SECRET` | Server only | Signs Web SaaS sessions. Use a unique high-entropy secret. |
 | `CAPITALGUARD_CORE_BASE_URL` | Server only | Base URL of the existing Core API, for example `https://capitalguardprov2-production-b4ea.up.railway.app`. |
 | `CAPITALGUARD_CORE_API_KEY` | Server only | A narrow service key used only by the server-side read adapter. Never use a `VITE_` prefix. |
