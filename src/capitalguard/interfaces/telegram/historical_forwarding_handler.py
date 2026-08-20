@@ -101,7 +101,19 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             parsed_count = 0
             partial_count = 0
             parsed_assets = []
+            temporal_modes = Counter()
+            temporal_routes = Counter()
+            temporal_reasons = Counter()
+            temporal_ages = []
             for record in preview.manifest.get("records", []):
+                temporal_decision = (record.get("metadata") or {}).get("temporal_decision") or {}
+                if temporal_decision.get("mode"):
+                    temporal_modes[temporal_decision["mode"]] += 1
+                if temporal_decision.get("route"):
+                    temporal_routes[temporal_decision["route"]] += 1
+                temporal_reasons.update(temporal_decision.get("reason_codes") or [])
+                if temporal_decision.get("age_seconds") is not None:
+                    temporal_ages.append(temporal_decision["age_seconds"])
                 parsed = parser.parse(record.get("raw_text"))
                 if parsed.parse_status == "PARSED":
                     parsed_count += 1
@@ -117,6 +129,13 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 "partial_count": partial_count,
                 "assets": parsed_assets,
                 "replay_status": "REPLAY_PENDING" if parsed_count else "NOT_PARSED",
+            }
+            metadata["temporal_summary"] = {
+                "modes": dict(temporal_modes),
+                "routes": dict(temporal_routes),
+                "reason_codes": dict(temporal_reasons),
+                "min_age_seconds": min(temporal_ages) if temporal_ages else None,
+                "max_age_seconds": max(temporal_ages) if temporal_ages else None,
             }
             metadata["intake_status"] = "DRY_RUN"
             metadata["auto_batch_finalized"] = True
@@ -136,6 +155,10 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 f"parsed={parsed_count}\n"
                 f"partial_or_unparsed={partial_count}\n"
                 f"assets={', '.join(parsed_assets) or 'N/A'}\n"
+                f"temporal_mode={dict(temporal_modes) or {'UNKNOWN': preview.total_records}}\n"
+                f"temporal_route={dict(temporal_routes) or {'HISTORICAL_CANDIDATE': preview.total_records}}\n"
+                f"temporal_age_seconds={min(temporal_ages) if temporal_ages else 'N/A'}..{max(temporal_ages) if temporal_ages else 'N/A'}\n"
+                f"temporal_reasons={', '.join(temporal_reasons.keys()) or 'N/A'}\n"
                 f"replay_status={'REPLAY_PENDING' if parsed_count else 'NOT_PARSED'}\n"
                 "No live recommendation or trader position was created."
             )
