@@ -190,6 +190,19 @@ def test_price_validity_accepts_fresh_price_inside_risk_envelope():
     assert result.drift_pct == Decimal("0.0007142857142857142857142857143")
 
 
+def test_decision_keeps_recently_stale_signal_out_of_historical_reconstruction():
+    result = TemporalDecisionService().decide(
+        temporal=context(age_seconds=545),
+        parsed_payload=PAYLOAD,
+        current_price=None,
+        market_data_available=False,
+    )
+    assert result.mode == TemporalMode.LIVE_STALE
+    assert "SOURCE_AGE_EXCEEDS_LIVE_WINDOW" in result.reason_codes
+    assert "STALE_LIVE_CANDIDATE" in result.reason_codes
+    assert "REPLAY_REQUIRED" not in result.reason_codes
+
+
 def test_decision_routes_old_message_to_historical_reconstruction():
     result = TemporalDecisionService().decide(
         temporal=context(age_seconds=3600),

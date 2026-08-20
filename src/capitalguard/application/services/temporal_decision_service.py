@@ -22,11 +22,15 @@ class TemporalDecisionService:
         price_validity_service: PriceValidityService | None = None,
         *,
         live_max_age_seconds: int = 180,
+        historical_transition_seconds: int = 3600,
     ):
         if live_max_age_seconds <= 0:
             raise ValueError("live_max_age_seconds must be positive")
+        if historical_transition_seconds < live_max_age_seconds:
+            raise ValueError("historical_transition_seconds must be >= live_max_age_seconds")
         self.price_validity_service = price_validity_service or PriceValidityService()
         self.live_max_age_seconds = live_max_age_seconds
+        self.historical_transition_seconds = historical_transition_seconds
 
     @staticmethod
     def _relation(value: Any) -> TimelineRelation:
@@ -173,9 +177,9 @@ class TemporalDecisionService:
         )
         age = temporal.age_seconds
         readiness = self._replay_readiness(temporal, complete, market_data_available)
-        if age is None or age > self.live_max_age_seconds:
+        if age is None or age >= self.historical_transition_seconds:
             mode = TemporalMode.HISTORICAL_RECONSTRUCTION
-            reasons = ("SOURCE_AGE_EXCEEDS_LIVE_WINDOW", "REPLAY_REQUIRED")
+            reasons = ("SOURCE_AGE_EXCEEDS_HISTORICAL_TRANSITION", "REPLAY_REQUIRED")
             confidence = Decimal("0.88")
         elif validity.valid_for_live and complete:
             mode = TemporalMode.LIVE_ELIGIBLE
@@ -183,7 +187,15 @@ class TemporalDecisionService:
             confidence = Decimal("0.75") + (validity.score * Decimal("0.25"))
         else:
             mode = TemporalMode.LIVE_STALE
-            reasons = tuple(["LIVE_PRICE_NOT_VALID"] + list(validity.reason_codes))
+            reasons = tuple(
+                [
+                    "SOURCE_AGE_EXCEEDS_LIVE_WINDOW"
+                    if age is not None and age > self.live_max_age_seconds
+                    else "LIVE_PRICE_NOT_VALID",
+                    "STALE_LIVE_CANDIDATE",
+                ]
+                + list(validity.reason_codes)
+            )
             confidence = Decimal("0.70")
 
         return TemporalDecision(
