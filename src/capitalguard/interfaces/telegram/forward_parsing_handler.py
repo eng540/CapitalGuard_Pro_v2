@@ -807,6 +807,14 @@ async def save_template_confirm_handler(update: Update, context: ContextTypes.DE
         await query.message.reply_text("ℹ️ Template suggestion discarded.")
     return ConversationHandler.END
 
+# --- Historical Forward Isolation ---
+async def suppress_forwarded_live_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """End stale live parsing silently; Group 0 already stages the forward historically."""
+    clean_parsing_conversation_state(context)
+    log.info("Suppressed forwarded message from stale live parser conversation; historical router owns the update.")
+    return ConversationHandler.END
+
+
 # --- Cancel Conversation ---
 async def cancel_parsing_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message_text = "❌ Operation cancelled."
@@ -842,11 +850,21 @@ def register_forward_parsing_handlers(app: Application):
             )
         ],
         states={
-            AWAIT_REVIEW: [CallbackQueryHandler(
-                review_callback_handler,
-                pattern=f"^{CallbackNamespace.FORWARD_PARSE.value}:"
-            )],
+            AWAIT_REVIEW: [
+                MessageHandler(
+                    filters.FORWARDED & filters.ChatType.PRIVATE,
+                    suppress_forwarded_live_fallback,
+                ),
+                CallbackQueryHandler(
+                    review_callback_handler,
+                    pattern=f"^{CallbackNamespace.FORWARD_PARSE.value}:"
+                ),
+            ],
             AWAIT_CORRECTION_VALUE: [
+                MessageHandler(
+                    filters.FORWARDED & filters.ChatType.PRIVATE,
+                    suppress_forwarded_live_fallback,
+                ),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
                     correction_value_handler
@@ -859,6 +877,10 @@ def register_forward_parsing_handlers(app: Application):
         },
         fallbacks=[
             CommandHandler("cancel", cancel_parsing_conversation),
+            MessageHandler(
+                filters.FORWARDED & filters.ChatType.PRIVATE,
+                suppress_forwarded_live_fallback,
+            ),
             CallbackQueryHandler(cancel_parsing_conversation, pattern="^.*"),
             MessageHandler(filters.ALL & filters.ChatType.PRIVATE, cancel_parsing_conversation)
         ],
