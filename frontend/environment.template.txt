@@ -1,0 +1,11 @@
+# Copy these variable names to Railway or Vercel settings. Do not commit real values.
+
+DATABASE_URL=mysql://USER:PASSWORD@HOST:3306/capitalguard_web
+JWT_SECRET=REPLACE_WITH_A_LONG_RANDOM_SECRET
+CAPITALGUARD_CORE_BASE_URL=https://capitalguardprov2-production-b4ea.up.railway.app
+CAPITALGUARD_CORE_API_KEY=REPLACE_WITH_CORE_SERVICE_KEY
+VITE_APP_ID=REPLACE_WITH_OAUTH_APP_ID
+OAUTH_SERVER_URL=https://api.manus.im
+VITE_OAUTH_PORTAL_URL=https://manus.im
+VITE_APP_TITLE=CapitalGuard Web SaaS
+VITE_APP_LOGO=
