@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from datetime import timezone
 
+from sqlalchemy import select
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
@@ -10,7 +12,12 @@ from capitalguard.application.services.historical_forwarding_service import (
     ForwardedMessageInput,
     HistoricalForwardingService,
 )
-from capitalguard.infrastructure.db.models import ChannelCatalog, UserType
+from capitalguard.infrastructure.db.models import (
+    ChannelCatalog,
+    HistoricalForwardReceipt,
+    HistoricalImportBatch,
+    UserType,
+)
 from capitalguard.infrastructure.db.uow import uow_transaction
 from capitalguard.interfaces.telegram.admin_commands import _is_admin
 from capitalguard.interfaces.telegram.auth import require_active_user
@@ -19,6 +26,11 @@ log = logging.getLogger(__name__)
 
 STAGING = 1
 BATCH_KEY = "historical_forward_batch_id"
+
+
+def historical_forwarding_active(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Return whether this private chat is currently staging historical forwards."""
+    return bool(context.user_data.get(BATCH_KEY))
 
 
 def _allowed(db_user, chat_id: int) -> bool:
@@ -31,6 +43,7 @@ def _parse_channel_arg(context: ContextTypes.DEFAULT_TYPE) -> str | None:
 
 
 def _resolve_catalog(db_session, value: str):
+    value = value.strip()
     catalog = None
     if value.lstrip("-").isdigit():
         catalog = db_session.query(ChannelCatalog).filter(
@@ -41,6 +54,82 @@ def _resolve_catalog(db_session, value: str):
             (ChannelCatalog.channel_code == value) | (ChannelCatalog.public_ref == value)
         ).one_or_none()
     return catalog
+
+
+def _catalog_label(catalog: ChannelCatalog) -> str:
+    code = catalog.channel_code or catalog.public_ref or "(no code)"
+    title = catalog.title or "Untitled channel"
+    return f"{code} | {title} | telegram_channel_id={catalog.telegram_channel_id}"
+
+
+@uow_transaction
+@require_active_user
+async def historical_channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Show the allow-listed channel codes and exact Telegram IDs used for matching."""
+    if not update.message or not _allowed(db_user, update.effective_chat.id):
+        if update.message:
+            await update.message.reply_text("🚫 Historical forwarding is limited to analysts and administrators.")
+        return
+
+    catalogs = db_session.execute(
+        select(ChannelCatalog)
+        .where(ChannelCatalog.is_active.is_(True))
+        .order_by(ChannelCatalog.channel_code, ChannelCatalog.id)
+    ).scalars().all()
+    if not catalogs:
+        await update.message.reply_text("📭 No active channels are registered in the historical allow-list.")
+        return
+
+    lines = ["📚 Registered historical channels:"]
+    lines.extend(f"{index}. {_catalog_label(catalog)}" for index, catalog in enumerate(catalogs, start=1))
+    lines.append("\nUse /historical_forward_start <channel_code> and compare the source_chat_id in the receipt.")
+    await update.message.reply_text("\n".join(lines))
+
+
+@uow_transaction
+@require_active_user
+async def historical_forward_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Show the current staging batch without converting it to a dry-run."""
+    if not update.message or not _allowed(db_user, update.effective_chat.id):
+        if update.message:
+            await update.message.reply_text("🚫 Historical forwarding is limited to analysts and administrators.")
+        return
+
+    batch_id = context.user_data.get(BATCH_KEY)
+    if not batch_id:
+        await update.message.reply_text(
+            "ℹ️ No historical forwarding batch is active.\n"
+            "Use /historical_forward_start <channel_code> to begin one."
+        )
+        return
+
+    batch = db_session.get(HistoricalImportBatch, batch_id)
+    if batch is None:
+        context.user_data.pop(BATCH_KEY, None)
+        await update.message.reply_text("⚠️ The staging batch no longer exists. Start a new batch.")
+        return
+
+    receipts = db_session.execute(
+        select(HistoricalForwardReceipt).where(HistoricalForwardReceipt.batch_id == batch.id)
+    ).scalars().all()
+    counts = Counter(receipt.validation_status for receipt in receipts)
+    metadata = batch.metadata_json or {}
+    catalog = db_session.get(ChannelCatalog, batch.channel_catalog_id)
+    channel_label = _catalog_label(catalog) if catalog else f"catalog_id={batch.channel_catalog_id}"
+    await update.message.reply_text(
+        "📊 Historical forwarding status\n"
+        f"batch_id={batch.id}\n"
+        f"status={batch.status}\n"
+        f"mode={metadata.get('mode', 'UNKNOWN')}\n"
+        f"channel={channel_label}\n"
+        f"expected_source_chat_id={metadata.get('expected_source_chat_id')}\n"
+        f"receipts={len(receipts)}\n"
+        f"staged={counts.get('STAGED', 0)}\n"
+        f"rejected_channel={counts.get('REJECTED_CHANNEL', 0)}\n"
+        f"rejected_origin={counts.get('REJECTED_ORIGIN', 0)}\n"
+        f"rejected_timestamp={counts.get('REJECTED_TIMESTAMP', 0)}\n"
+        "Continue forwarding, then use /historical_forward_finish."
+    )
 
 
 @uow_transaction
@@ -56,7 +145,10 @@ async def historical_forward_start_cmd(update: Update, context: ContextTypes.DEF
         return ConversationHandler.END
     catalog = _resolve_catalog(db_session, channel_arg)
     if not catalog:
-        await update.message.reply_text("❌ Channel is not registered in the allow-list.")
+        await update.message.reply_text(
+            "❌ Channel is not registered in the allow-list.\n"
+            "Use /historical_channels to see the exact channel code and Telegram ID."
+        )
         return ConversationHandler.END
     service = HistoricalForwardingService()
     batch = service.start_batch(
@@ -69,8 +161,11 @@ async def historical_forward_start_cmd(update: Update, context: ContextTypes.DEF
     context.user_data[BATCH_KEY] = batch.id
     await update.message.reply_text(
         "✅ Historical batch opened. Forward source messages now.\n"
-        "Use /historical_forward_finish to create a dry-run preview, or /historical_forward_cancel to discard staging.\n"
-        f"Channel: {catalog.channel_code or catalog.public_ref}"
+        "Use /historical_forward_status to inspect the expected source ID.\n"
+        "Use /historical_forward_finish to create a dry-run preview, or "
+        "/historical_forward_cancel to discard staging.\n"
+        f"Channel: {catalog.channel_code or catalog.public_ref}\n"
+        f"Expected source_chat_id: {catalog.telegram_channel_id}"
     )
     return STAGING
 
@@ -88,7 +183,10 @@ async def historical_forward_one_cmd(update: Update, context: ContextTypes.DEFAU
         return ConversationHandler.END
     catalog = _resolve_catalog(db_session, channel_arg)
     if not catalog:
-        await update.message.reply_text("❌ Channel is not registered in the allow-list.")
+        await update.message.reply_text(
+            "❌ Channel is not registered in the allow-list.\n"
+            "Use /historical_channels to see the exact channel code and Telegram ID."
+        )
         return ConversationHandler.END
     batch = HistoricalForwardingService().start_batch(
         db_session,
@@ -100,7 +198,8 @@ async def historical_forward_one_cmd(update: Update, context: ContextTypes.DEFAU
     )
     context.user_data[BATCH_KEY] = batch.id
     await update.message.reply_text(
-        "✅ Single-message historical intake opened. Forward exactly one source message."
+        "✅ Single-message historical intake opened. Forward exactly one source message.\n"
+        f"Expected source_chat_id: {catalog.telegram_channel_id}"
     )
     return STAGING
 
@@ -110,8 +209,16 @@ async def historical_forward_one_cmd(update: Update, context: ContextTypes.DEFAU
 async def historical_forward_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     batch_id = context.user_data.get(BATCH_KEY)
     message = update.message
-    if not batch_id or not message or not _allowed(db_user, update.effective_chat.id):
-        return ConversationHandler.END
+    if not message:
+        return STAGING
+    if not batch_id or not _allowed(db_user, update.effective_chat.id):
+        if _allowed(db_user, update.effective_chat.id):
+            await message.reply_text(
+                "⚠️ This message was not attached to an active historical batch. "
+                "Use /historical_forward_start first."
+            )
+        return STAGING
+
     origin = getattr(message, "forward_origin", None)
     origin_chat = getattr(origin, "chat", None) if origin else None
     origin_type = type(origin).__name__.upper() if origin else "UNKNOWN"
@@ -138,17 +245,41 @@ async def historical_forward_message_handler(update: Update, context: ContextTyp
             raw_text=raw_text,
             metadata={
                 "receiver_date": message.date.astimezone(timezone.utc).isoformat() if message.date else None,
-                "receiver_reply_to_message_id": getattr(getattr(message, "reply_to_message", None), "message_id", None),
+                "receiver_reply_to_message_id": getattr(
+                    getattr(message, "reply_to_message", None), "message_id", None
+                ),
                 "origin_author_signature": getattr(origin, "author_signature", None) if origin else None,
             },
         ),
     )
-    await message.reply_text(
-        f"📥 {receipt.validation_status}\n"
-        f"source_chat={receipt.source_chat_id}\n"
-        f"source_message={receipt.source_message_id}\n"
-        f"receipt_id={receipt.id}"
-    )
+    batch = db_session.get(HistoricalImportBatch, batch_id)
+    expected_source_chat_id = (batch.metadata_json or {}).get("expected_source_chat_id") if batch else None
+    if receipt.validation_status == "REJECTED_CHANNEL":
+        reply = (
+            "📥 REJECTED_CHANNEL\n"
+            f"source_chat={receipt.source_chat_id}\n"
+            f"expected_source_chat={expected_source_chat_id}\n"
+            f"source_message={receipt.source_message_id}\n"
+            f"receipt_id={receipt.id}\n"
+            "The forwarded source ID does not match the selected allow-listed channel. "
+            "Use /historical_channels and restart with the matching code."
+        )
+    elif receipt.validation_status == "REJECTED_ORIGIN":
+        reply = (
+            "📥 REJECTED_ORIGIN\n"
+            f"source_chat={receipt.source_chat_id}\n"
+            f"source_message={receipt.source_message_id}\n"
+            f"receipt_id={receipt.id}\n"
+            "Telegram did not expose a verifiable channel origin. Forward the original message, not a copy."
+        )
+    else:
+        reply = (
+            f"📥 {receipt.validation_status}\n"
+            f"source_chat={receipt.source_chat_id}\n"
+            f"source_message={receipt.source_message_id}\n"
+            f"receipt_id={receipt.id}"
+        )
+    await message.reply_text(reply)
     if (receipt.metadata_json or {}).get("mode") == "SINGLE":
         preview = HistoricalForwardingService().preview_batch(db_session, batch_id=batch_id)
         await message.reply_text(
@@ -165,11 +296,16 @@ async def historical_forward_message_handler(update: Update, context: ContextTyp
 async def historical_forward_finish_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
     batch_id = context.user_data.get(BATCH_KEY)
     if not update.message or not batch_id:
+        if update.message:
+            await update.message.reply_text(
+                "ℹ️ No active historical batch. Use /historical_forward_start <channel_code> first."
+            )
         return ConversationHandler.END
     preview = HistoricalForwardingService().preview_batch(db_session, batch_id=batch_id)
     context.user_data.pop(BATCH_KEY, None)
     await update.message.reply_text(
         "📋 Historical forwarding dry-run ready\n"
+        f"batch_id={preview.batch_id}\n"
         f"total={preview.total_records}\n"
         f"accepted={preview.accepted_records}\n"
         f"rejected={preview.rejected_records}\n"
@@ -194,7 +330,11 @@ def register_historical_forwarding_handlers(application: Application):
         ],
         states={
             STAGING: [
-                MessageHandler(filters.FORWARDED & ~filters.COMMAND & filters.ChatType.PRIVATE, historical_forward_message_handler),
+                MessageHandler(
+                    filters.FORWARDED & ~filters.COMMAND & filters.ChatType.PRIVATE,
+                    historical_forward_message_handler,
+                ),
+                CommandHandler("historical_forward_status", historical_forward_status_cmd),
                 CommandHandler("historical_forward_finish", historical_forward_finish_cmd),
                 CommandHandler("historical_forward_cancel", historical_forward_cancel_cmd),
             ]
@@ -203,6 +343,10 @@ def register_historical_forwarding_handlers(application: Application):
         name="historical_forwarding_intake",
         per_user=True,
         per_chat=True,
+        per_message=False,
         persistent=False,
+        conversation_timeout=1800,
     )
     application.add_handler(conversation, group=0)
+    application.add_handler(CommandHandler("historical_channels", historical_channels_cmd), group=0)
+    application.add_handler(CommandHandler("historical_forward_status", historical_forward_status_cmd), group=0)
