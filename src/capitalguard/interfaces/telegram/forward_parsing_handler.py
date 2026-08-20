@@ -6,7 +6,6 @@
 #    - 3. (COMPATIBLE) التوافق الكامل مع النظام
 
 import logging
-import asyncio
 import httpx
 import os
 import re
@@ -25,9 +24,10 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError, BadRequest
 
 # Infrastructure & Application specific imports
-from capitalguard.infrastructure.db.uow import session_scope, uow_transaction
-from capitalguard.interfaces.telegram.helpers import get_service, parse_cq_parts
-from capitalguard.interfaces.telegram.auth import require_active_user, get_db_user
+from capitalguard.infrastructure.db.uow import uow_transaction
+from capitalguard.interfaces.telegram.helpers import get_service
+from capitalguard.interfaces.telegram.auth import require_active_user
+from capitalguard.interfaces.telegram.historical_forwarding_handler import historical_forwarding_active
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.image_parsing_service import ImageParsingService 
 from capitalguard.interfaces.telegram.keyboards import (
@@ -35,7 +35,7 @@ from capitalguard.interfaces.telegram.keyboards import (
     build_editable_review_card, ButtonTexts
 )
 from capitalguard.interfaces.telegram.parsers import parse_number, parse_targets_list
-from capitalguard.infrastructure.db.models import ParsingAttempt, ParsingTemplate, User
+from capitalguard.infrastructure.db.models import ParsingAttempt
 from capitalguard.infrastructure.db.repository import ParsingRepository
 
 log = logging.getLogger(__name__)
@@ -131,6 +131,9 @@ async def smart_safe_edit(
 @require_active_user
 async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
     message = update.message
+    if historical_forwarding_active(context):
+        log.info("Historical forwarding batch is active; live text parser will not consume the forwarded message.")
+        return ConversationHandler.END
     if not message or not message.text or len(message.text) < 10:
         return ConversationHandler.END
 
@@ -303,6 +306,9 @@ async def forwarded_message_handler(update: Update, context: ContextTypes.DEFAUL
 @require_active_user
 async def forwarded_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
     message = update.message
+    if historical_forwarding_active(context):
+        log.info("Historical forwarding batch is active; live image parser will not consume the forwarded message.")
+        return ConversationHandler.END
     if not message or not message.photo:
         return ConversationHandler.END
 

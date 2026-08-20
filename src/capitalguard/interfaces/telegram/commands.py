@@ -205,6 +205,8 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
         "/find_analysts — اكتشاف المحللين ومقارنة المؤهلين",
         "/compare_analyst CODE — مقارنة المحلل حسب القناة",
         "/historical_forward_start CODE — استيراد تاريخ قناة بإعادة التوجيه",
+        "/historical_channels — عرض أكواد القنوات ومعرّفات Telegram المطابقة",
+        "/historical_forward_status — عرض حالة دفعة التاريخ الحالية",
 
     ]
     if is_analyst:
@@ -218,6 +220,8 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
             "/historical_forward_start CODE — بدء دفعة تاريخية",
             "/historical_forward_one CODE — استقبال رسالة واحدة",
             "/historical_forward_finish — إنشاء Dry-Run",
+            "/historical_forward_status — حالة الدفعة الحالية",
+            "/historical_forward_cancel — إلغاء staging دون إدخال بيانات",
         ])
     else:
         lines.extend([
