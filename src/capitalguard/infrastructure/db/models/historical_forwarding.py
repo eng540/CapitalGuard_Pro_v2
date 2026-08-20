@@ -11,6 +11,7 @@ class HistoricalForwardReceipt(Base):
     __table_args__ = (
         UniqueConstraint("receiver_chat_id", "receiver_message_id", name="uq_hist_forward_receiver_message"),
         UniqueConstraint(
+            "batch_id",
             "source_chat_id",
             "source_message_id",
             "source_message_revision",
