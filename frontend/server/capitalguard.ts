@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreGetOperationsFeed, coreGetPrice, coreGetSignal, coreGetTmaPortfolio, coreGetTraderReadModel, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
+import { coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetSignal, coreGetTmaPortfolio, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -57,11 +57,11 @@ export function telegramIdFromWebSession(openId: string): number {
 
 export const capitalguardRouter = router({
   workspace: protectedProcedure.query(() => coreOwnedSnapshot()),
-  recommendations: protectedProcedure.query(() => []),
-  discoverAnalysts: protectedProcedure.query(() => []),
+  recommendations: protectedProcedure.query(({ ctx }) => coreGetTraderRecommendations(telegramIdFromWebSession(ctx.user.openId))),
+  discoverAnalysts: protectedProcedure.query(() => coreGetAnalysts()),
   compareAnalysts: protectedProcedure.input(z.object({ codes: z.array(z.string().min(1)).min(2).max(3) })).query(() => ({ leader: null, rows: [], confidence: "CORE_DATA_PENDING" })),
-  historicalBatches: protectedProcedure.query(() => []),
-  historicalWallet: protectedProcedure.query(() => []),
+  historicalBatches: protectedProcedure.query(({ ctx }) => coreGetTraderHistorical(telegramIdFromWebSession(ctx.user.openId))),
+  historicalWallet: protectedProcedure.query(({ ctx }) => coreGetTraderHistorical(telegramIdFromWebSession(ctx.user.openId))),
   smartAnalyze: protectedProcedure.input(smartAnalysisInput).mutation(async ({ input }) => analyzeForwardText(input.text)),
   core: router({
     health: protectedProcedure.query(() => probeCoreHealth()),

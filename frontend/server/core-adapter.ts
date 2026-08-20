@@ -40,6 +40,9 @@ export type CoreOwnerReviewBatch = {
 };
 export type CoreOperationsEvent = { id: string; category: "PUBLICATION" | "LIFECYCLE" | "AUDIT"; code: string; severity: "info" | "warning" | "critical"; record_ref: string; occurred_at: string };
 export type CoreOperationsFeed = { events: CoreOperationsEvent[]; summary: { critical: number; warning: number; total: number } };
+export type CoreTraderRecommendation = { id: number; public_ref: string; asset: string; side: string; market: string; entry: number; stop_loss: number; targets: unknown[]; status: string; source_type: string; created_at: string | null; closed_at: string | null; timeline: Array<{ event_type: string; event_timestamp: string }> };
+export type CoreHistoricalRecord = { public_ref: string; asset: string | null; side: string | null; status: string; trust_tier: string; eligible_for_ranking: boolean; decision_timestamp: string | null };
+export type CoreAnalystReadModel = { analyst_code: string | null; public_ref: string | null; public_name: string; sample_size: number; win_rate_pct: number; total_pnl_pct: number; max_drawdown_pct: number; active_recommendations: number; risk_exposure_pct: number; eligible_for_ranking: boolean; freshness_days: number | null };
 
 export function getCoreConfig(env = process.env): CoreConfig {
   const rawUrl = env.CAPITALGUARD_CORE_BASE_URL?.trim();
@@ -125,6 +128,26 @@ export async function coreGetOperationsFeed(actorTelegramId: number, fetchImpl: 
   const result = await coreReadOnlyFetch(query("/api/webapp/owner/operations-feed", { actor_telegram_id: String(actorTelegramId) }), {}, fetchImpl, env);
   if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { events?: unknown }).events)) throw new Error("CAPITALGUARD_CORE_OPERATIONS_FEED_INVALID");
   return result as CoreOperationsFeed;
+}
+
+export async function coreGetTraderRecommendations(telegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ as_of: string; items: CoreTraderRecommendation[] }> {
+  if (!Number.isSafeInteger(telegramId) || telegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const result = await coreReadOnlyFetch(`/api/webapp/read-models/trader/${telegramId}/recommendations`, {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_RECOMMENDATIONS_INVALID");
+  return result as { as_of: string; items: CoreTraderRecommendation[] };
+}
+
+export async function coreGetTraderHistorical(telegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ as_of: string; items: CoreHistoricalRecord[] }> {
+  if (!Number.isSafeInteger(telegramId) || telegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const result = await coreReadOnlyFetch(`/api/webapp/read-models/trader/${telegramId}/historical`, {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_HISTORICAL_INVALID");
+  return result as { as_of: string; items: CoreHistoricalRecord[] };
+}
+
+export async function coreGetAnalysts(fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ as_of: string; items: CoreAnalystReadModel[] }> {
+  const result = await coreReadOnlyFetch("/api/webapp/read-models/analysts", {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_ANALYSTS_INVALID");
+  return result as { as_of: string; items: CoreAnalystReadModel[] };
 }
 
 export async function coreReviewHistoricalBatch(input: { actorTelegramId: number; batchId: number; approved: boolean; note?: string; idempotencyKey: string }, fetchImpl: typeof fetch = fetch, env = process.env) {

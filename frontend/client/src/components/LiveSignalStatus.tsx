@@ -7,8 +7,8 @@ export default function LiveSignalStatus() {
   const known = useRef<Set<string>>(new Set());
   const [permission, setPermission] = useState<NotificationPermission | "unsupported">(() => typeof Notification === "undefined" ? "unsupported" : Notification.permission);
   useEffect(() => {
-    const rows = signals.data ?? [];
-    const refs = rows.map((row: any) => row.publicRef).filter(Boolean);
+    const rows = signals.data?.items ?? [];
+    const refs: string[] = rows.map(row => row.public_ref).filter(Boolean);
     if (!known.current.size) { refs.forEach(ref => known.current.add(ref)); return; }
     const incoming = refs.filter(ref => !known.current.has(ref));
     incoming.forEach(ref => known.current.add(ref));

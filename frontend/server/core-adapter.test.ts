@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreGetOperationsFeed, coreGetPrice, coreGetTraderReadModel, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendations, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -92,5 +92,22 @@ describe("CapitalGuard Core adapter", () => {
     const result = await coreGetOperationsFeed(123456, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
     expect(requestUrl).toBe("https://core.example/api/webapp/owner/operations-feed?actor_telegram_id=123456");
     expect(result.summary.total).toBe(0);
+  });
+
+  it("keeps trader and analyst read models behind the Core service adapter", async () => {
+    const urls: string[] = [];
+    const fakeFetch = async (input: string | URL | Request) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({ ok: true, as_of: "2026-08-20T00:00:00Z", items: [] }), { status: 200 });
+    };
+    const env = { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" };
+    await coreGetTraderRecommendations(123456, fakeFetch as typeof fetch, env);
+    await coreGetTraderHistorical(123456, fakeFetch as typeof fetch, env);
+    await coreGetAnalysts(fakeFetch as typeof fetch, env);
+    expect(urls).toEqual([
+      "https://core.example/api/webapp/read-models/trader/123456/recommendations",
+      "https://core.example/api/webapp/read-models/trader/123456/historical",
+      "https://core.example/api/webapp/read-models/analysts",
+    ]);
   });
 });
