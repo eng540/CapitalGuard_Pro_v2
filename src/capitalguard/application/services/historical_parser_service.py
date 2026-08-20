@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from capitalguard.application.services.financial_consistency_service import FinancialConsistencyService
+from capitalguard.application.services.historical_outcome_reconciliation_service import HistoricalOutcomeReconciliationService
 from capitalguard.application.services.parsing_service import ParsingService
 
 
@@ -31,9 +32,22 @@ class HistoricalParserService:
     ):
         self.parsing_service = parsing_service
         self.consistency_service = consistency_service or FinancialConsistencyService()
+        self.outcome_service = HistoricalOutcomeReconciliationService()
 
     def _number_after(self, text: str, labels: str) -> Decimal | None:
         match = re.search(rf"(?:{labels})\s*[:=\-]?\s*({self._NUMBER})", text, re.IGNORECASE)
+        return self.parsing_service._parse_one_number(match.group(1)) if match else None
+
+    def _signed_number_after(self, text: str, labels: str) -> Decimal | None:
+        match = re.search(rf"(?:{labels})\s*[:=\-]?\s*([+-]?{self._NUMBER})", text, re.IGNORECASE)
+        return self.parsing_service._parse_one_number(match.group(1)) if match else None
+
+    def _reported_pnl(self, text: str) -> Decimal | None:
+        match = re.search(
+            r"(?:RESULT|PNL|PROFIT|LOSS|النتيجة|الربح|الخسارة)[^%\n]*?([+-]?" + self._NUMBER + r")\s*%",
+            text,
+            re.IGNORECASE,
+        )
         return self.parsing_service._parse_one_number(match.group(1)) if match else None
 
     def _target_tokens(self, text: str) -> list[str]:
@@ -53,6 +67,8 @@ class HistoricalParserService:
         stop_loss = self._number_after(cleaned, r"STOP(?:\s*LOSS)?|SL|وقف")
         target_tokens = self._target_tokens(cleaned)
         targets = self.parsing_service._parse_targets_list(target_tokens)
+        exit_price = self._number_after(cleaned, r"EXIT(?:\s*PRICE)?|CLOSE(?:\s*PRICE)?|الخروج|إغلاق")
+        reported_pnl_pct = self._reported_pnl(cleaned)
         errors: list[str] = []
         if not asset:
             errors.append("ASSET_NOT_FOUND")
@@ -64,6 +80,15 @@ class HistoricalParserService:
             errors.append("STOP_NOT_FOUND")
         if not targets:
             errors.append("TARGETS_NOT_FOUND")
+
+        outcome = None
+        if exit_price is not None or reported_pnl_pct is not None:
+            outcome = self.outcome_service.check_reported_outcome(
+                side=side,
+                entry=entry,
+                exit_price=exit_price,
+                reported_pnl_pct=reported_pnl_pct,
+            )
 
         consistency = self.consistency_service.check(
             side=side,
@@ -90,6 +115,15 @@ class HistoricalParserService:
                 "entry": entry,
                 "stop_loss": stop_loss,
                 "targets": targets,
+                "exit_price": exit_price,
+                "reported_pnl_pct": reported_pnl_pct,
+                "financial_outcome": {
+                    "status": outcome.status,
+                    "derived_pnl_pct": str(outcome.derived_pnl_pct) if outcome and outcome.derived_pnl_pct is not None else None,
+                    "reported_pnl_pct": str(outcome.reported_pnl_pct) if outcome and outcome.reported_pnl_pct is not None else None,
+                    "errors": list(outcome.errors) if outcome else [],
+                    "warnings": list(outcome.warnings) if outcome else [],
+                } if outcome else None,
                 "raw_text": raw_text,
                 "financial_consistency": {
                     "is_consistent": consistency.is_consistent,

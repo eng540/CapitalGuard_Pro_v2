@@ -41,3 +41,16 @@ def test_historical_parser_rejects_non_signal_text_without_side_effects():
     assert result.data["asset"] is None
     assert result.data["entry"] is None
     assert result.data["targets"] == []
+
+
+def test_historical_parser_exposes_source_outcome_mismatch_for_closed_signal():
+    result = parser().parse(
+        "#LSKUSDT LONG TRADE CLOSED Result: +0.95% Exit: 0.19500 "
+        "Entry: 0.21000 Stop: 0.19500 TP1: 0.22000@20% TP2: 0.24000@20% "
+        "TP3: 0.25000@20% TP4: 0.26000@20% TP5: 0.28300@20%"
+    )
+
+    assert result.parse_status == "PARSED"
+    assert result.data["financial_outcome"]["status"] == "MISMATCH"
+    assert result.data["financial_outcome"]["derived_pnl_pct"] == "-7.142857142857142857142857143"
+    assert "FINANCIAL_CONSISTENCY_REVIEW" in result.data["financial_outcome"]["warnings"]
