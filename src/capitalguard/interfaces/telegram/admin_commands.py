@@ -76,6 +76,7 @@ async def admin_panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "<code>/historical_forward_status</code> — عرض حالة الدفعة الحالية\n"
         "<code>/historical_forward_finish</code> — إنشاء Dry-Run للمراجعة\n"
         "<code>/historical_forward_review BATCH approve|reject</code> — قرار المالك قبل الإدخال\n"
+        "<code>/historical_forward_ingest BATCH</code> — إدخال Evidence بعد الاعتماد\n"
         "<code>/historical_forward_cancel</code> — إلغاء staging دون إدخال\n\n"
         "<b>Operations</b>\n"
         "<code>/backup</code> — إنشاء وإرسال نسخة احتياطية\n"
