@@ -1,0 +1,18 @@
+import DashboardLayout from "@/components/DashboardLayout";
+import { KpiCard, SectionTitle } from "@/components/finance-ui";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { trpc } from "@/lib/trpc";
+import { Calculator, ShieldCheck, Target, Wallet } from "lucide-react";
+import { useState } from "react";
+
+export default function RiskStudio() {
+  const [capital, setCapital] = useState("10000"); const [risk, setRisk] = useState("1"); const [entry, setEntry] = useState("70000"); const [stop, setStop] = useState("69500"); const [side, setSide] = useState<"long" | "short">("long");
+  const planner = trpc.capitalguard.riskPlan.useMutation();
+  const plan = planner.data;
+  const run = () => planner.mutate({ capital: Number(capital), riskPercent: Number(risk), entry: Number(entry), stop: Number(stop), side });
+  return <DashboardLayout><div dir="rtl" className="mx-auto max-w-[1180px]"><div className="mb-8"><p className="mb-2 text-xs font-semibold uppercase tracking-[.2em] text-cyan-300">Risk Studio</p><h1 className="text-3xl font-semibold">احسب المخاطرة قبل أن تفتح المركز.</h1><p className="mt-2 text-sm text-muted-foreground">محرك حساب مستقل؛ لا ينفذ صفقة ولا يرسل أوامر لأي وسيط.</p></div><div className="grid gap-6 lg:grid-cols-[.9fr_1.1fr]"><section className="rounded-3xl border border-white/8 bg-card/70 p-6"><SectionTitle title="مدخلات الخطة"/><div className="grid gap-4 sm:grid-cols-2"><Field label="رأس المال" value={capital} onChange={setCapital}/><Field label="المخاطرة %" value={risk} onChange={setRisk}/><Field label="سعر الدخول" value={entry} onChange={setEntry}/><Field label="وقف الخسارة" value={stop} onChange={setStop}/><div className="space-y-2"><Label>الاتجاه</Label><Select value={side} onValueChange={(value: "long" | "short") => setSide(value)}><SelectTrigger className="border-white/10 bg-white/[.03]"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="long">LONG</SelectItem><SelectItem value="short">SHORT</SelectItem></SelectContent></Select></div></div><Button onClick={run} disabled={planner.isPending} className="mt-6 w-full bg-cyan-400 text-slate-950 hover:bg-cyan-300"><Calculator className="ml-2 h-4 w-4"/>{planner.isPending ? "جاري الحساب" : "احسب الخطة"}</Button></section><section className="rounded-3xl border border-white/8 bg-card/70 p-6"><SectionTitle eyebrow="What-If" title="خطة حجم المركز"/><div className="grid gap-4 sm:grid-cols-3"><KpiCard label="المخاطرة القصوى" value={`${plan?.riskAmount ?? "—"} USDT`} icon={<ShieldCheck className="h-4 w-4"/>} tone="amber"/><KpiCard label="حجم المركز" value={String(plan?.quantity ?? "—")} icon={<Target className="h-4 w-4"/>}/><KpiCard label="القيمة الاسمية" value={`${plan?.notional ?? "—"} USDT`} icon={<Wallet className="h-4 w-4"/>} tone="violet"/></div>{plan && !plan.valid ? <p className="mt-5 rounded-xl border border-rose-400/20 bg-rose-400/10 p-4 text-sm text-rose-200">اتجاه وقف الخسارة غير صالح لهذه الجهة. لا يمكن إنشاء خطة مخاطرة.</p> : <p className="mt-6 rounded-xl border border-white/8 bg-white/[.03] p-4 text-sm leading-6 text-muted-foreground">تُعرض النتائج كمساعدة قرار فقط. تحقق من السيولة والرسوم والرافعة قبل أي تنفيذ يدوي.</p>}</section></div></div></DashboardLayout>;
+}
+function Field({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) { return <div className="space-y-2"><Label>{label}</Label><Input value={value} onChange={event => onChange(event.target.value)} inputMode="decimal" className="border-white/10 bg-white/[.03]" /></div>; }

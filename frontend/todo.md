@@ -1,0 +1,28 @@
+# Project TODO
+
+- [x] تثبيت خريطة صفحات CapitalGuard Web SaaS وسير المستخدم لكل دور.
+- [x] بناء نموذج بيانات ويب يعزل الحسابات الحية والمحافظ التاريخية والتدقيق الزمني.
+- [x] إضافة أدوار المتداول والمحلل والمدير مع حواجز tRPC واضحة.
+- [x] بناء الهوية البصرية FinTech Dark ونظام التصميم المتجاوب وTelegram Mini App readiness.
+- [x] بناء لوحة المتداول: المحفظة والصفقات المفتوحة والمغلقة وPnL والمخاطر.
+- [x] بناء لوحة المحلل: التوصيات والأداء وWin Rate وDrawdown والقنوات.
+- [x] بناء لوحة الإدارة: المستخدمون والأدوار والدفعات التاريخية وOwner Review وEvidence Ingestion.
+- [x] بناء واجهة Forward التاريخي: Temporal Decision وFinancial Outcome وReplay Gate وسجل المراجعة.
+- [x] بناء اكتشاف المحللين ومقارنتهم مع Win Rate وPnL وDrawdown وSample Size.
+- [x] بناء بطاقات التوصيات الحية مع IDs هرمية وحالات الأهداف وTimeline للأحداث.
+- [x] بناء رسوم بيانية تفاعلية للأداء وPnL والانكشاف والـ Drawdown.
+- [x] بناء Smart Dropzone لتحليل Forward والنصوص مع توضيح Temporal Decision.
+- [x] بناء What-If Simulator وحاسبة المخاطر وشارات النزاهة كأجزاء أصلية من الواجهة.
+- [x] إضافة طبقة بيانات لحظية آمنة وتنبيهات مرئية/صوتية بدون إجراء تداول آلي.
+- [x] إضافة توافق Telegram Mini App وآليات responsive/mobile-first.
+- [x] كتابة اختبارات Vitest لعقود الصلاحيات والمنطق المالي وتهيئة Mini App والواجهة الرئيسية.
+- [x] تنفيذ اختبارات جودة ولقطات بصرية وتوثيق حدود التكامل مع Core Python.
+- [x] إنشاء checkpoint Alpha وتسليم خارطة ربط CapitalGuard Core وRailway بشكل مرحلي.
+- [x] تغطية عقود المخاطر والمقارنة وSmart Dropzone وTMA باختبارات Vitest خفيفة.
+- [x] تنفيذ فحوص TypeScript ولقطات سطح المكتب والهاتف وتوثيق حدود التكامل مع Core Python.
+- [x] إضافة اختبارات واجهات تفاعلية لمسار Smart Dropzone بعد تفعيل Adapter المصادق عليه مع CapitalGuard Core.
+- [x] ربط Adapter خادمي مصادق عليه بـ CapitalGuard Core دون كشف PostgreSQL أو أسرار Telegram للمتصفح.
+- [ ] نقل كود CapitalGuard Web SaaS إلى eng540/CapitalGuard_Pro_v2 ضمن /frontend عبر فرع وPull Request مستقلين.
+- [ ] إضافة إعدادات build/start والنشر المستقل على Railway وVercel دون التأثير على Core أو Telegram Bot.
+- [ ] إعداد ملف متغيرات البيئة وقواعد الربط الآمن بين frontend وخدمة CapitalGuard Core.
+- [ ] التحقق من build والاختبارات في نسخة /frontend ثم تسليم رابط PR وخطة النشر.
