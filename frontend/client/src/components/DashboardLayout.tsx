@@ -19,7 +19,6 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { startLogin } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
 import { BarChart3, Bot, FileClock, LayoutDashboard, LogOut, PanelLeft, ShieldCheck, Target, Users } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
@@ -73,13 +72,9 @@ export default function DashboardLayout({
               تتطلب لوحات CapitalGuard مصادقة آمنة قبل الوصول إلى البيانات المالية.
             </p>
           </div>
-          <Button
-            onClick={() => startLogin()}
-            size="lg"
-            className="w-full shadow-lg hover:shadow-xl transition-all"
-          >
-            تسجيل الدخول
-          </Button>
+          <div className="w-full rounded-xl border border-cyan-300/15 bg-card p-4 text-center text-sm text-muted-foreground">
+            افتح المنصة من زر <strong className="text-foreground">Web App</strong> داخل بوت CapitalGuard على Telegram لإتمام الدخول الآمن.
+          </div>
         </div>
       </div>
     );

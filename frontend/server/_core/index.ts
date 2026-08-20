@@ -4,6 +4,7 @@ import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
+import { ENV } from "./env";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -14,7 +15,9 @@ export function createCapitalGuardApp() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
-  registerOAuthRoutes(app);
+  // Railway runs Telegram-first authentication. Legacy OAuth remains opt-in for
+  // controlled preview environments only and is never enabled by a placeholder.
+  if (ENV.legacyOAuthEnabled) registerOAuthRoutes(app);
   app.use(
     "/api/trpc",
     createExpressMiddleware({

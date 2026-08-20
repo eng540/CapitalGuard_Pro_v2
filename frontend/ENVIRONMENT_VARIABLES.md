@@ -8,9 +8,7 @@ This file is intentionally visible in GitHub. It explains every variable needed 
 | `JWT_SECRET` | Yes | Server environment only | Signs web-session cookies. Generate a unique random value. |
 | `CAPITALGUARD_CORE_BASE_URL` | Yes | Server environment only | The Core URL: `https://capitalguardprov2-production-b4ea.up.railway.app`. |
 | `CAPITALGUARD_CORE_API_KEY` | Yes | Server environment only | Read-only Core service key. Never use a `VITE_` prefix. |
-| `VITE_APP_ID` | Required for current OAuth | Browser build environment | OAuth application identifier. |
-| `OAUTH_SERVER_URL` | Required for current OAuth | Server environment | OAuth server base URL. |
-| `VITE_OAUTH_PORTAL_URL` | Required for current OAuth | Browser build environment | OAuth login portal URL. |
+| `CAPITALGUARD_WEB_APP_ID` | No | Server environment | Stable, non-secret issuer label for Web session JWTs. Defaults to `capitalguard-web`. |
 | `VITE_APP_TITLE` | Yes | Browser build environment | Browser-visible application title. |
 | `VITE_APP_LOGO` | Optional | Browser build environment | Public logo URL only. |
 
@@ -19,6 +17,14 @@ This file is intentionally visible in GitHub. It explains every variable needed 
 Create a **separate Web PostgreSQL service** and a separate Web application service with root directory `frontend`. Railway sets `PORT` automatically; do not create it manually. Reference the Web PostgreSQL URL as `DATABASE_URL`, then deploy. Keep the Core/Bot service and Core PostgreSQL unchanged.
 
 The committed `frontend/drizzle/0000_*.sql` migration creates only `web_*` tables and web enums. The service runs `db:migrate` before startup; it does not generate or alter any Core migration.
+
+## Telegram-first login
+
+Web authenticates users from Telegram Mini App `initData`. The browser sends this data to the Web server; Web forwards it to Core with the server-only Core service key. Core verifies Telegram's HMAC using the bot token already owned by Core, and Web creates its own signed, HttpOnly session only if Core confirms the payload and the `auth_date` is fresh. Do **not** add `OAUTH_SERVER_URL`, `VITE_OAUTH_PORTAL_URL`, `VITE_APP_ID`, or a Telegram Bot Token to Railway for this path.
+
+`CAPITALGUARD_ENABLE_LEGACY_OAUTH` remains disabled by default. Do not enable it on Railway unless a separately configured, real OAuth provider is introduced and reviewed.
+
+The Mini App must be configured in BotFather with the final HTTPS Railway domain or custom domain. A normal browser intentionally receives a prompt to open the application through the CapitalGuard bot.
 
 ## Vercel
 
