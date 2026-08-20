@@ -26,9 +26,11 @@ from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.lifecycle_service import LifecycleService
 from capitalguard.application.services.performance_service import PerformanceService
+from capitalguard.application.services.analyst_discovery_service import AnalystDiscoveryService
+from capitalguard.application.services.historical_signal_query_service import HistoricalSignalQueryService
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
-from capitalguard.infrastructure.db.models import PublicationDelivery, RecommendationEvent, RecommendationStatusEnum, WebCommandAudit
+from capitalguard.infrastructure.db.models import PublicationDelivery, RecommendationEvent, RecommendationStatusEnum, UserTrade, WebCommandAudit
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
@@ -125,6 +127,40 @@ def _serialize_live_position(entity: Any, live_price: float | None) -> dict[str,
         "source_type": "TRADER_LOG" if getattr(entity, "is_user_trade", False) else "ANALYST_RECOMMENDATION",
         "targets": targets,
         "created_at": created_at.isoformat() if created_at else None,
+    }
+
+
+def _serialize_trade_read_model(trade: UserTrade) -> dict[str, Any]:
+    events = sorted(getattr(trade, "events", []) or [], key=lambda item: (item.event_timestamp, item.id), reverse=True)[:8]
+    return {
+        "id": int(trade.id),
+        "public_ref": trade.public_ref or f"TR-{trade.id}",
+        "asset": trade.asset,
+        "side": trade.side,
+        "market": "Futures",
+        "entry": float(trade.entry),
+        "stop_loss": float(trade.stop_loss),
+        "targets": trade.targets or [],
+        "status": getattr(trade.status, "value", str(trade.status)),
+        "source_type": trade.source_type,
+        "created_at": trade.created_at.isoformat() if trade.created_at else None,
+        "closed_at": trade.closed_at.isoformat() if trade.closed_at else None,
+        "timeline": [
+            {"event_type": event.event_type, "event_timestamp": event.event_timestamp.isoformat()}
+            for event in events
+        ],
+    }
+
+
+def _serialize_historical_signal_read_model(signal: Any) -> dict[str, Any]:
+    return {
+        "public_ref": signal.public_ref,
+        "asset": signal.asset,
+        "side": signal.side,
+        "status": signal.status,
+        "trust_tier": signal.trust_tier,
+        "eligible_for_ranking": bool(signal.eligible_for_ranking),
+        "decision_timestamp": signal.decision_timestamp.isoformat() if signal.decision_timestamp else None,
     }
 
 # --- Endpoints ---
@@ -274,6 +310,53 @@ async def get_trader_read_model(telegram_id: int, request: Request):
             "performance": performance,
             "funnel": funnel,
         }
+
+
+@router.get("/read-models/trader/{telegram_id}/recommendations")
+async def get_trader_recommendation_read_model(telegram_id: int, request: Request):
+    require_core_service_key(request.headers.get("authorization"))
+    with session_scope() as session:
+        user = UserRepository(session).find_by_telegram_id(telegram_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Trader identity was not found")
+        trades = session.execute(
+            select(UserTrade).where(UserTrade.user_id == user.id).order_by(UserTrade.created_at.desc(), UserTrade.id.desc()).limit(100)
+        ).scalars().all()
+        return {"ok": True, "as_of": datetime.utcnow().isoformat() + "Z", "items": [_serialize_trade_read_model(trade) for trade in trades]}
+
+
+@router.get("/read-models/trader/{telegram_id}/historical")
+async def get_trader_historical_read_model(telegram_id: int, request: Request):
+    require_core_service_key(request.headers.get("authorization"))
+    with session_scope() as session:
+        user = UserRepository(session).find_by_telegram_id(telegram_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Trader identity was not found")
+        records = HistoricalSignalQueryService().search(session, trader_user_id=user.id, limit=100)
+        return {"ok": True, "as_of": datetime.utcnow().isoformat() + "Z", "items": [_serialize_historical_signal_read_model(signal) for signal in records]}
+
+
+@router.get("/read-models/analysts")
+async def get_analyst_read_model(request: Request):
+    require_core_service_key(request.headers.get("authorization"))
+    with session_scope() as session:
+        rows = AnalystDiscoveryService().find_analysts(session, include_ineligible=True, limit=50)
+        items = []
+        for row in rows:
+            items.append({
+                "analyst_code": row["analyst_code"],
+                "public_ref": row["public_ref"],
+                "public_name": row["public_name"],
+                "sample_size": int(row["sample_size"]),
+                "win_rate_pct": float(row["win_rate_pct"]),
+                "total_pnl_pct": float(row["total_pnl_pct"]),
+                "max_drawdown_pct": float(row["max_drawdown_pct"]),
+                "active_recommendations": int(row["active_recommendations"]),
+                "risk_exposure_pct": float(row["risk_exposure_pct"]),
+                "eligible_for_ranking": bool(row["eligible_for_ranking"]),
+                "freshness_days": float(row["freshness_days"]) if row["freshness_days"] is not None else None,
+            })
+        return {"ok": True, "as_of": datetime.utcnow().isoformat() + "Z", "items": items}
 
 
 @router.get("/owner/review-batches")
