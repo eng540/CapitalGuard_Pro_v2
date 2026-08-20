@@ -69,6 +69,7 @@ async def admin_panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "<code>/makeanalyst &lt;telegram_user_id&gt;</code> — ترقية إلى محلل\n"
         "<code>/grantalpha &lt;telegram_user_id&gt; &lt;FEATURES&gt;</code> — منح Alpha مجاني\n\n"
         "<b>Historical Intake</b>\n"
+        "أرسل أي Forward من قناة إلى الخاص — اكتشاف وتدقيق تلقائي\n"
         "<code>/historical_forward_start &lt;channel_code&gt;</code> — فتح دفعة إعادة توجيه\n"
         "<code>/historical_forward_one &lt;channel_code&gt;</code> — استقبال رسالة واحدة\n"
         "<code>/historical_channels</code> — عرض أكواد القنوات ومعرّفات Telegram\n"
