@@ -13,6 +13,10 @@ from capitalguard.application.services.frictionless_ingestion_service import (
 )
 from capitalguard.application.services.historical_parser_service import HistoricalParserService
 from capitalguard.application.services.historical_replay_gate_service import HistoricalReplayGateService
+from capitalguard.application.services.historical_owner_review_service import (
+    HistoricalOwnerReviewError,
+    HistoricalOwnerReviewService,
+)
 from capitalguard.application.services.parsing_service import ParsingService
 from capitalguard.application.services.price_service import PriceService
 from capitalguard.application.services.historical_forwarding_service import (
@@ -585,6 +589,41 @@ async def historical_forward_finish_cmd(update: Update, context: ContextTypes.DE
     return ConversationHandler.END
 
 
+@uow_transaction
+@require_active_user
+async def historical_forward_review_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Approve or reject a dry-run batch; approval never creates live entities."""
+    if not update.message:
+        return
+    if not _is_admin(update.effective_chat.id):
+        await update.message.reply_text("🚫 Historical batch review is restricted to administration.")
+        return
+    if len(context.args or []) < 2:
+        await update.message.reply_text("Usage: /historical_forward_review <batch_id> <approve|reject> [note]")
+        return
+    try:
+        batch_id = int(context.args[0])
+        decision = context.args[1].strip().lower()
+        if decision not in {"approve", "reject"}:
+            raise HistoricalOwnerReviewError("decision must be approve or reject")
+        note = " ".join(context.args[2:]).strip() or None
+        batch = HistoricalOwnerReviewService().review_batch(
+            db_session,
+            batch_id=batch_id,
+            reviewer_user_id=db_user.id,
+            approved=decision == "approve",
+            note=note,
+        )
+        await update.message.reply_text(
+            f"✅ Historical batch review recorded\\n"
+            f"batch_id={batch.id}\\n"
+            f"status={batch.status}\\n"
+            "Evidence ingestion remains a separate controlled step."
+        )
+    except (ValueError, HistoricalOwnerReviewError) as exc:
+        await update.message.reply_text(f"⚠️ Historical review rejected: {exc}")
+
+
 async def historical_forward_cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop(BATCH_KEY, None)
     if update.message:
@@ -627,3 +666,4 @@ def register_historical_forwarding_handlers(application: Application):
     )
     application.add_handler(CommandHandler("historical_channels", historical_channels_cmd), group=0)
     application.add_handler(CommandHandler("historical_forward_status", historical_forward_status_cmd), group=0)
+    application.add_handler(CommandHandler("historical_forward_review", historical_forward_review_cmd), group=0)
