@@ -1,6 +1,6 @@
 # Copy these variable names to Railway or Vercel settings. Do not commit real values.
 
-DATABASE_URL=mysql://USER:PASSWORD@HOST:3306/capitalguard_web
+DATABASE_URL=postgresql://WEB_USER:WEB_PASSWORD@WEB_POSTGRES_HOST:5432/capitalguard_web
 JWT_SECRET=REPLACE_WITH_A_LONG_RANDOM_SECRET
 CAPITALGUARD_CORE_BASE_URL=https://capitalguardprov2-production-b4ea.up.railway.app
 CAPITALGUARD_CORE_API_KEY=REPLACE_WITH_CORE_SERVICE_KEY

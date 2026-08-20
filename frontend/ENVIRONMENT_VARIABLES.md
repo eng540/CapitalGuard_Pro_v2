@@ -4,7 +4,7 @@ This file is intentionally visible in GitHub. It explains every variable needed 
 
 | Variable | Required | Where to set it | Purpose |
 |---|---:|---|---|
-| `DATABASE_URL` | Yes | Railway/Vercel server environment | Dedicated MySQL/TiDB database for the web service. Do not point it at Core PostgreSQL. |
+| `DATABASE_URL` | Yes | Railway/Vercel server environment | Dedicated PostgreSQL database for the Web service. Do not point it at Core PostgreSQL. |
 | `JWT_SECRET` | Yes | Server environment only | Signs web-session cookies. Generate a unique random value. |
 | `CAPITALGUARD_CORE_BASE_URL` | Yes | Server environment only | The Core URL: `https://capitalguardprov2-production-b4ea.up.railway.app`. |
 | `CAPITALGUARD_CORE_API_KEY` | Yes | Server environment only | Read-only Core service key. Never use a `VITE_` prefix. |
@@ -16,7 +16,9 @@ This file is intentionally visible in GitHub. It explains every variable needed 
 
 ## Railway
 
-Create a **separate** Railway service with root directory `frontend`. Railway sets `PORT` automatically; do not create it manually. Add the variables above in the service settings, then deploy. Keep the Core/Bot service unchanged.
+Create a **separate Web PostgreSQL service** and a separate Web application service with root directory `frontend`. Railway sets `PORT` automatically; do not create it manually. Reference the Web PostgreSQL URL as `DATABASE_URL`, then deploy. Keep the Core/Bot service and Core PostgreSQL unchanged.
+
+The committed `frontend/drizzle/0000_*.sql` migration creates only `web_*` tables and web enums. The service runs `db:migrate` before startup; it does not generate or alter any Core migration.
 
 ## Vercel
 

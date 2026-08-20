@@ -2,7 +2,7 @@
 buildCommand = "npx --yes pnpm@10.4.1 install --frozen-lockfile && npx --yes pnpm@10.4.1 build"
 
 [deploy]
-startCommand = "node dist/index.js"
+startCommand = "npx --yes pnpm@10.4.1 run db:migrate && node dist/index.js"
 healthcheckPath = "/"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
