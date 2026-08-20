@@ -14,6 +14,10 @@ from capitalguard.application.services.frictionless_ingestion_service import (
 from capitalguard.application.services.historical_parser_service import HistoricalParserService
 from capitalguard.application.services.historical_replay_gate_service import HistoricalReplayGateService
 from capitalguard.application.services.live_review_service import LiveReviewService
+from capitalguard.application.services.historical_evidence_ingestion_service import (
+    HistoricalEvidenceIngestionError,
+    HistoricalEvidenceIngestionService,
+)
 from capitalguard.application.services.historical_owner_review_service import (
     HistoricalOwnerReviewError,
     HistoricalOwnerReviewService,
@@ -633,6 +637,36 @@ async def historical_forward_review_cmd(update: Update, context: ContextTypes.DE
         await update.message.reply_text(f"⚠️ Historical review rejected: {exc}")
 
 
+@uow_transaction
+@require_active_user
+async def historical_forward_ingest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    """Ingest reviewed receipts as immutable evidence; never creates live entities."""
+    if not update.message:
+        return
+    if not _is_admin(update.effective_chat.id):
+        await update.message.reply_text("🚫 Evidence ingestion is restricted to administration.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /historical_forward_ingest <batch_id>")
+        return
+    try:
+        batch_id = int(context.args[0])
+        ingested, skipped = HistoricalEvidenceIngestionService().ingest_reviewed_batch(
+            db_session,
+            batch_id=batch_id,
+            reviewer_user_id=db_user.id,
+        )
+        await update.message.reply_text(
+            "✅ Historical evidence ingestion completed\\n"
+            f"batch_id={batch_id}\\n"
+            f"ingested={ingested}\\n"
+            f"skipped={skipped}\\n"
+            "No live recommendation or trader position was created."
+        )
+    except (ValueError, HistoricalEvidenceIngestionError) as exc:
+        await update.message.reply_text(f"⚠️ Evidence ingestion rejected: {exc}")
+
+
 async def historical_forward_cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop(BATCH_KEY, None)
     if update.message:
@@ -676,3 +710,4 @@ def register_historical_forwarding_handlers(application: Application):
     application.add_handler(CommandHandler("historical_channels", historical_channels_cmd), group=0)
     application.add_handler(CommandHandler("historical_forward_status", historical_forward_status_cmd), group=0)
     application.add_handler(CommandHandler("historical_forward_review", historical_forward_review_cmd), group=0)
+    application.add_handler(CommandHandler("historical_forward_ingest", historical_forward_ingest_cmd), group=0)

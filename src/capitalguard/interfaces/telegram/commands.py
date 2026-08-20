@@ -209,6 +209,7 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
         "/historical_forward_status — حالة الدفعة اليدوية الحالية",
         "/historical_forward_start CODE — مسار مراجعة تاريخية مضبوط",
         "/historical_forward_review BATCH approve|reject — قرار المالك قبل الإدخال",
+        "/historical_forward_ingest BATCH — إدخال Evidence بعد الاعتماد",
 
     ]
     if is_analyst:
@@ -226,6 +227,7 @@ async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, db_se
             "/historical_forward_status — حالة الدفعة الحالية",
             "/historical_forward_cancel — إلغاء staging دون إدخال بيانات",
             "/historical_forward_review BATCH approve|reject — اعتماد/رفض Dry-Run للإدارة",
+            "/historical_forward_ingest BATCH — إدخال Evidence المعتمدة فقط",
         ])
     else:
         lines.extend([
