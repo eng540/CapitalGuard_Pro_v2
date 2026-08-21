@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # R3 commercial gate: keep billing/charging disabled until Alpha retention approval.
     BILLING_ENABLED: bool = False
 
+    # R5 commercial gate: automatic execution and Copy Trading are prohibited until
+    # a separately approved commercial decision; no current code path reads this as true.
+    COPY_TRADING_ENABLED: bool = False
+
     # Historical connector gate: disabled until owner approval and connector acceptance.
     HISTORY_CONNECTOR_ENABLED: bool = False
 
