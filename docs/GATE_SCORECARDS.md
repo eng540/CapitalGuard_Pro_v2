@@ -40,7 +40,7 @@
 | البوابة | الحالة | الشرط التالي |
 |---|---|---|
 | R3-C Monetization | HOLD | قرار قانوني/تسعير/دعم ثم provider sandbox/webhook/refund/reconciliation. |
-| R4 Platform | OPEN | tenant/API v1/rate limits/contract coverage/load/SLO/error budget/canary. |
+| R4 Platform | BUILD_DONE جزئياً / OPEN | أُسست ركيزة `/api/v1/status` غير المالية؛ تبقى tenant/rate limits/contract coverage/load/SLO/error budget/canary مفتوحة. |
 | R5-C Copy Trading Sandbox | HOLD / NOT_STARTED | لا يبدأ قبل إغلاق R4 وقرار مستقل؛ C0–C5 تشمل sandbox, idempotency, reconciliation, kill switch, security/legal. |
 
 ## قواعد القرار

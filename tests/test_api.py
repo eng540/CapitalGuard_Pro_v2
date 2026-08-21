@@ -34,6 +34,29 @@ def test_health_is_fail_closed_before_startup(client: TestClient):
     assert response.json()["detail"] == "Service is not ready"
 
 
+def test_v1_status_is_versioned_nonfinancial_and_fail_closed(client: TestClient):
+    app.state.ready = False
+    app.state.ptb_app = None
+    app.state.services = None
+
+    not_ready = client.get("/api/v1/status")
+    assert not_ready.status_code == 503
+    assert not_ready.json()["detail"] == "Service is not ready"
+
+    app.state.ready = True
+    app.state.ptb_app = object()
+    app.state.services = {"test_service": object()}
+    ready = client.get("/api/v1/status")
+
+    assert ready.status_code == 200
+    assert ready.json() == {
+        "api_version": "v1",
+        "service": "capitalguard-core",
+        "status": "ok",
+        "commercial_mode": "noncommercial",
+    }
+
+
 def test_webapp_rejects_invalid_telegram_init_data(client: TestClient):
     response = client.get("/api/webapp/portfolio", params={"initData": "invalid"})
 
