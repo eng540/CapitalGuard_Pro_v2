@@ -112,10 +112,11 @@ describe("CapitalGuard Core adapter", () => {
   });
 
   it("reports R5 as a server-controlled noncommercial hold", async () => {
-    const fakeFetch = async () => new Response(JSON.stringify({ ok: true, status: "HOLD", reasons: ["RESTORE_DRILL_DEFERRED"], commercial_enabled: false, copy_trading_enabled: false, snapshot: { outbox_backlog: 0, owner_review_backlog: 0, replay_backlog: 0 }, as_of: "2026-08-21T00:00:00Z" }), { status: 200 });
+    const fakeFetch = async () => new Response(JSON.stringify({ ok: true, status: "HOLD", reasons: ["RESTORE_DRILL_DEFERRED"], commercial_enabled: false, copy_trading_enabled: false, execution_controls: { auto_trade_enabled: false, trade_live_enabled: false }, snapshot: { outbox_backlog: 0, owner_review_backlog: 0, replay_backlog: 0 }, as_of: "2026-08-21T00:00:00Z" }), { status: 200 });
     const result = await coreGetR5Readiness(123456, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
     expect(result.status).toBe("HOLD");
     expect(result.commercial_enabled).toBe(false);
     expect(result.copy_trading_enabled).toBe(false);
+    expect(result.execution_controls).toEqual({ auto_trade_enabled: false, trade_live_enabled: false });
   });
 });
