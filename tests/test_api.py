@@ -103,6 +103,7 @@ def test_additional_read_models_require_the_core_service_key(client: TestClient,
 
     assert client.get("/api/webapp/read-models/analysts").status_code == 401
     assert client.get("/api/webapp/read-models/trader/123456/recommendations").status_code == 401
+    assert client.get("/api/webapp/read-models/trader/123456/recommendations/USR-000001/T-0001").status_code == 401
     assert client.get("/api/webapp/read-models/trader/123456/historical").status_code == 401
 
 

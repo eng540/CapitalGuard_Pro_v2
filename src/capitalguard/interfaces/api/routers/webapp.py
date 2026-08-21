@@ -34,6 +34,7 @@ from capitalguard.infrastructure.db.models import HistoricalImportBatch, Histori
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
+TRADER_RECOMMENDATION_SCHEMA_VERSION = "2026-08-21.2"
 
 # --- Models ---
 class WebAppSignal(BaseModel):
@@ -132,9 +133,15 @@ def _serialize_live_position(entity: Any, live_price: float | None) -> dict[str,
 
 def _serialize_trade_read_model(trade: UserTrade) -> dict[str, Any]:
     events = sorted(getattr(trade, "events", []) or [], key=lambda item: (item.event_timestamp, item.id), reverse=True)[:8]
+    source = getattr(trade, "source_recommendation", None)
+    public_ref = trade.public_ref or f"TR-{trade.id}"
     return {
+        # `id` remains only as a temporary compatibility field for the existing
+        # read-only Web client. New clients must use public_ref/display_ref.
         "id": int(trade.id),
-        "public_ref": trade.public_ref or f"TR-{trade.id}",
+        "entity_type": "USER_TRADE",
+        "public_ref": public_ref,
+        "display_ref": public_ref,
         "asset": trade.asset,
         "side": trade.side,
         "market": "Futures",
@@ -143,13 +150,29 @@ def _serialize_trade_read_model(trade: UserTrade) -> dict[str, Any]:
         "targets": trade.targets or [],
         "status": getattr(trade.status, "value", str(trade.status)),
         "source_type": trade.source_type,
+        "source": {
+            "entity_type": "RECOMMENDATION",
+            "public_ref": getattr(source, "public_ref", None),
+            "analyst_id": getattr(source, "analyst_id", None),
+        } if source else None,
         "created_at": trade.created_at.isoformat() if trade.created_at else None,
+        "activated_at": trade.activated_at.isoformat() if trade.activated_at else None,
         "closed_at": trade.closed_at.isoformat() if trade.closed_at else None,
         "timeline": [
             {"event_type": event.event_type, "event_timestamp": event.event_timestamp.isoformat()}
             for event in events
         ],
     }
+
+
+def _find_owned_user_trade_by_public_ref(session: Any, user_id: int, public_ref: str) -> UserTrade | None:
+    """Resolve a trader-owned read model without exposing numeric-ID lookups."""
+    return session.execute(
+        select(UserTrade).where(
+            UserTrade.user_id == user_id,
+            UserTrade.public_ref == public_ref,
+        )
+    ).scalar_one_or_none()
 
 
 def _serialize_historical_signal_read_model(signal: Any) -> dict[str, Any]:
@@ -322,7 +345,39 @@ async def get_trader_recommendation_read_model(telegram_id: int, request: Reques
         trades = session.execute(
             select(UserTrade).where(UserTrade.user_id == user.id).order_by(UserTrade.created_at.desc(), UserTrade.id.desc()).limit(100)
         ).scalars().all()
-        return {"ok": True, "as_of": datetime.utcnow().isoformat() + "Z", "items": [_serialize_trade_read_model(trade) for trade in trades]}
+        return {
+            "ok": True,
+            "schema_version": TRADER_RECOMMENDATION_SCHEMA_VERSION,
+            "as_of": datetime.utcnow().isoformat() + "Z",
+            "items": [_serialize_trade_read_model(trade) for trade in trades],
+        }
+
+
+@router.get("/read-models/trader/{telegram_id}/recommendations/{public_ref:path}")
+async def get_owned_trader_recommendation_detail(telegram_id: int, public_ref: str, request: Request):
+    """Return one trader-owned UserTrade by public reference.
+
+    The Web service derives telegram_id from its signed session; Core enforces the
+    server key and row ownership before returning the detail.
+    """
+    require_core_service_key(request.headers.get("authorization"))
+    normalized_ref = public_ref.strip()
+    if not normalized_ref:
+        raise HTTPException(status_code=404, detail="Recommendation was not found")
+    with session_scope() as session:
+        user = UserRepository(session).find_by_telegram_id(telegram_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Trader identity was not found")
+        trade = _find_owned_user_trade_by_public_ref(session, user.id, normalized_ref)
+        if not trade:
+            # Do not reveal that a reference exists for another trader.
+            raise HTTPException(status_code=404, detail="Recommendation was not found")
+        return {
+            "ok": True,
+            "schema_version": TRADER_RECOMMENDATION_SCHEMA_VERSION,
+            "as_of": datetime.utcnow().isoformat() + "Z",
+            "item": _serialize_trade_read_model(trade),
+        }
 
 
 @router.get("/read-models/trader/{telegram_id}/historical")
