@@ -9,9 +9,6 @@ from capitalguard.application.services.parsing_service import ParsingService, Pa
 from capitalguard.infrastructure.db.repository import ParsingRepository
 from capitalguard.infrastructure.db.models import ParsingTemplate # Import model for fixture setup
 
-# Mark tests as async because extract_trade_data is async
-pytestmark = pytest.mark.asyncio
-
 @pytest.fixture
 def mock_parsing_repo():
     """Provides a mock ParsingRepository."""
@@ -82,6 +79,7 @@ def test_find_asset_and_side(parsing_service: ParsingService, input_text, expect
 
 # --- Test Cases for extract_trade_data (Main Method) ---
 
+@pytest.mark.asyncio
 async def test_extract_data_no_templates_ner_fallback_success(parsing_service: ParsingService, mock_parsing_repo: MagicMock):
     """Tests successful parsing via NER when no regex templates match."""
     mock_parsing_repo.get_active_templates.return_value = [] # Ensure no templates are returned
@@ -114,6 +112,7 @@ async def test_extract_data_no_templates_ner_fallback_success(parsing_service: P
     assert update_args['latency_ms'] is not None and update_args['latency_ms'] >= 0
 
 
+@pytest.mark.asyncio
 async def test_extract_data_regex_template_success(parsing_service: ParsingService, mock_parsing_repo: MagicMock):
     """Tests successful parsing using a matching regex template."""
     # Define a mock template
@@ -149,6 +148,7 @@ async def test_extract_data_regex_template_success(parsing_service: ParsingServi
     assert update_args['used_template_id'] == 1
 
 
+@pytest.mark.asyncio
 async def test_extract_data_all_paths_fail(parsing_service: ParsingService, mock_parsing_repo: MagicMock):
     """Tests the case where neither regex nor NER can parse the text."""
     mock_parsing_repo.get_active_templates.return_value = []
@@ -171,6 +171,7 @@ async def test_extract_data_all_paths_fail(parsing_service: ParsingService, mock
     assert update_args['used_template_id'] is None
 
 
+@pytest.mark.asyncio
 async def test_extract_data_db_error_on_start(parsing_service: ParsingService, mock_parsing_repo: MagicMock):
     """Tests handling of DB error during initial attempt creation."""
     mock_parsing_repo.add_attempt.side_effect = Exception("DB Connection Error")
@@ -200,6 +201,7 @@ corrected_data_dict = {
 }
 
 @pytest.mark.skip(reason="Requires session_scope/UOW setup for async correction method")
+@pytest.mark.asyncio
 async def test_record_correction_saves_diff(parsing_service: ParsingService, mock_parsing_repo: MagicMock):
     """Tests that corrections are recorded with the correct diff."""
     await parsing_service.record_correction(mock_attempt_id, corrected_data_dict, original_parsed_data_dict)
