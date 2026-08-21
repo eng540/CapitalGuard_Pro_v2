@@ -220,16 +220,23 @@ async def create_trade_webapp(payload: WebAppSignal, request: Request):
             targets = parse_targets_list(payload.targets_raw.split())
             if not targets: return {"ok": False, "error": "Invalid Targets"}
             notes = f"Lev: {payload.leverage}x | {payload.notes or ''}".strip()
+            target_channel_ids = {int(channel_id) for channel_id in (payload.channel_ids or [])}
             rec, _ = await svc.create_and_publish_recommendation_async(
                 user_id=str(user_data['id']), db_session=session,
                 asset=payload.asset, side=payload.side, market=payload.market,
                 order_type=payload.order_type, entry=Decimal(str(payload.entry)),
-                stop_loss=Decimal(str(payload.stop_loss)), targets=targets, notes=notes
+                stop_loss=Decimal(str(payload.stop_loss)), targets=targets, notes=notes,
+                target_channel_ids=target_channel_ids,
             )
-            asyncio.create_task(svc.background_publish_and_index(
-                rec_id=rec.id, user_db_id=user.id, target_channel_ids=set(payload.channel_ids) if payload.channel_ids else None
-            ))
-            return {"ok": True, "id": rec.id}
+            return {
+                "ok": True,
+                "entity_type": "RECOMMENDATION",
+                "public_ref": rec.public_ref,
+                "publication": {
+                    "state": "QUEUED" if target_channel_ids else "SAVED",
+                    "delivery_count": len(target_channel_ids),
+                },
+            }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
