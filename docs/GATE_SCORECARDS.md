@@ -10,7 +10,7 @@
 | Health/readiness وsmoke | PASS جزئي | Railway health موجود؛ يلزم artifact موحد للـ smoke. |
 | Fresh PostgreSQL migration | OPEN | تشغيل على قاعدة فارغة وتسجيل head. |
 | Existing-data reconciliation | OPEN | restore anonymized snapshot وعدّ counts/FKs/statuses. |
-| Backup/Restore وRTO/RPO | DEFERRED — NON-BLOCKING FOR NON-COMMERCIAL DEVELOPMENT | قرار المالك بتاريخ 21 أغسطس 2026: يؤجل Restore Drill، لكنه يبقى شرطاً قبل أي اعتماد تجاري أو رفع R5 من HOLD. |
+| Backup/Restore وRTO/RPO | PASS | Restore Drill منفصل ومقنّع بتاريخ 21 أغسطس 2026: Core/Web restore وAlembic/Drizzle وcounts ناجحة؛ RTO ≈45 ثانية، وRPO <5 دقائق. راجع `docs/RESTORE_DRILL_EVIDENCE_20260821.md`. |
 | E2E Forward→Close حي | OPEN | سيناريو موثق مع Redis/Telegram/market controlled inputs. |
 | أسرار وPII | OPEN | دليل تدوير مقنّع وretention/access register. |
 
@@ -52,3 +52,4 @@
 | التاريخ | القرار | النطاق المسموح | الأثر المحظور أو المؤجل |
 |---|---|---|---|
 | 21 أغسطس 2026 | تأجيل Restore Drill | استمرار تطوير المنتج غير التجاري، الترقيات، الاختبارات المحلية، UAT غير التجاري، ودمج التحسينات عبر PRs. | لا اعتماد تجاري، لا تفعيل دفع، لا تغيير R5 من HOLD، ولا Copy Trading قبل Restore Drill منفصل وموثق. |
+| 21 أغسطس 2026 | إغلاق دليل Restore Drill | دليل restore منطقي منفصل لـ Core وWeb مع migrations/integrity وRTO/RPO مقنّعة. | يبقى الدفع وCopy Trading والتنفيذ الحي محظوراً؛ لا تزال بقية أدلة G0/R4 وقرارات R3-C/R5-C مستقلة ومفتوحة. |

@@ -46,6 +46,10 @@ The owner must perform this drill against a **separate restore target**, never b
 5. Verify Core health, Web health, Telegram auth configuration, and that historical records remain isolated.
 6. Record duration, checksum or row-count sanity evidence, operator, issues, and corrective actions in the owner incident log.
 
+### Latest masked evidence
+
+The owner completed a separate Core and Web logical Restore Drill on **21 August 2026**. Both restores, Core Alembic verification, Web Drizzle verification, and masked table-integrity checks passed. The observed RTO was approximately **45 seconds** and the source snapshot age (RPO) was **under five minutes**. The temporary targets were dropped after verification, while production Core and Web health remained `ok`. See [`RESTORE_DRILL_EVIDENCE_20260821.md`](./RESTORE_DRILL_EVIDENCE_20260821.md).
+
 ## R4/R5 evidence checklist
 
 | Evidence | Status required before R5 commercial review |
@@ -54,12 +58,12 @@ The owner must perform this drill against a **separate restore target**, never b
 | Telegram-first session and owner RBAC verification | Complete for the current operational slice. |
 | Owner Review/Evidence audit and empty/error state verification | Complete for the current operational slice. |
 | Operations-feed route and protected unauthenticated probe | Complete for the current operational slice. |
-| Core and Web PostgreSQL backup-and-restore drill | Pending owner-operated evidence. |
+| Core and Web PostgreSQL backup-and-restore drill | Complete — masked separate-target drill passed on 21 August 2026; measured RTO ≈45s and RPO <5m. |
 | Defined observation window with no unresolved S1/S2 incident | Pending elapsed-time evidence. |
 | Formal commercial, legal, privacy, support, and pricing approval | Pending separate product decision. |
 
 Until every pending row is evidenced and approved, R5 is **HOLD**. A technical `PASS` in the release-gate service is not commercial authorization.
 
-## Current test-environment decision
+## Current operational decision
 
-The owner has deferred the PostgreSQL Restore Drill while the Railway deployment is treated as a test environment. This does not block feature development, Telegram authentication, read-only Core views, historical review, or the Owner Review workflow. It does block a transition of R5 out of **HOLD** and blocks any future commercial enablement. When resumed, the drill must use separate Core and Web restore targets and record the measured RTO/RPO evidence described above.
+The PostgreSQL Restore Drill is complete for the current Core/Web schemas. This closes the backup-and-restore evidence item but does not make the release commercial. Feature development, Telegram authentication, read-only Core views, historical review, and Owner Review remain non-commercial, while every other unresolved R4/R5 evidence item still governs its own gate.
