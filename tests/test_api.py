@@ -83,6 +83,14 @@ def test_additional_read_models_require_the_core_service_key(client: TestClient,
     assert client.get("/api/webapp/read-models/trader/123456/historical").status_code == 401
 
 
+def test_r5_readiness_requires_the_core_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "test-service-key")
+
+    assert client.get("/api/webapp/owner/r5-readiness?actor_telegram_id=123456").status_code == 401
+
+
 def test_removed_legacy_recommendations_surface_is_not_accidentally_reintroduced(client: TestClient):
     response = client.get("/recommendations")
     assert response.status_code == 404
