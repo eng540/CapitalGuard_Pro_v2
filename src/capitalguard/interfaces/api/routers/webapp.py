@@ -18,7 +18,7 @@ from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Header
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from capitalguard.config import settings
+from capitalguard.config import get_r5_observation_status, settings
 from capitalguard.infrastructure.db.uow import session_scope
 from capitalguard.infrastructure.db.repository import UserRepository, ChannelRepository, RecommendationRepository
 from capitalguard.interfaces.telegram.parsers import parse_targets_list
@@ -447,7 +447,12 @@ async def get_r5_readiness(actor_telegram_id: int, request: Request):
             replay_backlog = session.execute(
                 select(func.count()).select_from(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_status == "REPLAY_PENDING")
             ).scalar_one()
-            reasons = ["RESTORE_DRILL_DEFERRED", "NO_R5_OBSERVATION_WINDOW"]
+            observation = get_r5_observation_status()
+            reasons = ["RESTORE_DRILL_DEFERRED"]
+            if observation["started_at"] is None:
+                reasons.append("NO_R5_OBSERVATION_WINDOW")
+            elif not observation["complete"]:
+                reasons.append("R5_OBSERVATION_WINDOW_INCOMPLETE")
             if outbox_backlog:
                 reasons.append("OUTBOX_NOT_DRAINED")
             if review_backlog:
@@ -464,6 +469,7 @@ async def get_r5_readiness(actor_telegram_id: int, request: Request):
                     "auto_trade_enabled": settings.AUTO_TRADE_ENABLED,
                     "trade_live_enabled": settings.TRADE_LIVE_ENABLED,
                 },
+                "observation": observation,
                 "snapshot": {
                     "outbox_backlog": int(outbox_backlog),
                     "owner_review_backlog": int(review_backlog),
