@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     # R5 commercial gate: automatic execution and Copy Trading are prohibited until
     # a separately approved commercial decision; no current code path reads this as true.
     COPY_TRADING_ENABLED: bool = False
+    AUTO_TRADE_ENABLED: bool = False
+    TRADE_LIVE_ENABLED: bool = False
 
     # Historical connector gate: disabled until owner approval and connector acceptance.
     HISTORY_CONNECTOR_ENABLED: bool = False
@@ -69,5 +71,19 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def validate_r5_noncommercial_controls() -> dict[str, bool]:
+    """Fail closed if any prohibited commercial/execution flag is enabled during R5 HOLD."""
+    controls = {
+        "billing_enabled": settings.BILLING_ENABLED,
+        "copy_trading_enabled": settings.COPY_TRADING_ENABLED,
+        "auto_trade_enabled": settings.AUTO_TRADE_ENABLED,
+        "trade_live_enabled": settings.TRADE_LIVE_ENABLED,
+    }
+    enabled = [name for name, value in controls.items() if value]
+    if enabled:
+        raise RuntimeError(f"R5 noncommercial gate rejected enabled controls: {', '.join(enabled)}")
+    return controls
 
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---

@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse
 from telegram import Update, BotCommand
 from telegram.ext import Application, ContextTypes, BasePersistence
 
-from capitalguard.config import settings
+from capitalguard.config import settings, validate_r5_noncommercial_controls
 from capitalguard.boot import bootstrap_app, build_services
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
 from capitalguard.interfaces.api.routers import auth as auth_router
@@ -181,6 +181,14 @@ async def on_startup():
     log.info("🚀 Application startup sequence initiated...")
 
     validate_security_settings()
+    r5_controls = validate_r5_noncommercial_controls()
+    log.info(
+        "R5 noncommercial controls verified: billing=%s copy_trading=%s auto_trade=%s trade_live=%s",
+        r5_controls["billing_enabled"],
+        r5_controls["copy_trading_enabled"],
+        r5_controls["auto_trade_enabled"],
+        r5_controls["trade_live_enabled"],
+    )
 
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
