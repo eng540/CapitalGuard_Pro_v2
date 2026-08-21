@@ -43,6 +43,7 @@ export type CoreOperationsFeed = { events: CoreOperationsEvent[]; summary: { cri
 export type CoreTraderRecommendation = { id: number; public_ref: string; asset: string; side: string; market: string; entry: number; stop_loss: number; targets: unknown[]; status: string; source_type: string; created_at: string | null; closed_at: string | null; timeline: Array<{ event_type: string; event_timestamp: string }> };
 export type CoreHistoricalRecord = { public_ref: string; asset: string | null; side: string | null; status: string; trust_tier: string; eligible_for_ranking: boolean; decision_timestamp: string | null };
 export type CoreAnalystReadModel = { analyst_code: string | null; public_ref: string | null; public_name: string; sample_size: number; win_rate_pct: number; total_pnl_pct: number; max_drawdown_pct: number; active_recommendations: number; risk_exposure_pct: number; eligible_for_ranking: boolean; freshness_days: number | null };
+export type CoreR5Readiness = { status: "HOLD"; reasons: string[]; commercial_enabled: false; copy_trading_enabled: false; snapshot: { outbox_backlog: number; owner_review_backlog: number; replay_backlog: number }; as_of: string };
 
 export function getCoreConfig(env = process.env): CoreConfig {
   const rawUrl = env.CAPITALGUARD_CORE_BASE_URL?.trim();
@@ -148,6 +149,13 @@ export async function coreGetAnalysts(fetchImpl: typeof fetch = fetch, env = pro
   const result = await coreReadOnlyFetch("/api/webapp/read-models/analysts", {}, fetchImpl, env);
   if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_ANALYSTS_INVALID");
   return result as { as_of: string; items: CoreAnalystReadModel[] };
+}
+
+export async function coreGetR5Readiness(actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreR5Readiness> {
+  if (!Number.isSafeInteger(actorTelegramId) || actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const result = await coreReadOnlyFetch(query("/api/webapp/owner/r5-readiness", { actor_telegram_id: String(actorTelegramId) }), {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || (result as { status?: unknown }).status !== "HOLD") throw new Error("CAPITALGUARD_CORE_R5_READINESS_INVALID");
+  return result as CoreR5Readiness;
 }
 
 export async function coreReviewHistoricalBatch(input: { actorTelegramId: number; batchId: number; approved: boolean; note?: string; idempotencyKey: string }, fetchImpl: typeof fetch = fetch, env = process.env) {

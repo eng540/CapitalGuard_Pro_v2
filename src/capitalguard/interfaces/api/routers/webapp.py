@@ -16,7 +16,7 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Header
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from capitalguard.config import settings
 from capitalguard.infrastructure.db.uow import session_scope
@@ -30,7 +30,7 @@ from capitalguard.application.services.analyst_discovery_service import AnalystD
 from capitalguard.application.services.historical_signal_query_service import HistoricalSignalQueryService
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
-from capitalguard.infrastructure.db.models import PublicationDelivery, RecommendationEvent, RecommendationStatusEnum, UserTrade, WebCommandAudit
+from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalSignalEvent, PublicationDelivery, RecommendationEvent, RecommendationStatusEnum, UserTrade, WebCommandAudit
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
@@ -427,6 +427,46 @@ async def get_operations_feed(actor_telegram_id: int, request: Request):
             events.sort(key=lambda event: event["occurred_at"], reverse=True)
             trimmed = events[:100]
             return {"ok": True, "events": trimmed, "summary": {"critical": sum(event["severity"] == "critical" for event in trimmed), "warning": sum(event["severity"] == "warning" for event in trimmed), "total": len(trimmed)}}
+    except WebCommandError as exc:
+        raise HTTPException(status_code=403, detail="Owner command rejected") from exc
+
+
+@router.get("/owner/r5-readiness")
+async def get_r5_readiness(actor_telegram_id: int, request: Request):
+    """Owner-only operational R5 snapshot; this endpoint can never enable commerce."""
+    require_core_service_key(request.headers.get("authorization"))
+    try:
+        with session_scope() as session:
+            WebCommandService().require_owner(session, actor_telegram_id)
+            outbox_backlog = session.execute(
+                select(func.count()).select_from(PublicationDelivery).where(PublicationDelivery.status.in_(["PENDING", "PROCESSING", "RETRY", "FAILED"]))
+            ).scalar_one()
+            review_backlog = session.execute(
+                select(func.count()).select_from(HistoricalImportBatch).where(HistoricalImportBatch.status.in_(["DRY_RUN", "OWNER_REVIEW_REQUIRED"]))
+            ).scalar_one()
+            replay_backlog = session.execute(
+                select(func.count()).select_from(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_status == "REPLAY_PENDING")
+            ).scalar_one()
+            reasons = ["RESTORE_DRILL_DEFERRED", "NO_R5_OBSERVATION_WINDOW"]
+            if outbox_backlog:
+                reasons.append("OUTBOX_NOT_DRAINED")
+            if review_backlog:
+                reasons.append("OWNER_REVIEW_BACKLOG")
+            if replay_backlog:
+                reasons.append("REPLAY_PENDING_BACKLOG")
+            return {
+                "ok": True,
+                "status": "HOLD",
+                "reasons": reasons,
+                "commercial_enabled": False,
+                "copy_trading_enabled": False,
+                "snapshot": {
+                    "outbox_backlog": int(outbox_backlog),
+                    "owner_review_backlog": int(review_backlog),
+                    "replay_backlog": int(replay_backlog),
+                },
+                "as_of": datetime.utcnow().isoformat() + "Z",
+            }
     except WebCommandError as exc:
         raise HTTPException(status_code=403, detail="Owner command rejected") from exc
 
