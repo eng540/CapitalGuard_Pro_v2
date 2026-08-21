@@ -1,46 +1,28 @@
 # Definition of Done
 
-## 1. قاعدة عامة
+## 1. القاعدة
 
-لا تعتبر المهمة مكتملة لأن الكود يعمل محليًا فقط. الإغلاق يتطلب تحققًا من الكود والاختبارات والبيانات والأمن والتشغيل والتوثيق والدليل.
+> **Task Done ≠ Gate Closed.**
 
-> **Done = Code + Tests + Validation + Security + Documentation + Migration + Regression + PR + Evidence**
+`Task Done` يتطلب code/tests/docs/security/rollback. أما `Gate Closed` فيتطلب أيضاً evidence خارجي ومالك قرار. ويجب أن تسجل الوثائق الحالة بصيغة `BUILD_DONE` أو `EVIDENCE_OPEN` أو `GATE_CLOSED` أو `HOLD`.
 
-## 2. مستوى Task
+## 2. تعريف الإنجاز للمهمة وPR
 
-| البند | شرط الإغلاق |
+| المجال | الشرط |
 |---|---|
-| Scope | المهمة مرتبطة بـ Requirement/Story ولا تحتوي توسعًا غير مصرح |
-| Code | التغيير محدود، قابل للقراءة، ولا يكرر abstraction غير ضروري |
-| Error handling | الحالات الصحيحة والخاطئة واضحة ولا يوجد silent failure غير موثق |
-| Tests | Unit أو Integration مناسب، مع negative case واحد على الأقل |
-| Data | أي schema/query موثق ومختبر على DB مناسبة |
-| Security | مراجعة ownership/secrets/input عند انطباقها |
-| Observability | log/metric مفيد دون PII غير ضروري |
-| Docs | تحديث RUNBOOK/API/contract عند تغير السلوك |
-| Evidence | سجل اختبار أو screenshot/log قابل للإرفاق |
+| Traceability | Requirement ID وbacklog/story متصلان بالـ PR. |
+| Scope | لا تغيير خارج النطاق؛ لا feature تجاري ضمن PR حوكمة. |
+| Tests | tests مناسبة وتشمل negative case؛ وتشغل suite المتأثرة. |
+| Data | migration/rollback/fresh-existing evidence عند انطباقها. |
+| Security | ownership/input/secrets/PII reviewed عند الحساسية. |
+| Metrics | أثر العقد أو event أو KPI موثق. |
+| Operations | log/metric/runbook/degraded behavior عند الخدمات الحية. |
+| Evidence | command، environment، time، result، artifact أو سبب عدم التطبيق. |
 
-## 3. مستوى Story
+## 3. تعريف إغلاق البوابة
 
-يجب أن تنجح جميع Tasks التابعة، ويجب أن يوجد Integration test يثبت الرحلة الكاملة. يجب أن تكون Acceptance Criteria قابلة للتحقق آليًا، وأن تتم مراجعة حالات الفشل والتراجع.
+كل P0 يجب أن يكون PASS، ولا يوجد evidence مفقود، ويوجد Owner Decision مكتوب. لا يسمح `CONDITIONAL GO` بـ Alpha أو تجارة عند فشل recovery أو E2E أو ownership أو financial reconciliation.
 
-## 4. مستوى PR
+## 4. قواعد خاصة
 
-| البند | Required |
-|---|---|
-| Branch | فرع مستقل من آخر `main` أو branch معتمد |
-| Review | مراجعة تقنية واحدة على الأقل، وأمنية عند الحساسية |
-| Tests | `pytest -q` وtests المتخصصة ناجحة |
-| Static | `compileall` وBandit High وpip-audit |
-| Migration | `heads` واحد وupgrade/rollback evidence عند تغيير schema |
-| Diff | `git diff --check` وغييرات خارج النطاق مرفوضة |
-| Rollback | وصف كيف يمكن التراجع أو تعطيل Feature Flag |
-| Release note | أثر التغيير على التشغيل والبيانات واضح |
-
-## 5. مستوى Gate
-
-لا تغلق Gate إلا عند نجاح كل P0 وعدم وجود evidence مفقود. يسمح بـ `CONDITIONAL GO` فقط إذا كانت المخاطر غير المانعة مصنفة بمالك وموعد. لا يسمح بـ `GO Alpha` مع فشل Recovery أو E2E أو ownership.
-
-## 6. قواعد خاصة
-
-عند تغيّر State Machine يجب إعادة تشغيل reports وE2E. عند تغيّر secrets أو webhook يجب تشغيل Security tests. عند تغيّر migration يجب اختبار قاعدة فارغة ونسخة بيانات. عند تغيّر alert logic يجب اختبار duplication وreconnect وclose idempotency.
+أي تغيير State Machine يعيد tests للتقارير وE2E. تغيير metrics يعيد reference reconciliation. تغيير secret أو auth يعيد negative tests ويضيف rotation evidence. تغيير migration يعيد fresh/existing/restore evidence.
