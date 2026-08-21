@@ -33,6 +33,10 @@
 
 The restore-drill deferral does not permit bypassing the guardrail. It only allows the team to continue in test mode. The separate R4 runbook remains the authoritative procedure for resuming the drill.
 
+## Observation window configuration
+
+The owner can begin an auditable non-commercial observation window by setting `R5_OBSERVATION_STARTED_AT` to an ISO-8601 UTC timestamp and, optionally, `R5_OBSERVATION_WINDOW_HOURS` (default: `168`). Core calculates elapsed and remaining hours on each owner-only R5 readiness request; it does not create a background polling task. Completion of this window removes only the observation-related HOLD reason. It never removes the restore-drill or commercial-authorization hold.
+
 ## Related changes
 
 The current technical evidence includes the A-PG isolation [PR #222](https://github.com/eng540/CapitalGuard_Pro_v2/pull/222), Telegram-first authentication [PR #223](https://github.com/eng540/CapitalGuard_Pro_v2/pull/223), Mini App bridge repair [PR #224](https://github.com/eng540/CapitalGuard_Pro_v2/pull/224), health check [PR #225](https://github.com/eng540/CapitalGuard_Pro_v2/pull/225), Core Read Models [PR #226](https://github.com/eng540/CapitalGuard_Pro_v2/pull/226) and [PR #232](https://github.com/eng540/CapitalGuard_Pro_v2/pull/232), Owner Review [PR #227](https://github.com/eng540/CapitalGuard_Pro_v2/pull/227), operations feed [PR #229](https://github.com/eng540/CapitalGuard_Pro_v2/pull/229), R5 guardrail [PR #230](https://github.com/eng540/CapitalGuard_Pro_v2/pull/230), R4 runbook [PR #231](https://github.com/eng540/CapitalGuard_Pro_v2/pull/231), deferred-restore decision [PR #233](https://github.com/eng540/CapitalGuard_Pro_v2/pull/233), commercial default locks [PR #234](https://github.com/eng540/CapitalGuard_Pro_v2/pull/234), R5 Admin readiness [PR #235](https://github.com/eng540/CapitalGuard_Pro_v2/pull/235), direct-execution fail-closed controls [PR #237](https://github.com/eng540/CapitalGuard_Pro_v2/pull/237), and their verified owner-visible status [PR #238](https://github.com/eng540/CapitalGuard_Pro_v2/pull/238).
