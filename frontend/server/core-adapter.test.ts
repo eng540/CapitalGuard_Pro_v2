@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendations, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -107,7 +107,7 @@ describe("CapitalGuard Core adapter", () => {
     const urls: string[] = [];
     const fakeFetch = async (input: string | URL | Request) => {
       urls.push(String(input));
-      return new Response(JSON.stringify({ ok: true, as_of: "2026-08-20T00:00:00Z", items: [] }), { status: 200 });
+      return new Response(JSON.stringify({ ok: true, schema_version: "2026-08-21.2", as_of: "2026-08-20T00:00:00Z", items: [] }), { status: 200 });
     };
     const env = { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" };
     await coreGetTraderRecommendations(123456, fakeFetch as typeof fetch, env);
@@ -118,6 +118,18 @@ describe("CapitalGuard Core adapter", () => {
       "https://core.example/api/webapp/read-models/trader/123456/historical",
       "https://core.example/api/webapp/read-models/analysts",
     ]);
+  });
+
+  it("retrieves one owned recommendation only through an encoded public reference", async () => {
+    let requestUrl = "";
+    const fakeFetch = async (input: string | URL | Request) => {
+      requestUrl = String(input);
+      return new Response(JSON.stringify({ ok: true, schema_version: "2026-08-21.2", as_of: "2026-08-21T00:00:00Z", item: { id: 1, entity_type: "USER_TRADE", public_ref: "USR-000012/T-0003", display_ref: "USR-000012/T-0003", asset: "BTCUSDT", side: "LONG", market: "Futures", entry: 1, stop_loss: 1, targets: [], status: "WATCHLIST", source_type: "TRACKED_RECOMMENDATION", source: null, created_at: null, activated_at: null, closed_at: null, timeline: [] } }), { status: 200 });
+    };
+    const env = { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" };
+    const result = await coreGetTraderRecommendationDetail(123456, "USR-000012/T-0003", fakeFetch as typeof fetch, env);
+    expect(requestUrl).toBe("https://core.example/api/webapp/read-models/trader/123456/recommendations/USR-000012%2FT-0003");
+    expect(result.item.public_ref).toBe("USR-000012/T-0003");
   });
 
   it("reports R5 as a server-controlled noncommercial hold", async () => {
