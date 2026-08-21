@@ -59,3 +59,7 @@ The owner must perform this drill against a **separate restore target**, never b
 | Formal commercial, legal, privacy, support, and pricing approval | Pending separate product decision. |
 
 Until every pending row is evidenced and approved, R5 is **HOLD**. A technical `PASS` in the release-gate service is not commercial authorization.
+
+## Current test-environment decision
+
+The owner has deferred the PostgreSQL Restore Drill while the Railway deployment is treated as a test environment. This does not block feature development, Telegram authentication, read-only Core views, historical review, or the Owner Review workflow. It does block a transition of R5 out of **HOLD** and blocks any future commercial enablement. When resumed, the drill must use separate Core and Web restore targets and record the measured RTO/RPO evidence described above.
