@@ -97,6 +97,19 @@ def test_telegram_webhook_accepts_matching_secret_before_processing(client: Test
     assert response.json() == {"status": "ok"}
 
 
+def test_webhook_secret_validation_rejects_telegram_unallowed_characters():
+    from capitalguard.interfaces.api.main import validate_telegram_webhook_secret
+
+    with pytest.raises(RuntimeError, match="only A-Z"):
+        validate_telegram_webhook_secret("invalid secret@value")
+
+
+def test_webhook_secret_validation_accepts_telegram_character_contract():
+    from capitalguard.interfaces.api.main import validate_telegram_webhook_secret
+
+    assert validate_telegram_webhook_secret("tg_secret-2026_VALID") == "tg_secret-2026_VALID"
+
+
 def test_core_read_model_requires_a_server_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     from capitalguard.config import settings
 

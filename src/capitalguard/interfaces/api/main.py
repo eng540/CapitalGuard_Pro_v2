@@ -6,6 +6,7 @@
 import logging
 import asyncio
 import os
+import re
 import html
 import json
 import hmac
@@ -41,6 +42,18 @@ TELEGRAM_WEBHOOK_ALLOWED_UPDATES = (
     "channel_post",
     "edited_channel_post",
 )
+TELEGRAM_WEBHOOK_SECRET_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+
+
+def validate_telegram_webhook_secret(secret: str | None) -> str:
+    """Fail locally before Telegram rejects an invalid secret_token at startup."""
+    if not secret:
+        raise RuntimeError("TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_WEBHOOK_URL is configured.")
+    if not TELEGRAM_WEBHOOK_SECRET_PATTERN.fullmatch(secret):
+        raise RuntimeError(
+            "TELEGRAM_WEBHOOK_SECRET must be 1-256 characters using only A-Z, a-z, 0-9, '_' or '-'."
+        )
+    return secret
 
 
 class _PersistenceCodec:
@@ -269,11 +282,7 @@ async def on_startup():
     log.info("Bot commands configured.")
 
     if settings.TELEGRAM_WEBHOOK_URL:
-        webhook_secret = settings.TELEGRAM_WEBHOOK_SECRET
-        if not webhook_secret:
-            raise RuntimeError(
-                "TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_WEBHOOK_URL is configured."
-            )
+        webhook_secret = validate_telegram_webhook_secret(settings.TELEGRAM_WEBHOOK_SECRET)
         await ptb_app.bot.set_webhook(
             url=settings.TELEGRAM_WEBHOOK_URL,
             secret_token=webhook_secret,
