@@ -50,11 +50,9 @@ class WebAppSignal(BaseModel):
     leverage: Optional[str] = "20"
     channel_ids: List[int] = []
 
-class TradeAction(BaseModel):
-    initData: str
-    action: str
-    trade_id: int
-    value: Optional[str] = None
+class UserTradeCloseCommand(BaseModel):
+    actor_telegram_id: int
+    idempotency_key: str
 
 
 class OwnerReviewCommand(BaseModel):
@@ -573,49 +571,39 @@ async def get_user_funnel(initData: str, request: Request):
         return {"ok": False, "error": str(e)}
 
 
-@router.post("/action")
-async def handle_trade_action(payload: TradeAction, request: Request):
+@router.post("/action", status_code=410)
+async def retired_legacy_trade_action():
+    """Block the unsafe numeric-ID action surface; use typed command endpoints."""
+    raise HTTPException(status_code=410, detail="Legacy trade action endpoint is retired")
+
+
+@router.post("/read-models/trader/{telegram_id}/recommendations/{public_ref:path}/commands/close")
+async def close_owned_user_trade(
+    telegram_id: int,
+    public_ref: str,
+    command: UserTradeCloseCommand,
+    request: Request,
+):
+    require_core_service_key(request.headers.get("authorization"))
+    if command.actor_telegram_id != telegram_id:
+        raise HTTPException(status_code=403, detail="Command actor does not match the trader scope")
+    services = request.app.state.services or {}
+    lifecycle = services.get("lifecycle_service")
+    price_service = services.get("price_service")
+    if not lifecycle or not price_service:
+        raise HTTPException(status_code=503, detail="UserTrade command services are unavailable")
     try:
-        user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
-        lifecycle = request.app.state.services.get("lifecycle_service")
-        price_svc = request.app.state.services.get("price_service")
-        
         with session_scope() as session:
-            user_id = str(user_data['id'])
-            rec_id = payload.trade_id
-            
-            if payload.action == "close":
-                rec = lifecycle.repo.get(session, rec_id)
-                live = await price_svc.get_cached_price(rec.asset, rec.market, True)
-                await lifecycle.close_recommendation_async(rec_id, user_id, Decimal(str(live or 0)), session, "WEB_CLOSE")
-                return {"ok": True, "message": f"Closed at {live}"}
-            
-            elif payload.action == "breakeven":
-                await lifecycle.move_sl_to_breakeven_async(rec_id, session)
-                return {"ok": True, "message": "Moved to Breakeven"}
-            
-            elif payload.action == "partial":
-                rec = lifecycle.repo.get(session, rec_id)
-                live = await price_svc.get_cached_price(rec.asset, rec.market, True)
-                pct = Decimal(payload.value) if payload.value else Decimal("50")
-                await lifecycle.partial_close_async(rec_id, user_id, pct, Decimal(str(live or 0)), session, "WEB_PARTIAL")
-                return {"ok": True, "message": f"Closed {pct}%"}
-
-            elif payload.action == "update_sl":
-                new_sl = Decimal(str(payload.value))
-                await lifecycle.update_sl_for_user_async(rec_id, user_id, new_sl, session)
-                return {"ok": True, "message": f"SL Updated to {new_sl}"}
-
-            elif payload.action == "update_entry":
-                new_entry = Decimal(str(payload.value))
-                await lifecycle.update_entry_and_notes_async(rec_id, user_id, new_entry, None, session)
-                return {"ok": True, "message": f"Entry Updated to {new_entry}"}
-
-            return {"ok": False, "error": f"Unknown action: {payload.action}"}
-
-    except Exception as e:
-        log.error(f"Action Error: {e}", exc_info=True)
-        return {"ok": False, "error": str(e)}
+            return await WebCommandService().close_user_trade(
+                session,
+                actor_telegram_id=telegram_id,
+                public_ref=public_ref,
+                idempotency_key=command.idempotency_key,
+                lifecycle_service=lifecycle,
+                price_service=price_service,
+            )
+    except WebCommandError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 # ✅ RESTORED: Full Signal Analytics Endpoint
 @router.get("/signal/{rec_id}")
