@@ -449,6 +449,15 @@ async def show_review_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.callback_query.message if update.callback_query else update.effective_message
     await message.reply_html(review_text, reply_markup=review_final_keyboard(draft["token"]))
 
+
+async def creation_timeout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Clear an abandoned creation conversation and make the recovery explicit."""
+    clean_creation_state(context)
+    message = update.effective_message
+    if message:
+        await message.reply_text("⌛ انتهت جلسة إنشاء التوصية لعدم وجود نشاط. ارسل /newrec لبدء جلسة جديدة.")
+    return ConversationHandler.END
+
 @uow_transaction
 @require_active_user
 @require_analyst_user
@@ -1054,12 +1063,14 @@ def register_conversation_handlers(app: Application):
             AWAITING_REVIEW: [CallbackQueryHandler(review_handler, pattern=f"^{CallbackNamespace.RECOMMENDATION.value}:")],
             AWAITING_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, master_reply_handler)],
             AWAITING_CHANNELS: [CallbackQueryHandler(channel_picker_handler, pattern=f"^{CallbackNamespace.PUBLICATION.value}:")],
+            ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, creation_timeout_handler)],
         },
         fallbacks=[CommandHandler("cancel", cancel_creation_handler)],
         name="recommendation_creation",
         per_user=True, per_chat=True,
         conversation_timeout=CONVERSATION_TIMEOUT_CREATION,
-        per_message=False
+        per_message=False,
+        allow_reentry=True,
     )
     
     # --- 2. Custom Partial Close Conversation (Analyst) ---
