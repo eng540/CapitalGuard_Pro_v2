@@ -43,6 +43,16 @@
 | R4 Platform | BUILD_DONE جزئياً / OPEN | أُسست ركيزة `/api/v1/status` غير المالية؛ تبقى tenant/rate limits/contract coverage/load/SLO/error budget/canary مفتوحة. |
 | R5-C Copy Trading Sandbox | HOLD / NOT_STARTED | لا يبدأ قبل إغلاق R4 وقرار مستقل؛ C0–C5 تشمل sandbox, idempotency, reconciliation, kill switch, security/legal. |
 
+### TG-01 — Recommendation identity/read security foundation
+
+| البند | الحالة | الدليل/العمل التالي |
+|---|---|---|
+| UserTrade read model يعلن `entity_type` و`public_ref` و`display_ref` و`source` | BUILD_DONE | `webapp.py` و`tests/test_webapp_recommendation_contract.py`. |
+| تفاصيل UserTrade تستخدم public ref وتفرض owner scope داخل Core | BUILD_DONE | lookup مقيد بـ`user_id + public_ref` واختبار contract. |
+| Web لا يعتمد على numeric id لمسار التفاصيل الجديد | BUILD_DONE | مسار details الجديد؛ `id` بقي مؤقتاً لتوافق القائمة القديمة فقط. |
+| UAT لجلسة Telegram وقراءة تفاصيل trader واقعية | OPEN | يتطلب جلسة Telegram حية وحسابين للاختبار. |
+| أوامر close/partial/SL/entry مميزة حسب entity ومحمية | NOT_STARTED | نطاق TG-04؛ المسار القديم لا يعتمد كعقد Web جديد. |
+
 ## قواعد القرار
 
 لا يجوز تغيير `OPEN` إلى `PASS` دون رابط PR أو commit، أمر اختبار، بيئة، timestamp، نتيجة، ومالك قرار. ولا يزيل بدء نافذة رصد R5 أي سبب HOLD خاص بالاستعادة أو القرار التجاري أو Copy Trading.
