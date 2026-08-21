@@ -15,8 +15,9 @@
 | Telegram-first | Passed | Mini App session and owner RBAC were verified in the live test workflow. |
 | Owner Review and Evidence | Passed | Core command audit, idempotency, Owner RBAC, and a truthful empty queue/error state were deployed. |
 | Operations feed | Passed | Owner-only lifecycle, publication, and command audit feed is available without local financial replication. |
-| Commercial defaults | Passed | `BILLING_ENABLED=false` and `COPY_TRADING_ENABLED=false` are explicit Core defaults and have executable tests. |
+| Commercial and execution defaults | Passed | `BILLING_ENABLED=false`, `COPY_TRADING_ENABLED=false`, `AUTO_TRADE_ENABLED=false`, and `TRADE_LIVE_ENABLED=false` are typed Core controls with fail-closed tests. |
 | R5 status visibility | Passed | The owner-only R5 readiness endpoint and Admin panel expose backlog counts while keeping status `HOLD`. |
+| Direct-trade control evidence | Passed | The live owner Mini App snapshot showed `AUTO_TRADE_DISABLED` and `TRADE_LIVE_DISABLED`, with zero outbox, owner-review, and replay backlogs. |
 
 ## Mandatory HOLD reasons
 
@@ -28,10 +29,10 @@
 
 ## Non-negotiable controls
 
-> A successful CI run, deployment, or technical gate never turns on commerce. The R5 endpoint always returns `HOLD`, `commercial_enabled=false`, and `copy_trading_enabled=false` while the mandatory evidence is incomplete.
+> A successful CI run, deployment, or technical gate never turns on commerce. The R5 endpoint always returns `HOLD`, `commercial_enabled=false`, and `copy_trading_enabled=false` while the mandatory evidence is incomplete. Core also refuses to start if billing, Copy Trading, auto-trade, or live-trade execution is enabled during R5 HOLD.
 
 The restore-drill deferral does not permit bypassing the guardrail. It only allows the team to continue in test mode. The separate R4 runbook remains the authoritative procedure for resuming the drill.
 
 ## Related changes
 
-The current technical evidence includes the A-PG isolation [PR #222](https://github.com/eng540/CapitalGuard_Pro_v2/pull/222), Telegram-first authentication [PR #223](https://github.com/eng540/CapitalGuard_Pro_v2/pull/223), Mini App bridge repair [PR #224](https://github.com/eng540/CapitalGuard_Pro_v2/pull/224), health check [PR #225](https://github.com/eng540/CapitalGuard_Pro_v2/pull/225), Core Read Models [PR #226](https://github.com/eng540/CapitalGuard_Pro_v2/pull/226) and [PR #232](https://github.com/eng540/CapitalGuard_Pro_v2/pull/232), Owner Review [PR #227](https://github.com/eng540/CapitalGuard_Pro_v2/pull/227), operations feed [PR #229](https://github.com/eng540/CapitalGuard_Pro_v2/pull/229), R5 guardrail [PR #230](https://github.com/eng540/CapitalGuard_Pro_v2/pull/230), R4 runbook [PR #231](https://github.com/eng540/CapitalGuard_Pro_v2/pull/231), deferred-restore decision [PR #233](https://github.com/eng540/CapitalGuard_Pro_v2/pull/233), commercial default locks [PR #234](https://github.com/eng540/CapitalGuard_Pro_v2/pull/234), and R5 Admin readiness [PR #235](https://github.com/eng540/CapitalGuard_Pro_v2/pull/235).
+The current technical evidence includes the A-PG isolation [PR #222](https://github.com/eng540/CapitalGuard_Pro_v2/pull/222), Telegram-first authentication [PR #223](https://github.com/eng540/CapitalGuard_Pro_v2/pull/223), Mini App bridge repair [PR #224](https://github.com/eng540/CapitalGuard_Pro_v2/pull/224), health check [PR #225](https://github.com/eng540/CapitalGuard_Pro_v2/pull/225), Core Read Models [PR #226](https://github.com/eng540/CapitalGuard_Pro_v2/pull/226) and [PR #232](https://github.com/eng540/CapitalGuard_Pro_v2/pull/232), Owner Review [PR #227](https://github.com/eng540/CapitalGuard_Pro_v2/pull/227), operations feed [PR #229](https://github.com/eng540/CapitalGuard_Pro_v2/pull/229), R5 guardrail [PR #230](https://github.com/eng540/CapitalGuard_Pro_v2/pull/230), R4 runbook [PR #231](https://github.com/eng540/CapitalGuard_Pro_v2/pull/231), deferred-restore decision [PR #233](https://github.com/eng540/CapitalGuard_Pro_v2/pull/233), commercial default locks [PR #234](https://github.com/eng540/CapitalGuard_Pro_v2/pull/234), R5 Admin readiness [PR #235](https://github.com/eng540/CapitalGuard_Pro_v2/pull/235), direct-execution fail-closed controls [PR #237](https://github.com/eng540/CapitalGuard_Pro_v2/pull/237), and their verified owner-visible status [PR #238](https://github.com/eng540/CapitalGuard_Pro_v2/pull/238).
