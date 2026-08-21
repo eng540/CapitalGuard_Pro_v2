@@ -23,6 +23,7 @@ from capitalguard.boot import bootstrap_app, build_services
 from capitalguard.interfaces.telegram.handlers import register_all_handlers
 from capitalguard.interfaces.api.routers import auth as auth_router
 from capitalguard.interfaces.api.routers import webapp as webapp_router
+from capitalguard.interfaces.api.routers import v1 as v1_router
 from capitalguard.interfaces.api.metrics import router as metrics_router
 from capitalguard.interfaces.webhook.tradingview import router as tradingview_router
 from capitalguard.interfaces.api.security.auth import validate_security_settings
@@ -324,6 +325,7 @@ def health_check():
 # ✅ WEBAPP SUPPORT: Include WebApp router
 app.include_router(auth_router.router)
 app.include_router(webapp_router.router)
+app.include_router(v1_router.router)
 app.include_router(metrics_router)
 app.include_router(tradingview_router)
 
