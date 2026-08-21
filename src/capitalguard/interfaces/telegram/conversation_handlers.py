@@ -75,6 +75,8 @@ loge = logging.getLogger("capitalguard.errors")
 DRAFT_KEY = "rec_creation_draft"
 CHANNEL_PICKER_KEY = "channel_picker_selection"
 LAST_ACTIVITY_KEY_CREATION = "last_creation_activity"
+CREATION_MENU_CHAT_ID_KEY = "rec_creation_menu_chat_id"
+CREATION_MENU_MESSAGE_ID_KEY = "rec_creation_menu_message_id"
 CONVERSATION_TIMEOUT_CREATION = 1800
 
 # --- Management Keys ---
@@ -94,7 +96,8 @@ ORIGINAL_MESSAGE_MESSAGE_ID_KEY = "original_message_message_id"
 
 def clean_creation_state(context: ContextTypes.DEFAULT_TYPE):
     """تنظيف حالة إنشاء التوصية بشكل كامل."""
-    for key in [DRAFT_KEY, CHANNEL_PICKER_KEY, LAST_ACTIVITY_KEY_CREATION]:
+    for key in [DRAFT_KEY, CHANNEL_PICKER_KEY, LAST_ACTIVITY_KEY_CREATION,
+                CREATION_MENU_CHAT_ID_KEY, CREATION_MENU_MESSAGE_ID_KEY]:
         context.user_data.pop(key, None)
 
 def update_creation_activity(context: ContextTypes.DEFAULT_TYPE):
@@ -169,6 +172,10 @@ async def _preload_asset_prices(price_service: PriceService, assets: List[str]):
 @require_analyst_user
 async def newrec_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs) -> int:
     """نقطة بدء إنشاء توصية جديدة."""
+    previous_menu = (
+        context.user_data.get(CREATION_MENU_CHAT_ID_KEY),
+        context.user_data.get(CREATION_MENU_MESSAGE_ID_KEY),
+    )
     clean_creation_state(context)
     clean_management_state(context) # Clean other convos
     update_creation_activity(context)
@@ -184,7 +191,26 @@ async def newrec_entrypoint(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     except Exception as e:
         log.warning(f"Failed to launch price pre-fetch task: {e}", exc_info=False)
 
-    await update.message.reply_html("🚀 <b>منشئ التوصيات</b>\n\nاختر طريقة الإدخال:", reply_markup=main_creation_keyboard())
+    previous_chat_id, previous_message_id = previous_menu
+    if previous_chat_id and previous_message_id:
+        try:
+            await context.bot.delete_message(chat_id=previous_chat_id, message_id=previous_message_id)
+        except BadRequest:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=previous_chat_id,
+                    message_id=previous_message_id,
+                    text="♻️ تم استبدال جلسة منشئ التوصيات بجلسة أحدث.",
+                )
+            except BadRequest:
+                log.debug("Could not clean previous recommendation creation menu.")
+
+    menu_message = await update.message.reply_html(
+        "🚀 <b>منشئ التوصيات</b>\n\nاختر طريقة الإدخال:",
+        reply_markup=main_creation_keyboard(),
+    )
+    context.user_data[CREATION_MENU_CHAT_ID_KEY] = menu_message.chat_id
+    context.user_data[CREATION_MENU_MESSAGE_ID_KEY] = menu_message.message_id
     return SELECT_METHOD
 
 @uow_transaction
