@@ -139,6 +139,27 @@ def test_additional_read_models_require_the_core_service_key(client: TestClient,
     assert client.get("/api/webapp/read-models/trader/123456/historical").status_code == 401
 
 
+def test_legacy_numeric_trade_action_is_retired(client: TestClient):
+    response = client.post("/api/webapp/action")
+
+    assert response.status_code == 410
+    assert response.json()["detail"] == "Legacy trade action endpoint is retired"
+
+
+def test_user_trade_command_rejects_actor_outside_trader_scope(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "test-service-key")
+    response = client.post(
+        "/api/webapp/read-models/trader/123456/recommendations/USR-000001%2FT-0001/commands/close",
+        headers={"Authorization": "Bearer test-service-key"},
+        json={"actor_telegram_id": 999999, "idempotency_key": "tg04-command-key"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Command actor does not match the trader scope"
+
+
 def test_r5_readiness_requires_the_core_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     from capitalguard.config import settings
 

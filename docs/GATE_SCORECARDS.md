@@ -62,6 +62,15 @@
 | صفحة تفاصيل تقرأ public ref فقط ولا تعرض mutation action | BUILD_DONE | `frontend/client/src/pages/Recommendations.tsx`. |
 | UAT لجلسة Telegram حقيقية وملكية التفاصيل | OPEN | حسابان اختباريان ومرجع public مملوك/غير مملوك. |
 
+### TG-04 — UserTrade command foundation
+
+| البند | الحالة | الدليل/العمل التالي |
+|---|---|---|
+| إغلاق المسار الرقمي المختلط | BUILD_DONE | `POST /api/webapp/action` يعيد 410. |
+| Close command بالـpublic ref وowner scope والسعر الخادمي | BUILD_DONE | `WebCommandService.close_user_trade`. |
+| idempotency وaudit generic للهدف | BUILD_DONE | `WebCommandAudit` fingerprint/target type. |
+| Web action وUAT حي | OPEN | لا زر قبل سيناريو close/replay/ownership/unavailable-price. |
+
 ## قواعد القرار
 
 لا يجوز تغيير `OPEN` إلى `PASS` دون رابط PR أو commit، أمر اختبار، بيئة، timestamp، نتيجة، ومالك قرار. ولا يزيل بدء نافذة رصد R5 أي سبب HOLD خاص بالاستعادة أو القرار التجاري أو Copy Trading.
