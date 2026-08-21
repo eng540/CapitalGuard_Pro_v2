@@ -10,7 +10,7 @@
 | Health/readiness وsmoke | PASS جزئي | Railway health موجود؛ يلزم artifact موحد للـ smoke. |
 | Fresh PostgreSQL migration | OPEN | تشغيل على قاعدة فارغة وتسجيل head. |
 | Existing-data reconciliation | OPEN | restore anonymized snapshot وعدّ counts/FKs/statuses. |
-| Backup/Restore وRTO/RPO | OPEN | restore منفصل لـ Core وWeb وقياس مكتوب. |
+| Backup/Restore وRTO/RPO | DEFERRED — NON-BLOCKING FOR NON-COMMERCIAL DEVELOPMENT | قرار المالك بتاريخ 21 أغسطس 2026: يؤجل Restore Drill، لكنه يبقى شرطاً قبل أي اعتماد تجاري أو رفع R5 من HOLD. |
 | E2E Forward→Close حي | OPEN | سيناريو موثق مع Redis/Telegram/market controlled inputs. |
 | أسرار وPII | OPEN | دليل تدوير مقنّع وretention/access register. |
 
@@ -46,3 +46,9 @@
 ## قواعد القرار
 
 لا يجوز تغيير `OPEN` إلى `PASS` دون رابط PR أو commit، أمر اختبار، بيئة، timestamp، نتيجة، ومالك قرار. ولا يزيل بدء نافذة رصد R5 أي سبب HOLD خاص بالاستعادة أو القرار التجاري أو Copy Trading.
+
+## سجل قرارات التشغيل
+
+| التاريخ | القرار | النطاق المسموح | الأثر المحظور أو المؤجل |
+|---|---|---|---|
+| 21 أغسطس 2026 | تأجيل Restore Drill | استمرار تطوير المنتج غير التجاري، الترقيات، الاختبارات المحلية، UAT غير التجاري، ودمج التحسينات عبر PRs. | لا اعتماد تجاري، لا تفعيل دفع، لا تغيير R5 من HOLD، ولا Copy Trading قبل Restore Drill منفصل وموثق. |
