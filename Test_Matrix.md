@@ -1,48 +1,27 @@
 # Test Matrix
 
-## 1. مستويات الاختبار
+**المبدأ:** الاختبارات تعطي `BUILD_DONE`؛ أما smoke/UAT/recovery/load فتنتج دليل البوابة. يحفظ كل artifact الأمر والالتزام والبيئة والوقت والنتيجة.
 
-| النوع | الهدف | متى يستخدم |
-|---|---|---|
-| Unit | عقد الدالة وbusiness rules | Parser، validation، PnL، fingerprint |
-| Integration | خدمة + DB/Redis fake | lifecycle، repositories، Dedup |
-| API | HTTP contract وauth | health، webapp، webhook |
-| Database | schema/FK/migration/query | Alembic، reports، indexes |
-| Security | negative access/secrets/replay | RBAC، webhook، PII |
-| E2E | رحلة المستخدم الكاملة | Forward→Close |
-| Regression | منع عودة عيب مصحح | كل PR متعلق بعقد سابق |
-| Smoke | بعد deployment | startup، health، critical paths |
-| Load/Failure | latency/reconnect/backpressure | بعد R1 وقبل Alpha |
+| ID | المجال | دليل الاختبار الحالي | الدليل المفتوح |
+|---|---|---|---|
+| T-01 | Parser وArabic normalization | parser unit/integration | UAT samples |
+| T-02 | `/log` direct input | `tests/test_log_handler.py` | Telegram UAT |
+| T-03 | Lifecycle/PnL/history | R1 trade/lifecycle tests | reference dataset reconciliation |
+| T-04 | Dedup/outbox/idempotency | dedup/publication tests | repeated-live-flow UAT |
+| T-05 | alerts/TP/SL/reconnect | lifecycle/notifications coverage | p95/fault-injection/live evidence |
+| T-06 | R2 discovery/comparison | R2 targeted tests | analyst acceptance and observation |
+| T-07 | Historical/temporal/replay | historical E2E/release tests | real approved batch + OHLCV |
+| T-08 | Web/TMA/RBAC/read boundary | 33 Vitest/TypeScript/build | role UAT/degraded dependency evidence |
+| T-09 | Owner commands/Ops/R5 guardrails | command/R5 tests | restore and secret rotation evidence |
+| T-10 | PostgreSQL migration | CI/migrations | fresh + existing reconciliation + restore |
+| T-11 | Platform multi-tenant/API v1 | not started | scope decision then contract/security/load tests |
+| T-12 | payments | hold | provider sandbox suite after decision |
+| T-13 | Copy Trading | hold | C0–C5 security/reconciliation/kill-switch suite after decision |
 
-## 2. مصفوفة المتطلبات
+## Gate sets
 
-| ID | Area | Unit | Integration | API | DB | Security | E2E | Smoke | Current evidence |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---|
-| T-01 | Arabic parser | نعم | نعم | لا | لا | لا | نعم | نعم | `tests/test_parsing.py` |
-| T-02 | Validation | نعم | نعم | لا | لا | لا | نعم | لا | `tests/test_trade_service.py` |
-| T-03 | State transitions | نعم | نعم | لا | نعم | نعم | نعم | لا | جزئي |
-| T-04 | Dedup fingerprint/window | نعم | نعم | لا | نعم | نعم | نعم | لا | `test_dedup_ledger.py` |
-| T-05 | Review/Confirm | جزئي | نعم | لا | لا | نعم | مطلوب | مطلوب | لا evidence خارجي |
-| T-06 | Health/readiness | لا | جزئي | نعم | لا | نعم | لا | نعم | `tests/test_api.py` |
-| T-07 | TradingView webhook | لا | نعم | نعم | لا | نعم | نعم | نعم | unit/needs staging |
-| T-08 | Alert target/SL | نعم | نعم | لا | نعم | جزئي | نعم | نعم | needs fake feed |
-| T-09 | Close/PnL | نعم | نعم | لا | نعم | ownership | نعم | نعم | `test_trade_service.py` |
-| T-10 | Reports | نعم | نعم | لا | نعم | PII | نعم | نعم | needs reference dataset |
-| T-11 | Backup/Restore | لا | نعم | لا | نعم | secrets | نعم | نعم | NOT VERIFIED |
-| T-12 | `/log` | نعم | نعم | نعم | نعم | auth | نعم | نعم | NOT FOUND |
-| T-13 | Analyst discovery | نعم | نعم | نعم | نعم | RBAC | نعم | نعم | NOT FOUND |
-| T-14 | Payments | نعم | نعم | نعم | نعم | webhook/fraud | نعم | نعم | NOT FOUND |
-| T-15 | Tenant isolation | نعم | نعم | نعم | نعم | critical | نعم | نعم | NOT FOUND |
-| T-16 | Copy Trading | نعم | نعم | نعم | نعم | critical | نعم | نعم | NOT READY |
-
-## 3. Gate 0 execution set
-
-يجب تنفيذ مجموعة `G0` التالية على كل release candidate: `pytest -q`، Parser/Trade/Dedup integration، API smoke، `compileall`، Bandit High، pip-audit، `alembic heads`، PostgreSQL fresh upgrade، existing-data upgrade، restore drill، Redis/Telegram startup، وE2E Forward-to-Close.
-
-## 4. Test data rules
-
-يجب أن تتضمن datasets حالات LONG وSHORT، target واحد ومتعدد، أرقام عربية، duplicate source text، channel مختلف، Watchlist غير مفعلة، Activated، Partial close، full close، missing price، reconnect، unauthorized owner، والـ PII redaction. لا يستخدم الاختبار بيانات مستخدم حقيقية.
-
-## 5. Evidence format
-
-كل اختبار Gate يحفظ command، commit، environment class، timestamp، exit code، summary، وartifact path. اختبارات Staging تحفظ أيضًا service version وmigration head وhealth output وrollback reference.
+`G0`: full Core suite, security/static, fresh+existing migrations, restore, Redis/Telegram startup, E2E.
+`R1/AV`: reconciliation, UAT, p95, funnel/retention.
+`R2/H`: analyst acceptance, observation, real historical batch.
+`R4`: tenancy/API/load/SLO/canary.
+`R3-C/R5-C`: only after separate Owner Decision.
