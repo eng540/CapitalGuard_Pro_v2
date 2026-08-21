@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { telegramIdFromWebSession } from "./capitalguard";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
@@ -12,10 +12,13 @@ function coreContext(): TrpcContext {
 }
 
 describe("CapitalGuard Core tRPC routes", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("proxies Core health only through the authenticated server route", async () => {
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ status: "ok" }), { status: 200 }));
     const caller = appRouter.createCaller(coreContext());
     await expect(caller.capitalguard.core.health()).resolves.toMatchObject({ status: "ok" });
-  }, 15_000);
+  });
 
   it("rejects malformed symbols before any request is sent to Core", async () => {
     const caller = appRouter.createCaller(coreContext());

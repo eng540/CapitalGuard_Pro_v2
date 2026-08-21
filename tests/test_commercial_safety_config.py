@@ -1,6 +1,8 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
-from capitalguard.config import Settings, settings, validate_r5_noncommercial_controls
+from capitalguard.config import Settings, get_r5_observation_status, settings, validate_r5_noncommercial_controls
 
 
 def test_default_commercial_controls_remain_disabled():
@@ -18,3 +20,16 @@ def test_r5_gate_fails_closed_when_any_commercial_or_execution_control_is_enable
 
     with pytest.raises(RuntimeError, match="R5 noncommercial gate rejected"):
         validate_r5_noncommercial_controls()
+
+
+def test_r5_observation_status_reports_missing_and_elapsed_window(monkeypatch):
+    monkeypatch.setattr(settings, "R5_OBSERVATION_STARTED_AT", None)
+    monkeypatch.setattr(settings, "R5_OBSERVATION_WINDOW_HOURS", 24)
+    assert get_r5_observation_status()["complete"] is False
+
+    started = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    monkeypatch.setattr(settings, "R5_OBSERVATION_STARTED_AT", started)
+    status = get_r5_observation_status(now=started + timedelta(hours=25))
+    assert status["elapsed_hours"] == 25
+    assert status["remaining_hours"] == 0
+    assert status["complete"] is True

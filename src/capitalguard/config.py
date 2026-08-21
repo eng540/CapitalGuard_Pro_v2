@@ -7,6 +7,8 @@
       was initialized by `boot.py`.
 """
 
+from datetime import datetime, timezone
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -59,6 +61,8 @@ class Settings(BaseSettings):
     COPY_TRADING_ENABLED: bool = False
     AUTO_TRADE_ENABLED: bool = False
     TRADE_LIVE_ENABLED: bool = False
+    R5_OBSERVATION_STARTED_AT: datetime | None = None
+    R5_OBSERVATION_WINDOW_HOURS: int = Field(default=168, ge=1, le=8760)
 
     # Historical connector gate: disabled until owner approval and connector acceptance.
     HISTORY_CONNECTOR_ENABLED: bool = False
@@ -85,5 +89,30 @@ def validate_r5_noncommercial_controls() -> dict[str, bool]:
     if enabled:
         raise RuntimeError(f"R5 noncommercial gate rejected enabled controls: {', '.join(enabled)}")
     return controls
+
+
+def get_r5_observation_status(now: datetime | None = None) -> dict[str, int | str | bool | None]:
+    """Return a deterministic R5 observation-window snapshot without scheduling work."""
+    started_at = settings.R5_OBSERVATION_STARTED_AT
+    required_hours = settings.R5_OBSERVATION_WINDOW_HOURS
+    if started_at is None:
+        return {
+            "started_at": None,
+            "required_hours": required_hours,
+            "elapsed_hours": 0,
+            "remaining_hours": required_hours,
+            "complete": False,
+        }
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    reference = now or datetime.now(timezone.utc)
+    elapsed_hours = max(0, int((reference - started_at).total_seconds() // 3600))
+    return {
+        "started_at": started_at.isoformat(),
+        "required_hours": required_hours,
+        "elapsed_hours": elapsed_hours,
+        "remaining_hours": max(0, required_hours - elapsed_hours),
+        "complete": elapsed_hours >= required_hours,
+    }
 
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---

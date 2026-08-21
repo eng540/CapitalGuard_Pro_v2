@@ -8,10 +8,19 @@ describe("CapitalGuard Core adapter", () => {
   });
 
   it("validates the configured Core service through a lightweight authenticated health request", async () => {
-    const health = await probeCoreHealth();
+    let authorization = "";
+    const fakeFetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      authorization = String((init?.headers as Record<string, string>).Authorization);
+      return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
+    };
+    const health = await probeCoreHealth(fakeFetch as typeof fetch, {
+      CAPITALGUARD_CORE_BASE_URL: "https://core.example",
+      CAPITALGUARD_CORE_API_KEY: "private-service-key",
+    });
     expect(health.status).toBe("ok");
-    expect(health.baseUrl.startsWith("https://")).toBe(true);
-  }, 15_000);
+    expect(health.baseUrl).toBe("https://core.example");
+    expect(authorization).toBe("Bearer private-service-key");
+  });
 
   it("proxies only a documented read request and keeps the service key server-side", async () => {
     let requestUrl = "";
@@ -112,11 +121,12 @@ describe("CapitalGuard Core adapter", () => {
   });
 
   it("reports R5 as a server-controlled noncommercial hold", async () => {
-    const fakeFetch = async () => new Response(JSON.stringify({ ok: true, status: "HOLD", reasons: ["RESTORE_DRILL_DEFERRED"], commercial_enabled: false, copy_trading_enabled: false, execution_controls: { auto_trade_enabled: false, trade_live_enabled: false }, snapshot: { outbox_backlog: 0, owner_review_backlog: 0, replay_backlog: 0 }, as_of: "2026-08-21T00:00:00Z" }), { status: 200 });
+    const fakeFetch = async () => new Response(JSON.stringify({ ok: true, status: "HOLD", reasons: ["RESTORE_DRILL_DEFERRED"], commercial_enabled: false, copy_trading_enabled: false, execution_controls: { auto_trade_enabled: false, trade_live_enabled: false }, observation: { started_at: null, required_hours: 168, elapsed_hours: 0, remaining_hours: 168, complete: false }, snapshot: { outbox_backlog: 0, owner_review_backlog: 0, replay_backlog: 0 }, as_of: "2026-08-21T00:00:00Z" }), { status: 200 });
     const result = await coreGetR5Readiness(123456, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
     expect(result.status).toBe("HOLD");
     expect(result.commercial_enabled).toBe(false);
     expect(result.copy_trading_enabled).toBe(false);
     expect(result.execution_controls).toEqual({ auto_trade_enabled: false, trade_live_enabled: false });
+    expect(result.observation).toMatchObject({ required_hours: 168, complete: false });
   });
 });
