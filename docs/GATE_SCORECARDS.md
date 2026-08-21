@@ -53,6 +53,15 @@
 | UAT لجلسة Telegram وقراءة تفاصيل trader واقعية | OPEN | يتطلب جلسة Telegram حية وحسابين للاختبار. |
 | أوامر close/partial/SL/entry مميزة حسب entity ومحمية | NOT_STARTED | نطاق TG-04؛ المسار القديم لا يعتمد كعقد Web جديد. |
 
+### TG-03 — Web read-only recommendation UI
+
+| البند | الحالة | الدليل/العمل التالي |
+|---|---|---|
+| Adapter خادمي يطلب القائمة والتفاصيل من Core service-to-service | BUILD_DONE | `frontend/server/core-adapter.ts` واختبارات Vitest. |
+| tRPC يشتق Telegram ID من جلسة Web ولا يقبل هوية client | BUILD_DONE | `frontend/server/capitalguard.ts`. |
+| صفحة تفاصيل تقرأ public ref فقط ولا تعرض mutation action | BUILD_DONE | `frontend/client/src/pages/Recommendations.tsx`. |
+| UAT لجلسة Telegram حقيقية وملكية التفاصيل | OPEN | حسابان اختباريان ومرجع public مملوك/غير مملوك. |
+
 ## قواعد القرار
 
 لا يجوز تغيير `OPEN` إلى `PASS` دون رابط PR أو commit، أمر اختبار، بيئة، timestamp، نتيجة، ومالك قرار. ولا يزيل بدء نافذة رصد R5 أي سبب HOLD خاص بالاستعادة أو القرار التجاري أو Copy Trading.

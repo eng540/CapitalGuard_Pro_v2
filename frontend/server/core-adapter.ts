@@ -40,7 +40,25 @@ export type CoreOwnerReviewBatch = {
 };
 export type CoreOperationsEvent = { id: string; category: "PUBLICATION" | "LIFECYCLE" | "AUDIT"; code: string; severity: "info" | "warning" | "critical"; record_ref: string; occurred_at: string };
 export type CoreOperationsFeed = { events: CoreOperationsEvent[]; summary: { critical: number; warning: number; total: number } };
-export type CoreTraderRecommendation = { id: number; public_ref: string; asset: string; side: string; market: string; entry: number; stop_loss: number; targets: unknown[]; status: string; source_type: string; created_at: string | null; closed_at: string | null; timeline: Array<{ event_type: string; event_timestamp: string }> };
+export type CoreTraderRecommendation = {
+  id: number;
+  entity_type: "USER_TRADE";
+  public_ref: string;
+  display_ref: string;
+  asset: string;
+  side: string;
+  market: string;
+  entry: number;
+  stop_loss: number;
+  targets: unknown[];
+  status: string;
+  source_type: string;
+  source: { entity_type: "RECOMMENDATION"; public_ref: string | null; analyst_id: number | null } | null;
+  created_at: string | null;
+  activated_at: string | null;
+  closed_at: string | null;
+  timeline: Array<{ event_type: string; event_timestamp: string }>;
+};
 export type CoreHistoricalRecord = { public_ref: string; asset: string | null; side: string | null; status: string; trust_tier: string; eligible_for_ranking: boolean; decision_timestamp: string | null };
 export type CoreAnalystReadModel = { analyst_code: string | null; public_ref: string | null; public_name: string; sample_size: number; win_rate_pct: number; total_pnl_pct: number; max_drawdown_pct: number; active_recommendations: number; risk_exposure_pct: number; eligible_for_ranking: boolean; freshness_days: number | null };
 export type CoreR5Readiness = { status: "HOLD"; reasons: string[]; commercial_enabled: false; copy_trading_enabled: false; execution_controls: { auto_trade_enabled: boolean; trade_live_enabled: boolean }; observation: { started_at: string | null; required_hours: number; elapsed_hours: number; remaining_hours: number; complete: boolean }; snapshot: { outbox_backlog: number; owner_review_backlog: number; replay_backlog: number }; as_of: string };
@@ -131,11 +149,20 @@ export async function coreGetOperationsFeed(actorTelegramId: number, fetchImpl: 
   return result as CoreOperationsFeed;
 }
 
-export async function coreGetTraderRecommendations(telegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ as_of: string; items: CoreTraderRecommendation[] }> {
+export async function coreGetTraderRecommendations(telegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ schema_version: string; as_of: string; items: CoreTraderRecommendation[] }> {
   if (!Number.isSafeInteger(telegramId) || telegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
   const result = await coreReadOnlyFetch(`/api/webapp/read-models/trader/${telegramId}/recommendations`, {}, fetchImpl, env);
-  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_RECOMMENDATIONS_INVALID");
-  return result as { as_of: string; items: CoreTraderRecommendation[] };
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || typeof (result as { schema_version?: unknown }).schema_version !== "string" || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_RECOMMENDATIONS_INVALID");
+  return result as { schema_version: string; as_of: string; items: CoreTraderRecommendation[] };
+}
+
+export async function coreGetTraderRecommendationDetail(telegramId: number, publicRef: string, fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ schema_version: string; as_of: string; item: CoreTraderRecommendation }> {
+  if (!Number.isSafeInteger(telegramId) || telegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const normalizedRef = publicRef.trim();
+  if (!normalizedRef || normalizedRef.length > 80) throw new Error("CAPITALGUARD_PUBLIC_REF_REQUIRED");
+  const result = await coreReadOnlyFetch(`/api/webapp/read-models/trader/${telegramId}/recommendations/${encodeURIComponent(normalizedRef)}`, {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || typeof (result as { schema_version?: unknown }).schema_version !== "string" || !(result as { item?: unknown }).item) throw new Error("CAPITALGUARD_CORE_RECOMMENDATION_DETAIL_INVALID");
+  return result as { schema_version: string; as_of: string; item: CoreTraderRecommendation };
 }
 
 export async function coreGetTraderHistorical(telegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ as_of: string; items: CoreHistoricalRecord[] }> {
