@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str | None = None
     TELEGRAM_CHAT_ID: str | None = None
     TELEGRAM_WEBHOOK_URL: str | None = None
+    TELEGRAM_WEBHOOK_SECRET: str | None = None
     TELEGRAM_CHANNEL_INVITE_LINK: str | None = None
     TELEGRAM_ADMIN_CHAT_ID: str | None = None
 

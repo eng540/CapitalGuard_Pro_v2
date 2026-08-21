@@ -65,6 +65,38 @@ def test_webapp_rejects_invalid_telegram_init_data(client: TestClient):
     assert "error" in response.json()
 
 
+def test_telegram_webhook_rejects_missing_or_invalid_secret(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "tg-webhook-test-secret")
+
+    missing = client.post("/webhook/telegram", json={})
+    invalid = client.post(
+        "/webhook/telegram",
+        headers={"X-Telegram-Bot-Api-Secret-Token": "wrong-secret"},
+        json={},
+    )
+
+    assert missing.status_code == 403
+    assert invalid.status_code == 403
+
+
+def test_telegram_webhook_accepts_matching_secret_before_processing(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "tg-webhook-test-secret")
+    app.state.ptb_app = None
+
+    response = client.post(
+        "/webhook/telegram",
+        headers={"X-Telegram-Bot-Api-Secret-Token": "tg-webhook-test-secret"},
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_core_read_model_requires_a_server_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     from capitalguard.config import settings
 

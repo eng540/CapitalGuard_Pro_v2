@@ -8,11 +8,12 @@ import asyncio
 import os
 import html
 import json
+import hmac
 import traceback
 from typing import List, Dict, Any, Optional, Tuple
 
 import redis
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from telegram import Update, BotCommand
@@ -34,6 +35,12 @@ from capitalguard.application.services.market_data_service import MarketDataServ
 from capitalguard.infrastructure.db.backup_service import auto_backup_loop
 
 log = logging.getLogger(__name__)
+TELEGRAM_WEBHOOK_ALLOWED_UPDATES = (
+    "message",
+    "callback_query",
+    "channel_post",
+    "edited_channel_post",
+)
 
 
 class _PersistenceCodec:
@@ -262,7 +269,16 @@ async def on_startup():
     log.info("Bot commands configured.")
 
     if settings.TELEGRAM_WEBHOOK_URL:
-        await ptb_app.bot.set_webhook(url=settings.TELEGRAM_WEBHOOK_URL, allowed_updates=Update.ALL_TYPES)
+        webhook_secret = settings.TELEGRAM_WEBHOOK_SECRET
+        if not webhook_secret:
+            raise RuntimeError(
+                "TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_WEBHOOK_URL is configured."
+            )
+        await ptb_app.bot.set_webhook(
+            url=settings.TELEGRAM_WEBHOOK_URL,
+            secret_token=webhook_secret,
+            allowed_updates=TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
+        )
         log.info(f"Webhook set to {settings.TELEGRAM_WEBHOOK_URL}")
 
     await ptb_app.start()
@@ -298,7 +314,19 @@ async def on_shutdown():
     log.info("🔌 Application shutdown complete.")
 
 @app.post("/webhook/telegram")
-async def telegram_webhook(request: Request):
+async def telegram_webhook(
+    request: Request,
+    telegram_secret_token: str | None = Header(
+        default=None,
+        alias="X-Telegram-Bot-Api-Secret-Token",
+    ),
+):
+    configured_secret = settings.TELEGRAM_WEBHOOK_SECRET
+    if not configured_secret:
+        log.error("Telegram webhook received while TELEGRAM_WEBHOOK_SECRET is not configured.")
+        raise HTTPException(status_code=503, detail="Telegram webhook authentication is not configured")
+    if not telegram_secret_token or not hmac.compare_digest(telegram_secret_token, configured_secret):
+        raise HTTPException(status_code=403, detail="Telegram webhook authentication rejected")
     ptb_app = request.app.state.ptb_app
     if ptb_app:
         try:
