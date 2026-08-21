@@ -2,7 +2,7 @@
 
 ## Current release position
 
-The product is operating as a controlled, non-commercial system. `BILLING_ENABLED` remains `false`, no payment provider is connected, and Copy Trading remains absent from the runtime and user interfaces. A successful engineering deployment, a green CI run, or an R4 operational checkpoint does not change these restrictions.
+The product is operating as a controlled, non-commercial system. `BILLING_ENABLED=false` and `COPY_TRADING_ENABLED=false` are explicit Core defaults, no payment provider is connected, and Copy Trading remains absent from the runtime and user interfaces. A successful engineering deployment, a green CI run, or an R4 operational checkpoint does not change these restrictions.
 
 ## R5 decision contract
 
