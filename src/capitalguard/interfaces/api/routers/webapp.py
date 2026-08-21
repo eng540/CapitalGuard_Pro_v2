@@ -460,6 +460,10 @@ async def get_r5_readiness(actor_telegram_id: int, request: Request):
                 "reasons": reasons,
                 "commercial_enabled": False,
                 "copy_trading_enabled": False,
+                "execution_controls": {
+                    "auto_trade_enabled": settings.AUTO_TRADE_ENABLED,
+                    "trade_live_enabled": settings.TRADE_LIVE_ENABLED,
+                },
                 "snapshot": {
                     "outbox_backlog": int(outbox_backlog),
                     "owner_review_backlog": int(review_backlog),
