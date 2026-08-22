@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
+import { coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -105,6 +105,9 @@ export const capitalguardRouter = router({
       actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
       publicRef: input.publicRef,
       idempotencyKey: input.idempotencyKey,
+    })),
+    updatePendingUserTradeEntry: traderProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80), entry: z.number().finite().positive(), idempotencyKey: z.string().trim().min(16).max(128) })).mutation(({ ctx, input }) => coreUpdatePendingUserTradeEntry({
+      actorTelegramId: telegramIdFromWebSession(ctx.user.openId), publicRef: input.publicRef, entry: input.entry, idempotencyKey: input.idempotencyKey,
     })),
     cancelPendingUserTrade: traderProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80), idempotencyKey: z.string().trim().min(16).max(128) })).mutation(({ ctx, input }) => coreCancelPendingUserTrade({
       actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
