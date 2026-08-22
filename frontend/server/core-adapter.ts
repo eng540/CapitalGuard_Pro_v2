@@ -62,6 +62,9 @@ export type CoreTraderRecommendation = {
 export type CoreHistoricalRecord = { public_ref: string; asset: string | null; side: string | null; status: string; trust_tier: string; eligible_for_ranking: boolean; decision_timestamp: string | null };
 export type CoreAnalystReadModel = { analyst_code: string | null; public_ref: string | null; public_name: string; sample_size: number; win_rate_pct: number; total_pnl_pct: number; max_drawdown_pct: number; active_recommendations: number; risk_exposure_pct: number; eligible_for_ranking: boolean; freshness_days: number | null };
 export type CoreR5Readiness = { status: "HOLD"; reasons: string[]; commercial_enabled: false; copy_trading_enabled: false; execution_controls: { auto_trade_enabled: boolean; trade_live_enabled: boolean }; observation: { started_at: string | null; required_hours: number; elapsed_hours: number; remaining_hours: number; complete: boolean }; snapshot: { outbox_backlog: number; owner_review_backlog: number; replay_backlog: number }; as_of: string };
+export type CoreAnalystRecommendationInput = { actorTelegramId: number; asset: string; side: "LONG" | "SHORT"; market: string; orderType: "LIMIT" | "MARKET"; entry: number; stopLoss: number; targetsRaw: string; notes?: string; leverage?: string; channelIds: number[] };
+export type CoreAnalystRecommendationPreview = { schema_version: number; mode: "PREVIEW"; asset: string; side: "LONG" | "SHORT"; market: string; order_type: "LIMIT" | "MARKET"; entry: string; stop_loss: string; targets: Array<{ price: string; close_percent: number }>; live_price: string | null; publication: { state: "NOT_QUEUED"; eligible_channel_count: number } };
+export type CoreAnalystRecommendationConfirmation = { ok: true; entity_type: "RECOMMENDATION"; public_ref: string; publication: { state: "SAVED" | "QUEUED"; queued_delivery_count: number }; replayed: boolean };
 
 export function getCoreConfig(env = process.env): CoreConfig {
   const rawUrl = env.CAPITALGUARD_CORE_BASE_URL?.trim();
@@ -131,6 +134,26 @@ async function coreCommand(path: string, payload: Record<string, unknown>, fetch
   }, fetchImpl, env);
   if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true) throw new Error("CAPITALGUARD_CORE_COMMAND_INVALID");
   return result as Record<string, unknown>;
+}
+
+function analystRecommendationPayload(input: CoreAnalystRecommendationInput) {
+  if (!Number.isSafeInteger(input.actorTelegramId) || input.actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  return { actor_telegram_id: input.actorTelegramId, asset: input.asset, side: input.side, market: input.market, order_type: input.orderType, entry: input.entry, stop_loss: input.stopLoss, targets_raw: input.targetsRaw, notes: input.notes, leverage: input.leverage ?? "20", channel_ids: input.channelIds };
+}
+
+export async function corePreviewAnalystRecommendation(input: CoreAnalystRecommendationInput, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreAnalystRecommendationPreview> {
+  const result = await coreCommand("/api/webapp/recommendations/preview", analystRecommendationPayload(input), fetchImpl, env);
+  const preview = result.preview;
+  if (!preview || typeof preview !== "object" || (preview as { mode?: unknown }).mode !== "PREVIEW") throw new Error("CAPITALGUARD_CORE_ANALYST_PREVIEW_INVALID");
+  return preview as CoreAnalystRecommendationPreview;
+}
+
+export async function coreConfirmAnalystRecommendation(input: CoreAnalystRecommendationInput & { idempotencyKey: string }, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreAnalystRecommendationConfirmation> {
+  const key = input.idempotencyKey.trim();
+  if (key.length < 16 || key.length > 128) throw new Error("CAPITALGUARD_IDEMPOTENCY_KEY_INVALID");
+  const result = await coreCommand("/api/webapp/recommendations/confirm", { ...analystRecommendationPayload(input), idempotency_key: key }, fetchImpl, env);
+  if (result.entity_type !== "RECOMMENDATION" || typeof result.public_ref !== "string" || !result.publication) throw new Error("CAPITALGUARD_CORE_ANALYST_CONFIRM_INVALID");
+  return result as unknown as CoreAnalystRecommendationConfirmation;
 }
 
 export async function coreListOwnerReviewBatches(actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreOwnerReviewBatch[]> {
