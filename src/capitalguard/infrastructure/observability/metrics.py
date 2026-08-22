@@ -1,4 +1,16 @@
-from prometheus_client import Counter, Gauge
+from prometheus_client import Counter, Gauge, Histogram
+
+
+HTTP_REQUESTS_TOTAL = Counter(
+    "cg_http_requests_total",
+    "Core HTTP requests completed, excluding the metrics scrape endpoint",
+    ["method", "route", "status"],
+)
+HTTP_REQUEST_LATENCY_SECONDS = Histogram(
+    "cg_http_request_latency_seconds",
+    "Core HTTP request latency, excluding the metrics scrape endpoint",
+    ["method", "route", "status"],
+)
 
 
 OUTBOX_ATTEMPTS_TOTAL = Counter(

@@ -34,6 +34,20 @@ def test_health_is_fail_closed_before_startup(client: TestClient):
     assert response.json()["detail"] == "Service is not ready"
 
 
+def test_metrics_record_safe_route_templates_and_exclude_metrics_scrapes(client: TestClient):
+    app.state.ready = False
+    app.state.ptb_app = None
+    app.state.services = None
+
+    assert client.get("/health").status_code == 503
+    metrics = client.get("/metrics")
+
+    assert metrics.status_code == 200
+    assert 'cg_http_requests_total{method="GET",route="/health",status="503"}' in metrics.text
+    assert 'cg_http_request_latency_seconds_count{method="GET",route="/health",status="503"}' in metrics.text
+    assert 'route="/metrics"' not in metrics.text
+
+
 def test_v1_status_is_versioned_nonfinancial_and_fail_closed(client: TestClient):
     from capitalguard.interfaces.api.routers.v1 import reset_status_rate_limiter
 
