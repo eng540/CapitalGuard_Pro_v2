@@ -50,6 +50,11 @@ class WebAppSignal(BaseModel):
     leverage: Optional[str] = "20"
     channel_ids: List[int] = []
 
+
+class AnalystRecommendationConfirm(WebAppSignal):
+    idempotency_key: str
+
+
 class UserTradeCloseCommand(BaseModel):
     actor_telegram_id: int
     idempotency_key: str
@@ -207,6 +212,85 @@ async def get_analyst_channels(initData: str):
             return {"ok": True, "channels": [{"id": ch.telegram_channel_id, "title": ch.title, "is_active": ch.is_active} for ch in channels]}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+@router.post("/recommendations/preview")
+async def preview_recommendation_webapp(payload: WebAppSignal, request: Request):
+    """Validate an analyst recommendation without persisting any financial record."""
+    try:
+        user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
+        service = request.app.state.services.get("creation_service") if request.app.state.services else None
+        if not service:
+            return {"ok": False, "error": {"code": "SERVICE_UNAVAILABLE", "message": "Recommendation service unavailable"}}
+        targets = parse_targets_list(payload.targets_raw.split())
+        if not targets:
+            return {"ok": False, "error": {"code": "INVALID_TARGETS", "message": "At least one valid target is required"}}
+        with session_scope() as session:
+            preview = await service.preview_recommendation_async(
+                user_id=str(user_data["id"]),
+                db_session=session,
+                asset=payload.asset,
+                side=payload.side,
+                market=payload.market,
+                order_type=payload.order_type,
+                entry=Decimal(str(payload.entry)),
+                stop_loss=Decimal(str(payload.stop_loss)),
+                targets=targets,
+                notes=f"Lev: {payload.leverage}x | {payload.notes or ''}".strip(),
+                target_channel_ids={int(channel_id) for channel_id in (payload.channel_ids or [])},
+            )
+        return {"ok": True, "preview": preview}
+    except HTTPException:
+        raise
+    except (KeyError, ValueError, RuntimeError) as exc:
+        return {"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(exc)}}
+    except Exception:
+        log.exception("Analyst recommendation preview failed")
+        return {"ok": False, "error": {"code": "INTERNAL_ERROR", "message": "Unable to preview recommendation"}}
+
+
+@router.post("/recommendations/confirm")
+async def confirm_recommendation_webapp(payload: AnalystRecommendationConfirm, request: Request):
+    """Persist one already-reviewed recommendation through the idempotent Core command boundary."""
+    key = payload.idempotency_key.strip()
+    if len(key) < 16 or len(key) > 128:
+        return {"ok": False, "error": {"code": "INVALID_IDEMPOTENCY_KEY", "message": "Idempotency key must contain 16 to 128 characters"}}
+    try:
+        user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
+        creation_service = request.app.state.services.get("creation_service") if request.app.state.services else None
+        if not creation_service:
+            return {"ok": False, "error": {"code": "SERVICE_UNAVAILABLE", "message": "Recommendation service unavailable"}}
+        targets = parse_targets_list(payload.targets_raw.split())
+        if not targets:
+            return {"ok": False, "error": {"code": "INVALID_TARGETS", "message": "At least one valid target is required"}}
+        recommendation = {
+            "asset": payload.asset,
+            "side": payload.side,
+            "market": payload.market,
+            "order_type": payload.order_type,
+            "entry": Decimal(str(payload.entry)),
+            "stop_loss": Decimal(str(payload.stop_loss)),
+            "targets": targets,
+            "notes": f"Lev: {payload.leverage}x | {payload.notes or ''}".strip(),
+            "target_channel_ids": {int(channel_id) for channel_id in (payload.channel_ids or [])},
+        }
+        with session_scope() as session:
+            return await WebCommandService().confirm_analyst_recommendation(
+                session,
+                actor_telegram_id=int(user_data["id"]),
+                idempotency_key=key,
+                creation_service=creation_service,
+                recommendation=recommendation,
+            )
+    except HTTPException:
+        raise
+    except WebCommandError as exc:
+        return {"ok": False, "error": {"code": "COMMAND_REJECTED", "message": str(exc)}}
+    except (KeyError, ValueError, RuntimeError) as exc:
+        return {"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(exc)}}
+    except Exception:
+        log.exception("Analyst recommendation confirmation failed")
+        return {"ok": False, "error": {"code": "INTERNAL_ERROR", "message": "Unable to confirm recommendation"}}
+
 
 @router.post("/create")
 async def create_trade_webapp(payload: WebAppSignal, request: Request):
