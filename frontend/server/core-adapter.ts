@@ -65,6 +65,7 @@ export type CoreR5Readiness = { status: "HOLD"; reasons: string[]; commercial_en
 export type CoreAnalystRecommendationInput = { actorTelegramId: number; asset: string; side: "LONG" | "SHORT"; market: string; orderType: "LIMIT" | "MARKET"; entry: number; stopLoss: number; targetsRaw: string; notes?: string; leverage?: string; channelIds: number[] };
 export type CoreAnalystRecommendationPreview = { schema_version: number; mode: "PREVIEW"; asset: string; side: "LONG" | "SHORT"; market: string; order_type: "LIMIT" | "MARKET"; entry: string; stop_loss: string; targets: Array<{ price: string; close_percent: number }>; live_price: string | null; publication: { state: "NOT_QUEUED"; eligible_channel_count: number } };
 export type CoreAnalystRecommendationConfirmation = { ok: true; entity_type: "RECOMMENDATION"; public_ref: string; publication: { state: "SAVED" | "QUEUED"; queued_delivery_count: number }; replayed: boolean };
+export type CoreAnalystPublicationChannel = { id: number; title: string; username: string | null };
 
 export function getCoreConfig(env = process.env): CoreConfig {
   const rawUrl = env.CAPITALGUARD_CORE_BASE_URL?.trim();
@@ -146,6 +147,13 @@ export async function corePreviewAnalystRecommendation(input: CoreAnalystRecomme
   const preview = result.preview;
   if (!preview || typeof preview !== "object" || (preview as { mode?: unknown }).mode !== "PREVIEW") throw new Error("CAPITALGUARD_CORE_ANALYST_PREVIEW_INVALID");
   return preview as CoreAnalystRecommendationPreview;
+}
+
+export async function coreGetAnalystPublicationChannels(actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreAnalystPublicationChannel[]> {
+  if (!Number.isSafeInteger(actorTelegramId) || actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const result = await coreReadOnlyFetch(query("/api/webapp/recommendations/channels", { actor_telegram_id: String(actorTelegramId) }), {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_ANALYST_CHANNELS_INVALID");
+  return (result as { items: CoreAnalystPublicationChannel[] }).items;
 }
 
 export async function coreConfirmAnalystRecommendation(input: CoreAnalystRecommendationInput & { idempotencyKey: string }, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreAnalystRecommendationConfirmation> {
