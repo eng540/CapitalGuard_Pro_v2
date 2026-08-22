@@ -85,3 +85,28 @@ jobs:
         env:
           RECONCILIATION_EXPECTED_DB: capitalguard_fresh
         run: PYTHONPATH=src python scripts/reconcile_existing_data.py
+
+  web-contract-coverage:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Enable pnpm
+        run: corepack enable
+      - name: Install locked Web dependencies
+        run: pnpm install --frozen-lockfile
+      - name: TypeScript contract check
+        run: pnpm check
+      - name: Vitest contract coverage
+        run: pnpm test
+      - name: Production build check
+        run: pnpm build
