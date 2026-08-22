@@ -12,7 +12,7 @@
 | Existing-data reconciliation | OPEN | restore anonymized snapshot وعدّ counts/FKs/statuses. |
 | Backup/Restore وRTO/RPO | PASS | Restore Drill منفصل ومقنّع بتاريخ 21 أغسطس 2026: Core/Web restore وAlembic/Drizzle وcounts ناجحة؛ RTO ≈45 ثانية، وRPO <5 دقائق. راجع `docs/RESTORE_DRILL_EVIDENCE_20260821.md`. |
 | E2E Forward→Close حي | OPEN | سيناريو موثق مع Redis/Telegram/market controlled inputs. |
-| أسرار وPII | OPEN | دليل تدوير مقنّع وretention/access register. |
+| أسرار وPII | PASS جزئي | تدوير مقنّع مغلق: اعتماد سابق=401 وحالي=200 وCore/Web health=ok؛ راجع `docs/SECRET_ROTATION_EVIDENCE_20260822.md`. يبقى retention/access register مستقلاً. |
 
 ## R1 وAlpha/Value
 
@@ -81,3 +81,4 @@
 |---|---|---|---|
 | 21 أغسطس 2026 | تأجيل Restore Drill | استمرار تطوير المنتج غير التجاري، الترقيات، الاختبارات المحلية، UAT غير التجاري، ودمج التحسينات عبر PRs. | لا اعتماد تجاري، لا تفعيل دفع، لا تغيير R5 من HOLD، ولا Copy Trading قبل Restore Drill منفصل وموثق. |
 | 21 أغسطس 2026 | إغلاق دليل Restore Drill | دليل restore منطقي منفصل لـ Core وWeb مع migrations/integrity وRTO/RPO مقنّعة. | يبقى الدفع وCopy Trading والتنفيذ الحي محظوراً؛ لا تزال بقية أدلة G0/R4 وقرارات R3-C/R5-C مستقلة ومفتوحة. |
+| 22 أغسطس 2026 | إغلاق دليل تدوير الأسرار | تدوير Core API/JWT Web/PostgreSQL Web مع إثبات مقنّع لرفض السابق وقبول الحالي. | لا يفعّل الدفع أو Copy Trading أو التنفيذ الحي ولا يغلق retention/access register. |
