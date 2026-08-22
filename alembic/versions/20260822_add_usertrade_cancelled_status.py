@@ -17,7 +17,10 @@ depends_on = None
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
-        op.execute("ALTER TYPE usertradestatus ADD VALUE IF NOT EXISTS 'CANCELLED'")
+        # PostgreSQL does not allow a new enum value to be used by a
+        # constraint until the ALTER TYPE transaction has committed.
+        with op.get_context().autocommit_block():
+            op.execute("ALTER TYPE usertradestatus ADD VALUE IF NOT EXISTS 'CANCELLED'")
     op.execute("ALTER TABLE user_trades DROP CONSTRAINT IF EXISTS valid_user_trade_status")
     op.execute(
         """
