@@ -44,3 +44,40 @@ jobs:
 
       - name: Tests
         run: pytest -q
+
+  fresh-postgres-migration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: capitalguard
+          POSTGRES_PASSWORD: capitalguard
+          POSTGRES_DB: capitalguard_fresh
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U capitalguard -d capitalguard_fresh"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://capitalguard:capitalguard@localhost:5432/capitalguard_fresh
+      API_KEY: test_api_key
+      TELEGRAM_BOT_TOKEN: 123:fake_token
+      ENV: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install migration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Apply Alembic to an empty PostgreSQL database
+        run: PYTHONPATH=src alembic upgrade head
+      - name: Verify fresh schema and empty domain tables
+        run: PYTHONPATH=src python scripts/verify_fresh_postgres_migration.py
