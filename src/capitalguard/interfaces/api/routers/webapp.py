@@ -63,6 +63,10 @@ class UserTradeCloseCommand(BaseModel):
     idempotency_key: str
 
 
+class UserTradePartialCloseCommand(UserTradeCloseCommand):
+    close_percent: Decimal
+
+
 class UserTradeCancelCommand(BaseModel):
     actor_telegram_id: int
     idempotency_key: str
@@ -873,6 +877,36 @@ async def cancel_owned_pending_user_trade(
                 public_ref=public_ref,
                 idempotency_key=command.idempotency_key,
                 lifecycle_service=lifecycle,
+            )
+    except WebCommandError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/read-models/trader/{telegram_id}/recommendations/{public_ref:path}/commands/partial-close")
+async def partial_close_owned_user_trade(
+    telegram_id: int,
+    public_ref: str,
+    command: UserTradePartialCloseCommand,
+    request: Request,
+):
+    require_core_service_key(request.headers.get("authorization"))
+    if command.actor_telegram_id != telegram_id:
+        raise HTTPException(status_code=403, detail="Command actor does not match the trader scope")
+    services = request.app.state.services or {}
+    lifecycle = services.get("lifecycle_service")
+    price_service = services.get("price_service")
+    if not lifecycle or not price_service:
+        raise HTTPException(status_code=503, detail="UserTrade command services are unavailable")
+    try:
+        with session_scope() as session:
+            return await WebCommandService().partial_close_user_trade(
+                session,
+                actor_telegram_id=telegram_id,
+                public_ref=public_ref,
+                close_percent=command.close_percent,
+                idempotency_key=command.idempotency_key,
+                lifecycle_service=lifecycle,
+                price_service=price_service,
             )
     except WebCommandError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
