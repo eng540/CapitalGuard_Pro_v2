@@ -67,6 +67,9 @@ class Settings(BaseSettings):
 
     # Historical connector gate: disabled until owner approval and connector acceptance.
     HISTORY_CONNECTOR_ENABLED: bool = False
+    HISTORICAL_TRUST_PUBLIC_RANKING_ENABLED: bool = False
+    HISTORICAL_TRUST_MIN_SAMPLE_SIZE: int = Field(default=20, ge=1, le=100000)
+    HISTORICAL_TRUST_MIN_REPLAY_COVERAGE_PERCENT: float = Field(default=95.0, ge=0.0, le=100.0)
 
     # Temporal Forward Decisioning gate: metadata/explainability can ship before routing changes.
     TEMPORAL_DECISIONING_ENABLED: bool = False
