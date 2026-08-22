@@ -31,10 +31,12 @@ from capitalguard.application.services.historical_signal_query_service import Hi
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
 from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalSignalEvent, PublicationDelivery, RecommendationEvent, RecommendationStatusEnum, UserTrade, WebCommandAudit
+from capitalguard.infrastructure.market.symbol_catalog import SymbolCatalog
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webapp", tags=["WebApp"])
 TRADER_RECOMMENDATION_SCHEMA_VERSION = "2026-08-21.2"
+ANALYST_ASSET_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT")
 
 # --- Models ---
 class WebAppSignal(BaseModel):
@@ -244,6 +246,27 @@ async def get_analyst_recommendation_channels(actor_telegram_id: int, request: R
                 for channel in channels
             ],
         }
+
+
+@router.get("/recommendations/assets")
+async def get_analyst_recommendation_assets(market: str, request: Request):
+    """Return Core-owned explicit assets for the selected display market only."""
+    require_core_service_key(request.headers.get("authorization"))
+    normalized_market = market.strip().upper()
+    if normalized_market not in {"SPOT", "FUTURES"}:
+        raise HTTPException(status_code=422, detail="Market must be Spot or Futures")
+    catalog = SymbolCatalog.binance(
+        list(ANALYST_ASSET_SYMBOLS),
+        market="spot" if normalized_market == "SPOT" else "Futures-USD-M",
+    )
+    return {
+        "ok": True,
+        "market": "Spot" if normalized_market == "SPOT" else "Futures",
+        "items": [
+            {"symbol": entry.canonical, "venue": entry.venue.value, "provider_symbol": entry.provider_symbol, "market": entry.market}
+            for entry in catalog.entries()
+        ],
+    }
 
 @router.post("/recommendations/preview")
 async def preview_recommendation_webapp(payload: WebAppSignal, request: Request):
