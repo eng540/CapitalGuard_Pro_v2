@@ -95,6 +95,16 @@ class EvidenceIngestCommand(BaseModel):
     batch_id: int
     idempotency_key: str
 
+
+class HistoricalBinanceReplayCommand(BaseModel):
+    actor_telegram_id: int
+    signal_id: int
+    start: datetime
+    end: datetime
+    interval: str = "1m"
+    limit: int = 1500
+    idempotency_key: str
+
 # --- Helpers ---
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
     if not bot_token:
@@ -714,6 +724,18 @@ async def execute_evidence_ingestion(batch_id: int, command: EvidenceIngestComma
             )
     except WebCommandError as exc:
         raise HTTPException(status_code=403, detail="Owner command rejected") from exc
+
+
+@router.post("/owner/historical-signals/{signal_id}/replay-binance")
+async def execute_historical_binance_replay(signal_id: int, command: HistoricalBinanceReplayCommand, request: Request):
+    require_core_service_key(request.headers.get("authorization"))
+    if signal_id != command.signal_id or len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Invalid historical replay command")
+    try:
+        with session_scope() as session:
+            return WebCommandService().replay_historical_signal_from_binance(session, actor_telegram_id=command.actor_telegram_id, signal_id=signal_id, start=command.start, end=command.end, interval=command.interval, limit=command.limit, idempotency_key=command.idempotency_key)
+    except WebCommandError as exc:
+        raise HTTPException(status_code=409, detail="Historical replay rejected") from exc
 
 
 @router.get("/owner/operations-feed")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 from capitalguard.application.services.historical_evidence_ingestion_service import HistoricalEvidenceIngestionService
 from capitalguard.application.services.historical_owner_review_service import HistoricalOwnerReviewService
 from capitalguard.config import settings
-from capitalguard.infrastructure.db.models import HistoricalImportBatch, UserTrade, UserTradeStatusEnum, WebCommandAudit
+from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalSignal, UserTrade, UserTradeStatusEnum, WebCommandAudit
 from capitalguard.infrastructure.db.repository import UserRepository
 
 
@@ -21,6 +22,7 @@ class WebCommandError(ValueError):
 class WebCommandService:
     REVIEW = "HISTORICAL_OWNER_REVIEW"
     INGEST = "HISTORICAL_EVIDENCE_INGEST"
+    REPLAY_BINANCE = "HISTORICAL_BINANCE_REPLAY"
     CLOSE_USER_TRADE = "USER_TRADE_MANUAL_CLOSE"
     PARTIAL_CLOSE_USER_TRADE = "USER_TRADE_MANUAL_PARTIAL_CLOSE"
     MOVE_USER_TRADE_STOP_TO_BREAKEVEN = "USER_TRADE_MOVE_STOP_TO_BREAKEVEN"
@@ -123,6 +125,24 @@ class WebCommandService:
         )
         response = {"ok": True, "batch_id": batch_id, "ingested": ingested, "skipped": skipped, "replayed": False}
         self._record(session, idempotency_key=idempotency_key, command_type=self.INGEST, actor_user_id=owner.id, target_type="HISTORICAL_IMPORT_BATCH", target_id=batch_id, request_hash=request_hash, response=response)
+        return response
+
+    def replay_historical_signal_from_binance(self, session: Session, *, actor_telegram_id: int, signal_id: int, start: datetime, end: datetime, interval: str, limit: int, idempotency_key: str) -> dict:
+        owner = self._require_owner(session, actor_telegram_id)
+        signal = session.get(HistoricalSignal, signal_id)
+        if signal is None or signal.evidence is None or signal.evidence.batch is None or signal.evidence.batch.status != "EVIDENCE_INGESTED" or not signal.evidence.ownership_proof_ref:
+            raise WebCommandError("Historical replay requires reviewed evidence")
+        request_hash = self._fingerprint(self.REPLAY_BINANCE, actor_telegram_id, "HISTORICAL_SIGNAL", signal_id, {"start": start.isoformat(), "end": end.isoformat(), "interval": interval, "limit": limit})
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+        from capitalguard.application.services.historical_market_replay_service import HistoricalMarketReplayService
+        try:
+            events = HistoricalMarketReplayService().replay_from_binance(session, signal_id=signal_id, start=start, replay_end=end, interval=interval, limit=limit)
+        except Exception as exc:
+            raise WebCommandError("Historical Binance replay failed without changes") from exc
+        response = {"ok": True, "signal_id": signal_id, "event_count": len(events), "replayed": False, "commercial_enabled": False}
+        self._record(session, idempotency_key=idempotency_key, command_type=self.REPLAY_BINANCE, actor_user_id=owner.id, target_type="HISTORICAL_SIGNAL", target_id=signal_id, request_hash=request_hash, response=response)
         return response
 
     async def close_user_trade(
