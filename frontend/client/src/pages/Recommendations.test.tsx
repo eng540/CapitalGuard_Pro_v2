@@ -6,6 +6,7 @@ const mutate = vi.fn();
 const cancelMutate = vi.fn();
 const partialMutate = vi.fn();
 const breakevenMutate = vi.fn();
+const entryUpdateMutate = vi.fn();
 let recommendationState: Record<string, unknown>;
 let detailState: Record<string, unknown>;
 
@@ -24,6 +25,7 @@ vi.mock("@/lib/trpc", () => ({
         cancelPendingUserTrade: { useMutation: () => ({ mutate: cancelMutate, isPending: false }) },
         partialCloseUserTrade: { useMutation: () => ({ mutate: partialMutate, isPending: false }) },
         moveUserTradeStopToBreakeven: { useMutation: () => ({ mutate: breakevenMutate, isPending: false }) },
+        updatePendingUserTradeEntry: { useMutation: () => ({ mutate: entryUpdateMutate, isPending: false }) },
       },
     },
   },
@@ -59,6 +61,7 @@ describe("UserTrade close surface", () => {
     cancelMutate.mockReset();
     partialMutate.mockReset();
     breakevenMutate.mockReset();
+    entryUpdateMutate.mockReset();
     Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "close-command-key-0001" } });
     recommendationState = { isLoading: false, isError: false, data: { as_of: "2026-08-22T12:00:00Z", items: [activeItem] }, refetch: vi.fn() };
     detailState = { isLoading: false, isError: false, data: { as_of: "2026-08-22T12:00:00Z", schema_version: "2026-08-22.1", item: activeItem }, refetch: vi.fn() };
@@ -94,6 +97,30 @@ describe("UserTrade close surface", () => {
     fireEvent.click(screen.getByText("طلب إلغاء التتبع"));
     fireEvent.click(screen.getByText("تأكيد الإلغاء"));
     expect(cancelMutate).toHaveBeenCalledWith({ publicRef: "USR-000012/T-0003", idempotencyKey: "cancel-command-key-0001" });
+  });
+
+  it("requires explicit confirmation before updating the entry of a pending Core record", () => {
+    detailState = { ...detailState, data: { ...(detailState.data as object), item: { ...activeItem, status: "WATCHLIST" } } };
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "entry-update-key-0001" } });
+    render(<Recommendations />);
+    fireEvent.click(screen.getByText("عرض التفاصيل"));
+    fireEvent.change(screen.getByLabelText("سعر الدخول الجديد"), { target: { value: "70125" } });
+    fireEvent.click(screen.getByText("طلب تعديل الدخول"));
+    expect(entryUpdateMutate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("تأكيد تعديل الدخول"));
+    expect(entryUpdateMutate).toHaveBeenCalledWith({ publicRef: "USR-000012/T-0003", entry: 70125, idempotencyKey: "entry-update-key-0001" });
+  });
+
+  it("rejects an unchanged or non-positive pending entry in the client before an action is requested", () => {
+    detailState = { ...detailState, data: { ...(detailState.data as object), item: { ...activeItem, status: "PENDING_ACTIVATION" } } };
+    render(<Recommendations />);
+    fireEvent.click(screen.getByText("عرض التفاصيل"));
+    fireEvent.click(screen.getByText("طلب تعديل الدخول"));
+    expect(screen.getByText("أدخل سعر دخول موجباً قبل طلب التعديل.")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("سعر الدخول الجديد"), { target: { value: "70000" } });
+    fireEvent.click(screen.getByText("طلب تعديل الدخول"));
+    expect(screen.getByText("أدخل سعراً مختلفاً عن قيمة الدخول الحالية قبل طلب التعديل.")).toBeTruthy();
+    expect(entryUpdateMutate).not.toHaveBeenCalled();
   });
 
   it("requires an in-range percentage and explicit confirmation before partial close", () => {

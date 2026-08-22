@@ -72,6 +72,20 @@ describe("CapitalGuard Core tRPC routes", () => {
     expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, idempotency_key: "breakeven-command-01" });
   });
 
+  it("derives the pending UserTrade entry-update actor from the Telegram session", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body);
+      return new Response(JSON.stringify({ ok: true, entity_type: "USER_TRADE", public_ref: "USR-000012/T-0004", status: "PENDING_ACTIVATION", entry: 70125, replayed: false }), { status: 200 });
+    });
+    const caller = appRouter.createCaller({ ...coreContext(), user: { ...coreContext().user!, openId: "telegram:123456" } });
+    await expect(caller.capitalguard.trader.updatePendingUserTradeEntry({ publicRef: "USR-000012/T-0004", entry: 70125, idempotencyKey: "entry-update-key-0001" })).resolves.toMatchObject({ status: "PENDING_ACTIVATION", entry: 70125 });
+    expect(requestUrl).toContain("/read-models/trader/123456/recommendations/USR-000012%2FT-0004/commands/update-entry");
+    expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, entry: 70125, idempotency_key: "entry-update-key-0001" });
+  });
+
   it("derives the UserTrade pending-cancel actor and forwards no market price", async () => {
     let requestUrl = "";
     let requestBody = "";
