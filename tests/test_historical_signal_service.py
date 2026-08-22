@@ -241,6 +241,18 @@ def test_historical_reputation_summary_separates_confidence(db_session, historic
     assert quality.rank_eligible_signals == 0
 
 
+def test_historical_trust_release_gate_is_fail_closed_without_evidence(db_session):
+    from capitalguard.application.services.historical_trust_release_service import HistoricalTrustReleaseService
+
+    readiness = HistoricalTrustReleaseService.evaluate(db_session, analyst_id=123)
+
+    assert readiness.status == "HOLD"
+    assert readiness.public_ranking_enabled is False
+    assert readiness.commercial_enabled is False
+    assert "PUBLIC_RANKING_DISABLED" in readiness.reasons
+    assert "MINIMUM_SAMPLE_NOT_MET" in readiness.reasons
+
+
 def test_historical_attribution_review_is_auditable(db_session, historical_service):
     evidence = historical_service.ingest_evidence(
         db_session,

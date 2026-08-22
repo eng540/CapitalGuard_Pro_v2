@@ -29,6 +29,7 @@ from capitalguard.application.services.performance_service import PerformanceSer
 from capitalguard.application.services.analyst_discovery_service import AnalystDiscoveryService
 from capitalguard.application.services.historical_reputation_service import HistoricalReputationService
 from capitalguard.application.services.historical_signal_query_service import HistoricalSignalQueryService
+from capitalguard.application.services.historical_trust_release_service import HistoricalTrustReleaseService
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
 from capitalguard.infrastructure.db.models import Channel, HistoricalImportBatch, HistoricalSignalEvent, PublicationDelivery, Recommendation, RecommendationEvent, RecommendationStatusEnum, UserTrade, WebCommandAudit
@@ -817,6 +818,31 @@ async def get_historical_trust_quality(actor_telegram_id: int, request: Request,
                     "confidence_weighted_sample": float(report.confidence_weighted_sample),
                 },
                 "commercial_enabled": False,
+            }
+    except WebCommandError as exc:
+        raise HTTPException(status_code=403, detail="Owner command rejected") from exc
+
+
+@router.get("/owner/historical-trust-readiness")
+async def get_historical_trust_readiness(actor_telegram_id: int, request: Request, analyst_id: int | None = None, channel_id: int | None = None):
+    """Owner-only fail-closed release gate for public historical ranking."""
+    require_core_service_key(request.headers.get("authorization"))
+    try:
+        with session_scope() as session:
+            WebCommandService().require_owner(session, actor_telegram_id)
+            readiness = HistoricalTrustReleaseService.evaluate(session, analyst_id=analyst_id, channel_id=channel_id)
+            return {
+                "ok": True,
+                "status": readiness.status,
+                "reasons": readiness.reasons,
+                "public_ranking_enabled": readiness.public_ranking_enabled,
+                "commercial_enabled": readiness.commercial_enabled,
+                "snapshot": {
+                    "sample_size": readiness.sample_size,
+                    "replay_coverage_percent": float(readiness.replay_coverage_percent),
+                    "reviewed_attributions": readiness.reviewed_attributions,
+                    "pending_attributions": readiness.pending_attributions,
+                },
             }
     except WebCommandError as exc:
         raise HTTPException(status_code=403, detail="Owner command rejected") from exc
