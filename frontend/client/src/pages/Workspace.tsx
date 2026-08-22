@@ -1,71 +1,39 @@
+import React from "react";
 import DashboardLayout from "@/components/DashboardLayout";
-import { KpiCard, PreviewNotice, SectionTitle, StatusPill } from "@/components/finance-ui";
-import { Button } from "@/components/ui/button";
-import { previewPortfolio, previewRecommendations, previewTrades, pnlSeries } from "@/lib/preview-data";
-import { trpc } from "@/lib/trpc";
-import LiveSignalStatus from "@/components/LiveSignalStatus";
 import CoreConnectionStatus from "@/components/CoreConnectionStatus";
-import { Activity, ArrowDownLeft, ArrowUpRight, BarChart3, ChevronLeft, CircleDollarSign, WalletCards } from "lucide-react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import LiveSignalStatus from "@/components/LiveSignalStatus";
+import { KpiCard, SectionTitle, StatusPill } from "@/components/finance-ui";
+import { Button } from "@/components/ui/button";
+import { trpc } from "@/lib/trpc";
+import { Activity, ArrowUpRight, ChevronLeft, CircleDollarSign, WalletCards } from "lucide-react";
 import { Link } from "wouter";
 
+function displayMetric(value: unknown, suffix = "") {
+  if (typeof value !== "number" && typeof value !== "string") return "غير متاح";
+  return `${value}${suffix}`;
+}
+
 export default function Workspace() {
-  const liveSnapshot = trpc.capitalguard.core.traderSnapshot.useQuery(undefined, {
+  const snapshot = trpc.capitalguard.core.traderSnapshot.useQuery(undefined, {
     refetchInterval: 15_000,
     refetchOnWindowFocus: true,
   });
-  const hasCoreReadModel = liveSnapshot.data?.ok === true;
-  const positions = liveSnapshot.data?.portfolio.positions ?? [];
-  const performance = liveSnapshot.data?.performance as Record<string, unknown> | undefined;
-  const funnel = liveSnapshot.data?.funnel as Record<string, unknown> | undefined;
-  const rows = hasCoreReadModel
-    ? positions.map(position => ({
-      id: `REC-${position.id}`,
-      asset: position.asset,
-      side: position.side.toLowerCase(),
-      entry: position.entry,
-      source: position.source_type,
-      status: position.status,
-      pnl: `${position.pnl_live_pct >= 0 ? "+" : ""}${position.pnl_live_pct.toFixed(2)}%`,
-    }))
-    : previewTrades;
-  const cards = hasCoreReadModel
-    ? positions.map(position => ({
-      ref: `REC-${position.id}`,
-      asset: position.asset,
-      side: position.side.toLowerCase(),
-      source: position.source_type,
-      status: position.status,
-      entry: position.entry,
-      stop: position.stop_loss,
-      targets: position.targets.map(target => target.price).join(" · "),
-    }))
-    : previewRecommendations;
-  const kpis = hasCoreReadModel
-    ? {
-      openPositions: String(liveSnapshot.data?.portfolio.open_position_count ?? 0),
-      totalPnl: String(performance?.total_pnl_pct ?? "—"),
-      winRate: String(performance?.win_rate_pct ?? "—"),
-      activated: String(funnel?.activated ?? "—"),
-    }
-    : {
-      openPositions: String(previewPortfolio.totalEquity),
-      totalPnl: `+${previewPortfolio.realizedPnl}`,
-      winRate: `+${previewPortfolio.unrealizedPnl}`,
-      activated: String(previewPortfolio.availableBalance),
-    };
-  return <DashboardLayout>
-    <div dir="rtl" className="mx-auto max-w-[1500px]">
-      <div className="mb-8 flex flex-col justify-between gap-5 lg:flex-row lg:items-end"><div><p className="mb-2 text-xs font-semibold uppercase tracking-[.2em] text-cyan-300">Control Center</p><h1 className="text-3xl font-semibold tracking-tight">صباح التداول، راقب الصورة كاملة.</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">المحفظة، المخاطر، التوصيات ودورة الأحداث في مساحة واحدة مفهومة من أول نظرة.</p></div><div className="flex gap-3"><Button variant="outline" className="border-white/10 bg-white/[.03]" asChild><Link href="/risk">حاسبة المخاطر</Link></Button><Button className="bg-cyan-400 text-slate-950 hover:bg-cyan-300" asChild><Link href="/recommendations">استكشاف التوصيات <ChevronLeft className="mr-1 h-4 w-4" /></Link></Button></div></div>
-      <PreviewNotice isLive={hasCoreReadModel} />
-      <CoreConnectionStatus />
-      <LiveSignalStatus />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><KpiCard label={hasCoreReadModel ? "مراكز مفتوحة" : "إجمالي القيمة"} value={hasCoreReadModel ? kpis.openPositions : `${Number(kpis.openPositions).toLocaleString()} ${previewPortfolio.currency}`} change={hasCoreReadModel ? "من Core في هذه اللحظة" : "صافي المحفظة بعد المراكز المفتوحة"} icon={<WalletCards className="h-4 w-4" />} /><KpiCard label={hasCoreReadModel ? "PnL المحفظة المفعلة" : "PnL المحقق"} value={kpis.totalPnl} change={hasCoreReadModel ? "Activated Portfolio Only" : "آخر 30 يومًا"} icon={<ArrowUpRight className="h-4 w-4" />} tone="emerald" /><KpiCard label={hasCoreReadModel ? "Win Rate" : "PnL غير المحقق"} value={kpis.winRate} change={hasCoreReadModel ? "حسب الصفقات المفعلة المغلقة" : "يُحدّث عند ربط مصدر السوق"} icon={<Activity className="h-4 w-4" />} tone="cyan" /><KpiCard label={hasCoreReadModel ? "صفقات مفعلة" : "الرصيد المتاح"} value={kpis.activated} change={hasCoreReadModel ? "من Funnel دورة الحياة" : "جاهز لإدارة المخاطر"} icon={<CircleDollarSign className="h-4 w-4" />} tone="violet" /></div>
-      {hasCoreReadModel ? <p className="mt-3 text-xs text-cyan-200">تم التحديث من Core عند {liveSnapshot.data?.as_of ? new Date(liveSnapshot.data.as_of).toLocaleTimeString("ar-SA") : "الآن"}؛ لا تحفظ المنصة هذه البيانات المالية محلياً.</p> : liveSnapshot.isError ? <p className="mt-3 text-xs text-amber-200">تعذر جلب قراءة Core الحية؛ بقيت بيانات العرض ظاهرة بوضوح حتى تتعافى الخدمة.</p> : null}
-      <div className="mt-6 grid gap-6 xl:grid-cols-[1.55fr_.9fr]"><section className="panel-glow rounded-3xl border border-white/8 bg-card/70 p-5"><SectionTitle eyebrow="Performance" title="منحنى PnL الأسبوعي" action={<span className="text-xs text-emerald-300">+1.84% هذا الأسبوع</span>} /><div className="h-[290px]" dir="ltr"><ResponsiveContainer width="100%" height="100%"><AreaChart data={pnlSeries}><defs><linearGradient id="pnl" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#22d3ee" stopOpacity={0.35}/><stop offset="100%" stopColor="#22d3ee" stopOpacity={0}/></linearGradient></defs><CartesianGrid vertical={false} stroke="#ffffff10"/><XAxis dataKey="day" tickLine={false} axisLine={false} tick={{ fill: "#8190ad", fontSize: 11 }}/><YAxis hide domain={[-100, 400]}/><Tooltip contentStyle={{ background: "#121a2d", border: "1px solid #ffffff18", borderRadius: 14 }} labelStyle={{ color: "#dce8ff" }}/><Area type="monotone" dataKey="pnl" stroke="#22d3ee" strokeWidth={2.4} fill="url(#pnl)" /></AreaChart></ResponsiveContainer></div></section>
-      <section className="rounded-3xl border border-white/8 bg-card/70 p-5"><SectionTitle eyebrow="Signal Health" title="نبض السوق"/><div className="space-y-4"><div className="rounded-2xl border border-white/8 bg-white/[.025] p-4"><div className="flex items-center justify-between"><p className="text-sm font-medium">حالة التدفق</p><StatusPill value="LIVE REVIEW SAFE" /></div><p className="mt-3 text-xs leading-5 text-muted-foreground">لا إنشاء تلقائي لتوصية أو صفقة. كل إشارة حديثة تمر بمراجعة صريحة.</p></div><div className="rounded-2xl border border-white/8 bg-white/[.025] p-4"><div className="flex items-center justify-between"><p className="text-sm font-medium">Temporal Decisioning</p><span className="font-mono text-xs text-cyan-300">0 LEAKS</span></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-white/5"><div className="h-full w-[76%] rounded-full bg-gradient-to-r from-cyan-400 to-violet-400"/></div><p className="mt-2 text-xs text-muted-foreground">المسارات الحية والتاريخية معزولة حسب الزمن والسعر.</p></div><Link href="/historical" className="flex items-center justify-between rounded-2xl bg-gradient-to-l from-violet-400/15 to-cyan-400/10 p-4 transition hover:brightness-110"><span className="text-sm font-medium">مراجعة الدفعات التاريخية</span><ChevronLeft className="h-4 w-4 text-cyan-300"/></Link></div></section></div>
-      <section className="mt-6 rounded-3xl border border-white/8 bg-card/70 p-5"><SectionTitle eyebrow="Positions" title="الصفقات الشخصية" action={<Link href="/recommendations" className="text-xs text-cyan-300 hover:text-cyan-200">كل الصفقات</Link>} /><div className="overflow-x-auto"><table className="w-full min-w-[680px] text-right"><thead className="text-[11px] uppercase tracking-[.12em] text-muted-foreground"><tr><th className="pb-3 font-medium">الصفقة</th><th className="pb-3 font-medium">الأصل</th><th className="pb-3 font-medium">الدخول</th><th className="pb-3 font-medium">المصدر</th><th className="pb-3 font-medium">الحالة</th><th className="pb-3 text-left font-medium">PnL</th></tr></thead><tbody>{rows.map((trade: any) => <tr key={trade.id ?? trade.publicRef} className="border-t border-white/6 text-sm"><td className="py-4 font-mono text-xs text-slate-300">{trade.id ?? trade.publicRef}</td><td className="py-4"><span className="font-medium">{trade.asset}</span><span className={trade.side === "long" ? "mr-2 text-xs text-emerald-300" : "mr-2 text-xs text-rose-300"}>{trade.side?.toUpperCase()}</span></td><td className="py-4 text-muted-foreground">{trade.entry}</td><td className="py-4 text-xs text-muted-foreground">{trade.source ?? trade.sourceType}</td><td className="py-4"><StatusPill value={trade.status}/></td><td className="py-4 text-left font-medium text-emerald-300">{trade.pnl ?? trade.realizedPnl}</td></tr>)}</tbody></table></div></section>
-      <section className="mt-6"><SectionTitle eyebrow="Live Recommendations" title="التوصيات التي تتابعها"/><div className="grid gap-4 lg:grid-cols-3">{cards.slice(0,3).map((rec: any) => <article key={rec.ref ?? rec.publicRef} className="rounded-3xl border border-white/8 bg-card/70 p-5 transition hover:-translate-y-1 hover:border-cyan-400/25"><div className="flex items-start justify-between"><div><p className="font-mono text-[11px] text-cyan-300">{rec.ref ?? rec.publicRef}</p><h3 className="mt-2 text-xl font-semibold">{rec.asset}</h3></div><StatusPill value={rec.status}/></div><p className={rec.side === "long" ? "mt-4 text-sm text-emerald-300" : "mt-4 text-sm text-rose-300"}>{rec.side?.toUpperCase()} · {rec.source ?? "Core"}</p><div className="mt-5 grid grid-cols-2 gap-3 text-xs"><div className="rounded-xl bg-white/[.04] p-3"><p className="text-muted-foreground">Entry</p><p className="mt-1 font-medium">{rec.entry}</p></div><div className="rounded-xl bg-white/[.04] p-3"><p className="text-muted-foreground">Stop</p><p className="mt-1 font-medium">{rec.stop ?? rec.stopLoss}</p></div></div><p className="mt-4 text-xs text-muted-foreground">Targets: {rec.targets}</p></article>)}</div></section>
-    </div>
-  </DashboardLayout>;
+  const model = snapshot.data?.ok === true ? snapshot.data : null;
+  const positions = model?.portfolio.positions ?? [];
+  const performance = model?.performance as Record<string, unknown> | undefined;
+  const funnel = model?.funnel as Record<string, unknown> | undefined;
+
+  return <DashboardLayout><main dir="rtl" className="mx-auto max-w-[1500px]">
+    <header className="mb-8 flex flex-col justify-between gap-5 lg:flex-row lg:items-end"><div><p className="mb-2 text-xs font-semibold uppercase tracking-[.2em] text-cyan-300">Core Live Read Model</p><h1 className="text-3xl font-semibold tracking-tight">مساحة المتداول الحية</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">تعرض هذه المساحة قراءة Core الحالية فقط. لا توجد بيانات مالية تجريبية أو نسخة مخزنة في Web.</p></div><div className="flex gap-3"><Button variant="outline" className="border-white/10 bg-white/[.03]" asChild><Link href="/risk">حاسبة المخاطر</Link></Button><Button className="bg-cyan-400 text-slate-950 hover:bg-cyan-300" asChild><Link href="/recommendations">استكشاف التوصيات <ChevronLeft className="mr-1 h-4 w-4" /></Link></Button></div></header>
+    <CoreConnectionStatus />
+    <LiveSignalStatus />
+    {snapshot.isLoading ? <section className="mt-6 rounded-3xl border border-white/10 bg-card/70 p-6 text-sm text-muted-foreground">جارٍ تحميل قراءة المحفظة من Core…</section> : null}
+    {snapshot.isError ? <section className="mt-6 rounded-3xl border border-amber-300/20 bg-amber-300/[.05] p-6"><h2 className="font-semibold text-amber-100">تعذر تحميل القراءة الحية</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">لم تُعرض أي بيانات بديلة. تحقق من اتصال Core ثم حدّث الصفحة.</p></section> : null}
+    {model ? <>
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><KpiCard label="مراكز مفتوحة" value={String(model.portfolio.open_position_count)} change="من Core الآن" icon={<WalletCards className="h-4 w-4" />} /><KpiCard label="PnL المحفظة المفعلة" value={displayMetric(performance?.total_pnl_pct, "%")} change="Activated Portfolio Only" icon={<ArrowUpRight className="h-4 w-4" />} tone="emerald" /><KpiCard label="Win Rate" value={displayMetric(performance?.win_rate_pct, "%")} change="صفقات مفعلة مغلقة" icon={<Activity className="h-4 w-4" />} tone="cyan" /><KpiCard label="صفقات مفعلة" value={displayMetric(funnel?.activated)} change="Funnel دورة الحياة" icon={<CircleDollarSign className="h-4 w-4" />} tone="violet" /></div>
+      <section className="mt-6 rounded-3xl border border-cyan-300/15 bg-cyan-300/[.04] p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[.16em] text-cyan-300">Read Model Status</p><h2 className="mt-1 font-semibold">مصدر البيانات ووقت القراءة</h2></div><StatusPill value="CORE LIVE" /></div><p className="mt-3 text-sm text-muted-foreground">آخر تحديث: {model.as_of ? new Date(model.as_of).toLocaleString("ar-SA") : "غير متاح"}. تُقرأ البيانات خادمياً من Core ولا تُكرر في قاعدة Web.</p></section>
+      <section className="mt-6 rounded-3xl border border-white/8 bg-card/70 p-5"><SectionTitle eyebrow="Positions" title="المراكز الشخصية الحية" action={<Link href="/recommendations" className="text-xs text-cyan-300 hover:text-cyan-200">كل الصفقات</Link>} />{positions.length === 0 ? <p className="mt-5 rounded-2xl border border-dashed border-white/10 p-5 text-sm text-muted-foreground">لا توجد مراكز مفتوحة في قراءة Core الحالية.</p> : <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[760px] text-right"><thead className="text-[11px] uppercase tracking-[.12em] text-muted-foreground"><tr><th className="pb-3 font-medium">المرجع</th><th className="pb-3 font-medium">الأصل</th><th className="pb-3 font-medium">الدخول</th><th className="pb-3 font-medium">السعر الحي</th><th className="pb-3 font-medium">المصدر</th><th className="pb-3 font-medium">الحالة</th><th className="pb-3 text-left font-medium">PnL حي</th></tr></thead><tbody>{positions.map(position => <tr key={position.id} className="border-t border-white/6 text-sm"><td className="py-4 font-mono text-xs text-slate-300">UT-{position.id}</td><td className="py-4"><span className="font-medium">{position.asset}</span><span className={position.side.toUpperCase() === "LONG" ? "mr-2 text-xs text-emerald-300" : "mr-2 text-xs text-rose-300"}>{position.side.toUpperCase()}</span></td><td className="py-4 text-muted-foreground">{position.entry}</td><td className="py-4 text-muted-foreground">{position.live_price ?? "غير متاح"}</td><td className="py-4 text-xs text-muted-foreground">{position.source_type}</td><td className="py-4"><StatusPill value={position.status}/></td><td className={position.pnl_live_pct >= 0 ? "py-4 text-left font-medium text-emerald-300" : "py-4 text-left font-medium text-rose-300"}>{position.pnl_live_pct >= 0 ? "+" : ""}{position.pnl_live_pct.toFixed(2)}%</td></tr>)}</tbody></table></div>}</section>
+      <section className="mt-6"><SectionTitle eyebrow="Live Recommendations" title="التوصيات المتصلة بمراكزك" />{positions.length === 0 ? <p className="mt-4 text-sm text-muted-foreground">لا توجد توصيات مفعلة لعرضها حالياً.</p> : <div className="mt-4 grid gap-4 lg:grid-cols-3">{positions.slice(0, 3).map(position => <article key={position.id} className="rounded-3xl border border-white/8 bg-card/70 p-5"><div className="flex items-start justify-between"><div><p className="font-mono text-[11px] text-cyan-300">UT-{position.id}</p><h3 className="mt-2 text-xl font-semibold">{position.asset}</h3></div><StatusPill value={position.status}/></div><p className={position.side.toUpperCase() === "LONG" ? "mt-4 text-sm text-emerald-300" : "mt-4 text-sm text-rose-300"}>{position.side.toUpperCase()} · {position.source_type}</p><div className="mt-5 grid grid-cols-2 gap-3 text-xs"><div className="rounded-xl bg-white/[.04] p-3"><p className="text-muted-foreground">Entry</p><p className="mt-1 font-medium">{position.entry}</p></div><div className="rounded-xl bg-white/[.04] p-3"><p className="text-muted-foreground">Stop</p><p className="mt-1 font-medium">{position.stop_loss}</p></div></div><p className="mt-4 text-xs text-muted-foreground">Targets: {position.targets.map(target => target.price).join(" · ") || "غير متاحة"}</p></article>)}</div>}</section>
+    </> : null}
+  </main></DashboardLayout>;
 }
