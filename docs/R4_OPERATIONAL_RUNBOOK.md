@@ -50,6 +50,10 @@ The owner must perform this drill against a **separate restore target**, never b
 
 The owner completed a separate Core and Web logical Restore Drill on **21 August 2026**. Both restores, Core Alembic verification, Web Drizzle verification, and masked table-integrity checks passed. The observed RTO was approximately **45 seconds** and the source snapshot age (RPO) was **under five minutes**. The temporary targets were dropped after verification, while production Core and Web health remained `ok`. See [`RESTORE_DRILL_EVIDENCE_20260821.md`](./RESTORE_DRILL_EVIDENCE_20260821.md).
 
+## Secret rotation evidence
+
+The owner completed a masked rotation of the Core API service key, Web JWT secret, and Web PostgreSQL credentials on **22 August 2026**. The revoked credential received HTTP `401`, the current credential received HTTP `200`, and both Core and Web health endpoints remained `ok`. No secret values, database URLs, or identifiers are recorded. See [`SECRET_ROTATION_EVIDENCE_20260822.md`](./SECRET_ROTATION_EVIDENCE_20260822.md).
+
 ## R4/R5 evidence checklist
 
 | Evidence | Status required before R5 commercial review |
