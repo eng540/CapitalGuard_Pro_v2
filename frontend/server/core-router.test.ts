@@ -43,4 +43,18 @@ describe("CapitalGuard Core tRPC routes", () => {
     expect(requestUrl).toContain("/read-models/trader/123456/recommendations/USR-000012%2FT-0003/commands/close");
     expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, idempotency_key: "close-command-key-0001" });
   });
+
+  it("derives the UserTrade pending-cancel actor and forwards no market price", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body);
+      return new Response(JSON.stringify({ ok: true, entity_type: "USER_TRADE", public_ref: "USR-000012/T-0004", status: "CANCELLED", close_price: null, pnl_percentage: null, replayed: false }), { status: 200 });
+    });
+    const caller = appRouter.createCaller({ ...coreContext(), user: { ...coreContext().user!, openId: "telegram:123456" } });
+    await expect(caller.capitalguard.trader.cancelPendingUserTrade({ publicRef: "USR-000012/T-0004", idempotencyKey: "cancel-command-key-001" })).resolves.toMatchObject({ status: "CANCELLED", close_price: null });
+    expect(requestUrl).toContain("/read-models/trader/123456/recommendations/USR-000012%2FT-0004/commands/cancel");
+    expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, idempotency_key: "cancel-command-key-001" });
+  });
 });

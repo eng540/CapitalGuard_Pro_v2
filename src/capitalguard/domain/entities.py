@@ -40,6 +40,7 @@ class UserTradeStatus(Enum):
     PENDING_ACTIVATION = "PENDING_ACTIVATION" # User clicked "Activate", waiting for entry price hit. Does NOT count yet.
     ACTIVATED = "ACTIVATED" # Trade is live. This IS the basis for all user PnL calculations.
     CLOSED = "CLOSED" # Trade is closed.
+    CANCELLED = "CANCELLED" # Pending/watchlist tracking was explicitly cancelled before activation. Never records market PnL.
 
 class UserType(Enum):
     """Defines the roles a user can have within the system."""

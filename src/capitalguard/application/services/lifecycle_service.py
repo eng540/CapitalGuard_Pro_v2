@@ -969,6 +969,8 @@ class LifecycleService:
         
         if trade.status == UserTradeStatusEnum.CLOSED: 
             return trade
+        if trade.status != UserTradeStatusEnum.ACTIVATED:
+            raise ValueError("Only an activated UserTrade can be closed at a market price")
         
         pnl = 0.0
         if trade.status == UserTradeStatusEnum.ACTIVATED:
@@ -994,6 +996,45 @@ class LifecycleService:
             trade,
             "✋ Trade Closed Manually",
             f"Asset: <b>#{trade.asset}</b> · Exit: <code>{_format_price(exit_price)}</code> · PnL: <b>{pnl:.2f}%</b>",
+            mode="MANUAL",
+        )
+        await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
+        return trade
+
+    async def cancel_pending_user_trade_async(self, user_id: str, trade_id: int, db_session: Session) -> Optional[UserTrade]:
+        """Cancel a watchlist or pending-activation record without a market exit or PnL."""
+        user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not user:
+            raise ValueError("User not found.")
+        trade = db_session.query(UserTrade).filter(
+            UserTrade.id == trade_id,
+            UserTrade.user_id == user.id,
+        ).with_for_update().first()
+        if not trade:
+            raise ValueError(f"Trade #{trade_id} not found")
+        if trade.status == UserTradeStatusEnum.CANCELLED:
+            return trade
+        if trade.status not in (UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION):
+            raise ValueError("Only a pending UserTrade can be cancelled")
+
+        prior_status = trade.status.value
+        trade.status = UserTradeStatusEnum.CANCELLED
+        trade.close_price = None
+        trade.pnl_percentage = None
+        trade.open_size_percent = Decimal("0")
+        trade.closed_at = datetime.now(timezone.utc)
+        db_session.add(UserTradeEvent(
+            user_trade_id=trade.id,
+            event_type="PENDING_CANCELLED",
+            event_data={"mode": "MANUAL", "prior_status": prior_status, "reason": "USER_CANCELLED_BEFORE_ACTIVATION"},
+        ))
+        if self.alert_service:
+            await self.alert_service.remove_single_trigger("user_trade", trade.id)
+        await self._notify_trade_event(
+            db_session,
+            trade,
+            "🚫 Pending Trade Cancelled",
+            f"Asset: <b>#{trade.asset}</b> · No market entry or PnL was recorded.",
             mode="MANUAL",
         )
         await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)

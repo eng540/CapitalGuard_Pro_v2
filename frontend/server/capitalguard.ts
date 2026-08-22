@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
+import { coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -18,12 +18,16 @@ const analystRecommendationInput = z.object({
   side: z.enum(["LONG", "SHORT"]),
   market: z.string().trim().min(2).max(32),
   orderType: z.enum(["LIMIT", "MARKET", "STOP_MARKET"]),
-  entry: z.number().positive(),
+  entry: z.number().nonnegative(),
   stopLoss: z.number().positive(),
   targetsRaw: z.string().trim().min(1).max(1_000),
   notes: z.string().trim().max(2_000).optional(),
   leverage: z.string().trim().max(16).optional(),
   channelIds: z.array(z.number().int()).max(20),
+}).superRefine((value, ctx) => {
+  if (value.orderType !== "MARKET" && value.entry <= 0) {
+    ctx.addIssue({ code: "custom", path: ["entry"], message: "Entry price must be greater than zero for Limit or Stop Market" });
+  }
 });
 
 export function calculateRiskPlan(input: z.infer<typeof riskInput>) {
@@ -91,13 +95,19 @@ export const capitalguardRouter = router({
       publicRef: input.publicRef,
       idempotencyKey: input.idempotencyKey,
     })),
+    cancelPendingUserTrade: traderProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80), idempotencyKey: z.string().trim().min(16).max(128) })).mutation(({ ctx, input }) => coreCancelPendingUserTrade({
+      actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
+      publicRef: input.publicRef,
+      idempotencyKey: input.idempotencyKey,
+    })),
   }),
   analyst: router({
     dashboard: analystProcedure.query(() => ({ profile: null, recommendations: [] })),
     assets: analystProcedure.input(z.object({ market: z.enum(["Spot", "Futures"]) })).query(({ input }) => coreGetAnalystAssets(input.market)),
     publicationChannels: analystProcedure.query(({ ctx }) => coreGetAnalystPublicationChannels(telegramIdFromWebSession(ctx.user.openId))),
+    recommendationPublication: analystProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80) })).query(({ ctx, input }) => coreGetAnalystRecommendationPublication(telegramIdFromWebSession(ctx.user.openId), input.publicRef)),
     previewRecommendation: analystProcedure.input(analystRecommendationInput).mutation(({ ctx, input }) => corePreviewAnalystRecommendation({ ...input, actorTelegramId: telegramIdFromWebSession(ctx.user.openId) })),
-    confirmRecommendation: analystProcedure.input(analystRecommendationInput.extend({ idempotencyKey: z.string().trim().min(16).max(128).optional() })).mutation(({ ctx, input }) => coreConfirmAnalystRecommendation({ ...input, actorTelegramId: telegramIdFromWebSession(ctx.user.openId), idempotencyKey: input.idempotencyKey ?? randomUUID() })),
+    confirmRecommendation: analystProcedure.input(analystRecommendationInput.safeExtend({ idempotencyKey: z.string().trim().min(16).max(128).optional() })).mutation(({ ctx, input }) => coreConfirmAnalystRecommendation({ ...input, actorTelegramId: telegramIdFromWebSession(ctx.user.openId), idempotencyKey: input.idempotencyKey ?? randomUUID() })),
   }),
   admin: router({
     overview: adminProcedure.query(adminOverview),
