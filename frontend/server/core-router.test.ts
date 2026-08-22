@@ -58,6 +58,20 @@ describe("CapitalGuard Core tRPC routes", () => {
     expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, close_percent: 25, idempotency_key: "partial-command-key-001" });
   });
 
+  it("derives the UserTrade breakeven actor from the Telegram session and forwards no price or stop", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body);
+      return new Response(JSON.stringify({ ok: true, entity_type: "USER_TRADE", public_ref: "USR-000012/T-0003", status: "ACTIVATED", stop_loss: 70000, replayed: false }), { status: 200 });
+    });
+    const caller = appRouter.createCaller({ ...coreContext(), user: { ...coreContext().user!, openId: "telegram:123456" } });
+    await expect(caller.capitalguard.trader.moveUserTradeStopToBreakeven({ publicRef: "USR-000012/T-0003", idempotencyKey: "breakeven-command-01" })).resolves.toMatchObject({ stop_loss: 70000 });
+    expect(requestUrl).toContain("/read-models/trader/123456/recommendations/USR-000012%2FT-0003/commands/move-stop-to-breakeven");
+    expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, idempotency_key: "breakeven-command-01" });
+  });
+
   it("derives the UserTrade pending-cancel actor and forwards no market price", async () => {
     let requestUrl = "";
     let requestBody = "";

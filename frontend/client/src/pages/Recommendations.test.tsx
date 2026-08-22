@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mutate = vi.fn();
 const cancelMutate = vi.fn();
 const partialMutate = vi.fn();
+const breakevenMutate = vi.fn();
 let recommendationState: Record<string, unknown>;
 let detailState: Record<string, unknown>;
 
@@ -22,6 +23,7 @@ vi.mock("@/lib/trpc", () => ({
         closeUserTrade: { useMutation: () => ({ mutate, isPending: false }) },
         cancelPendingUserTrade: { useMutation: () => ({ mutate: cancelMutate, isPending: false }) },
         partialCloseUserTrade: { useMutation: () => ({ mutate: partialMutate, isPending: false }) },
+        moveUserTradeStopToBreakeven: { useMutation: () => ({ mutate: breakevenMutate, isPending: false }) },
       },
     },
   },
@@ -56,6 +58,7 @@ describe("UserTrade close surface", () => {
     mutate.mockReset();
     cancelMutate.mockReset();
     partialMutate.mockReset();
+    breakevenMutate.mockReset();
     Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "close-command-key-0001" } });
     recommendationState = { isLoading: false, isError: false, data: { as_of: "2026-08-22T12:00:00Z", items: [activeItem] }, refetch: vi.fn() };
     detailState = { isLoading: false, isError: false, data: { as_of: "2026-08-22T12:00:00Z", schema_version: "2026-08-22.1", item: activeItem }, refetch: vi.fn() };
@@ -111,5 +114,15 @@ describe("UserTrade close surface", () => {
     fireEvent.click(screen.getByText("طلب إغلاق جزئي"));
     expect(screen.getByText("أدخل نسبة موجبة أقل من المتبقي (100%). الإغلاق الكامل له إجراء منفصل.")).toBeTruthy();
     expect(partialMutate).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit confirmation before moving an activated trade stop to Core-held breakeven", () => {
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "breakeven-command-01" } });
+    render(<Recommendations />);
+    fireEvent.click(screen.getByText("عرض التفاصيل"));
+    fireEvent.click(screen.getByText("طلب تحريك الوقف إلى التعادل"));
+    expect(breakevenMutate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("تأكيد التحريك إلى التعادل"));
+    expect(breakevenMutate).toHaveBeenCalledWith({ publicRef: "USR-000012/T-0003", idempotencyKey: "breakeven-command-01" });
   });
 });

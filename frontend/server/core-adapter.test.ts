@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -222,6 +222,20 @@ describe("CapitalGuard Core adapter", () => {
     expect(requestUrl).toBe("https://core.example/api/webapp/read-models/trader/123456/recommendations/USR-000012%2FT-0003/commands/partial-close");
     expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, close_percent: 25, idempotency_key: "partial-command-key-001" });
     expect(result).toMatchObject({ public_ref: "USR-000012/T-0003", closed_percent: 25, remaining_open_size_percent: 75 });
+  });
+
+  it("moves a UserTrade stop to breakeven through the owned reference without a browser-supplied price", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    const fakeFetch = async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body);
+      return new Response(JSON.stringify({ ok: true, entity_type: "USER_TRADE", public_ref: "USR-000012/T-0003", status: "ACTIVATED", stop_loss: 70000, replayed: false }), { status: 200 });
+    };
+    const result = await coreMoveUserTradeStopToBreakeven({ actorTelegramId: 123456, publicRef: "USR-000012/T-0003", idempotencyKey: "breakeven-command-01" }, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
+    expect(requestUrl).toBe("https://core.example/api/webapp/read-models/trader/123456/recommendations/USR-000012%2FT-0003/commands/move-stop-to-breakeven");
+    expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, idempotency_key: "breakeven-command-01" });
+    expect(result).toMatchObject({ public_ref: "USR-000012/T-0003", stop_loss: 70000 });
   });
 
   it("reports R5 as a server-controlled noncommercial hold", async () => {

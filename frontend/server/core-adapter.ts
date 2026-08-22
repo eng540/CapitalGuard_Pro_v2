@@ -86,6 +86,7 @@ export type CoreUserTradeCloseConfirmation = { ok: true; entity_type: "USER_TRAD
 export type CoreUserTradeCancelConfirmation = { ok: true; entity_type: "USER_TRADE"; public_ref: string; status: "CANCELLED"; close_price: null; pnl_percentage: null; replayed: boolean };
 export type CoreUserTradePartialCloseInput = CoreUserTradeCloseInput & { closePercent: number };
 export type CoreUserTradePartialCloseConfirmation = { ok: true; entity_type: "USER_TRADE"; public_ref: string; status: "ACTIVATED"; closed_percent: number; remaining_open_size_percent: number; partial_close_price: number; replayed: boolean };
+export type CoreUserTradeBreakevenConfirmation = { ok: true; entity_type: "USER_TRADE"; public_ref: string; status: "ACTIVATED"; stop_loss: number; replayed: boolean };
 
 export function getCoreConfig(env = process.env): CoreConfig {
   const rawUrl = env.CAPITALGUARD_CORE_BASE_URL?.trim();
@@ -299,6 +300,20 @@ export async function corePartialCloseUserTrade(input: CoreUserTradePartialClose
     throw new Error("CAPITALGUARD_CORE_USER_TRADE_PARTIAL_CLOSE_INVALID");
   }
   return result as unknown as CoreUserTradePartialCloseConfirmation;
+}
+
+export async function coreMoveUserTradeStopToBreakeven(input: CoreUserTradeCloseInput, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreUserTradeBreakevenConfirmation> {
+  if (!Number.isSafeInteger(input.actorTelegramId) || input.actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const publicRef = input.publicRef.trim();
+  const idempotencyKey = input.idempotencyKey.trim();
+  if (!publicRef || publicRef.length > 80) throw new Error("CAPITALGUARD_PUBLIC_REF_REQUIRED");
+  if (idempotencyKey.length < 16 || idempotencyKey.length > 128) throw new Error("CAPITALGUARD_IDEMPOTENCY_KEY_INVALID");
+  const path = `/api/webapp/read-models/trader/${input.actorTelegramId}/recommendations/${encodeURIComponent(publicRef)}/commands/move-stop-to-breakeven`;
+  const result = await coreCommand(path, { actor_telegram_id: input.actorTelegramId, idempotency_key: idempotencyKey }, fetchImpl, env);
+  if (result.entity_type !== "USER_TRADE" || result.public_ref !== publicRef || result.status !== "ACTIVATED" || typeof result.stop_loss !== "number") {
+    throw new Error("CAPITALGUARD_CORE_USER_TRADE_BREAKEVEN_INVALID");
+  }
+  return result as unknown as CoreUserTradeBreakevenConfirmation;
 }
 
 export async function coreGetTraderHistorical(telegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ as_of: string; items: CoreHistoricalRecord[] }> {
