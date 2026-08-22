@@ -266,7 +266,10 @@ class PublicationOutboxService:
                 attempt,
                 str(exc),
             )
-            return {"bucket": "failed", "item": {"channel_id": channel_id, "attempt": attempt, "error": str(exc)}}
+            return {
+                "bucket": "retry" if next_status == PublicationDeliveryStatus.RETRY.value else "failed",
+                "item": {"channel_id": channel_id, "attempt": attempt, "error": str(exc)},
+            }
 
     async def process_due_once(self, limit: int = 25) -> int:
         with session_scope() as session:

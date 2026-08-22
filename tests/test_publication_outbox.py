@@ -106,6 +106,35 @@ async def test_outbox_records_terminal_failure(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_outbox_recovers_after_transient_failure_without_duplicate_message(db_session, monkeypatch):
+    recommendation = _recommendation(db_session)
+    repo = RecommendationRepository()
+    notifier = MagicMock()
+    notifier.bot_username = "TestBot"
+    notifier.post_to_channel = AsyncMock(side_effect=[RuntimeError("temporary outage"), (-1003, 701)])
+    service = PublicationOutboxService(repo, notifier, max_attempts=2)
+    delivery = service.enqueue_create_deliveries(db_session, recommendation.id, [-1003])[0]
+    db_session.flush()
+    monkeypatch.setattr(
+        "capitalguard.application.services.publication_outbox_service.session_scope",
+        lambda: _session_scope_for(db_session),
+    )
+
+    first = await service._deliver_one(delivery.id, repo._to_entity(recommendation))
+    second = await service._deliver_one(delivery.id, repo._to_entity(recommendation))
+
+    assert first["bucket"] == "retry"
+    assert second["bucket"] == "success"
+    saved = db_session.query(PublicationDelivery).filter_by(id=delivery.id).one()
+    assert saved.status == PublicationDeliveryStatus.SENT.value
+    assert saved.telegram_message_id == 701
+    assert db_session.query(PublishedMessage).filter_by(
+        recommendation_id=recommendation.id,
+        telegram_channel_id=-1003,
+    ).count() == 1
+
+
+@pytest.mark.asyncio
 async def test_outbox_update_delivery_edits_existing_message(db_session, monkeypatch):
     recommendation = _recommendation(db_session)
     repo = RecommendationRepository()
