@@ -11,6 +11,7 @@ import html
 import json
 import hmac
 import traceback
+from time import perf_counter
 from typing import List, Dict, Any, Optional, Tuple
 
 import redis
@@ -31,6 +32,7 @@ from capitalguard.interfaces.webhook.tradingview import router as tradingview_ro
 from capitalguard.interfaces.api.security.auth import validate_security_settings
 from capitalguard.application.services.alert_service import AlertService
 from capitalguard.application.services.market_data_service import MarketDataService
+from capitalguard.infrastructure.observability.metrics import HTTP_REQUEST_LATENCY_SECONDS, HTTP_REQUESTS_TOTAL
 
 # ✅ NEW: Import auto_backup_loop for background execution in production
 from capitalguard.infrastructure.db.backup_service import auto_backup_loop
@@ -193,6 +195,31 @@ app.state.ready = False
 
 # ✅ WEBAPP SUPPORT: Mount static files for WebApp
 app.mount("/static", StaticFiles(directory="src/capitalguard/interfaces/api/static"), name="static")
+
+
+def _metric_route_label(request: Request) -> str:
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None)
+    return route_path if isinstance(route_path, str) else "unmatched"
+
+
+@app.middleware("http")
+async def observe_http_request(request: Request, call_next):
+    """Record only method, route template, status, and duration for non-scrape requests."""
+    started = perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        if request.url.path != "/metrics":
+            labels = {"method": request.method, "route": _metric_route_label(request), "status": "500"}
+            HTTP_REQUESTS_TOTAL.labels(**labels).inc()
+            HTTP_REQUEST_LATENCY_SECONDS.labels(**labels).observe(perf_counter() - started)
+        raise
+    if request.url.path != "/metrics":
+        labels = {"method": request.method, "route": _metric_route_label(request), "status": str(response.status_code)}
+        HTTP_REQUESTS_TOTAL.labels(**labels).inc()
+        HTTP_REQUEST_LATENCY_SECONDS.labels(**labels).observe(perf_counter() - started)
+    return response
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Exception while handling an update:", exc_info=context.error)
