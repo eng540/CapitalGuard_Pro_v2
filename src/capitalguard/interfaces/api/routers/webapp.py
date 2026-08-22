@@ -67,6 +67,10 @@ class UserTradePartialCloseCommand(UserTradeCloseCommand):
     close_percent: Decimal
 
 
+class UserTradeEntryUpdateCommand(UserTradeCloseCommand):
+    entry: Decimal
+
+
 class UserTradeCancelCommand(BaseModel):
     actor_telegram_id: int
     idempotency_key: str
@@ -932,6 +936,33 @@ async def move_owned_user_trade_stop_to_breakeven(
                 session,
                 actor_telegram_id=telegram_id,
                 public_ref=public_ref,
+                idempotency_key=command.idempotency_key,
+                lifecycle_service=lifecycle,
+            )
+    except WebCommandError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/read-models/trader/{telegram_id}/recommendations/{public_ref:path}/commands/update-entry")
+async def update_owned_pending_user_trade_entry(
+    telegram_id: int,
+    public_ref: str,
+    command: UserTradeEntryUpdateCommand,
+    request: Request,
+):
+    require_core_service_key(request.headers.get("authorization"))
+    if command.actor_telegram_id != telegram_id:
+        raise HTTPException(status_code=403, detail="Command actor does not match the trader scope")
+    lifecycle = (request.app.state.services or {}).get("lifecycle_service")
+    if not lifecycle:
+        raise HTTPException(status_code=503, detail="UserTrade command services are unavailable")
+    try:
+        with session_scope() as session:
+            return await WebCommandService().update_pending_user_trade_entry(
+                session,
+                actor_telegram_id=telegram_id,
+                public_ref=public_ref,
+                entry=command.entry,
                 idempotency_key=command.idempotency_key,
                 lifecycle_service=lifecycle,
             )

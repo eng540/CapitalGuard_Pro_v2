@@ -370,6 +370,29 @@ async def test_move_user_trade_stop_to_breakeven_rejects_regression_or_foreign_t
     db_session.refresh(already_protected)
     assert already_protected.stop_loss == Decimal("95")
 
+
+async def test_update_pending_user_trade_entry_validates_financial_shape_and_records_event(trade_service_real_db: TradeService, db_session):
+    user = UserRepository(db_session).find_or_create(telegram_id=562, first_name="PendingEntry")
+    trade = UserTrade(user_id=user.id, asset="BTCUSDT", side="LONG", entry=Decimal("100"), stop_loss=Decimal("95"), targets=[{"price": "110", "close_percent": 100}], status=UserTradeStatus.PENDING_ACTIVATION)
+    db_session.add(trade)
+    db_session.commit()
+
+    result = await trade_service_real_db.update_pending_user_trade_entry_async(user_id=str(user.telegram_user_id), trade_id=trade.id, new_entry=Decimal("101"), db_session=db_session)
+    assert result.entry == Decimal("101")
+    event = db_session.query(UserTradeEvent).filter(UserTradeEvent.user_trade_id == trade.id, UserTradeEvent.event_type == "MANUAL_PENDING_ENTRY_UPDATED").one()
+    assert event.event_data == {"previous_entry": "100", "new_entry": "101", "mode": "MANUAL"}
+    with pytest.raises(ValueError, match="LONG entry"):
+        await trade_service_real_db.update_pending_user_trade_entry_async(user_id=str(user.telegram_user_id), trade_id=trade.id, new_entry=Decimal("94"), db_session=db_session)
+
+
+async def test_update_pending_user_trade_entry_rejects_activated_history(trade_service_real_db: TradeService, db_session):
+    user = UserRepository(db_session).find_or_create(telegram_id=563, first_name="ActiveEntry")
+    trade = UserTrade(user_id=user.id, asset="BTCUSDT", side="LONG", entry=Decimal("100"), stop_loss=Decimal("95"), targets=[], status=UserTradeStatus.ACTIVATED)
+    db_session.add(trade)
+    db_session.commit()
+    with pytest.raises(ValueError, match="non-activated"):
+        await trade_service_real_db.update_pending_user_trade_entry_async(user_id=str(user.telegram_user_id), trade_id=trade.id, new_entry=Decimal("101"), db_session=db_session)
+
 # --- Keep existing tests for Recommendation lifecycle (create, close, etc.) ---
 # Example: Ensure create_and_publish still works
 async def test_create_and_publish_recommendation_success(trade_service_real_db: TradeService, db_session, mock_notifier: MagicMock):
