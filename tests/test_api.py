@@ -35,6 +35,9 @@ def test_health_is_fail_closed_before_startup(client: TestClient):
 
 
 def test_v1_status_is_versioned_nonfinancial_and_fail_closed(client: TestClient):
+    from capitalguard.interfaces.api.routers.v1 import reset_status_rate_limiter
+
+    reset_status_rate_limiter()
     app.state.ready = False
     app.state.ptb_app = None
     app.state.services = None
@@ -55,6 +58,24 @@ def test_v1_status_is_versioned_nonfinancial_and_fail_closed(client: TestClient)
         "status": "ok",
         "commercial_mode": "noncommercial",
     }
+
+
+def test_v1_status_rate_limit_is_scoped_to_public_metadata(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.interfaces.api.routers import v1
+
+    monkeypatch.setattr(v1, "STATUS_RATE_LIMIT_PER_MINUTE", 2)
+    v1.reset_status_rate_limiter()
+    app.state.ready = True
+    app.state.ptb_app = object()
+    app.state.services = {"test_service": object()}
+
+    assert client.get("/api/v1/status").status_code == 200
+    assert client.get("/api/v1/status").status_code == 200
+    limited = client.get("/api/v1/status")
+
+    assert limited.status_code == 429
+    assert limited.headers["retry-after"]
+    assert limited.json()["detail"] == "Public status rate limit exceeded"
 
 
 def test_webapp_rejects_invalid_telegram_init_data(client: TestClient):
