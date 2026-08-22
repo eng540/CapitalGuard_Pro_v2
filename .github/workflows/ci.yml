@@ -81,3 +81,7 @@ jobs:
         run: PYTHONPATH=src alembic upgrade head
       - name: Verify fresh schema and empty domain tables
         run: PYTHONPATH=src python scripts/verify_fresh_postgres_migration.py
+      - name: Exercise reconciliation verifier against isolated CI database
+        env:
+          RECONCILIATION_EXPECTED_DB: capitalguard_fresh
+        run: PYTHONPATH=src python scripts/reconcile_existing_data.py
