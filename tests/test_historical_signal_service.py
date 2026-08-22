@@ -233,6 +233,12 @@ def test_historical_reputation_summary_separates_confidence(db_session, historic
     assert summary.rank_eligible_signals == 0
     assert summary.excluded_signals == 1
     assert summary.confidence_weighted_sample == 0
+    quality = HistoricalReputationService.quality_report(db_session, analyst_id=123)
+    assert quality.total_signals == 1
+    assert quality.market_evidence_artifacts == 0
+    assert quality.replay_coverage_percent == 0
+    assert quality.reviewed_attributions == 0
+    assert quality.rank_eligible_signals == 0
 
 
 def test_historical_attribution_review_is_auditable(db_session, historical_service):

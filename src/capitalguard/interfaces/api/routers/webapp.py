@@ -27,6 +27,7 @@ from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.lifecycle_service import LifecycleService
 from capitalguard.application.services.performance_service import PerformanceService
 from capitalguard.application.services.analyst_discovery_service import AnalystDiscoveryService
+from capitalguard.application.services.historical_reputation_service import HistoricalReputationService
 from capitalguard.application.services.historical_signal_query_service import HistoricalSignalQueryService
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
@@ -784,6 +785,38 @@ async def get_r5_readiness(actor_telegram_id: int, request: Request):
                     "replay_backlog": int(replay_backlog),
                 },
                 "as_of": datetime.utcnow().isoformat() + "Z",
+            }
+    except WebCommandError as exc:
+        raise HTTPException(status_code=403, detail="Owner command rejected") from exc
+
+
+@router.get("/owner/historical-quality")
+async def get_historical_trust_quality(actor_telegram_id: int, request: Request, analyst_id: int | None = None, channel_id: int | None = None):
+    """Owner-only, non-financial quality gate for historical trust evidence."""
+    require_core_service_key(request.headers.get("authorization"))
+    try:
+        with session_scope() as session:
+            WebCommandService().require_owner(session, actor_telegram_id)
+            report = HistoricalReputationService.quality_report(session, analyst_id=analyst_id, channel_id=channel_id)
+            return {
+                "ok": True,
+                "status": "HOLD" if report.rank_eligible_signals == 0 else "EVIDENCE_READY",
+                "quality": {
+                    "analyst_id": report.analyst_id,
+                    "channel_id": report.channel_id,
+                    "total_signals": report.total_signals,
+                    "verified_signals": report.verified_signals,
+                    "rank_eligible_signals": report.rank_eligible_signals,
+                    "excluded_signals": report.excluded_signals,
+                    "unfilled_signals": report.unfilled_signals,
+                    "verified_replay_events": report.verified_replay_events,
+                    "market_evidence_artifacts": report.market_evidence_artifacts,
+                    "replay_coverage_percent": float(report.replay_coverage_percent),
+                    "reviewed_attributions": report.reviewed_attributions,
+                    "pending_attributions": report.pending_attributions,
+                    "confidence_weighted_sample": float(report.confidence_weighted_sample),
+                },
+                "commercial_enabled": False,
             }
     except WebCommandError as exc:
         raise HTTPException(status_code=403, detail="Owner command rejected") from exc
