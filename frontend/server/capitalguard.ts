@@ -17,7 +17,7 @@ const analystRecommendationInput = z.object({
   asset: z.string().trim().min(3).max(24).regex(/^[A-Z0-9]+$/),
   side: z.enum(["LONG", "SHORT"]),
   market: z.string().trim().min(2).max(32),
-  orderType: z.enum(["LIMIT", "MARKET"]),
+  orderType: z.enum(["LIMIT", "MARKET", "STOP_MARKET"]),
   entry: z.number().positive(),
   stopLoss: z.number().positive(),
   targetsRaw: z.string().trim().min(1).max(1_000),
