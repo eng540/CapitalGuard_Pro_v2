@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mutate = vi.fn();
 const cancelMutate = vi.fn();
+const partialMutate = vi.fn();
 let recommendationState: Record<string, unknown>;
 let detailState: Record<string, unknown>;
 
@@ -20,6 +21,7 @@ vi.mock("@/lib/trpc", () => ({
       trader: {
         closeUserTrade: { useMutation: () => ({ mutate, isPending: false }) },
         cancelPendingUserTrade: { useMutation: () => ({ mutate: cancelMutate, isPending: false }) },
+        partialCloseUserTrade: { useMutation: () => ({ mutate: partialMutate, isPending: false }) },
       },
     },
   },
@@ -43,6 +45,7 @@ const activeItem = {
   created_at: null,
   activated_at: null,
   closed_at: null,
+  open_size_percent: 100,
   timeline: [],
 };
 
@@ -52,6 +55,7 @@ describe("UserTrade close surface", () => {
   beforeEach(() => {
     mutate.mockReset();
     cancelMutate.mockReset();
+    partialMutate.mockReset();
     Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "close-command-key-0001" } });
     recommendationState = { isLoading: false, isError: false, data: { as_of: "2026-08-22T12:00:00Z", items: [activeItem] }, refetch: vi.fn() };
     detailState = { isLoading: false, isError: false, data: { as_of: "2026-08-22T12:00:00Z", schema_version: "2026-08-22.1", item: activeItem }, refetch: vi.fn() };
@@ -60,12 +64,12 @@ describe("UserTrade close surface", () => {
   it("requires explicit confirmation before close and sends only public_ref with an idempotency key", () => {
     render(<Recommendations />);
     fireEvent.click(screen.getByText("عرض التفاصيل"));
-    expect(screen.getByText("طلب إغلاق يدوي")).toBeTruthy();
+    expect(screen.getByText("طلب إغلاق يدوي كامل")).toBeTruthy();
     expect(mutate).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByText("طلب إغلاق يدوي"));
-    expect(screen.getByText("تأكيد الإغلاق")).toBeTruthy();
-    fireEvent.click(screen.getByText("تأكيد الإغلاق"));
+    fireEvent.click(screen.getByText("طلب إغلاق يدوي كامل"));
+    expect(screen.getByText("تأكيد الإغلاق الكامل")).toBeTruthy();
+    fireEvent.click(screen.getByText("تأكيد الإغلاق الكامل"));
     expect(mutate).toHaveBeenCalledWith({ publicRef: "USR-000012/T-0003", idempotencyKey: "close-command-key-0001" });
   });
 
@@ -73,7 +77,7 @@ describe("UserTrade close surface", () => {
     detailState = { ...detailState, data: { ...(detailState.data as object), item: { ...activeItem, status: "CLOSED" } } };
     render(<Recommendations />);
     fireEvent.click(screen.getByText("عرض التفاصيل"));
-    expect(screen.queryByText("طلب إغلاق يدوي")).toBeNull();
+    expect(screen.queryByText("طلب إغلاق يدوي كامل")).toBeNull();
     expect(screen.getByText("هذا السجل طرفي بالفعل؛ لا يظهر أمر إغلاق أو إلغاء مكرر.")).toBeTruthy();
   });
 
@@ -83,9 +87,29 @@ describe("UserTrade close surface", () => {
     render(<Recommendations />);
     fireEvent.click(screen.getByText("عرض التفاصيل"));
     expect(screen.getByText("طلب إلغاء التتبع")).toBeTruthy();
-    expect(screen.queryByText("طلب إغلاق يدوي")).toBeNull();
+    expect(screen.queryByText("طلب إغلاق يدوي كامل")).toBeNull();
     fireEvent.click(screen.getByText("طلب إلغاء التتبع"));
     fireEvent.click(screen.getByText("تأكيد الإلغاء"));
     expect(cancelMutate).toHaveBeenCalledWith({ publicRef: "USR-000012/T-0003", idempotencyKey: "cancel-command-key-0001" });
+  });
+
+  it("requires an in-range percentage and explicit confirmation before partial close", () => {
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "partial-command-key-001" } });
+    render(<Recommendations />);
+    fireEvent.click(screen.getByText("عرض التفاصيل"));
+    fireEvent.change(screen.getByLabelText("نسبة الإغلاق الجزئي"), { target: { value: "25" } });
+    fireEvent.click(screen.getByText("طلب إغلاق جزئي"));
+    expect(partialMutate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("تأكيد الإغلاق الجزئي"));
+    expect(partialMutate).toHaveBeenCalledWith({ publicRef: "USR-000012/T-0003", closePercent: 25, idempotencyKey: "partial-command-key-001" });
+  });
+
+  it("rejects a full or oversized percentage in the client before an action is requested", () => {
+    render(<Recommendations />);
+    fireEvent.click(screen.getByText("عرض التفاصيل"));
+    fireEvent.change(screen.getByLabelText("نسبة الإغلاق الجزئي"), { target: { value: "100" } });
+    fireEvent.click(screen.getByText("طلب إغلاق جزئي"));
+    expect(screen.getByText("أدخل نسبة موجبة أقل من المتبقي (100%). الإغلاق الكامل له إجراء منفصل.")).toBeTruthy();
+    expect(partialMutate).not.toHaveBeenCalled();
   });
 });

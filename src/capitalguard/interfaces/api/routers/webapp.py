@@ -191,6 +191,7 @@ def _serialize_trade_read_model(trade: UserTrade) -> dict[str, Any]:
         "market": "Futures",
         "entry": float(trade.entry),
         "stop_loss": float(trade.stop_loss),
+        "open_size_percent": float(trade.open_size_percent),
         "targets": trade.targets or [],
         "status": getattr(trade.status, "value", str(trade.status)),
         "source_type": trade.source_type,

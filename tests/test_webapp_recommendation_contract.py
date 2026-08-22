@@ -28,6 +28,7 @@ def test_trade_read_model_uses_typed_public_identity_and_source_reference():
         side="LONG",
         entry=65000,
         stop_loss=64000,
+        open_size_percent=75,
         targets=[],
         source_type="TRACKED_RECOMMENDATION",
         created_at=datetime(2026, 8, 21, 12, 0, 0),
@@ -38,6 +39,7 @@ def test_trade_read_model_uses_typed_public_identity_and_source_reference():
     assert payload["entity_type"] == "USER_TRADE"
     assert payload["public_ref"] == "USR-000012/T-0003"
     assert payload["display_ref"] == "USR-000012/T-0003"
+    assert payload["open_size_percent"] == 75.0
     assert payload["source"] == {
         "entity_type": "RECOMMENDATION",
         "public_ref": "AN-000007/R-0009",

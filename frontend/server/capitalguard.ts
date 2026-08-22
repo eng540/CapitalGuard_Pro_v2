@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
+import { coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -93,6 +93,12 @@ export const capitalguardRouter = router({
     closeUserTrade: traderProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80), idempotencyKey: z.string().trim().min(16).max(128) })).mutation(({ ctx, input }) => coreCloseUserTrade({
       actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
       publicRef: input.publicRef,
+      idempotencyKey: input.idempotencyKey,
+    })),
+    partialCloseUserTrade: traderProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80), closePercent: z.number().finite().positive().max(100), idempotencyKey: z.string().trim().min(16).max(128) })).mutation(({ ctx, input }) => corePartialCloseUserTrade({
+      actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
+      publicRef: input.publicRef,
+      closePercent: input.closePercent,
       idempotencyKey: input.idempotencyKey,
     })),
     cancelPendingUserTrade: traderProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80), idempotencyKey: z.string().trim().min(16).max(128) })).mutation(({ ctx, input }) => coreCancelPendingUserTrade({
