@@ -100,6 +100,25 @@ def test_webapp_rejects_invalid_telegram_init_data(client: TestClient):
     assert "error" in response.json()
 
 
+def test_webapp_verifies_telegram_session_through_an_authenticated_post(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+    from capitalguard.interfaces.api.routers import webapp
+
+    monkeypatch.setattr(settings, "API_KEY", "core-service-test-key")
+    monkeypatch.setattr(webapp, "validate_telegram_data", lambda init_data, bot_token: {"id": 123456})
+
+    rejected = client.post("/api/webapp/telegram/verify", json={"init_data": "telegram-proof"})
+    accepted = client.post(
+        "/api/webapp/telegram/verify",
+        headers={"Authorization": "Bearer core-service-test-key"},
+        json={"init_data": "telegram-proof"},
+    )
+
+    assert rejected.status_code == 401
+    assert accepted.status_code == 200
+    assert accepted.json() == {"ok": True, "telegram_id": 123456}
+
+
 def test_telegram_webhook_rejects_missing_or_invalid_secret(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     from capitalguard.config import settings
 

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTmaPortfolio, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
+import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -81,7 +81,6 @@ export const capitalguardRouter = router({
     health: protectedProcedure.query(() => probeCoreHealth()),
     price: protectedProcedure.input(z.object({ symbol: z.string().trim().min(3).max(24).regex(/^[A-Z0-9]+$/) })).query(({ input }) => coreGetPrice(input.symbol)),
     signal: protectedProcedure.input(z.object({ recId: z.number().int().positive() })).query(({ input }) => coreGetSignal(input.recId)),
-    tmaPortfolio: protectedProcedure.input(z.object({ initData: z.string().trim().min(20).max(10_000) })).query(({ input }) => coreGetTmaPortfolio(input.initData)),
     traderSnapshot: protectedProcedure.query(({ ctx }) => coreGetTraderReadModel(telegramIdFromWebSession(ctx.user.openId))),
   }),
   riskPlan: protectedProcedure.input(riskInput).mutation(({ input }) => calculateRiskPlan(input)),

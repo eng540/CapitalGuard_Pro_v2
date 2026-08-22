@@ -63,6 +63,10 @@ class UserTradeCloseCommand(BaseModel):
     idempotency_key: str
 
 
+class TelegramSessionVerification(BaseModel):
+    init_data: str
+
+
 class OwnerReviewCommand(BaseModel):
     actor_telegram_id: int
     batch_id: int
@@ -115,6 +119,20 @@ def resolve_webapp_actor(payload: WebAppSignal, request: Request) -> int:
     if not isinstance(payload.actor_telegram_id, int) or payload.actor_telegram_id <= 0:
         raise HTTPException(status_code=422, detail="Authenticated Web actor is required")
     return payload.actor_telegram_id
+
+
+@router.post("/telegram/verify")
+async def verify_telegram_session(payload: TelegramSessionVerification, request: Request):
+    """Verify Mini App initData for the Web server without putting it in a URL."""
+    require_core_service_key(request.headers.get("authorization"))
+    init_data = payload.init_data.strip()
+    if not init_data or len(init_data) > 10_000:
+        raise HTTPException(status_code=422, detail="Telegram initData is required")
+    user_data = validate_telegram_data(init_data, settings.TELEGRAM_BOT_TOKEN)
+    telegram_id = user_data.get("id")
+    if not isinstance(telegram_id, int) or telegram_id <= 0:
+        raise HTTPException(status_code=403, detail="Telegram identity is invalid")
+    return {"ok": True, "telegram_id": telegram_id}
 
 
 def _serialize_live_position(entity: Any, live_price: float | None) -> dict[str, Any]:

@@ -57,11 +57,19 @@ describe("CapitalGuard Core adapter", () => {
       CAPITALGUARD_CORE_API_KEY: "private-service-key",
     })).rejects.toThrow("CAPITALGUARD_TMA_INITDATA_INVALID");
 
-    const acceptedFetch = async () => new Response(JSON.stringify({ ok: true, portfolio: [] }), { status: 200 });
+    let requestUrl = "";
+    let requestBody = "";
+    const acceptedFetch = async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body);
+      return new Response(JSON.stringify({ ok: true, telegram_id: 123456 }), { status: 200 });
+    };
     await expect(coreVerifyTelegramInitData("auth_date=1&user=%7B%7D", acceptedFetch as typeof fetch, {
       CAPITALGUARD_CORE_BASE_URL: "https://core.example",
       CAPITALGUARD_CORE_API_KEY: "private-service-key",
-    })).resolves.toMatchObject({ ok: true });
+    })).resolves.toMatchObject({ ok: true, telegram_id: 123456 });
+    expect(requestUrl).toBe("https://core.example/api/webapp/telegram/verify");
+    expect(JSON.parse(requestBody)).toEqual({ init_data: "auth_date=1&user=%7B%7D" });
   });
 
   it("requests a trader read model only through the server-side Core adapter", async () => {
