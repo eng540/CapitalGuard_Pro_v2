@@ -66,6 +66,7 @@ export type CoreAnalystRecommendationInput = { actorTelegramId: number; asset: s
 export type CoreAnalystRecommendationPreview = { schema_version: number; mode: "PREVIEW"; asset: string; side: "LONG" | "SHORT"; market: string; order_type: "LIMIT" | "MARKET" | "STOP_MARKET"; entry: string; stop_loss: string; targets: Array<{ price: string; close_percent: number }>; live_price: string | null; publication: { state: "NOT_QUEUED"; eligible_channel_count: number } };
 export type CoreAnalystRecommendationConfirmation = { ok: true; entity_type: "RECOMMENDATION"; public_ref: string; publication: { state: "SAVED" | "QUEUED"; queued_delivery_count: number }; replayed: boolean };
 export type CoreAnalystPublicationChannel = { id: number; title: string; username: string | null };
+export type CoreAnalystAsset = { symbol: string; venue: string; provider_symbol: string; market: string };
 
 export function getCoreConfig(env = process.env): CoreConfig {
   const rawUrl = env.CAPITALGUARD_CORE_BASE_URL?.trim();
@@ -154,6 +155,12 @@ export async function coreGetAnalystPublicationChannels(actorTelegramId: number,
   const result = await coreReadOnlyFetch(query("/api/webapp/recommendations/channels", { actor_telegram_id: String(actorTelegramId) }), {}, fetchImpl, env);
   if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_ANALYST_CHANNELS_INVALID");
   return (result as { items: CoreAnalystPublicationChannel[] }).items;
+}
+
+export async function coreGetAnalystAssets(market: "Spot" | "Futures", fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreAnalystAsset[]> {
+  const result = await coreReadOnlyFetch(query("/api/webapp/recommendations/assets", { market }), {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_ANALYST_ASSETS_INVALID");
+  return (result as { items: CoreAnalystAsset[] }).items;
 }
 
 export async function coreConfirmAnalystRecommendation(input: CoreAnalystRecommendationInput & { idempotencyKey: string }, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreAnalystRecommendationConfirmation> {
