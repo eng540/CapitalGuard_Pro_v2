@@ -1126,6 +1126,66 @@ class LifecycleService:
         await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
         return trade
 
+    async def update_pending_user_trade_entry_async(
+        self,
+        user_id: str,
+        trade_id: int,
+        new_entry: Decimal,
+        db_session: Session,
+    ) -> Optional[UserTrade]:
+        """Amend entry before activation only; active and terminal history is immutable."""
+        user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not user:
+            raise ValueError("User not found.")
+        trade = db_session.query(UserTrade).filter(
+            UserTrade.id == trade_id,
+            UserTrade.user_id == user.id,
+        ).with_for_update().first()
+        if not trade:
+            raise ValueError(f"Trade #{trade_id} not found")
+        if trade.status not in (UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION):
+            raise ValueError("Only a non-activated UserTrade entry can be amended")
+
+        entry = _to_decimal(new_entry)
+        stop_loss = _to_decimal(trade.stop_loss)
+        side = str(trade.side).upper()
+        if entry <= Decimal("0") or stop_loss <= Decimal("0"):
+            raise ValueError("UserTrade entry and stop loss must be positive")
+        target_prices = [_to_decimal(target.get("price")) for target in (trade.targets or []) if isinstance(target, dict)]
+        if any(price <= Decimal("0") for price in target_prices):
+            raise ValueError("UserTrade targets must be positive")
+        if side == "LONG":
+            if stop_loss >= entry or any(price <= entry for price in target_prices):
+                raise ValueError("LONG entry must remain above stop loss and below all targets")
+        elif side == "SHORT":
+            if stop_loss <= entry or any(price >= entry for price in target_prices):
+                raise ValueError("SHORT entry must remain below stop loss and above all targets")
+        else:
+            raise ValueError("UserTrade side is invalid")
+
+        previous_entry = _to_decimal(trade.entry)
+        if entry == previous_entry:
+            raise ValueError("UserTrade entry is already set to this value")
+        trade.entry = entry
+        db_session.add(UserTradeEvent(
+            user_trade_id=trade.id,
+            event_type="MANUAL_PENDING_ENTRY_UPDATED",
+            event_data={
+                "previous_entry": format(previous_entry.normalize(), "f"),
+                "new_entry": format(entry.normalize(), "f"),
+                "mode": "MANUAL",
+            },
+        ))
+        await self._notify_trade_event(
+            db_session,
+            trade,
+            "✏️ Pending Trade Entry Updated",
+            f"Asset: <b>#{trade.asset}</b> · Entry: <code>{_format_price(entry)}</code> · Awaiting activation.",
+            mode="MANUAL",
+        )
+        await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
+        return trade
+
     async def cancel_pending_user_trade_async(self, user_id: str, trade_id: int, db_session: Session) -> Optional[UserTrade]:
         """Cancel a watchlist or pending-activation record without a market exit or PnL."""
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))

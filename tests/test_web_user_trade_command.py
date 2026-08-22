@@ -50,11 +50,16 @@ def _lifecycle(trade):
         trade.stop_loss = trade.entry
         return trade
 
+    async def update_entry(_telegram_id, _trade_id, entry, _session):
+        trade.entry = entry
+        return trade
+
     return SimpleNamespace(
         close_user_trade_async=AsyncMock(side_effect=close),
         cancel_pending_user_trade_async=AsyncMock(side_effect=cancel),
         partial_close_user_trade_async=AsyncMock(side_effect=partial),
         move_user_trade_stop_to_breakeven_async=AsyncMock(side_effect=breakeven),
+        update_pending_user_trade_entry_async=AsyncMock(side_effect=update_entry),
     )
 
 
@@ -309,3 +314,36 @@ async def test_breakeven_command_rejects_pending_or_terminal_trade_before_lifecy
             idempotency_key="breakeven-closed", lifecycle_service=lifecycle,
         )
     assert lifecycle.move_user_trade_stop_to_breakeven_async.await_count == 0
+
+
+async def test_pending_entry_update_replays_and_never_touches_an_activated_trade(db_session):
+    pending = _trade(db_session, 83014, "USR-083014/T-0001", UserTradeStatus.PENDING_ACTIVATION)
+    pending.targets = [{"price": "110", "close_percent": 100}]
+    db_session.commit()
+    lifecycle = _lifecycle(pending)
+    service = WebCommandService()
+
+    first = await service.update_pending_user_trade_entry(
+        db_session, actor_telegram_id=83014, public_ref=pending.public_ref,
+        entry=Decimal("101"), idempotency_key="entry-update-once", lifecycle_service=lifecycle,
+    )
+    replay = await service.update_pending_user_trade_entry(
+        db_session, actor_telegram_id=83014, public_ref=pending.public_ref,
+        entry=Decimal("101"), idempotency_key="entry-update-once", lifecycle_service=lifecycle,
+    )
+    assert first == replay
+    assert first["entry"] == 101.0
+    assert lifecycle.update_pending_user_trade_entry_async.await_count == 1
+
+
+async def test_pending_entry_update_rejects_activated_or_invalid_entry_before_lifecycle(db_session):
+    active = _trade(db_session, 83015, "USR-083015/T-0001")
+    pending = _trade(db_session, 83015, "USR-083015/T-0002", UserTradeStatus.WATCHLIST)
+    lifecycle = _lifecycle(active)
+    service = WebCommandService()
+
+    with pytest.raises(WebCommandError, match="Only a non-activated"):
+        await service.update_pending_user_trade_entry(db_session, actor_telegram_id=83015, public_ref=active.public_ref, entry=Decimal("101"), idempotency_key="entry-active", lifecycle_service=lifecycle)
+    with pytest.raises(WebCommandError, match="positive finite"):
+        await service.update_pending_user_trade_entry(db_session, actor_telegram_id=83015, public_ref=pending.public_ref, entry=Decimal("0"), idempotency_key="entry-zero", lifecycle_service=lifecycle)
+    assert lifecycle.update_pending_user_trade_entry_async.await_count == 0

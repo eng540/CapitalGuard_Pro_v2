@@ -562,6 +562,7 @@ class TradeService:
     async def close_user_trade_async(self, *args, **kwargs): return await self.lifecycle_service.close_user_trade_async(*args, **kwargs)
     async def partial_close_user_trade_async(self, *args, **kwargs): return await self.lifecycle_service.partial_close_user_trade_async(*args, **kwargs)
     async def move_user_trade_stop_to_breakeven_async(self, *args, **kwargs): return await self.lifecycle_service.move_user_trade_stop_to_breakeven_async(*args, **kwargs)
+    async def update_pending_user_trade_entry_async(self, *args, **kwargs): return await self.lifecycle_service.update_pending_user_trade_entry_async(*args, **kwargs)
     async def close_recommendation_async(self, *args, **kwargs): return await self.lifecycle_service.close_recommendation_async(*args, **kwargs)
     async def partial_close_async(self, *args, **kwargs): return await self.lifecycle_service.partial_close_async(*args, **kwargs)
     async def update_sl_for_user_async(self, *args, **kwargs): return await self.lifecycle_service.update_sl_for_user_async(*args, **kwargs)

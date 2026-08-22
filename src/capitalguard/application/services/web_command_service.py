@@ -24,6 +24,7 @@ class WebCommandService:
     CLOSE_USER_TRADE = "USER_TRADE_MANUAL_CLOSE"
     PARTIAL_CLOSE_USER_TRADE = "USER_TRADE_MANUAL_PARTIAL_CLOSE"
     MOVE_USER_TRADE_STOP_TO_BREAKEVEN = "USER_TRADE_MOVE_STOP_TO_BREAKEVEN"
+    UPDATE_PENDING_USER_TRADE_ENTRY = "USER_TRADE_PENDING_ENTRY_UPDATE"
     CANCEL_USER_TRADE = "USER_TRADE_PENDING_CANCEL"
     CREATE_ANALYST_RECOMMENDATION = "ANALYST_RECOMMENDATION_CONFIRM"
 
@@ -387,6 +388,66 @@ class WebCommandService:
             session,
             idempotency_key=idempotency_key,
             command_type=self.MOVE_USER_TRADE_STOP_TO_BREAKEVEN,
+            actor_user_id=actor.id,
+            target_type="USER_TRADE",
+            target_id=trade.id,
+            request_hash=request_hash,
+            response=response,
+        )
+        return response
+
+    async def update_pending_user_trade_entry(
+        self,
+        session: Session,
+        *,
+        actor_telegram_id: int,
+        public_ref: str,
+        entry: Decimal,
+        idempotency_key: str,
+        lifecycle_service,
+    ) -> dict:
+        actor = UserRepository(session).find_by_telegram_id(actor_telegram_id)
+        if actor is None:
+            raise WebCommandError("Trader identity does not exist in Core")
+        normalized_ref = public_ref.strip()
+        requested_entry = Decimal(str(entry))
+        if not normalized_ref:
+            raise WebCommandError("UserTrade public reference is required")
+        if not requested_entry.is_finite() or requested_entry <= Decimal("0"):
+            raise WebCommandError("UserTrade entry must be a positive finite value")
+        trade = session.query(UserTrade).filter(
+            UserTrade.user_id == actor.id,
+            UserTrade.public_ref == normalized_ref,
+        ).with_for_update().first()
+        if trade is None:
+            raise WebCommandError("UserTrade was not found")
+        request_hash = self._fingerprint(
+            self.UPDATE_PENDING_USER_TRADE_ENTRY,
+            actor_telegram_id,
+            "USER_TRADE",
+            trade.id,
+            {"public_ref": normalized_ref, "entry": format(requested_entry.normalize(), "f")},
+        )
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+        if trade.status not in (UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION):
+            raise WebCommandError("Only a non-activated UserTrade entry can be amended")
+        updated_trade = await lifecycle_service.update_pending_user_trade_entry_async(
+            str(actor_telegram_id), trade.id, requested_entry, session,
+        )
+        response = {
+            "ok": True,
+            "entity_type": "USER_TRADE",
+            "public_ref": updated_trade.public_ref,
+            "status": getattr(updated_trade.status, "value", str(updated_trade.status)),
+            "entry": float(updated_trade.entry),
+            "replayed": False,
+        }
+        self._record(
+            session,
+            idempotency_key=idempotency_key,
+            command_type=self.UPDATE_PENDING_USER_TRADE_ENTRY,
             actor_user_id=actor.id,
             target_type="USER_TRADE",
             target_id=trade.id,
