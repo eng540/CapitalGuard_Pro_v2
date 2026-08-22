@@ -1,0 +1,22 @@
+name: Platform Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_url:
+        description: "Core public URL"
+        required: true
+        type: string
+      web_url:
+        description: "Web public URL"
+        required: true
+        type: string
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run non-financial platform smoke
+        run: bash scripts/platform_smoke.sh "${{ inputs.core_url }}" "${{ inputs.web_url }}"
