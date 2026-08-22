@@ -1,4 +1,5 @@
 const HEALTH_TIMEOUT_MS = 10_000;
+const CORE_REQUEST_TIMEOUT_MS = 8_000;
 
 type CoreConfig = { baseUrl: string; apiKey: string };
 export type CoreHealth = { status: "ok"; baseUrl: string };
@@ -77,6 +78,11 @@ export function getCoreConfig(env = process.env): CoreConfig {
   return { baseUrl: url.toString().replace(/\/$/, ""), apiKey };
 }
 
+function getRequestTimeoutMs(env = process.env): number {
+  const configured = Number(env.CAPITALGUARD_CORE_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured >= 100 && configured <= 30_000 ? configured : CORE_REQUEST_TIMEOUT_MS;
+}
+
 export async function probeCoreHealth(fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreHealth> {
   const config = getCoreConfig(env);
   const controller = new AbortController();
@@ -90,6 +96,10 @@ export async function probeCoreHealth(fetchImpl: typeof fetch = fetch, env = pro
     const payload = await response.json() as { status?: string };
     if (payload.status !== "ok") throw new Error("CAPITALGUARD_CORE_UNHEALTHY");
     return { status: "ok", baseUrl: config.baseUrl };
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("CAPITALGUARD_CORE_HEALTH_TIMEOUT");
+    if (error instanceof Error && error.message.startsWith("CAPITALGUARD_CORE_")) throw error;
+    throw new Error("CAPITALGUARD_CORE_HEALTH_UNAVAILABLE");
   } finally {
     clearTimeout(timer);
   }
@@ -98,12 +108,28 @@ export async function probeCoreHealth(fetchImpl: typeof fetch = fetch, env = pro
 export async function coreReadOnlyFetch(path: string, init: RequestInit = {}, fetchImpl: typeof fetch = fetch, env = process.env) {
   const config = getCoreConfig(env);
   if (!path.startsWith("/api/")) throw new Error("CAPITALGUARD_CORE_READ_PATH_REQUIRED");
-  const response = await fetchImpl(`${config.baseUrl}${path}`, {
-    ...init,
-    headers: { ...init.headers, Authorization: `Bearer ${config.apiKey}`, Accept: "application/json" },
-  });
-  if (!response.ok) throw new Error(`CAPITALGUARD_CORE_API_${response.status}`);
-  return response.json() as Promise<unknown>;
+  const controller = new AbortController();
+  const callerSignal = init.signal;
+  const forwardCallerAbort = () => controller.abort();
+  if (callerSignal?.aborted) controller.abort();
+  else callerSignal?.addEventListener("abort", forwardCallerAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(), getRequestTimeoutMs(env));
+  try {
+    const response = await fetchImpl(`${config.baseUrl}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: { ...init.headers, Authorization: `Bearer ${config.apiKey}`, Accept: "application/json" },
+    });
+    if (!response.ok) throw new Error(`CAPITALGUARD_CORE_API_${response.status}`);
+    return response.json() as Promise<unknown>;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("CAPITALGUARD_CORE_TIMEOUT");
+    if (error instanceof Error && error.message.startsWith("CAPITALGUARD_CORE_API_")) throw error;
+    throw new Error("CAPITALGUARD_CORE_UNAVAILABLE");
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", forwardCallerAbort);
+  }
 }
 
 function query(path: string, params: Record<string, string>) {
