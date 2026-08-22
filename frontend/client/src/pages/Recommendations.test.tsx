@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mutate = vi.fn();
+const cancelMutate = vi.fn();
 let recommendationState: Record<string, unknown>;
 let detailState: Record<string, unknown>;
 
@@ -16,7 +17,10 @@ vi.mock("@/lib/trpc", () => ({
     capitalguard: {
       recommendations: { useQuery: () => recommendationState },
       recommendationDetail: { useQuery: () => detailState },
-      trader: { closeUserTrade: { useMutation: () => ({ mutate, isPending: false }) } },
+      trader: {
+        closeUserTrade: { useMutation: () => ({ mutate, isPending: false }) },
+        cancelPendingUserTrade: { useMutation: () => ({ mutate: cancelMutate, isPending: false }) },
+      },
     },
   },
 }));
@@ -33,7 +37,7 @@ const activeItem = {
   entry: 70000,
   stop_loss: 69000,
   targets: [],
-  status: "ACTIVE",
+  status: "ACTIVATED",
   source_type: "TRACKED_RECOMMENDATION",
   source: null,
   created_at: null,
@@ -47,6 +51,7 @@ describe("UserTrade close surface", () => {
 
   beforeEach(() => {
     mutate.mockReset();
+    cancelMutate.mockReset();
     Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "close-command-key-0001" } });
     recommendationState = { isLoading: false, isError: false, data: { as_of: "2026-08-22T12:00:00Z", items: [activeItem] }, refetch: vi.fn() };
     detailState = { isLoading: false, isError: false, data: { as_of: "2026-08-22T12:00:00Z", schema_version: "2026-08-22.1", item: activeItem }, refetch: vi.fn() };
@@ -69,6 +74,18 @@ describe("UserTrade close surface", () => {
     render(<Recommendations />);
     fireEvent.click(screen.getByText("عرض التفاصيل"));
     expect(screen.queryByText("طلب إغلاق يدوي")).toBeNull();
-    expect(screen.getByText("هذا السجل مغلق بالفعل؛ لا يظهر أمر إغلاق مكرر.")).toBeTruthy();
+    expect(screen.getByText("هذا السجل طرفي بالفعل؛ لا يظهر أمر إغلاق أو إلغاء مكرر.")).toBeTruthy();
+  });
+
+  it("offers cancellation without a market price for a pending Core record", () => {
+    detailState = { ...detailState, data: { ...(detailState.data as object), item: { ...activeItem, status: "WATCHLIST" } } };
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "cancel-command-key-0001" } });
+    render(<Recommendations />);
+    fireEvent.click(screen.getByText("عرض التفاصيل"));
+    expect(screen.getByText("طلب إلغاء التتبع")).toBeTruthy();
+    expect(screen.queryByText("طلب إغلاق يدوي")).toBeNull();
+    fireEvent.click(screen.getByText("طلب إلغاء التتبع"));
+    fireEvent.click(screen.getByText("تأكيد الإلغاء"));
+    expect(cancelMutate).toHaveBeenCalledWith({ publicRef: "USR-000012/T-0003", idempotencyKey: "cancel-command-key-0001" });
   });
 });

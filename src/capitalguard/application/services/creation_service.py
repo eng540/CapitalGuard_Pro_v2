@@ -403,25 +403,17 @@ class CreationService:
                     logger.error(f"[BG Rec {rec_id}]: ORM object not found.")
                     return
 
-                # 2. النشر (Publishing) - محاولة معزولة
+                # 2. Publication delivery belongs exclusively to PublicationOutboxService.
+                # This compatibility task only finalizes the Core record and monitoring index.
                 rec_entity = self.repo._to_entity(rec_orm)
                 success_count = 0
                 publish_error = None
 
                 if rec_entity:
-                    try:
-                        # النشر للقنوات
-                        _, report = await self._publish_recommendation(
-                            session, rec_entity, user_db_id, target_channel_ids
-                        )
-                        success_count = len(report.get("success", []))
-                        logger.info(f"[BG Rec {rec_id}]: Published to {success_count} channels.")
-                        
-                        # حفظ معرفات الرسائل المنشورة في نفس الجلسة
-                        session.flush() 
-                    except Exception as e:
-                        publish_error = str(e)
-                        logger.error(f"[BG Rec {rec_id}]: Publishing partial failure: {e}")
+                    logger.info(
+                        "[BG Rec %s]: Publication is queued in Outbox; direct Telegram delivery is disabled.",
+                        rec_id,
+                    )
 
                 # 3. التثبيت وإزالة الظل (Atomic Commit) - الخطوة الأهم
                 try:
@@ -462,11 +454,7 @@ class CreationService:
                 try:
                     state_emoji = "▶️" if status_str == "ACTIVE" else "⏳"
                     msg = f"✅ **تم التثبيت بنجاح!**\nالصفقة #{rec_orm.asset} أصبحت حقيقية.\nالحالة: {state_emoji} **{status_str}**"
-                    
-                    if publish_error:
-                        msg += f"\n⚠️ تنبيه: فشل النشر في القنوات ({publish_error})."
-                    elif success_count == 0:
-                        msg += "\nℹ️ لم يتم النشر في أي قناة (ربما لا توجد قنوات)، لكن الصفقة تعمل."
+                    msg += "\n📤 تسليم القنوات تتم معالجته عبر Publication Outbox؛ حالة QUEUED ليست تأكيداً بالتسليم."
                     
                     await self._notify_user_trade_update(user_id=user_db_id, text=msg)
                 except: pass

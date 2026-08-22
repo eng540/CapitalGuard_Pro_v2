@@ -36,7 +36,16 @@ def _lifecycle(trade):
         trade.close_price = price
         return trade
 
-    return SimpleNamespace(close_user_trade_async=AsyncMock(side_effect=close))
+    async def cancel(_telegram_id, _trade_id, _session):
+        trade.status = UserTradeStatus.CANCELLED
+        trade.close_price = None
+        trade.pnl_percentage = None
+        return trade
+
+    return SimpleNamespace(
+        close_user_trade_async=AsyncMock(side_effect=close),
+        cancel_pending_user_trade_async=AsyncMock(side_effect=cancel),
+    )
 
 
 async def test_close_command_replays_same_key_without_second_market_price(db_session):
@@ -93,3 +102,49 @@ async def test_close_command_leaves_trade_unchanged_when_price_is_unavailable(db
         await WebCommandService().close_user_trade(db_session, actor_telegram_id=83005, public_ref=trade.public_ref, idempotency_key="no-price-key", lifecycle_service=lifecycle, price_service=prices)
     assert trade.status == UserTradeStatus.ACTIVATED
     assert lifecycle.close_user_trade_async.await_count == 0
+
+
+async def test_close_command_rejects_pending_trade_before_market_price_lookup(db_session):
+    trade = _trade(db_session, 83006, "USR-083006/T-0001", UserTradeStatus.WATCHLIST)
+    lifecycle = _lifecycle(trade)
+    prices = SimpleNamespace(get_cached_price=AsyncMock(return_value=110.0))
+
+    with pytest.raises(WebCommandError, match="must be cancelled"):
+        await WebCommandService().close_user_trade(
+            db_session,
+            actor_telegram_id=83006,
+            public_ref=trade.public_ref,
+            idempotency_key="pending-close-key",
+            lifecycle_service=lifecycle,
+            price_service=prices,
+        )
+    assert prices.get_cached_price.await_count == 0
+    assert lifecycle.close_user_trade_async.await_count == 0
+    assert trade.status == UserTradeStatus.WATCHLIST
+
+
+async def test_cancel_pending_command_replays_without_price_or_pnl(db_session):
+    trade = _trade(db_session, 83007, "USR-083007/T-0001", UserTradeStatus.PENDING_ACTIVATION)
+    lifecycle = _lifecycle(trade)
+    service = WebCommandService()
+
+    first = await service.cancel_pending_user_trade(
+        db_session,
+        actor_telegram_id=83007,
+        public_ref=trade.public_ref,
+        idempotency_key="cancel-once",
+        lifecycle_service=lifecycle,
+    )
+    replay = await service.cancel_pending_user_trade(
+        db_session,
+        actor_telegram_id=83007,
+        public_ref=trade.public_ref,
+        idempotency_key="cancel-once",
+        lifecycle_service=lifecycle,
+    )
+
+    assert first["status"] == UserTradeStatus.CANCELLED.value
+    assert first["close_price"] is None
+    assert first["pnl_percentage"] is None
+    assert replay == first
+    assert lifecycle.cancel_pending_user_trade_async.await_count == 1

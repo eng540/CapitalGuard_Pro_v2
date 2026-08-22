@@ -136,10 +136,22 @@ async def handle_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE, tim
         return True
     return False
 
+def _normalize_publication_queue_notice(text: Optional[str]) -> Optional[str]:
+    if not isinstance(text, str) or "جاري النشر الآن في" not in text:
+        return text
+    return text.replace(
+        "جاري النشر الآن في",
+        "📤 تم وضع التسليمات في Publication Outbox: ",
+    ).replace(
+        "قناة...",
+        "قناة (QUEUED؛ لم يتأكد التسليم بعد).",
+    )
+
+
 async def safe_edit_message(query: CallbackQuery, text=None, reply_markup=None, parse_mode=ParseMode.HTML):
     """تحرير الرسالة بشكل آمن مع استعادة الأخطاء."""
     try:
-        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode, disable_web_page_preview=True)
+        await query.edit_message_text(text=_normalize_publication_queue_notice(text), reply_markup=reply_markup, parse_mode=parse_mode, disable_web_page_preview=True)
         return True
     except BadRequest as e:
         if "message is not modified" in str(e).lower():
@@ -516,7 +528,7 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
             # ✅ Move service retrieval *inside* the block
             creation_service = get_service(context, "creation_service", CreationService)
             
-            all_channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=True)
+            all_channels = ChannelRepository(db_session).list_by_analyst(db_user.id, only_active=True)  # Outbox-only publication path.
             selected_ids = context.user_data.get(CHANNEL_PICKER_KEY, {ch.telegram_channel_id for ch in all_channels})
             draft['target_channel_ids'] = selected_ids
             

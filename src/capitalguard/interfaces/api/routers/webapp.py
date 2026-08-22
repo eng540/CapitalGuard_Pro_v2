@@ -30,7 +30,7 @@ from capitalguard.application.services.analyst_discovery_service import AnalystD
 from capitalguard.application.services.historical_signal_query_service import HistoricalSignalQueryService
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
-from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalSignalEvent, PublicationDelivery, RecommendationEvent, RecommendationStatusEnum, UserTrade, WebCommandAudit
+from capitalguard.infrastructure.db.models import Channel, HistoricalImportBatch, HistoricalSignalEvent, PublicationDelivery, Recommendation, RecommendationEvent, RecommendationStatusEnum, UserTrade, WebCommandAudit
 from capitalguard.infrastructure.market.symbol_catalog import SymbolCatalog
 
 log = logging.getLogger(__name__)
@@ -59,6 +59,11 @@ class AnalystRecommendationConfirm(WebAppSignal):
 
 
 class UserTradeCloseCommand(BaseModel):
+    actor_telegram_id: int
+    idempotency_key: str
+
+
+class UserTradeCancelCommand(BaseModel):
     actor_telegram_id: int
     idempotency_key: str
 
@@ -285,6 +290,83 @@ async def get_analyst_recommendation_assets(market: str, request: Request):
             for entry in catalog.entries()
         ],
     }
+
+
+@router.get("/recommendations/{public_ref:path}/publication")
+async def get_analyst_recommendation_publication(public_ref: str, actor_telegram_id: int, request: Request):
+    """Return Core-owned, analyst-scoped Outbox delivery state without promising Telegram delivery early."""
+    require_core_service_key(request.headers.get("authorization"))
+    if actor_telegram_id <= 0:
+        raise HTTPException(status_code=422, detail="Authenticated Web actor is required")
+    with session_scope() as session:
+        analyst = UserRepository(session).find_by_telegram_id(actor_telegram_id)
+        if not analyst or str(getattr(analyst.user_type, "value", analyst.user_type)).upper() != "ANALYST":
+            raise HTTPException(status_code=403, detail="Analyst role required")
+        recommendation = session.query(Recommendation).filter(
+            Recommendation.public_ref == public_ref.strip(),
+            Recommendation.analyst_id == analyst.id,
+        ).first()
+        if recommendation is None:
+            raise HTTPException(status_code=404, detail="Recommendation was not found")
+        deliveries = session.execute(
+            select(PublicationDelivery)
+            .where(
+                PublicationDelivery.recommendation_id == recommendation.id,
+                PublicationDelivery.operation == "CREATE",
+            )
+            .order_by(PublicationDelivery.telegram_channel_id.asc())
+        ).scalars().all()
+        channel_titles = {
+            channel.telegram_channel_id: channel.title or channel.username or str(channel.telegram_channel_id)
+            for channel in session.execute(
+                select(Channel).where(Channel.analyst_id == analyst.id)
+            ).scalars().all()
+        }
+        state_map = {
+            "PENDING": "QUEUED",
+            "PROCESSING": "PUBLISHING",
+            "SENT": "DELIVERED",
+            "RETRY": "RETRYING",
+            "FAILED": "FAILED",
+        }
+        items = [
+            {
+                "channel_id": delivery.telegram_channel_id,
+                "channel_title": channel_titles.get(delivery.telegram_channel_id, str(delivery.telegram_channel_id)),
+                "state": state_map.get(delivery.status, "QUEUED"),
+                "attempts": delivery.attempts,
+                "next_attempt_at": delivery.next_attempt_at.isoformat() if delivery.next_attempt_at else None,
+                "sent_at": delivery.sent_at.isoformat() if delivery.sent_at else None,
+                "failure_code": "DELIVERY_FAILED" if delivery.status == "FAILED" else "RETRY_SCHEDULED" if delivery.status == "RETRY" else None,
+            }
+            for delivery in deliveries
+        ]
+        states = {item["state"] for item in items}
+        if not items:
+            state = "SAVED"
+        elif states == {"DELIVERED"}:
+            state = "DELIVERED"
+        elif "FAILED" in states:
+            state = "FAILED"
+        elif "RETRYING" in states:
+            state = "RETRYING"
+        elif "PUBLISHING" in states:
+            state = "PUBLISHING"
+        else:
+            state = "QUEUED"
+        return {
+            "ok": True,
+            "schema_version": "2026-08-22.1",
+            "public_ref": recommendation.public_ref,
+            "publication": {
+                "state": state,
+                "delivery_count": len(items),
+                "delivered_count": sum(item["state"] == "DELIVERED" for item in items),
+                "retrying_count": sum(item["state"] == "RETRYING" for item in items),
+                "failed_count": sum(item["state"] == "FAILED" for item in items),
+                "channels": items,
+            },
+        }
 
 @router.post("/recommendations/preview")
 async def preview_recommendation_webapp(payload: WebAppSignal, request: Request):
@@ -765,6 +847,32 @@ async def close_owned_user_trade(
                 idempotency_key=command.idempotency_key,
                 lifecycle_service=lifecycle,
                 price_service=price_service,
+            )
+    except WebCommandError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/read-models/trader/{telegram_id}/recommendations/{public_ref:path}/commands/cancel")
+async def cancel_owned_pending_user_trade(
+    telegram_id: int,
+    public_ref: str,
+    command: UserTradeCancelCommand,
+    request: Request,
+):
+    require_core_service_key(request.headers.get("authorization"))
+    if command.actor_telegram_id != telegram_id:
+        raise HTTPException(status_code=403, detail="Command actor does not match the trader scope")
+    lifecycle = (request.app.state.services or {}).get("lifecycle_service")
+    if not lifecycle:
+        raise HTTPException(status_code=503, detail="UserTrade command services are unavailable")
+    try:
+        with session_scope() as session:
+            return await WebCommandService().cancel_pending_user_trade(
+                session,
+                actor_telegram_id=telegram_id,
+                public_ref=public_ref,
+                idempotency_key=command.idempotency_key,
+                lifecycle_service=lifecycle,
             )
     except WebCommandError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error

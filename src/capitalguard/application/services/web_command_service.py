@@ -22,6 +22,7 @@ class WebCommandService:
     REVIEW = "HISTORICAL_OWNER_REVIEW"
     INGEST = "HISTORICAL_EVIDENCE_INGEST"
     CLOSE_USER_TRADE = "USER_TRADE_MANUAL_CLOSE"
+    CANCEL_USER_TRADE = "USER_TRADE_PENDING_CANCEL"
     CREATE_ANALYST_RECOMMENDATION = "ANALYST_RECOMMENDATION_CONFIRM"
 
     @staticmethod
@@ -161,6 +162,10 @@ class WebCommandService:
             return existing
         if trade.status == UserTradeStatusEnum.CLOSED:
             raise WebCommandError("UserTrade is already closed")
+        if trade.status == UserTradeStatusEnum.CANCELLED:
+            raise WebCommandError("UserTrade is already cancelled")
+        if trade.status != UserTradeStatusEnum.ACTIVATED:
+            raise WebCommandError("Pending UserTrade must be cancelled without a market price")
         live_price = await price_service.get_cached_price(trade.asset, "Futures", True)
         if not isinstance(live_price, (int, float)) or live_price <= 0:
             raise WebCommandError("Trusted market price is unavailable; UserTrade was not changed")
@@ -182,6 +187,65 @@ class WebCommandService:
             session,
             idempotency_key=idempotency_key,
             command_type=self.CLOSE_USER_TRADE,
+            actor_user_id=actor.id,
+            target_type="USER_TRADE",
+            target_id=trade.id,
+            request_hash=request_hash,
+            response=response,
+        )
+        return response
+
+    async def cancel_pending_user_trade(
+        self,
+        session: Session,
+        *,
+        actor_telegram_id: int,
+        public_ref: str,
+        idempotency_key: str,
+        lifecycle_service,
+    ) -> dict:
+        actor = UserRepository(session).find_by_telegram_id(actor_telegram_id)
+        if actor is None:
+            raise WebCommandError("Trader identity does not exist in Core")
+        normalized_ref = public_ref.strip()
+        if not normalized_ref:
+            raise WebCommandError("UserTrade public reference is required")
+        trade = session.query(UserTrade).filter(
+            UserTrade.user_id == actor.id,
+            UserTrade.public_ref == normalized_ref,
+        ).with_for_update().first()
+        if trade is None:
+            raise WebCommandError("UserTrade was not found")
+        request_hash = self._fingerprint(
+            self.CANCEL_USER_TRADE,
+            actor_telegram_id,
+            "USER_TRADE",
+            trade.id,
+            {"public_ref": normalized_ref},
+        )
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+        if trade.status == UserTradeStatusEnum.CANCELLED:
+            raise WebCommandError("UserTrade is already cancelled")
+        if trade.status not in (UserTradeStatusEnum.WATCHLIST, UserTradeStatusEnum.PENDING_ACTIVATION):
+            raise WebCommandError("Only a pending UserTrade can be cancelled")
+        cancelled_trade = await lifecycle_service.cancel_pending_user_trade_async(
+            str(actor_telegram_id), trade.id, session,
+        )
+        response = {
+            "ok": True,
+            "entity_type": "USER_TRADE",
+            "public_ref": cancelled_trade.public_ref,
+            "status": getattr(cancelled_trade.status, "value", str(cancelled_trade.status)),
+            "close_price": None,
+            "pnl_percentage": None,
+            "replayed": False,
+        }
+        self._record(
+            session,
+            idempotency_key=idempotency_key,
+            command_type=self.CANCEL_USER_TRADE,
             actor_user_id=actor.id,
             target_type="USER_TRADE",
             target_id=trade.id,

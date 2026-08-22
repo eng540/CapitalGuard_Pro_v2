@@ -67,9 +67,22 @@ export type CoreAnalystRecommendationInput = { actorTelegramId: number; asset: s
 export type CoreAnalystRecommendationPreview = { schema_version: number; mode: "PREVIEW"; asset: string; side: "LONG" | "SHORT"; market: string; order_type: "LIMIT" | "MARKET" | "STOP_MARKET"; entry: string; stop_loss: string; targets: Array<{ price: string; close_percent: number }>; live_price: string | null; publication: { state: "NOT_QUEUED"; eligible_channel_count: number } };
 export type CoreAnalystRecommendationConfirmation = { ok: true; entity_type: "RECOMMENDATION"; public_ref: string; publication: { state: "SAVED" | "QUEUED"; queued_delivery_count: number }; replayed: boolean };
 export type CoreAnalystPublicationChannel = { id: number; title: string; username: string | null };
+export type CoreAnalystPublicationStatus = {
+  schema_version: string;
+  public_ref: string;
+  publication: {
+    state: "SAVED" | "QUEUED" | "PUBLISHING" | "DELIVERED" | "RETRYING" | "FAILED";
+    delivery_count: number;
+    delivered_count: number;
+    retrying_count: number;
+    failed_count: number;
+    channels: Array<{ channel_id: number; channel_title: string; state: "QUEUED" | "PUBLISHING" | "DELIVERED" | "RETRYING" | "FAILED"; attempts: number; next_attempt_at: string | null; sent_at: string | null; failure_code: "RETRY_SCHEDULED" | "DELIVERY_FAILED" | null }>;
+  };
+};
 export type CoreAnalystAsset = { symbol: string; venue: string; provider_symbol: string; market: string };
 export type CoreUserTradeCloseInput = { actorTelegramId: number; publicRef: string; idempotencyKey: string };
 export type CoreUserTradeCloseConfirmation = { ok: true; entity_type: "USER_TRADE"; public_ref: string; status: string; close_price: number; replayed: boolean };
+export type CoreUserTradeCancelConfirmation = { ok: true; entity_type: "USER_TRADE"; public_ref: string; status: "CANCELLED"; close_price: null; pnl_percentage: null; replayed: boolean };
 
 export function getCoreConfig(env = process.env): CoreConfig {
   const rawUrl = env.CAPITALGUARD_CORE_BASE_URL?.trim();
@@ -185,6 +198,17 @@ export async function coreGetAnalystPublicationChannels(actorTelegramId: number,
   return (result as { items: CoreAnalystPublicationChannel[] }).items;
 }
 
+export async function coreGetAnalystRecommendationPublication(actorTelegramId: number, publicRef: string, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreAnalystPublicationStatus> {
+  if (!Number.isSafeInteger(actorTelegramId) || actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const normalizedRef = publicRef.trim();
+  if (!normalizedRef || normalizedRef.length > 80) throw new Error("CAPITALGUARD_PUBLIC_REF_REQUIRED");
+  const result = await coreReadOnlyFetch(query(`/api/webapp/recommendations/${encodeURIComponent(normalizedRef)}/publication`, { actor_telegram_id: String(actorTelegramId) }), {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || (result as { public_ref?: unknown }).public_ref !== normalizedRef || !(result as { publication?: unknown }).publication) {
+    throw new Error("CAPITALGUARD_CORE_ANALYST_PUBLICATION_INVALID");
+  }
+  return result as CoreAnalystPublicationStatus;
+}
+
 export async function coreGetAnalystAssets(market: "Spot" | "Futures", fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreAnalystAsset[]> {
   const result = await coreReadOnlyFetch(query("/api/webapp/recommendations/assets", { market }), {}, fetchImpl, env);
   if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_ANALYST_ASSETS_INVALID");
@@ -243,6 +267,20 @@ export async function coreCloseUserTrade(input: CoreUserTradeCloseInput, fetchIm
     throw new Error("CAPITALGUARD_CORE_USER_TRADE_CLOSE_INVALID");
   }
   return result as unknown as CoreUserTradeCloseConfirmation;
+}
+
+export async function coreCancelPendingUserTrade(input: CoreUserTradeCloseInput, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreUserTradeCancelConfirmation> {
+  if (!Number.isSafeInteger(input.actorTelegramId) || input.actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const publicRef = input.publicRef.trim();
+  const idempotencyKey = input.idempotencyKey.trim();
+  if (!publicRef || publicRef.length > 80) throw new Error("CAPITALGUARD_PUBLIC_REF_REQUIRED");
+  if (idempotencyKey.length < 16 || idempotencyKey.length > 128) throw new Error("CAPITALGUARD_IDEMPOTENCY_KEY_INVALID");
+  const path = `/api/webapp/read-models/trader/${input.actorTelegramId}/recommendations/${encodeURIComponent(publicRef)}/commands/cancel`;
+  const result = await coreCommand(path, { actor_telegram_id: input.actorTelegramId, idempotency_key: idempotencyKey }, fetchImpl, env);
+  if (result.entity_type !== "USER_TRADE" || result.public_ref !== publicRef || result.status !== "CANCELLED" || result.close_price !== null || result.pnl_percentage !== null) {
+    throw new Error("CAPITALGUARD_CORE_USER_TRADE_CANCEL_INVALID");
+  }
+  return result as unknown as CoreUserTradeCancelConfirmation;
 }
 
 export async function coreGetTraderHistorical(telegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ as_of: string; items: CoreHistoricalRecord[] }> {

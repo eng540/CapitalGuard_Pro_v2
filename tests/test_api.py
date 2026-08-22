@@ -206,6 +206,18 @@ def test_additional_read_models_require_the_core_service_key(client: TestClient,
     assert client.get("/api/webapp/read-models/trader/123456/historical").status_code == 401
 
 
+def test_analyst_publication_status_requires_the_core_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "test-service-key")
+    response = client.get(
+        "/api/webapp/recommendations/AN-000001%2FR-0001/publication",
+        params={"actor_telegram_id": 123456},
+    )
+
+    assert response.status_code == 401
+
+
 def test_legacy_numeric_trade_action_is_retired(client: TestClient):
     response = client.post("/api/webapp/action")
 
