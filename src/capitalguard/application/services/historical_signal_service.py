@@ -417,6 +417,16 @@ class HistoricalSignalService:
         })
         has_activation = "ACTIVATED" in event_types
         has_terminal_outcome = "SL" in event_types or (target_count > 0 and hit_target_count >= target_count)
+        verified_attribution = any(
+            attribution.status == "VERIFIED"
+            and attribution.reviewed_by_user_id is not None
+            and attribution.reviewed_at is not None
+            and bool(attribution.proof_type)
+            and bool(attribution.proof_ref)
+            and (signal.channel_id is None or attribution.channel_id == signal.channel_id)
+            and (signal.analyst_id is None or attribution.analyst_id == signal.analyst_id)
+            for attribution in signal.attributions
+        )
         eligible = (
             signal.analyst_id is not None
             and signal.trust_tier in self.RANKABLE_TRUST_TIERS
@@ -424,6 +434,7 @@ class HistoricalSignalService:
             and verified_events
             and has_activation
             and has_terminal_outcome
+            and verified_attribution
             and not review_blocked
         )
         signal.eligible_for_ranking = eligible

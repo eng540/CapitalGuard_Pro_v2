@@ -33,6 +33,23 @@ def test_replay_records_activation_targets_and_eligibility(db_session):
         stop_loss=Decimal("90"),
         targets=[{"price": "110", "close_percent": 50}, {"price": "120", "close_percent": 50}],
     )
+    attribution = signal_service.add_attribution(
+        db_session,
+        signal_id=signal.id,
+        attribution_kind="ANALYST",
+        analyst_id=1,
+        proof_type="ANALYST_ACCOUNT_CONFIRMATION",
+        proof_ref="test://analyst/1",
+        confidence_score="1.0000",
+        dedup_key=f"test:analyst:{signal.id}",
+    )
+    signal_service.review_attribution(
+        db_session,
+        attribution_id=attribution.id,
+        reviewer_user_id=99,
+        status="VERIFIED",
+        note="Test analyst attribution reviewed",
+    )
     events = HistoricalMarketReplayService().replay(
         db_session,
         signal_id=signal.id,
