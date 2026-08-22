@@ -68,6 +68,17 @@ def _parse_int_user_id(user_id: Any) -> Optional[int]:
         return int(user_str) if user_str.lstrip('-').isdigit() else None
     except: return None
 
+def _validate_market_and_side(market: Any, side: Any) -> Tuple[str, str]:
+    normalized_market = str(market or "Futures").strip().upper()
+    normalized_side = str(side or "").strip().upper()
+    if normalized_market not in {"SPOT", "FUTURES"}:
+        raise ValueError("Market must be Spot or Futures.")
+    if normalized_side not in {"LONG", "SHORT"}:
+        raise ValueError("Side must be Long or Short.")
+    if normalized_market == "SPOT" and normalized_side != "LONG":
+        raise ValueError("Spot recommendations support Long only.")
+    return ("Spot" if normalized_market == "SPOT" else "Futures", normalized_side)
+
 # --- Service Class ---
 
 async def _publish_symbol_event(asset: str, market: str, action: str = "ADD") -> None:
@@ -255,8 +266,7 @@ class CreationService:
             for target in kwargs["targets"]
         ]
         asset = kwargs["asset"].strip().upper()
-        side = kwargs["side"].upper()
-        market = kwargs.get("market", "Futures")
+        market, side = _validate_market_and_side(kwargs.get("market", "Futures"), kwargs["side"])
         order_type = OrderTypeEnum[kwargs["order_type"].upper()]
 
         effective_entry = entry
@@ -307,8 +317,7 @@ class CreationService:
         sl = _to_decimal(kwargs['stop_loss'])
         targets = [{'price': _to_decimal(t['price']), 'close_percent': t.get('close_percent', 0.0)} for t in kwargs['targets']]
         asset = kwargs['asset'].strip().upper()
-        side = kwargs['side'].upper()
-        market = kwargs.get('market', 'Futures')
+        market, side = _validate_market_and_side(kwargs.get('market', 'Futures'), kwargs['side'])
         order_type = OrderTypeEnum[kwargs['order_type'].upper()]
         target_channel_ids = set(kwargs.get("target_channel_ids") or set())
         if target_channel_ids:
