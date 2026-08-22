@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import React from "react";
 import { SectionTitle, StatusPill } from "@/components/finance-ui";
 import { trpc } from "@/lib/trpc";
 import { BarChart3, GitCompareArrows, Search, ShieldCheck } from "lucide-react";
