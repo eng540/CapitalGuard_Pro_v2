@@ -4,11 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { normalizeFinancialNumber, normalizeSymbol } from "@/lib/financial-input";
+import { getAnalystTradeFlow, type AnalystMarket, type AnalystOrderType, type AnalystSide } from "@/lib/analyst-trade-flow";
 import { trpc } from "@/lib/trpc";
 
-type Market = "Spot" | "Futures";
-type Side = "LONG" | "SHORT";
-type OrderType = "MARKET" | "LIMIT" | "STOP_MARKET";
 type Target = { price: string; percent: string };
 
 function ChoiceCard<T extends string>({ value, selected, title, detail, onSelect }: { value: T; selected: boolean; title: string; detail: string; onSelect: (value: T) => void }) {
@@ -16,9 +14,9 @@ function ChoiceCard<T extends string>({ value, selected, title, detail, onSelect
 }
 
 export default function AnalystWorkspace() {
-  const [market, setMarket] = useState<Market>("Futures");
-  const [side, setSide] = useState<Side>("LONG");
-  const [orderType, setOrderType] = useState<OrderType>("LIMIT");
+  const [market, setMarket] = useState<AnalystMarket>("Futures");
+  const [side, setSide] = useState<AnalystSide>("LONG");
+  const [orderType, setOrderType] = useState<AnalystOrderType>("LIMIT");
   const [asset, setAsset] = useState("BTCUSDT");
   const [entry, setEntry] = useState("");
   const [stopLoss, setStopLoss] = useState("");
@@ -27,7 +25,8 @@ export default function AnalystWorkspace() {
   const [preview, setPreview] = useState<any>(null);
   const [selectedChannelIds, setSelectedChannelIds] = useState<number[]>([]);
   const symbol = normalizeSymbol(asset);
-  const isMarket = orderType === "MARKET";
+  const tradeFlow = getAnalystTradeFlow(market, orderType);
+  const isMarket = !tradeFlow.manualEntryRequired;
   const assets = trpc.capitalguard.analyst.assets.useQuery({ market });
   const channels = trpc.capitalguard.analyst.publicationChannels.useQuery();
   const price = trpc.capitalguard.core.price.useQuery({ symbol }, { enabled: symbol.length >= 3, refetchInterval: 15_000 });
@@ -38,7 +37,7 @@ export default function AnalystWorkspace() {
   const currentPrice = price.data && typeof price.data === "object" && "price" in price.data ? Number((price.data as { price: unknown }).price) : Number.NaN;
   const parsedTargets = useMemo(() => targets.map(target => ({ price: normalizeFinancialNumber(target.price), percent: normalizeFinancialNumber(target.percent) })), [targets]);
   const targetTotal = parsedTargets.reduce((sum, target) => sum + (Number.isFinite(target.percent) ? target.percent : 0), 0);
-  useEffect(() => { if (market === "Spot") setSide("LONG"); }, [market]);
+  useEffect(() => { if (!tradeFlow.allowedSides.includes(side)) setSide("LONG"); }, [side, tradeFlow.allowedSides]);
   useEffect(() => { if (channels.data) setSelectedChannelIds(channels.data.map(channel => channel.id)); }, [channels.data]);
   useEffect(() => { if (assets.data?.length && !assets.data.some(item => item.symbol === symbol)) setAsset(assets.data[0].symbol); }, [assets.data, symbol]);
   const updateTarget = (index: number, key: keyof Target, value: string) => setTargets(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item));
