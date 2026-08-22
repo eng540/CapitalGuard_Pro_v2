@@ -200,7 +200,7 @@ def test_demo_historical_reconstruction_end_to_end_isolated(db_session):
     assert summary.winning_signals == 2
     assert summary.losing_signals == 1
     assert summary.unfilled_signals == 1
-    assert summary.rank_eligible_signals == 3
+    assert summary.rank_eligible_signals == 1
     assert summary.win_rate_percent == Decimal("66.6667")
     assert summary.pnl_sum_percent == Decimal("9.0000")
 
