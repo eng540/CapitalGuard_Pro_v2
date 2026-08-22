@@ -38,7 +38,8 @@ TRADER_RECOMMENDATION_SCHEMA_VERSION = "2026-08-21.2"
 
 # --- Models ---
 class WebAppSignal(BaseModel):
-    initData: str
+    initData: Optional[str] = None
+    actor_telegram_id: Optional[int] = None
     asset: str
     side: str
     market: str
@@ -101,6 +102,17 @@ def require_core_service_key(authorization: str | None = Header(default=None)) -
     supplied_key = authorization.removeprefix("Bearer ").strip()
     if not supplied_key or not hmac.compare_digest(supplied_key, configured_key):
         raise HTTPException(status_code=403, detail="Core service authorization rejected")
+
+
+def resolve_webapp_actor(payload: WebAppSignal, request: Request) -> int:
+    """Resolve a Mini App actor or a server-authenticated Web actor inside Core."""
+    init_data = (payload.initData or "").strip()
+    if init_data:
+        return int(validate_telegram_data(init_data, settings.TELEGRAM_BOT_TOKEN)["id"])
+    require_core_service_key(request.headers.get("authorization"))
+    if not isinstance(payload.actor_telegram_id, int) or payload.actor_telegram_id <= 0:
+        raise HTTPException(status_code=422, detail="Authenticated Web actor is required")
+    return payload.actor_telegram_id
 
 
 def _serialize_live_position(entity: Any, live_price: float | None) -> dict[str, Any]:
@@ -217,7 +229,7 @@ async def get_analyst_channels(initData: str):
 async def preview_recommendation_webapp(payload: WebAppSignal, request: Request):
     """Validate an analyst recommendation without persisting any financial record."""
     try:
-        user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
+        actor_telegram_id = resolve_webapp_actor(payload, request)
         service = request.app.state.services.get("creation_service") if request.app.state.services else None
         if not service:
             return {"ok": False, "error": {"code": "SERVICE_UNAVAILABLE", "message": "Recommendation service unavailable"}}
@@ -226,7 +238,7 @@ async def preview_recommendation_webapp(payload: WebAppSignal, request: Request)
             return {"ok": False, "error": {"code": "INVALID_TARGETS", "message": "At least one valid target is required"}}
         with session_scope() as session:
             preview = await service.preview_recommendation_async(
-                user_id=str(user_data["id"]),
+                user_id=str(actor_telegram_id),
                 db_session=session,
                 asset=payload.asset,
                 side=payload.side,
@@ -255,7 +267,7 @@ async def confirm_recommendation_webapp(payload: AnalystRecommendationConfirm, r
     if len(key) < 16 or len(key) > 128:
         return {"ok": False, "error": {"code": "INVALID_IDEMPOTENCY_KEY", "message": "Idempotency key must contain 16 to 128 characters"}}
     try:
-        user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
+        actor_telegram_id = resolve_webapp_actor(payload, request)
         creation_service = request.app.state.services.get("creation_service") if request.app.state.services else None
         if not creation_service:
             return {"ok": False, "error": {"code": "SERVICE_UNAVAILABLE", "message": "Recommendation service unavailable"}}
@@ -276,7 +288,7 @@ async def confirm_recommendation_webapp(payload: AnalystRecommendationConfirm, r
         with session_scope() as session:
             return await WebCommandService().confirm_analyst_recommendation(
                 session,
-                actor_telegram_id=int(user_data["id"]),
+                actor_telegram_id=actor_telegram_id,
                 idempotency_key=key,
                 creation_service=creation_service,
                 recommendation=recommendation,
