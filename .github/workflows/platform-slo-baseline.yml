@@ -1,0 +1,26 @@
+name: Platform SLO Baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_url:
+        description: "Core public URL"
+        required: true
+        type: string
+      web_url:
+        description: "Web public URL"
+        required: true
+        type: string
+      samples:
+        description: "Sequential samples per contract (1-20)"
+        required: false
+        default: "10"
+        type: string
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run non-financial SLO baseline
+        run: python3 scripts/platform_slo_baseline.py "${{ inputs.core_url }}" "${{ inputs.web_url }}" --samples "${{ inputs.samples }}"
