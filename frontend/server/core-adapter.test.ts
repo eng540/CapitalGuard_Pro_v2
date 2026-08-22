@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -156,6 +156,17 @@ describe("CapitalGuard Core adapter", () => {
     const result = await coreGetOperationsFeed(123456, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
     expect(requestUrl).toBe("https://core.example/api/webapp/owner/operations-feed?actor_telegram_id=123456");
     expect(result.summary.total).toBe(0);
+  });
+
+  it("retrieves the historical trust release gate only through the server-side Core adapter", async () => {
+    let requestUrl = "";
+    const fakeFetch = async (input: string | URL | Request) => {
+      requestUrl = String(input);
+      return new Response(JSON.stringify({ ok: true, status: "HOLD", reasons: ["PUBLIC_RANKING_DISABLED"], public_ranking_enabled: false, commercial_enabled: false, snapshot: { sample_size: 0, replay_coverage_percent: 0, reviewed_attributions: 0, pending_attributions: 0 } }), { status: 200 });
+    };
+    const result = await coreGetHistoricalTrustReadiness(123456, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
+    expect(requestUrl).toBe("https://core.example/api/webapp/owner/historical-trust-readiness?actor_telegram_id=123456");
+    expect(result).toMatchObject({ status: "HOLD", public_ranking_enabled: false, commercial_enabled: false });
   });
 
   it("keeps trader and analyst read models behind the Core service adapter", async () => {
