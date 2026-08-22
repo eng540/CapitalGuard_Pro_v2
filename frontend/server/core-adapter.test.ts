@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -34,6 +34,20 @@ describe("CapitalGuard Core adapter", () => {
     expect(requestUrl).toBe("https://core.example/api/webapp/price?symbol=BTCUSDT");
     expect(authorization).toBe("Bearer private-service-key");
     expect(payload).toMatchObject({ symbol: "BTCUSDT" });
+  });
+
+  it("returns stable timeout and unavailable errors for Core read calls", async () => {
+    const env = { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key", CAPITALGUARD_CORE_TIMEOUT_MS: "100" };
+    const hangingFetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      if (init?.signal?.aborted) throw new Error("aborted");
+      return new Promise<Response>(() => undefined);
+    };
+    const unavailableFetch = async () => { throw new Error("socket closed"); };
+    const cancelled = new AbortController();
+    cancelled.abort();
+
+    await expect(coreReadOnlyFetch("/api/webapp/price?symbol=BTCUSDT", { signal: cancelled.signal }, hangingFetch as typeof fetch, env)).rejects.toThrow("CAPITALGUARD_CORE_TIMEOUT");
+    await expect(coreReadOnlyFetch("/api/webapp/price?symbol=BTCUSDT", unavailableFetch as typeof fetch, env)).rejects.toThrow("CAPITALGUARD_CORE_UNAVAILABLE");
   });
 
   it("accepts Telegram data only when the Core verifier confirms it", async () => {
