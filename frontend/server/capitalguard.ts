@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTmaPortfolio, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
+import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTmaPortfolio, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -85,7 +85,14 @@ export const capitalguardRouter = router({
     traderSnapshot: protectedProcedure.query(({ ctx }) => coreGetTraderReadModel(telegramIdFromWebSession(ctx.user.openId))),
   }),
   riskPlan: protectedProcedure.input(riskInput).mutation(({ input }) => calculateRiskPlan(input)),
-  trader: router({ portfolio: traderProcedure.query(() => coreOwnedSnapshot()) }),
+  trader: router({
+    portfolio: traderProcedure.query(() => coreOwnedSnapshot()),
+    closeUserTrade: traderProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80), idempotencyKey: z.string().trim().min(16).max(128) })).mutation(({ ctx, input }) => coreCloseUserTrade({
+      actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
+      publicRef: input.publicRef,
+      idempotencyKey: input.idempotencyKey,
+    })),
+  }),
   analyst: router({
     dashboard: analystProcedure.query(() => ({ profile: null, recommendations: [] })),
     assets: analystProcedure.input(z.object({ market: z.enum(["Spot", "Futures"]) })).query(({ input }) => coreGetAnalystAssets(input.market)),

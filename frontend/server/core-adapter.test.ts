@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -177,6 +177,26 @@ describe("CapitalGuard Core adapter", () => {
     const result = await coreGetTraderRecommendationDetail(123456, "USR-000012/T-0003", fakeFetch as typeof fetch, env);
     expect(requestUrl).toBe("https://core.example/api/webapp/read-models/trader/123456/recommendations/USR-000012%2FT-0003");
     expect(result.item.public_ref).toBe("USR-000012/T-0003");
+  });
+
+  it("closes a UserTrade only through its owned public reference and a server-side idempotency key", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    let authorization = "";
+    const fakeFetch = async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body);
+      authorization = String((init?.headers as Record<string, string>).Authorization);
+      return new Response(JSON.stringify({ ok: true, entity_type: "USER_TRADE", public_ref: "USR-000012/T-0003", status: "CLOSED", close_price: 70123.45, replayed: false }), { status: 200 });
+    };
+    const result = await coreCloseUserTrade({ actorTelegramId: 123456, publicRef: "USR-000012/T-0003", idempotencyKey: "close-command-key-0001" }, fakeFetch as typeof fetch, {
+      CAPITALGUARD_CORE_BASE_URL: "https://core.example",
+      CAPITALGUARD_CORE_API_KEY: "private-service-key",
+    });
+    expect(requestUrl).toBe("https://core.example/api/webapp/read-models/trader/123456/recommendations/USR-000012%2FT-0003/commands/close");
+    expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, idempotency_key: "close-command-key-0001" });
+    expect(authorization).toBe("Bearer private-service-key");
+    expect(result).toMatchObject({ public_ref: "USR-000012/T-0003", status: "CLOSED" });
   });
 
   it("reports R5 as a server-controlled noncommercial hold", async () => {
