@@ -393,3 +393,39 @@ class HistoricalMarketReplayService:
             if target_levels and len(hit_targets) == len(target_levels):
                 closed = True
         return events
+
+    def replay_from_binance(
+        self,
+        session: Session,
+        *,
+        signal_id: int,
+        start: datetime,
+        replay_end: datetime,
+        interval: str = "1m",
+        limit: int = 1500,
+        provider=None,
+    ) -> list[HistoricalSignalEvent]:
+        """Fetches bounded historical OHLCV explicitly; provider failures leave replay unchanged."""
+        signal, _, _, _ = self._signal_levels(session, signal_id)
+        if provider is None:
+            from capitalguard.infrastructure.market.historical_ohlcv_provider import BinanceHistoricalOhlcvProvider
+
+            provider = BinanceHistoricalOhlcvProvider()
+        candles, endpoint = provider.fetch(
+            asset=str(signal.asset or ""),
+            market=signal.market,
+            interval=interval,
+            start=self._utc(start),
+            end=self._utc(replay_end),
+            limit=limit,
+        )
+        if not candles:
+            raise HistoricalSignalValidationError("Historical candle provider returned no evidence")
+        return self.replay_candles(
+            session,
+            signal_id=signal_id,
+            candles=candles,
+            replay_end=replay_end,
+            interval=interval,
+            provider_endpoint=endpoint,
+        )
