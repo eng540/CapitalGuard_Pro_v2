@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Iterable
+from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.models import HistoricalSignalEvent
+from capitalguard.infrastructure.db.models import HistoricalMarketEvidence, HistoricalSignalEvent
 
 from .historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
 
@@ -68,6 +72,74 @@ class HistoricalMarketReplayService:
     ):
         self.signal_service = signal_service or HistoricalSignalService()
         self.candle_cache = candle_cache or CandleCache()
+
+    @staticmethod
+    def _artifact_payload(*, signal_id: int, asset: str | None, market: str | None, interval: str, candles: list[MarketCandle], replay_end: datetime, provider_endpoint: str | None) -> dict:
+        return {
+            "signal_id": signal_id,
+            "asset": asset,
+            "market": market,
+            "interval": interval,
+            "replay_end": replay_end.isoformat(),
+            "provider_endpoint": provider_endpoint,
+            "candles": [
+                {
+                    "open_time": candle.open_time.isoformat(),
+                    "open": str(candle.open),
+                    "high": str(candle.high),
+                    "low": str(candle.low),
+                    "close": str(candle.close),
+                    "volume": str(candle.volume),
+                    "data_source": candle.data_source,
+                }
+                for candle in candles
+            ],
+        }
+
+    @staticmethod
+    def _artifact_hash(payload: dict) -> str:
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _record_market_evidence(self, session: Session, *, signal_id: int, asset: str | None, market: str | None, interval: str, candles: list[MarketCandle], replay_end: datetime, provider_endpoint: str | None = None) -> HistoricalMarketEvidence | None:
+        if not candles:
+            return None
+        payload = self._artifact_payload(
+            signal_id=signal_id,
+            asset=asset,
+            market=market,
+            interval=interval,
+            candles=candles,
+            replay_end=replay_end,
+            provider_endpoint=provider_endpoint,
+        )
+        artifact_hash = self._artifact_hash(payload)
+        range_start = min(candle.open_time for candle in candles)
+        range_end = max(candle.open_time for candle in candles)
+        providers = sorted({candle.data_source for candle in candles if candle.data_source})
+        provider = providers[0] if len(providers) == 1 else "MULTI_SOURCE"
+        artifact_key = f"signal:{signal_id}:interval:{interval}:start:{range_start.isoformat()}:end:{range_end.isoformat()}:hash:{artifact_hash}"
+        existing = session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.artifact_key == artifact_key)).scalar_one_or_none()
+        if existing is not None:
+            return existing
+        evidence = HistoricalMarketEvidence(
+            signal_id=signal_id,
+            replay_run_ref=f"HMKT-{uuid4().hex[:24].upper()}",
+            provider=provider,
+            provider_endpoint=provider_endpoint,
+            asset=str(asset or "").upper(),
+            market=market,
+            interval=interval,
+            range_start=range_start,
+            range_end=range_end,
+            candle_count=len(candles),
+            artifact_hash=artifact_hash,
+            artifact_key=artifact_key,
+            metadata_json=payload,
+        )
+        session.add(evidence)
+        session.flush()
+        return evidence
 
     @staticmethod
     def _utc(value: datetime) -> datetime:
@@ -215,6 +287,8 @@ class HistoricalMarketReplayService:
         signal_id: int,
         candles: Iterable[MarketCandle],
         replay_end: datetime,
+        interval: str = "1m",
+        provider_endpoint: str | None = None,
     ) -> list[HistoricalSignalEvent]:
         signal, entry, stop, target_levels = self._signal_levels(session, signal_id)
         end_time = self._utc(replay_end)
@@ -237,6 +311,16 @@ class HistoricalMarketReplayService:
         closed = False
         hit_targets: set[int] = set()
         decision_time = self._utc(signal.decision_timestamp)
+        market_evidence = self._record_market_evidence(
+            session,
+            signal_id=signal.id,
+            asset=signal.asset,
+            market=signal.market,
+            interval=interval,
+            candles=normalized,
+            replay_end=end_time,
+            provider_endpoint=provider_endpoint,
+        )
         for candle in normalized:
             candle_time = self._utc(candle.open_time)
             if candle_time < decision_time or closed:
@@ -255,7 +339,7 @@ class HistoricalMarketReplayService:
                     price=entry,
                     replay_status="VERIFIED",
                     event_confidence="1.0000",
-                    event_data={"replay_end": end_time.isoformat(), "candle_rule": "OHLCV"},
+                    event_data={"replay_end": end_time.isoformat(), "candle_rule": "OHLCV", "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None},
                     dedup_key=f"replay:{signal.id}:ACTIVATED",
                 ))
                 activated = True
@@ -276,6 +360,7 @@ class HistoricalMarketReplayService:
                     event_data={
                         "replay_end": end_time.isoformat(),
                         "candle_rule": "PESSIMISTIC_SL_FIRST",
+                        "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None,
                         "high": str(candle.high),
                         "low": str(candle.low),
                     },
@@ -300,6 +385,7 @@ class HistoricalMarketReplayService:
                         "target_index": index,
                         "replay_end": end_time.isoformat(),
                         "candle_rule": "PESSIMISTIC_SL_FIRST",
+                        "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None,
                     },
                     dedup_key=f"replay:{signal.id}:TP{index}",
                 ))
