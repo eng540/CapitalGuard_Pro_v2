@@ -6,7 +6,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.models import HistoricalSignal, HistoricalSignalEvent
+from capitalguard.infrastructure.db.models import HistoricalMarketEvidence, HistoricalSignal, HistoricalSignalAttribution, HistoricalSignalEvent
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,23 @@ class HistoricalReputationSummary:
     unfilled_signals: int = 0
     pnl_sum_percent: Decimal = Decimal("0")
     win_rate_percent: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class HistoricalTrustQualityReport:
+    analyst_id: int | None
+    channel_id: int | None
+    total_signals: int
+    verified_signals: int
+    rank_eligible_signals: int
+    excluded_signals: int
+    unfilled_signals: int
+    verified_replay_events: int
+    market_evidence_artifacts: int
+    replay_coverage_percent: Decimal
+    reviewed_attributions: int
+    pending_attributions: int
+    confidence_weighted_sample: Decimal
 
 
 class HistoricalReputationService:
@@ -129,4 +146,59 @@ class HistoricalReputationService:
             unfilled_signals=unfilled,
             pnl_sum_percent=pnl_sum.quantize(Decimal("0.0001")),
             win_rate_percent=win_rate.quantize(Decimal("0.0001")),
+        )
+
+    @classmethod
+    def quality_report(
+        cls,
+        session: Session,
+        *,
+        analyst_id: int | None = None,
+        channel_id: int | None = None,
+    ) -> HistoricalTrustQualityReport:
+        summary = cls.summarize(session, analyst_id=analyst_id, channel_id=channel_id)
+        statement = select(HistoricalSignal.id)
+        if analyst_id is not None:
+            statement = statement.where(HistoricalSignal.analyst_id == analyst_id)
+        if channel_id is not None:
+            statement = statement.where(HistoricalSignal.channel_id == channel_id)
+        signal_ids = list(session.execute(statement).scalars().all())
+        if not signal_ids:
+            return HistoricalTrustQualityReport(
+                analyst_id=analyst_id,
+                channel_id=channel_id,
+                total_signals=0,
+                verified_signals=0,
+                rank_eligible_signals=0,
+                excluded_signals=0,
+                unfilled_signals=0,
+                verified_replay_events=0,
+                market_evidence_artifacts=0,
+                replay_coverage_percent=Decimal("0"),
+                reviewed_attributions=0,
+                pending_attributions=0,
+                confidence_weighted_sample=Decimal("0"),
+            )
+        artifacts = list(session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.signal_id.in_(signal_ids))).scalars().all())
+        artifact_signals = {artifact.signal_id for artifact in artifacts}
+        attributions = list(session.execute(select(HistoricalSignalAttribution).where(HistoricalSignalAttribution.signal_id.in_(signal_ids))).scalars().all())
+        reviewed = [
+            item for item in attributions
+            if item.status == "VERIFIED" and item.reviewed_by_user_id is not None and item.reviewed_at is not None and item.proof_type and item.proof_ref
+        ]
+        coverage = (Decimal(len(artifact_signals)) / Decimal(len(signal_ids)) * Decimal("100")).quantize(Decimal("0.0001"))
+        return HistoricalTrustQualityReport(
+            analyst_id=analyst_id,
+            channel_id=channel_id,
+            total_signals=summary.total_signals,
+            verified_signals=summary.verified_signals,
+            rank_eligible_signals=summary.rank_eligible_signals,
+            excluded_signals=summary.excluded_signals,
+            unfilled_signals=summary.unfilled_signals,
+            verified_replay_events=summary.verified_replay_events,
+            market_evidence_artifacts=len(artifacts),
+            replay_coverage_percent=coverage,
+            reviewed_attributions=len(reviewed),
+            pending_attributions=sum(item.status in {"PROPOSED", "PENDING_REVIEW"} for item in attributions),
+            confidence_weighted_sample=summary.confidence_weighted_sample,
         )
