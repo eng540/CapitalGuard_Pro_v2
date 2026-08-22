@@ -153,6 +153,10 @@ class CreationService:
         if risk.is_zero():
             raise ValueError("Entry and SL cannot be equal.")
 
+    def validate_recommendation_data(self, side: str, entry: Decimal, stop_loss: Decimal, targets: List[Dict[str, Any]]) -> None:
+        """Public Core validation contract for analyst preview and confirmation."""
+        self._validate_recommendation_data(side, entry, stop_loss, targets)
+
     async def _publish_recommendation(self, session: Session, rec_entity: RecommendationEntity, user_db_id: int, target_channel_ids: Optional[Set[int]] = None) -> Tuple[RecommendationEntity, Dict]:
         """Publish once per channel; retries skip channels with a saved message row."""
         report = {"success": [], "failed": [], "skipped": []}
@@ -238,6 +242,56 @@ class CreationService:
                     await self._call_notifier_maybe_async(self.notifier.send_private_text, chat_id=user.telegram_user_id, text=text)
         except: pass
 
+    async def preview_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Dict[str, Any]:
+        """Read-only Core preview contract for an analyst recommendation."""
+        user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not user or user.user_type != UserTypeEntity.ANALYST:
+            raise ValueError("Only analysts can preview recommendations.")
+
+        entry = _to_decimal(kwargs["entry"])
+        stop_loss = _to_decimal(kwargs["stop_loss"])
+        targets = [
+            {"price": _to_decimal(target["price"]), "close_percent": target.get("close_percent", 0.0)}
+            for target in kwargs["targets"]
+        ]
+        asset = kwargs["asset"].strip().upper()
+        side = kwargs["side"].upper()
+        market = kwargs.get("market", "Futures")
+        order_type = OrderTypeEnum[kwargs["order_type"].upper()]
+
+        effective_entry = entry
+        live_price = None
+        if order_type == OrderTypeEnum.MARKET:
+            live_price = await self.price_service.get_cached_price(asset, market, True)
+            effective_entry = _to_decimal(live_price) if live_price else entry
+            if effective_entry <= 0:
+                raise RuntimeError("Invalid live price and no manual entry provided.")
+
+        self.validate_recommendation_data(side, effective_entry, stop_loss, targets)
+        selected_channels = set(kwargs.get("target_channel_ids") or set())
+        active_channels = ChannelRepository(db_session).list_by_analyst(user.id, only_active=True)
+        eligible_channels = [
+            channel.telegram_channel_id
+            for channel in active_channels
+            if not selected_channels or channel.telegram_channel_id in selected_channels
+        ]
+        if selected_channels and len(eligible_channels) != len(selected_channels):
+            raise ValueError("One or more selected channels are not active for this analyst.")
+
+        return {
+            "schema_version": 1,
+            "mode": "PREVIEW",
+            "asset": asset,
+            "side": side,
+            "market": market,
+            "order_type": order_type.value,
+            "entry": str(effective_entry),
+            "stop_loss": str(stop_loss),
+            "targets": [{"price": str(target["price"]), "close_percent": target["close_percent"]} for target in targets],
+            "live_price": str(live_price) if live_price else None,
+            "publication": {"state": "NOT_QUEUED", "eligible_channel_count": len(eligible_channels)},
+        }
+
     # --- MAIN ENTRY POINT (Analyst Creator) ---
     async def create_and_publish_recommendation_async(self, user_id: str, db_session: Session, **kwargs) -> Tuple[Optional[RecommendationEntity], Dict]:
         """
@@ -256,6 +310,14 @@ class CreationService:
         side = kwargs['side'].upper()
         market = kwargs.get('market', 'Futures')
         order_type = OrderTypeEnum[kwargs['order_type'].upper()]
+        target_channel_ids = set(kwargs.get("target_channel_ids") or set())
+        if target_channel_ids:
+            active_channel_ids = {
+                channel.telegram_channel_id
+                for channel in ChannelRepository(db_session).list_by_analyst(user.id, only_active=True)
+            }
+            if not target_channel_ids.issubset(active_channel_ids):
+                raise ValueError("One or more selected channels are not active for this analyst.")
         
         # منطق تحديد الحالة الأولية (Status Logic)
         if order_type == OrderTypeEnum.MARKET:
@@ -272,7 +334,7 @@ class CreationService:
             status, final_entry = RecommendationStatusEnum.PENDING, entry
         
         # التحقق النهائي
-        self._validate_recommendation_data(side, final_entry, sl, targets)
+        self.validate_recommendation_data(side, final_entry, sl, targets)
         
         # تحويل الأهداف لـ JSON
         targets_db = [{'price': str(t['price']), 'close_percent': t['close_percent']} for t in targets]
@@ -297,7 +359,6 @@ class CreationService:
         # تسجيل حدث الإنشاء
         db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="CREATED_ACTIVE" if status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING", event_data={'entry': str(final_entry)}))
 
-        target_channel_ids = kwargs.get("target_channel_ids") or set()
         if self.outbox_service and target_channel_ids:
             self.outbox_service.enqueue_create_deliveries(
                 db_session,

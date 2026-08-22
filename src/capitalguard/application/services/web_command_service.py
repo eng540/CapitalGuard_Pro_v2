@@ -22,6 +22,7 @@ class WebCommandService:
     REVIEW = "HISTORICAL_OWNER_REVIEW"
     INGEST = "HISTORICAL_EVIDENCE_INGEST"
     CLOSE_USER_TRADE = "USER_TRADE_MANUAL_CLOSE"
+    CREATE_ANALYST_RECOMMENDATION = "ANALYST_RECOMMENDATION_CONFIRM"
 
     @staticmethod
     def _require_owner(session: Session, actor_telegram_id: int):
@@ -184,6 +185,75 @@ class WebCommandService:
             actor_user_id=actor.id,
             target_type="USER_TRADE",
             target_id=trade.id,
+            request_hash=request_hash,
+            response=response,
+        )
+        return response
+
+    async def confirm_analyst_recommendation(
+        self,
+        session: Session,
+        *,
+        actor_telegram_id: int,
+        idempotency_key: str,
+        creation_service,
+        recommendation: dict,
+    ) -> dict:
+        """Persist a reviewed analyst recommendation exactly once through Core."""
+        actor = UserRepository(session).find_by_telegram_id(actor_telegram_id)
+        if actor is None or getattr(getattr(actor, "user_type", None), "value", "") != "ANALYST":
+            raise WebCommandError("Analyst authorization required")
+
+        normalized_channels = sorted({int(channel_id) for channel_id in recommendation.get("target_channel_ids", set())})
+        fingerprint_payload = {
+            "asset": str(recommendation["asset"]).strip().upper(),
+            "side": str(recommendation["side"]).upper(),
+            "market": str(recommendation.get("market", "Futures")),
+            "order_type": str(recommendation["order_type"]).upper(),
+            "entry": str(recommendation["entry"]),
+            "stop_loss": str(recommendation["stop_loss"]),
+            "targets": [
+                {"price": str(target["price"]), "close_percent": target.get("close_percent", 0.0)}
+                for target in recommendation["targets"]
+            ],
+            "notes": recommendation.get("notes"),
+            "target_channel_ids": normalized_channels,
+        }
+        request_hash = self._fingerprint(
+            self.CREATE_ANALYST_RECOMMENDATION,
+            actor_telegram_id,
+            "RECOMMENDATION_CREATE",
+            0,
+            fingerprint_payload,
+        )
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+
+        rec, report = await creation_service.create_and_publish_recommendation_async(
+            user_id=str(actor_telegram_id),
+            db_session=session,
+            **recommendation,
+        )
+        if rec is None:
+            raise WebCommandError("Recommendation was not created")
+        response = {
+            "ok": True,
+            "entity_type": "RECOMMENDATION",
+            "public_ref": rec.public_ref,
+            "publication": {
+                "state": "QUEUED" if normalized_channels else "SAVED",
+                "queued_delivery_count": len(normalized_channels),
+            },
+            "replayed": False,
+        }
+        self._record(
+            session,
+            idempotency_key=idempotency_key,
+            command_type=self.CREATE_ANALYST_RECOMMENDATION,
+            actor_user_id=actor.id,
+            target_type="RECOMMENDATION",
+            target_id=rec.id,
             request_hash=request_hash,
             response=response,
         )
