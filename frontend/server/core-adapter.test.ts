@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReplayHistoricalSignalFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -112,6 +112,20 @@ describe("CapitalGuard Core adapter", () => {
     });
     expect(requestUrl).toBe("https://core.example/api/webapp/owner/review-batches");
     expect(JSON.parse(requestBody)).toMatchObject({ actor_telegram_id: 123456, batch_id: 9, approved: true, idempotency_key: "command-key-123456" });
+  });
+
+  it("runs reviewed historical Binance replay only through the server-side owner adapter", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    const fakeFetch = async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body);
+      return new Response(JSON.stringify({ ok: true, signal_id: 9, event_count: 3, replayed: false, commercial_enabled: false }), { status: 200 });
+    };
+    const result = await coreReplayHistoricalSignalFromBinance({ actorTelegramId: 123456, signalId: 9, start: "2026-01-01T00:00:00.000Z", end: "2026-01-01T01:00:00.000Z", interval: "1m", limit: 100, idempotencyKey: "binance-replay-key-0001" }, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
+    expect(requestUrl).toBe("https://core.example/api/webapp/owner/historical-signals/9/replay-binance");
+    expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, signal_id: 9, start: "2026-01-01T00:00:00.000Z", end: "2026-01-01T01:00:00.000Z", interval: "1m", limit: 100, idempotency_key: "binance-replay-key-0001" });
+    expect(result).toMatchObject({ signal_id: 9, event_count: 3, commercial_enabled: false });
   });
 
   it("sends analyst preview and confirmation only through the authenticated Core adapter", async () => {
