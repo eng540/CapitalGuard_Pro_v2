@@ -44,6 +44,20 @@ describe("CapitalGuard Core tRPC routes", () => {
     expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, idempotency_key: "close-command-key-0001" });
   });
 
+  it("derives the UserTrade partial-close actor from the Telegram session and forwards the percentage only", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body);
+      return new Response(JSON.stringify({ ok: true, entity_type: "USER_TRADE", public_ref: "USR-000012/T-0003", status: "ACTIVATED", closed_percent: 25, remaining_open_size_percent: 75, partial_close_price: 70123.45, replayed: false }), { status: 200 });
+    });
+    const caller = appRouter.createCaller({ ...coreContext(), user: { ...coreContext().user!, openId: "telegram:123456" } });
+    await expect(caller.capitalguard.trader.partialCloseUserTrade({ publicRef: "USR-000012/T-0003", closePercent: 25, idempotencyKey: "partial-command-key-001" })).resolves.toMatchObject({ status: "ACTIVATED", remaining_open_size_percent: 75 });
+    expect(requestUrl).toContain("/read-models/trader/123456/recommendations/USR-000012%2FT-0003/commands/partial-close");
+    expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, close_percent: 25, idempotency_key: "partial-command-key-001" });
+  });
+
   it("derives the UserTrade pending-cancel actor and forwards no market price", async () => {
     let requestUrl = "";
     let requestBody = "";

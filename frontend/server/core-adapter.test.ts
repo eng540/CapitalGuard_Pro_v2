@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -205,6 +205,23 @@ describe("CapitalGuard Core adapter", () => {
     expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, idempotency_key: "close-command-key-0001" });
     expect(authorization).toBe("Bearer private-service-key");
     expect(result).toMatchObject({ public_ref: "USR-000012/T-0003", status: "CLOSED" });
+  });
+
+  it("partially closes a UserTrade through an owned public reference, percentage, and server-side idempotency key", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    const fakeFetch = async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body);
+      return new Response(JSON.stringify({ ok: true, entity_type: "USER_TRADE", public_ref: "USR-000012/T-0003", status: "ACTIVATED", closed_percent: 25, remaining_open_size_percent: 75, partial_close_price: 70123.45, replayed: false }), { status: 200 });
+    };
+    const result = await corePartialCloseUserTrade({ actorTelegramId: 123456, publicRef: "USR-000012/T-0003", closePercent: 25, idempotencyKey: "partial-command-key-001" }, fakeFetch as typeof fetch, {
+      CAPITALGUARD_CORE_BASE_URL: "https://core.example",
+      CAPITALGUARD_CORE_API_KEY: "private-service-key",
+    });
+    expect(requestUrl).toBe("https://core.example/api/webapp/read-models/trader/123456/recommendations/USR-000012%2FT-0003/commands/partial-close");
+    expect(JSON.parse(requestBody)).toEqual({ actor_telegram_id: 123456, close_percent: 25, idempotency_key: "partial-command-key-001" });
+    expect(result).toMatchObject({ public_ref: "USR-000012/T-0003", closed_percent: 25, remaining_open_size_percent: 75 });
   });
 
   it("reports R5 as a server-controlled noncommercial hold", async () => {
