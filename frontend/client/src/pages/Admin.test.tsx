@@ -19,4 +19,5 @@ describe("Admin R4.1 Core read model", () => {
   beforeEach(() => { batchesState = { isLoading: false, isError: false, isSuccess: true, data: [], refetch: vi.fn() }; });
   it("renders an explicit empty owner queue without fallback data", () => { render(<Admin />); expect(screen.getByText("لا توجد دفعات تاريخية مؤهلة للمراجعة حالياً.")).toBeTruthy(); });
   it("renders an explicit Core error for the owner queue", () => { batchesState = { isLoading: false, isError: true, isSuccess: false, data: undefined, refetch: vi.fn() }; render(<Admin />); expect(screen.getByText("تعذر جلب طابور Core الحي. لم تُعرض أي بيانات بديلة؛ راجع اتصال API وصلاحية المالك ثم أعد المحاولة.")).toBeTruthy(); });
+  it("renders an explicit Core loading state for the owner queue", () => { batchesState = { isLoading: true, isError: false, isSuccess: false, data: undefined, refetch: vi.fn() }; render(<Admin />); expect(screen.getByText("جارٍ تحميل طابور Core…")).toBeTruthy(); });
 });
