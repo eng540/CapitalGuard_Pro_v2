@@ -186,6 +186,15 @@ def test_owner_command_surface_requires_the_core_service_key(client: TestClient,
     assert response.status_code == 401
 
 
+def test_historical_binance_replay_requires_the_core_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "test-service-key")
+    response = client.post("/api/webapp/owner/historical-signals/9/replay-binance", json={"actor_telegram_id": 123456, "signal_id": 9, "start": "2026-01-01T00:00:00Z", "end": "2026-01-01T01:00:00Z", "idempotency_key": "historical-replay-key-0001"})
+
+    assert response.status_code == 401
+
+
 def test_operations_feed_requires_the_core_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     from capitalguard.config import settings
 
