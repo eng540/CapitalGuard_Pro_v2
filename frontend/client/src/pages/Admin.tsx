@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import React from "react";
 import { KpiCard, PreviewNotice, SectionTitle, StatusPill } from "@/components/finance-ui";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
