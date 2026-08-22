@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { normalizeFinancialNumber, normalizeSymbol } from "@/lib/financial-input";
+import { analystValidationMessage } from "@/lib/analyst-validation-message";
 import { getAnalystTradeFlow, type AnalystMarket, type AnalystOrderType, type AnalystSide } from "@/lib/analyst-trade-flow";
 import { trpc } from "@/lib/trpc";
 
@@ -25,10 +26,8 @@ function ChoiceCard<T extends string>({ value, selected, title, detail, onSelect
 
 function ComposerError({ error }: { error: { message: string } | null | undefined }) {
   if (!error) return null;
-  const message = error.message.includes("Entry price") || error.message.includes("too_small")
-    ? "سعر الدخول مطلوب وموجب فقط لأمر Limit أو Stop Market. أمر Market يأخذ السعر الحي من Core تلقائياً."
-    : "تعذرت المعاينة. راجع الحقول المطلوبة أو حاول مجدداً؛ لم تُنشأ توصية.";
-  return <p className="rounded-2xl border border-rose-400/20 bg-rose-500/10 p-4 text-sm text-rose-100">{message}</p>;
+  const validation = analystValidationMessage(error.message);
+  return <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 p-4 text-sm text-rose-100"><p className="font-semibold">تحقق حقل: {validation.title}</p><p className="mt-1">{validation.message}</p></div>;
 }
 
 export default function AnalystWorkspace() {
