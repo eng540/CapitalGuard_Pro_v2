@@ -52,6 +52,10 @@ async def test_close_command_replays_same_key_without_second_market_price(db_ses
     assert replay == first
     assert lifecycle.close_user_trade_async.await_count == 1
     assert prices.get_cached_price.await_count == 1
+    assert set(first) == {"ok", "entity_type", "public_ref", "status", "close_price", "replayed"}
+    assert first["entity_type"] == "USER_TRADE"
+    assert first["public_ref"] == trade.public_ref
+    assert first["status"] == UserTradeStatus.CLOSED.value
 
 
 async def test_close_command_rejects_key_reuse_for_different_target(db_session):
