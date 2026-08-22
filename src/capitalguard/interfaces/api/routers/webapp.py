@@ -225,6 +225,26 @@ async def get_analyst_channels(initData: str):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
+@router.get("/recommendations/channels")
+async def get_analyst_recommendation_channels(actor_telegram_id: int, request: Request):
+    """Return only the authenticated analyst's active publication channels for Web selection."""
+    require_core_service_key(request.headers.get("authorization"))
+    if actor_telegram_id <= 0:
+        raise HTTPException(status_code=422, detail="Authenticated Web actor is required")
+    with session_scope() as session:
+        analyst = UserRepository(session).find_by_telegram_id(actor_telegram_id)
+        if not analyst or str(getattr(analyst.user_type, "value", analyst.user_type)).upper() != "ANALYST":
+            raise HTTPException(status_code=403, detail="Analyst role required")
+        channels = ChannelRepository(session).list_by_analyst(analyst.id, only_active=True)
+        return {
+            "ok": True,
+            "items": [
+                {"id": channel.telegram_channel_id, "title": channel.title or str(channel.telegram_channel_id), "username": channel.username}
+                for channel in channels
+            ],
+        }
+
 @router.post("/recommendations/preview")
 async def preview_recommendation_webapp(payload: WebAppSignal, request: Request):
     """Validate an analyst recommendation without persisting any financial record."""
