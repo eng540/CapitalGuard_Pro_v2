@@ -85,6 +85,29 @@ class HistoricalSignal(Base):
     analyst = relationship("User")
     events = relationship("HistoricalSignalEvent", back_populates="signal", cascade="all, delete-orphan")
     attributions = relationship("HistoricalSignalAttribution", back_populates="signal", cascade="all, delete-orphan")
+    market_evidence = relationship("HistoricalMarketEvidence", back_populates="signal", cascade="all, delete-orphan")
+
+
+class HistoricalMarketEvidence(Base):
+    __tablename__ = "historical_market_evidence"
+
+    id = Column(Integer, primary_key=True)
+    signal_id = Column(Integer, ForeignKey("historical_signals.id", ondelete="CASCADE"), nullable=False, index=True)
+    replay_run_ref = Column(String(48), nullable=False, unique=True, index=True)
+    provider = Column(String(80), nullable=False, index=True)
+    provider_endpoint = Column(String(255), nullable=True)
+    asset = Column(String(80), nullable=False, index=True)
+    market = Column(String(80), nullable=True, index=True)
+    interval = Column(String(16), nullable=False, server_default="1m")
+    range_start = Column(DateTime(timezone=True), nullable=False, index=True)
+    range_end = Column(DateTime(timezone=True), nullable=False, index=True)
+    candle_count = Column(Integer, nullable=False, server_default="0")
+    artifact_hash = Column(String(64), nullable=False, index=True)
+    artifact_key = Column(String(180), nullable=False, unique=True)
+    metadata_json = Column(JSON_TYPE, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    signal = relationship("HistoricalSignal", back_populates="market_evidence")
 
 
 class HistoricalSignalEvent(Base):

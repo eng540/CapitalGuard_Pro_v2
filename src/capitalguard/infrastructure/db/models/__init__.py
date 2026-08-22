@@ -33,6 +33,7 @@ from .recommendation_channel_ref import RecommendationChannelRef
 from .entitlement import EntitlementGrant, SubscriptionLedgerEntry
 from .historical_signal import (
     HistoricalImportBatch,
+    HistoricalMarketEvidence,
     HistoricalSignalEvidence,
     HistoricalSignal,
     HistoricalSignalEvent,
@@ -78,6 +79,7 @@ __all__ = [
     "EntitlementGrant",
     "SubscriptionLedgerEntry",
     "HistoricalImportBatch",
+    "HistoricalMarketEvidence",
     "HistoricalSignalEvidence",
     "HistoricalSignal",
     "HistoricalSignalEvent",

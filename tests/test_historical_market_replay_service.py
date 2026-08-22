@@ -2,12 +2,15 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
 from capitalguard.application.services.historical_market_replay_service import (
     HistoricalMarketReplayService,
+    MarketCandle,
     MarketObservation,
 )
 from capitalguard.application.services.historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
+from capitalguard.infrastructure.db.models import HistoricalMarketEvidence
 
 
 def _time(day: int, hour: int):
@@ -50,20 +53,26 @@ def test_replay_records_activation_targets_and_eligibility(db_session):
         status="VERIFIED",
         note="Test analyst attribution reviewed",
     )
-    events = HistoricalMarketReplayService().replay(
+    events = HistoricalMarketReplayService().replay_candles(
         db_session,
         signal_id=signal.id,
         replay_end=_time(1, 15),
-        observations=[
-            MarketObservation("BTCUSDT", "Futures", _time(1, 10), Decimal("100"), "historical-test"),
-            MarketObservation("BTCUSDT", "Futures", _time(1, 11), Decimal("110"), "historical-test"),
-            MarketObservation("BTCUSDT", "Futures", _time(1, 12), Decimal("120"), "historical-test"),
+        candles=[
+            MarketCandle("BTCUSDT", "Futures", _time(1, 10), Decimal("100"), Decimal("100"), Decimal("99"), Decimal("100"), Decimal("1"), "historical-test"),
+            MarketCandle("BTCUSDT", "Futures", _time(1, 11), Decimal("100"), Decimal("110"), Decimal("101"), Decimal("110"), Decimal("1"), "historical-test"),
+            MarketCandle("BTCUSDT", "Futures", _time(1, 12), Decimal("110"), Decimal("120"), Decimal("111"), Decimal("120"), Decimal("1"), "historical-test"),
         ],
     )
 
     assert [event.event_type for event in events] == ["ACTIVATED", "TP1", "TP2"]
     assert all(event.replay_status == "VERIFIED" for event in events)
     assert signal.eligible_for_ranking is True
+    artifact = db_session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.signal_id == signal.id)).scalar_one()
+    assert artifact.provider == "historical-test"
+    assert artifact.interval == "1m"
+    assert artifact.candle_count == 3
+    assert artifact.artifact_hash
+    assert events[0].event_data["market_evidence_ref"] == artifact.replay_run_ref
 
 
 def test_replay_rejects_observation_after_replay_end(db_session):
