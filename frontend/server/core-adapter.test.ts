@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreConfirmAnalystRecommendation, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -90,6 +90,28 @@ describe("CapitalGuard Core adapter", () => {
     });
     expect(requestUrl).toBe("https://core.example/api/webapp/owner/review-batches");
     expect(JSON.parse(requestBody)).toMatchObject({ actor_telegram_id: 123456, batch_id: 9, approved: true, idempotency_key: "command-key-123456" });
+  });
+
+  it("sends analyst preview and confirmation only through the authenticated Core adapter", async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown>; authorization: string }> = [];
+    const fakeFetch = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, body: JSON.parse(String(init?.body)), authorization: String((init?.headers as Record<string, string>).Authorization) });
+      const payload = url.endsWith("/preview")
+        ? { ok: true, preview: { schema_version: 1, mode: "PREVIEW", asset: "BTCUSDT", side: "LONG", market: "Futures", order_type: "LIMIT", entry: "100", stop_loss: "95", targets: [{ price: "110", close_percent: 100 }], live_price: null, publication: { state: "NOT_QUEUED", eligible_channel_count: 1 } } }
+        : { ok: true, entity_type: "RECOMMENDATION", public_ref: "AN-000001/R-0001", publication: { state: "QUEUED", queued_delivery_count: 1 }, replayed: false };
+      return new Response(JSON.stringify(payload), { status: 200 });
+    };
+    const env = { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" };
+    const input = { actorTelegramId: 123456, asset: "BTCUSDT", side: "LONG" as const, market: "Futures", orderType: "LIMIT" as const, entry: 100, stopLoss: 95, targetsRaw: "110", channelIds: [-10001] };
+    await expect(corePreviewAnalystRecommendation(input, fakeFetch as typeof fetch, env)).resolves.toMatchObject({ mode: "PREVIEW" });
+    await expect(coreConfirmAnalystRecommendation({ ...input, idempotencyKey: "analyst-confirm-key-0001" }, fakeFetch as typeof fetch, env)).resolves.toMatchObject({ public_ref: "AN-000001/R-0001" });
+    expect(calls.map(call => call.url)).toEqual(["https://core.example/api/webapp/recommendations/preview", "https://core.example/api/webapp/recommendations/confirm"]);
+    expect(calls.map(call => call.body)).toEqual([
+      expect.objectContaining({ actor_telegram_id: 123456, asset: "BTCUSDT", channel_ids: [-10001] }),
+      expect.objectContaining({ actor_telegram_id: 123456, idempotency_key: "analyst-confirm-key-0001" }),
+    ]);
+    expect(calls.every(call => call.authorization === "Bearer private-service-key")).toBe(true);
   });
 
   it("retrieves operations telemetry only through the server-side Core adapter", async () => {

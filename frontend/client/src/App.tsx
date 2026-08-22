@@ -13,6 +13,7 @@ import Historical from "./pages/Historical";
 import RiskStudio from "./pages/RiskStudio";
 import Admin from "./pages/Admin";
 import SmartDropzone from "./pages/SmartDropzone";
+import AnalystWorkspace from "./pages/AnalystWorkspace";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -22,6 +23,7 @@ function Router() {
       <Route path={"/app"} component={Workspace} />
       <Route path={"/recommendations"} component={Recommendations} />
       <Route path={"/analysts"} component={Analysts} />
+      <Route path={"/analyst/workspace"} component={AnalystWorkspace} />
       <Route path={"/historical"} component={Historical} />
       <Route path={"/risk"} component={RiskStudio} />
       <Route path={"/admin"} component={Admin} />

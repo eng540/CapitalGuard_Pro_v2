@@ -30,6 +30,7 @@ const menuItems = [
   { icon: LayoutDashboard, label: "نظرة عامة", path: "/app" },
   { icon: Target, label: "التوصيات", path: "/recommendations" },
   { icon: BarChart3, label: "اكتشاف المحللين", path: "/analysts" },
+  { icon: Target, label: "مساحة المحلل", path: "/analyst/workspace" },
   { icon: Bot, label: "Smart Dropzone", path: "/smart" },
   { icon: FileClock, label: "التاريخ وReplay", path: "/historical" },
   { icon: ShieldCheck, label: "استوديو المخاطر", path: "/risk" },

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTmaPortfolio, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
+import { coreConfirmAnalystRecommendation, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTmaPortfolio, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -11,6 +11,19 @@ const riskInput = z.object({
   entry: z.number().positive(),
   stop: z.number().positive(),
   side: z.enum(["long", "short"]),
+});
+
+const analystRecommendationInput = z.object({
+  asset: z.string().trim().min(3).max(24).regex(/^[A-Z0-9]+$/),
+  side: z.enum(["LONG", "SHORT"]),
+  market: z.string().trim().min(2).max(32),
+  orderType: z.enum(["LIMIT", "MARKET"]),
+  entry: z.number().positive(),
+  stopLoss: z.number().positive(),
+  targetsRaw: z.string().trim().min(1).max(1_000),
+  notes: z.string().trim().max(2_000).optional(),
+  leverage: z.string().trim().max(16).optional(),
+  channelIds: z.array(z.number().int()).max(20),
 });
 
 export function calculateRiskPlan(input: z.infer<typeof riskInput>) {
@@ -73,7 +86,11 @@ export const capitalguardRouter = router({
   }),
   riskPlan: protectedProcedure.input(riskInput).mutation(({ input }) => calculateRiskPlan(input)),
   trader: router({ portfolio: traderProcedure.query(() => coreOwnedSnapshot()) }),
-  analyst: router({ dashboard: analystProcedure.query(() => ({ profile: null, recommendations: [] })) }),
+  analyst: router({
+    dashboard: analystProcedure.query(() => ({ profile: null, recommendations: [] })),
+    previewRecommendation: analystProcedure.input(analystRecommendationInput).mutation(({ ctx, input }) => corePreviewAnalystRecommendation({ ...input, actorTelegramId: telegramIdFromWebSession(ctx.user.openId) })),
+    confirmRecommendation: analystProcedure.input(analystRecommendationInput.extend({ idempotencyKey: z.string().trim().min(16).max(128).optional() })).mutation(({ ctx, input }) => coreConfirmAnalystRecommendation({ ...input, actorTelegramId: telegramIdFromWebSession(ctx.user.openId), idempotencyKey: input.idempotencyKey ?? randomUUID() })),
+  }),
   admin: router({
     overview: adminProcedure.query(adminOverview),
     historicalReviewBatches: adminProcedure.query(async ({ ctx }) => {
