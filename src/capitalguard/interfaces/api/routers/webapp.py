@@ -912,6 +912,32 @@ async def partial_close_owned_user_trade(
     except WebCommandError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
+
+@router.post("/read-models/trader/{telegram_id}/recommendations/{public_ref:path}/commands/move-stop-to-breakeven")
+async def move_owned_user_trade_stop_to_breakeven(
+    telegram_id: int,
+    public_ref: str,
+    command: UserTradeCloseCommand,
+    request: Request,
+):
+    require_core_service_key(request.headers.get("authorization"))
+    if command.actor_telegram_id != telegram_id:
+        raise HTTPException(status_code=403, detail="Command actor does not match the trader scope")
+    lifecycle = (request.app.state.services or {}).get("lifecycle_service")
+    if not lifecycle:
+        raise HTTPException(status_code=503, detail="UserTrade command services are unavailable")
+    try:
+        with session_scope() as session:
+            return await WebCommandService().move_user_trade_stop_to_breakeven(
+                session,
+                actor_telegram_id=telegram_id,
+                public_ref=public_ref,
+                idempotency_key=command.idempotency_key,
+                lifecycle_service=lifecycle,
+            )
+    except WebCommandError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
 # ✅ RESTORED: Full Signal Analytics Endpoint
 @router.get("/signal/{rec_id}")
 async def get_signal_details(rec_id: int, request: Request):

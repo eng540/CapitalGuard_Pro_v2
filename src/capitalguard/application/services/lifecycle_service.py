@@ -1065,6 +1065,67 @@ class LifecycleService:
         await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
         return trade
 
+    async def move_user_trade_stop_to_breakeven_async(
+        self,
+        user_id: str,
+        trade_id: int,
+        db_session: Session,
+    ) -> Optional[UserTrade]:
+        """Move an owned activated UserTrade stop exactly to its stored entry.
+
+        This is deliberately not a generic stop-edit command. It never accepts a
+        browser-supplied price, and it refuses a move that would worsen an
+        already-protected stop.
+        """
+        user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not user:
+            raise ValueError("User not found.")
+        trade = db_session.query(UserTrade).filter(
+            UserTrade.id == trade_id,
+            UserTrade.user_id == user.id,
+        ).with_for_update().first()
+        if not trade:
+            raise ValueError(f"Trade #{trade_id} not found")
+        if trade.status != UserTradeStatusEnum.ACTIVATED:
+            raise ValueError("Only an activated UserTrade can move its stop to breakeven")
+
+        entry = _to_decimal(trade.entry)
+        current_stop = _to_decimal(trade.stop_loss)
+        side = str(trade.side).upper()
+        if entry <= Decimal("0") or current_stop <= Decimal("0"):
+            raise ValueError("UserTrade entry and stop loss must be positive")
+        if side == "LONG":
+            if current_stop >= entry:
+                raise ValueError("UserTrade stop loss is already at or beyond breakeven")
+        elif side == "SHORT":
+            if current_stop <= entry:
+                raise ValueError("UserTrade stop loss is already at or beyond breakeven")
+        else:
+            raise ValueError("UserTrade side is invalid")
+
+        trade.stop_loss = entry
+        previous_stop_loss = format(current_stop.normalize(), "f")
+        breakeven_stop_loss = format(entry.normalize(), "f")
+        db_session.add(UserTradeEvent(
+            user_trade_id=trade.id,
+            event_type="MANUAL_STOP_MOVED_TO_BREAKEVEN",
+            event_data={
+                "previous_stop_loss": previous_stop_loss,
+                "new_stop_loss": breakeven_stop_loss,
+                "reason": "BREAKEVEN",
+                "mode": "MANUAL",
+            },
+        ))
+        await self._notify_trade_event(
+            db_session,
+            trade,
+            "🛡️ Stop Loss Moved to Break-Even",
+            f"Asset: <b>#{trade.asset}</b> · Stop: <code>{_format_price(entry)}</code> · Entry protected.",
+            mode="MANUAL",
+        )
+        await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
+        return trade
+
     async def cancel_pending_user_trade_async(self, user_id: str, trade_id: int, db_session: Session) -> Optional[UserTrade]:
         """Cancel a watchlist or pending-activation record without a market exit or PnL."""
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))

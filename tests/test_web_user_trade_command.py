@@ -46,10 +46,15 @@ def _lifecycle(trade):
         trade.open_size_percent = Decimal(str(trade.open_size_percent)) - close_percent
         return trade
 
+    async def breakeven(_telegram_id, _trade_id, _session):
+        trade.stop_loss = trade.entry
+        return trade
+
     return SimpleNamespace(
         close_user_trade_async=AsyncMock(side_effect=close),
         cancel_pending_user_trade_async=AsyncMock(side_effect=cancel),
         partial_close_user_trade_async=AsyncMock(side_effect=partial),
+        move_user_trade_stop_to_breakeven_async=AsyncMock(side_effect=breakeven),
     )
 
 
@@ -259,3 +264,48 @@ async def test_partial_close_command_leaves_trade_unchanged_when_price_is_unavai
     assert trade.status == UserTradeStatus.ACTIVATED
     assert trade.open_size_percent == Decimal("100")
     assert lifecycle.partial_close_user_trade_async.await_count == 0
+
+
+async def test_breakeven_command_replays_without_a_second_lifecycle_change(db_session):
+    trade = _trade(db_session, 83012, "USR-083012/T-0001")
+    lifecycle = _lifecycle(trade)
+    service = WebCommandService()
+
+    first = await service.move_user_trade_stop_to_breakeven(
+        db_session, actor_telegram_id=83012, public_ref=trade.public_ref,
+        idempotency_key="breakeven-once-key", lifecycle_service=lifecycle,
+    )
+    replay = await service.move_user_trade_stop_to_breakeven(
+        db_session, actor_telegram_id=83012, public_ref=trade.public_ref,
+        idempotency_key="breakeven-once-key", lifecycle_service=lifecycle,
+    )
+
+    assert first == replay
+    assert first == {
+        "ok": True,
+        "entity_type": "USER_TRADE",
+        "public_ref": trade.public_ref,
+        "status": UserTradeStatus.ACTIVATED.value,
+        "stop_loss": 100.0,
+        "replayed": False,
+    }
+    assert lifecycle.move_user_trade_stop_to_breakeven_async.await_count == 1
+
+
+async def test_breakeven_command_rejects_pending_or_terminal_trade_before_lifecycle(db_session):
+    pending = _trade(db_session, 83013, "USR-083013/T-0001", UserTradeStatus.PENDING_ACTIVATION)
+    closed = _trade(db_session, 83013, "USR-083013/T-0002", UserTradeStatus.CLOSED)
+    lifecycle = _lifecycle(pending)
+    service = WebCommandService()
+
+    with pytest.raises(WebCommandError, match="Only an activated"):
+        await service.move_user_trade_stop_to_breakeven(
+            db_session, actor_telegram_id=83013, public_ref=pending.public_ref,
+            idempotency_key="breakeven-pending", lifecycle_service=lifecycle,
+        )
+    with pytest.raises(WebCommandError, match="already closed"):
+        await service.move_user_trade_stop_to_breakeven(
+            db_session, actor_telegram_id=83013, public_ref=closed.public_ref,
+            idempotency_key="breakeven-closed", lifecycle_service=lifecycle,
+        )
+    assert lifecycle.move_user_trade_stop_to_breakeven_async.await_count == 0

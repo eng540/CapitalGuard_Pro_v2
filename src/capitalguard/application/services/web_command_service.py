@@ -23,6 +23,7 @@ class WebCommandService:
     INGEST = "HISTORICAL_EVIDENCE_INGEST"
     CLOSE_USER_TRADE = "USER_TRADE_MANUAL_CLOSE"
     PARTIAL_CLOSE_USER_TRADE = "USER_TRADE_MANUAL_PARTIAL_CLOSE"
+    MOVE_USER_TRADE_STOP_TO_BREAKEVEN = "USER_TRADE_MOVE_STOP_TO_BREAKEVEN"
     CANCEL_USER_TRADE = "USER_TRADE_PENDING_CANCEL"
     CREATE_ANALYST_RECOMMENDATION = "ANALYST_RECOMMENDATION_CONFIRM"
 
@@ -325,6 +326,67 @@ class WebCommandService:
             session,
             idempotency_key=idempotency_key,
             command_type=self.PARTIAL_CLOSE_USER_TRADE,
+            actor_user_id=actor.id,
+            target_type="USER_TRADE",
+            target_id=trade.id,
+            request_hash=request_hash,
+            response=response,
+        )
+        return response
+
+    async def move_user_trade_stop_to_breakeven(
+        self,
+        session: Session,
+        *,
+        actor_telegram_id: int,
+        public_ref: str,
+        idempotency_key: str,
+        lifecycle_service,
+    ) -> dict:
+        """Move a caller-owned activated UserTrade stop to its Core-held entry only."""
+        actor = UserRepository(session).find_by_telegram_id(actor_telegram_id)
+        if actor is None:
+            raise WebCommandError("Trader identity does not exist in Core")
+        normalized_ref = public_ref.strip()
+        if not normalized_ref:
+            raise WebCommandError("UserTrade public reference is required")
+        trade = session.query(UserTrade).filter(
+            UserTrade.user_id == actor.id,
+            UserTrade.public_ref == normalized_ref,
+        ).with_for_update().first()
+        if trade is None:
+            raise WebCommandError("UserTrade was not found")
+        request_hash = self._fingerprint(
+            self.MOVE_USER_TRADE_STOP_TO_BREAKEVEN,
+            actor_telegram_id,
+            "USER_TRADE",
+            trade.id,
+            {"public_ref": normalized_ref},
+        )
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+        if trade.status == UserTradeStatusEnum.CLOSED:
+            raise WebCommandError("UserTrade is already closed")
+        if trade.status == UserTradeStatusEnum.CANCELLED:
+            raise WebCommandError("UserTrade is already cancelled")
+        if trade.status != UserTradeStatusEnum.ACTIVATED:
+            raise WebCommandError("Only an activated UserTrade can move its stop to breakeven")
+        updated_trade = await lifecycle_service.move_user_trade_stop_to_breakeven_async(
+            str(actor_telegram_id), trade.id, session,
+        )
+        response = {
+            "ok": True,
+            "entity_type": "USER_TRADE",
+            "public_ref": updated_trade.public_ref,
+            "status": getattr(updated_trade.status, "value", str(updated_trade.status)),
+            "stop_loss": float(updated_trade.stop_loss),
+            "replayed": False,
+        }
+        self._record(
+            session,
+            idempotency_key=idempotency_key,
+            command_type=self.MOVE_USER_TRADE_STOP_TO_BREAKEVEN,
             actor_user_id=actor.id,
             target_type="USER_TRADE",
             target_id=trade.id,

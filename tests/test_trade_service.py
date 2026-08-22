@@ -323,6 +323,53 @@ async def test_partial_close_user_trade_rejects_full_or_foreign_trade(trade_serv
     db_session.refresh(trade)
     assert trade.open_size_percent == Decimal("30")
 
+
+async def test_move_user_trade_stop_to_breakeven_records_auditable_event(trade_service_real_db: TradeService, db_session):
+    user = UserRepository(db_session).find_or_create(telegram_id=559, first_name="Breakeven")
+    trade = UserTrade(
+        user_id=user.id, asset="SOLUSDT", side="LONG", entry=Decimal("100"),
+        stop_loss=Decimal("95"), targets=[], status=UserTradeStatus.ACTIVATED,
+    )
+    db_session.add(trade)
+    db_session.commit()
+
+    result = await trade_service_real_db.move_user_trade_stop_to_breakeven_async(
+        user_id=str(user.telegram_user_id), trade_id=trade.id, db_session=db_session,
+    )
+
+    assert result.status == UserTradeStatus.ACTIVATED
+    assert result.stop_loss == Decimal("100")
+    event = db_session.query(UserTradeEvent).filter(
+        UserTradeEvent.user_trade_id == trade.id,
+        UserTradeEvent.event_type == "MANUAL_STOP_MOVED_TO_BREAKEVEN",
+    ).one()
+    assert event.event_data == {
+        "previous_stop_loss": "95", "new_stop_loss": "100",
+        "reason": "BREAKEVEN", "mode": "MANUAL",
+    }
+
+
+async def test_move_user_trade_stop_to_breakeven_rejects_regression_or_foreign_trade(trade_service_real_db: TradeService, db_session):
+    owner = UserRepository(db_session).find_or_create(telegram_id=560, first_name="BreakevenOwner")
+    other = UserRepository(db_session).find_or_create(telegram_id=561, first_name="BreakevenOther")
+    already_protected = UserTrade(
+        user_id=owner.id, asset="ETHUSDT", side="SHORT", entry=Decimal("100"),
+        stop_loss=Decimal("95"), targets=[], status=UserTradeStatus.ACTIVATED,
+    )
+    db_session.add(already_protected)
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="already at or beyond"):
+        await trade_service_real_db.move_user_trade_stop_to_breakeven_async(
+            user_id=str(owner.telegram_user_id), trade_id=already_protected.id, db_session=db_session,
+        )
+    with pytest.raises(ValueError, match="Trade #.* not found"):
+        await trade_service_real_db.move_user_trade_stop_to_breakeven_async(
+            user_id=str(other.telegram_user_id), trade_id=already_protected.id, db_session=db_session,
+        )
+    db_session.refresh(already_protected)
+    assert already_protected.stop_loss == Decimal("95")
+
 # --- Keep existing tests for Recommendation lifecycle (create, close, etc.) ---
 # Example: Ensure create_and_publish still works
 async def test_create_and_publish_recommendation_success(trade_service_real_db: TradeService, db_session, mock_notifier: MagicMock):
