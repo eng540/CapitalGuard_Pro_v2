@@ -88,6 +88,9 @@ jobs:
 
   web-contract-coverage:
     runs-on: ubuntu-latest
+    env:
+      CAPITALGUARD_CORE_BASE_URL: https://core.test.invalid
+      CAPITALGUARD_CORE_API_KEY: ci_test_core_service_key
     defaults:
       run:
         working-directory: frontend
