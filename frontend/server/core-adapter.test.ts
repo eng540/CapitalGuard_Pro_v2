@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreConfirmAnalystRecommendation, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, corePreviewAnalystRecommendation, coreReviewHistoricalBatch, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -112,6 +112,17 @@ describe("CapitalGuard Core adapter", () => {
       expect.objectContaining({ actor_telegram_id: 123456, idempotency_key: "analyst-confirm-key-0001" }),
     ]);
     expect(calls.every(call => call.authorization === "Bearer private-service-key")).toBe(true);
+  });
+
+  it("retrieves analyst asset suggestions from the Core catalog for the selected market", async () => {
+    let requestUrl = "";
+    const fakeFetch = async (input: string | URL | Request) => {
+      requestUrl = String(input);
+      return new Response(JSON.stringify({ ok: true, market: "Futures", items: [{ symbol: "BTCUSDT", venue: "binance", provider_symbol: "BTCUSDT", market: "Futures-USD-M" }] }), { status: 200 });
+    };
+    const assets = await coreGetAnalystAssets("Futures", fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
+    expect(requestUrl).toBe("https://core.example/api/webapp/recommendations/assets?market=Futures");
+    expect(assets).toEqual([{ symbol: "BTCUSDT", venue: "binance", provider_symbol: "BTCUSDT", market: "Futures-USD-M" }]);
   });
 
   it("retrieves operations telemetry only through the server-side Core adapter", async () => {
