@@ -25,6 +25,10 @@ class SymbolCatalog:
     def resolve(self, symbol: str) -> MarketSymbol | None:
         return self._symbols.get((symbol or "").strip().upper())
 
+    def entries(self) -> tuple[MarketSymbol, ...]:
+        """Expose explicit catalog metadata without querying or enabling a venue."""
+        return tuple(self._symbols.values())
+
     @classmethod
     def binance(cls, symbols: list[str], market: str = "spot") -> "SymbolCatalog":
         return cls(tuple(
