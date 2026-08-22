@@ -560,6 +560,7 @@ class TradeService:
     async def create_trade_from_recommendation(self, *args, **kwargs): return await self.creation_service.create_trade_from_recommendation(*args, **kwargs)
     
     async def close_user_trade_async(self, *args, **kwargs): return await self.lifecycle_service.close_user_trade_async(*args, **kwargs)
+    async def partial_close_user_trade_async(self, *args, **kwargs): return await self.lifecycle_service.partial_close_user_trade_async(*args, **kwargs)
     async def close_recommendation_async(self, *args, **kwargs): return await self.lifecycle_service.close_recommendation_async(*args, **kwargs)
     async def partial_close_async(self, *args, **kwargs): return await self.lifecycle_service.partial_close_async(*args, **kwargs)
     async def update_sl_for_user_async(self, *args, **kwargs): return await self.lifecycle_service.update_sl_for_user_async(*args, **kwargs)

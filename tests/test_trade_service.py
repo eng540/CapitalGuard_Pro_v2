@@ -9,7 +9,7 @@ from capitalguard.application.services.trade_service import TradeService
 from capitalguard.application.services.creation_service import CreationService
 from capitalguard.application.services.lifecycle_service import LifecycleService
 from capitalguard.infrastructure.db.repository import UserRepository, RecommendationRepository # Needed for setup/verification
-from capitalguard.infrastructure.db.models import User, UserTrade, UserTradeStatus, Recommendation, RecommendationStatusEnum # Import ORM models
+from capitalguard.infrastructure.db.models import User, UserTrade, UserTradeEvent, UserTradeStatus, Recommendation, RecommendationStatusEnum # Import ORM models
 from capitalguard.domain.entities import (
     UserType,
     Recommendation as RecommendationEntity,
@@ -266,7 +266,62 @@ async def test_close_already_closed_user_trade(trade_service_real_db: TradeServi
     assert result_orm.id == trade_id
     assert result_orm.status == UserTradeStatus.CLOSED
     assert result_orm.close_price == Decimal("105") # Original price
-    assert result_orm.pnl_percentage == Decimal("5.0") # Original PnL
+    assert result_orm.pnl_percentage == Decimal("5.0") # Original PnL calculation
+
+
+async def test_partial_close_user_trade_records_remaining_size_and_event(trade_service_real_db: TradeService, db_session):
+    user = UserRepository(db_session).find_or_create(telegram_id=556, first_name="Partial")
+    user.is_active = True
+    trade = UserTrade(
+        user_id=user.id, asset="BTCUSDT", side="LONG", entry=Decimal("100"),
+        stop_loss=Decimal("95"), targets=[{"price": "110", "close_percent": 100.0}],
+        status=UserTradeStatus.ACTIVATED, open_size_percent=Decimal("100"),
+    )
+    db_session.add(trade)
+    db_session.commit()
+
+    result = await trade_service_real_db.partial_close_user_trade_async(
+        user_id=str(user.telegram_user_id), trade_id=trade.id,
+        close_percent=Decimal("25"), exit_price=Decimal("110"), db_session=db_session,
+    )
+
+    assert result.status == UserTradeStatus.ACTIVATED
+    assert result.open_size_percent == Decimal("75")
+    assert result.close_price is None
+    assert result.pnl_percentage is None
+    event = db_session.query(UserTradeEvent).filter(
+        UserTradeEvent.user_trade_id == trade.id,
+        UserTradeEvent.event_type == "MANUAL_PARTIAL_CLOSE",
+    ).one()
+    assert event.event_data == {
+        "price": "110", "amount": 25.0, "pnl": 10.0,
+        "remaining_open_size_percent": 75.0, "mode": "MANUAL",
+    }
+
+
+async def test_partial_close_user_trade_rejects_full_or_foreign_trade(trade_service_real_db: TradeService, db_session):
+    owner = UserRepository(db_session).find_or_create(telegram_id=557, first_name="PartialOwner")
+    other = UserRepository(db_session).find_or_create(telegram_id=558, first_name="PartialOther")
+    trade = UserTrade(
+        user_id=owner.id, asset="ETHUSDT", side="LONG", entry=Decimal("100"),
+        stop_loss=Decimal("95"), targets=[], status=UserTradeStatus.ACTIVATED,
+        open_size_percent=Decimal("30"),
+    )
+    db_session.add(trade)
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="less than the remaining"):
+        await trade_service_real_db.partial_close_user_trade_async(
+            user_id=str(owner.telegram_user_id), trade_id=trade.id,
+            close_percent=Decimal("30"), exit_price=Decimal("110"), db_session=db_session,
+        )
+    with pytest.raises(ValueError, match="Trade #.* not found"):
+        await trade_service_real_db.partial_close_user_trade_async(
+            user_id=str(other.telegram_user_id), trade_id=trade.id,
+            close_percent=Decimal("10"), exit_price=Decimal("110"), db_session=db_session,
+        )
+    db_session.refresh(trade)
+    assert trade.open_size_percent == Decimal("30")
 
 # --- Keep existing tests for Recommendation lifecycle (create, close, etc.) ---
 # Example: Ensure create_and_publish still works

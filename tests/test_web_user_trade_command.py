@@ -42,9 +42,14 @@ def _lifecycle(trade):
         trade.pnl_percentage = None
         return trade
 
+    async def partial(_telegram_id, _trade_id, close_percent, _price, _session):
+        trade.open_size_percent = Decimal(str(trade.open_size_percent)) - close_percent
+        return trade
+
     return SimpleNamespace(
         close_user_trade_async=AsyncMock(side_effect=close),
         cancel_pending_user_trade_async=AsyncMock(side_effect=cancel),
+        partial_close_user_trade_async=AsyncMock(side_effect=partial),
     )
 
 
@@ -148,3 +153,109 @@ async def test_cancel_pending_command_replays_without_price_or_pnl(db_session):
     assert first["pnl_percentage"] is None
     assert replay == first
     assert lifecycle.cancel_pending_user_trade_async.await_count == 1
+
+
+async def test_partial_close_command_replays_without_second_price_lookup(db_session):
+    trade = _trade(db_session, 83008, "USR-083008/T-0001")
+    trade.open_size_percent = Decimal("100")
+    db_session.commit()
+    lifecycle = _lifecycle(trade)
+    prices = SimpleNamespace(get_cached_price=AsyncMock(return_value=110.0))
+    service = WebCommandService()
+
+    first = await service.partial_close_user_trade(
+        db_session,
+        actor_telegram_id=83008,
+        public_ref=trade.public_ref,
+        close_percent=Decimal("25"),
+        idempotency_key="partial-once",
+        lifecycle_service=lifecycle,
+        price_service=prices,
+    )
+    replay = await service.partial_close_user_trade(
+        db_session,
+        actor_telegram_id=83008,
+        public_ref=trade.public_ref,
+        close_percent=Decimal("25"),
+        idempotency_key="partial-once",
+        lifecycle_service=lifecycle,
+        price_service=prices,
+    )
+
+    assert first == replay
+    assert first == {
+        "ok": True,
+        "entity_type": "USER_TRADE",
+        "public_ref": trade.public_ref,
+        "status": UserTradeStatus.ACTIVATED.value,
+        "closed_percent": 25.0,
+        "remaining_open_size_percent": 75.0,
+        "partial_close_price": 110.0,
+        "replayed": False,
+    }
+    assert lifecycle.partial_close_user_trade_async.await_count == 1
+    assert prices.get_cached_price.await_count == 1
+
+
+async def test_partial_close_command_rejects_pending_or_full_amount_before_price_lookup(db_session):
+    pending = _trade(db_session, 83009, "USR-083009/T-0001", UserTradeStatus.WATCHLIST)
+    active = _trade(db_session, 83009, "USR-083009/T-0002")
+    active.open_size_percent = Decimal("40")
+    db_session.commit()
+    lifecycle = _lifecycle(active)
+    prices = SimpleNamespace(get_cached_price=AsyncMock(return_value=110.0))
+    service = WebCommandService()
+
+    with pytest.raises(WebCommandError, match="Only an activated"):
+        await service.partial_close_user_trade(
+            db_session, actor_telegram_id=83009, public_ref=pending.public_ref,
+            close_percent=Decimal("25"), idempotency_key="partial-pending",
+            lifecycle_service=lifecycle, price_service=prices,
+        )
+    with pytest.raises(WebCommandError, match="less than the remaining"):
+        await service.partial_close_user_trade(
+            db_session, actor_telegram_id=83009, public_ref=active.public_ref,
+            close_percent=Decimal("40"), idempotency_key="partial-full",
+            lifecycle_service=lifecycle, price_service=prices,
+        )
+    assert prices.get_cached_price.await_count == 0
+    assert lifecycle.partial_close_user_trade_async.await_count == 0
+
+
+async def test_partial_close_command_rejects_key_reuse_with_different_percentage(db_session):
+    trade = _trade(db_session, 83010, "USR-083010/T-0001")
+    trade.open_size_percent = Decimal("100")
+    db_session.commit()
+    lifecycle = _lifecycle(trade)
+    prices = SimpleNamespace(get_cached_price=AsyncMock(return_value=110.0))
+    service = WebCommandService()
+
+    await service.partial_close_user_trade(
+        db_session, actor_telegram_id=83010, public_ref=trade.public_ref,
+        close_percent=Decimal("20"), idempotency_key="partial-shared",
+        lifecycle_service=lifecycle, price_service=prices,
+    )
+    with pytest.raises(WebCommandError, match="Idempotency key cannot be reused"):
+        await service.partial_close_user_trade(
+            db_session, actor_telegram_id=83010, public_ref=trade.public_ref,
+            close_percent=Decimal("10"), idempotency_key="partial-shared",
+            lifecycle_service=lifecycle, price_service=prices,
+        )
+
+
+async def test_partial_close_command_leaves_trade_unchanged_when_price_is_unavailable(db_session):
+    trade = _trade(db_session, 83011, "USR-083011/T-0001")
+    trade.open_size_percent = Decimal("100")
+    db_session.commit()
+    lifecycle = _lifecycle(trade)
+    prices = SimpleNamespace(get_cached_price=AsyncMock(return_value=None))
+
+    with pytest.raises(WebCommandError, match="Trusted market price is unavailable"):
+        await WebCommandService().partial_close_user_trade(
+            db_session, actor_telegram_id=83011, public_ref=trade.public_ref,
+            close_percent=Decimal("10"), idempotency_key="partial-no-price",
+            lifecycle_service=lifecycle, price_service=prices,
+        )
+    assert trade.status == UserTradeStatus.ACTIVATED
+    assert trade.open_size_percent == Decimal("100")
+    assert lifecycle.partial_close_user_trade_async.await_count == 0

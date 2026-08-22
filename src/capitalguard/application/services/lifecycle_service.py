@@ -1001,6 +1001,70 @@ class LifecycleService:
         await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
         return trade
 
+    async def partial_close_user_trade_async(
+        self,
+        user_id: str,
+        trade_id: int,
+        close_percent: Decimal,
+        exit_price: Decimal,
+        db_session: Session,
+    ) -> Optional[UserTrade]:
+        """Close a strict portion of an activated, caller-owned UserTrade.
+
+        ``close_percent`` is expressed in percentage points of the original
+        position. It must be strictly smaller than the currently open portion;
+        a full close continues through the explicit full-close contract.
+        """
+        user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not user:
+            raise ValueError("User not found.")
+        trade = db_session.query(UserTrade).filter(
+            UserTrade.id == trade_id,
+            UserTrade.user_id == user.id,
+        ).with_for_update().first()
+        if not trade:
+            raise ValueError(f"Trade #{trade_id} not found")
+        if trade.status != UserTradeStatusEnum.ACTIVATED:
+            raise ValueError("Only an activated UserTrade can be partially closed at a market price")
+
+        requested_percent = _to_decimal(close_percent)
+        remaining_percent = _to_decimal(trade.open_size_percent)
+        if requested_percent <= Decimal("0"):
+            raise ValueError("Partial close percentage must be positive")
+        if remaining_percent <= Decimal("0"):
+            raise ValueError("UserTrade has no remaining open size")
+        if requested_percent >= remaining_percent:
+            raise ValueError("Partial close percentage must be less than the remaining open size; use full close")
+        if not exit_price.is_finite() or exit_price <= Decimal("0"):
+            raise ValueError("Trusted market price is unavailable")
+
+        pnl = _pct(trade.entry, exit_price, trade.side)
+        trade.open_size_percent = remaining_percent - requested_percent
+        db_session.add(UserTradeEvent(
+            user_trade_id=trade.id,
+            event_type="MANUAL_PARTIAL_CLOSE",
+            event_data={
+                "price": str(exit_price),
+                "amount": float(requested_percent),
+                "pnl": pnl,
+                "remaining_open_size_percent": float(trade.open_size_percent),
+                "mode": "MANUAL",
+            },
+        ))
+        await self._notify_trade_event(
+            db_session,
+            trade,
+            "💰 Trade Partially Closed Manually",
+            (
+                f"Asset: <b>#{trade.asset}</b> · Exit: <code>{_format_price(exit_price)}</code> "
+                f"· Closed: <b>{requested_percent:g}%</b> · Remaining: <b>{trade.open_size_percent:g}%</b> "
+                f"· PnL: <b>{pnl:.2f}%</b>"
+            ),
+            mode="MANUAL",
+        )
+        await self._commit_and_dispatch(db_session, trade, rebuild_alerts=False)
+        return trade
+
     async def cancel_pending_user_trade_async(self, user_id: str, trade_id: int, db_session: Session) -> Optional[UserTrade]:
         """Cancel a watchlist or pending-activation record without a market exit or PnL."""
         user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
