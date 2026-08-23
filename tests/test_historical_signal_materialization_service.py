@@ -67,3 +67,11 @@ def test_g5_blocks_unaccepted_and_incomplete_drafts_without_signal(db_session):
     with pytest.raises(HistoricalSignalMaterializationBlocked, match="PROVENANCE_INCOMPLETE"):
         HistoricalSignalMaterializationService().materialize(db_session, draft_id=draft.id)
     assert db_session.execute(select(HistoricalSignal)).scalars().all() == []
+
+
+def test_g5_uses_proven_source_timestamp_not_review_or_runtime_time(db_session):
+    draft, revision = accepted_g5_draft(db_session)
+    signal = HistoricalSignalMaterializationService().materialize(db_session, draft_id=draft.id)
+
+    assert signal.decision_timestamp.replace(tzinfo=revision.source_timestamp.tzinfo) == revision.source_timestamp
+    assert signal.decision_timestamp <= draft.reviewed_at
