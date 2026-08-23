@@ -40,7 +40,16 @@ class HistoricalAdjudicationService:
         candidates = session.execute(select(HistoricalFinancialCandidate).join(HistoricalFinancialCandidate.interpretation).where(HistoricalFinancialCandidate.interpretation.has(revision_id=revision_id))).scalars().all()
         fields = {item.field_type for item in candidates if item.review_status == "ACCEPTED" and item.status == "CANDIDATE"}
         relation = session.execute(select(HistoricalMessageRelationship).where(HistoricalMessageRelationship.source_message_id == revision.message_id, HistoricalMessageRelationship.target_message_id == related_revision.message_id, HistoricalMessageRelationship.review_status == "ACCEPTED")).scalar_one_or_none()
-        kind = "SL_UPDATE" if "STOP_LOSS" in fields else "TP_UPDATE" if "TARGET" in fields else "ENTRY_UPDATE" if "ENTRY" in fields else "UNKNOWN"
+        text = (revision.raw_text or "").upper()
+        kind = (
+            "CANCEL" if "CANCEL" in text or "إلغاء" in text else
+            "CLOSE" if "CLOSE" in text or "CLOSED" in text or "إغلاق" in text else
+            "TARGET_REACHED" if "TARGET REACHED" in text or "TP HIT" in text else
+            "PARTIAL_EXIT" if "PARTIAL" in text or "جزئي" in text else
+            "SL_UPDATE" if "STOP_LOSS" in fields else
+            "TP_UPDATE" if "TARGET" in fields else
+            "ENTRY_UPDATE" if "ENTRY" in fields else "UNKNOWN"
+        )
         status = "DRAFT" if relation and kind != "UNKNOWN" else "REVIEW_REQUIRED"
         draft = HistoricalRecommendationDraft(revision_id=revision_id, related_draft_id=related_draft_id, draft_kind=kind, confidence_score=Decimal("0.8000") if status == "DRAFT" else Decimal("0"), status=status, evidence_chain_json={"candidate_ids": [item.id for item in candidates], "relationship_id": relation.id if relation else None}, adjudication_reason=None if status == "DRAFT" else "RELATIONSHIP_OR_LIFECYCLE_EVIDENCE_INSUFFICIENT")
         session.add(draft); session.flush(); return draft
