@@ -54,3 +54,15 @@ def test_g3_extracts_percentage_currency_and_strategy_as_candidates(db_session):
     candidates = HistoricalFinancialCandidateService().extract(db_session, interpretation_id=interpretation.id)
     assert {item.field_type for item in candidates}.issuperset({"PERCENTAGE", "CURRENCY", "STRATEGY"})
     assert all(item.review_status == "PENDING" for item in candidates)
+
+
+def test_g3_extracts_entry_zone_as_candidate(db_session):
+    _, receipt = make_reviewed_batch(db_session)
+    receipt.raw_text = "#BTCUSDT LONG Entry Zone 62000-62500"
+    receipt.content_hash = "j" * 64
+    revision = HistoricalMessageFoundationService().record_receipt(db_session, receipt=receipt)
+    interpretation = HistoricalContentUnderstandingService().interpret_revision(db_session, revision_id=revision.id)
+    candidates = HistoricalFinancialCandidateService().extract(db_session, interpretation_id=interpretation.id)
+    zone = next(item for item in candidates if item.field_type == "ENTRY_ZONE")
+    assert zone.value_json == {"lower": "62000", "upper": "62500"}
+    assert zone.status == "CANDIDATE" and zone.review_status == "PENDING"
