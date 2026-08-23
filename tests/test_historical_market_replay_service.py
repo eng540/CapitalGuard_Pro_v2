@@ -13,7 +13,7 @@ from capitalguard.application.services.historical_market_replay_service import (
 from capitalguard.application.services.historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.config import settings
-from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalMarketEvidence, WebCommandAudit
+from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalMarketEvidence, HistoricalSignalEvent, WebCommandAudit
 from capitalguard.infrastructure.db.repository import UserRepository
 from capitalguard.infrastructure.market.binance_client import HistoricalMarketProviderError
 
@@ -74,6 +74,52 @@ def test_reviewed_batch_replay_rejects_binance_unavailability_without_success_au
         WebCommandService().replay_reviewed_batch_from_binance(db_session, actor_telegram_id=telegram_id, batch_id=batch.id, idempotency_key="batch-replay-provider-failure")
 
     assert db_session.execute(select(WebCommandAudit).where(WebCommandAudit.idempotency_key == "batch-replay-provider-failure")).scalar_one_or_none() is None
+
+
+def test_reviewed_batch_replay_rolls_back_partial_events_artifacts_and_audit_when_binance_fails(db_session, monkeypatch):
+    telegram_id = 97003
+    idempotency_key = "batch-replay-atomic-provider-failure"
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_CHAT_ID", str(telegram_id))
+    batch, signal = _reviewed_batch_signal(db_session, telegram_id)
+
+    def partially_write_then_fail(_self, session, **_kwargs):
+        session.add(HistoricalSignalEvent(
+            signal_id=signal.id,
+            event_type="ACTIVATED",
+            event_timestamp=signal.decision_timestamp,
+            market_as_of=signal.decision_timestamp,
+            data_source="BINANCE_FUTURES",
+            replay_status="VERIFIED",
+            event_confidence=Decimal("1"),
+            dedup_key="test:partial-binance-event",
+        ))
+        session.add(HistoricalMarketEvidence(
+            signal_id=signal.id,
+            replay_run_ref="HMKT-TEST-PARTIAL",
+            provider="BINANCE_FUTURES",
+            asset="BTCUSDT",
+            interval="1m",
+            range_start=signal.decision_timestamp,
+            range_end=signal.decision_timestamp,
+            candle_count=1,
+            artifact_hash="f" * 64,
+            artifact_key="test:partial-binance-artifact",
+        ))
+        session.flush()
+        raise HistoricalMarketProviderError("provider unavailable")
+
+    monkeypatch.setattr(HistoricalMarketReplayService, "replay_from_binance", partially_write_then_fail)
+    with pytest.raises(WebCommandError, match="source unavailable"):
+        try:
+            WebCommandService().replay_reviewed_batch_from_binance(db_session, actor_telegram_id=telegram_id, batch_id=batch.id, idempotency_key=idempotency_key)
+        except WebCommandError:
+            # Same transaction boundary used by the WebApp endpoint's session_scope.
+            db_session.rollback()
+            raise
+
+    assert db_session.execute(select(HistoricalSignalEvent).where(HistoricalSignalEvent.dedup_key == "test:partial-binance-event")).scalar_one_or_none() is None
+    assert db_session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.artifact_key == "test:partial-binance-artifact")).scalar_one_or_none() is None
+    assert db_session.execute(select(WebCommandAudit).where(WebCommandAudit.idempotency_key == idempotency_key)).scalar_one_or_none() is None
 
 
 def test_replay_records_activation_targets_and_eligibility(db_session):

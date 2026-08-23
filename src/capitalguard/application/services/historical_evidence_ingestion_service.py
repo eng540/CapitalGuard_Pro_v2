@@ -5,9 +5,12 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch
+from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch, HistoricalSignal
+from capitalguard.infrastructure.db.repository import ParsingRepository
 
+from .historical_parser_service import HistoricalParserService
 from .historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
+from .parsing_service import ParsingService
 
 
 class HistoricalEvidenceIngestionError(ValueError):
@@ -17,8 +20,60 @@ class HistoricalEvidenceIngestionError(ValueError):
 class HistoricalEvidenceIngestionService:
     """Moves reviewed forwarding receipts into immutable evidence, never live entities."""
 
-    def __init__(self, signal_service: HistoricalSignalService | None = None):
+    def __init__(self, signal_service: HistoricalSignalService | None = None, parser: HistoricalParserService | None = None):
         self.signal_service = signal_service or HistoricalSignalService()
+        self.parser = parser or HistoricalParserService(ParsingService(ParsingRepository))
+
+    def _ensure_replayable_signal(self, session: Session, *, receipt: HistoricalForwardReceipt) -> bool:
+        """Create exactly one historical-only signal when immutable evidence parses fully."""
+        if not receipt.evidence_id or receipt.source_message_timestamp is None:
+            return False
+        existing = session.execute(
+            select(HistoricalSignal).where(HistoricalSignal.evidence_id == receipt.evidence_id)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return False
+        parsed = self.parser.parse(receipt.raw_text or "")
+        receipt.metadata_json = {
+            **(receipt.metadata_json or {}),
+            "historical_parse_status": parsed.parse_status,
+            "historical_parse_errors": list(parsed.errors),
+        }
+        if parsed.parse_status != "PARSED":
+            return False
+        data = parsed.data or {}
+        self.signal_service.create_signal(
+            session,
+            evidence_id=receipt.evidence_id,
+            decision_timestamp=receipt.source_message_timestamp,
+            channel_catalog_id=receipt.batch.channel_catalog_id if receipt.batch else None,
+            asset=data.get("asset"),
+            side=data.get("side"),
+            entry=data.get("entry"),
+            stop_loss=data.get("stop_loss"),
+            targets=data.get("targets"),
+            market=data.get("market"),
+        )
+        return True
+
+    def ensure_replayable_signals(self, session: Session, *, batch_id: int) -> int:
+        """Backfill only historical parsed signals for an already-ingested batch.
+
+        This is idempotent and repairs batches created before signal construction
+        was made part of Evidence Ingestion; it never creates live entities.
+        """
+        batch = session.get(HistoricalImportBatch, batch_id)
+        if batch is None or batch.status != "EVIDENCE_INGESTED":
+            raise HistoricalEvidenceIngestionError("Batch requires evidence ingestion before replay preparation")
+        receipts = session.execute(
+            select(HistoricalForwardReceipt).where(
+                HistoricalForwardReceipt.batch_id == batch_id,
+                HistoricalForwardReceipt.validation_status == "INGESTED",
+            )
+        ).scalars().all()
+        created = sum(1 for receipt in receipts if self._ensure_replayable_signal(session, receipt=receipt))
+        session.flush()
+        return created
 
     def ingest_reviewed_batch(
         self,
@@ -32,10 +87,9 @@ class HistoricalEvidenceIngestionService:
             raise HistoricalEvidenceIngestionError("Historical batch does not exist")
         owner_review = (batch.metadata_json or {}).get("owner_review") or {}
         if batch.status == "EVIDENCE_INGESTED":
-            existing_receipts = session.execute(
-                select(HistoricalForwardReceipt).where(HistoricalForwardReceipt.batch_id == batch_id)
-            ).scalars().all()
-            return 0, sum(1 for receipt in existing_receipts if receipt.validation_status == "INGESTED")
+            created = self.ensure_replayable_signals(session, batch_id=batch_id)
+            existing_receipts = session.execute(select(HistoricalForwardReceipt).where(HistoricalForwardReceipt.batch_id == batch_id)).scalars().all()
+            return created, sum(1 for receipt in existing_receipts if receipt.validation_status == "INGESTED")
         if batch.status != "VALIDATED" or owner_review.get("approved") is not True:
             raise HistoricalEvidenceIngestionError("Batch requires approved owner review before evidence ingestion")
         if not reviewer_user_id:
@@ -84,6 +138,7 @@ class HistoricalEvidenceIngestionService:
                 "evidence_id": evidence.id,
                 "ingested_by_user_id": reviewer_user_id,
             }
+            self._ensure_replayable_signal(session, receipt=receipt)
             ingested += 1
         batch.metadata_json = {
             **(batch.metadata_json or {}),
