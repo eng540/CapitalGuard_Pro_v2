@@ -1,5 +1,6 @@
 import pytest
 from sqlalchemy import select
+from decimal import Decimal
 
 from capitalguard.application.services.historical_adjudication_service import HistoricalAdjudicationService
 from capitalguard.application.services.historical_content_understanding_service import HistoricalContentUnderstandingService
@@ -83,3 +84,30 @@ def test_g5_fails_closed_for_lifecycle_draft_until_parent_link_is_materialized(d
     with pytest.raises(HistoricalSignalMaterializationBlocked, match="LIFECYCLE_PARENT_MATERIALIZATION_REQUIRED"):
         HistoricalSignalMaterializationService().materialize(db_session, draft_id=draft.id)
     assert db_session.execute(select(HistoricalSignal)).scalars().all() == []
+
+
+def test_g5_materializes_accepted_lifecycle_against_parent_signal_only(db_session):
+    parent, revision = accepted_g5_draft(db_session)
+    service = HistoricalSignalMaterializationService()
+    parent_signal = service.materialize(db_session, draft_id=parent.id)
+    child = HistoricalRecommendationDraft(
+        revision_id=revision.id,
+        related_draft_id=parent.id,
+        draft_kind="SL_UPDATE",
+        status="ACCEPTED",
+        confidence_score=Decimal("0.8000"),
+        evidence_chain_json={"parent_draft_id": parent.id},
+    )
+    db_session.add(child)
+    db_session.flush()
+
+    linked_signal = service.materialize(db_session, draft_id=child.id)
+    bridges = db_session.execute(
+        select(HistoricalSignalMaterialization).order_by(HistoricalSignalMaterialization.id)
+    ).scalars().all()
+
+    assert linked_signal.id == parent_signal.id
+    assert len(db_session.execute(select(HistoricalSignal)).scalars().all()) == 1
+    assert len(bridges) == 2
+    assert bridges[1].related_materialization_id == bridges[0].id
+    assert bridges[1].signal_id == bridges[0].signal_id

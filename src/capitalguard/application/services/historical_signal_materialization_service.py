@@ -58,8 +58,15 @@ class HistoricalSignalMaterializationService:
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:DRAFT_NOT_FOUND")
         if draft.status != "ACCEPTED":
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:DRAFT_NOT_ACCEPTED")
+        parent_materialization = None
         if draft.related_draft_id is not None:
-            raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:LIFECYCLE_PARENT_MATERIALIZATION_REQUIRED")
+            parent_materialization = session.execute(
+                select(HistoricalSignalMaterialization).where(
+                    HistoricalSignalMaterialization.draft_id == draft.related_draft_id
+                )
+            ).scalar_one_or_none()
+            if parent_materialization is None:
+                raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:LIFECYCLE_PARENT_MATERIALIZATION_REQUIRED")
         revision = session.get(HistoricalMessageRevision, draft.revision_id)
         if revision is None or revision.message_id is None or revision.evidence_id is None:
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:PROVENANCE_INCOMPLETE")
@@ -83,7 +90,7 @@ class HistoricalSignalMaterializationService:
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:REQUIRED_CANDIDATE_MISSING")
 
         values = {field: self._candidate_value(items[0]) for field, items in by_field.items()}
-        signal = HistoricalSignal(
+        signal = parent_materialization.signal if parent_materialization else HistoricalSignal(
             public_ref=f"HIST-G5-{draft.id:012d}",
             evidence_id=revision.evidence_id,
             asset=str(values["ASSET"]) if "ASSET" in values else None,
@@ -98,11 +105,13 @@ class HistoricalSignalMaterializationService:
             confidence_score=Decimal(str(draft.confidence_score or 0)),
             eligible_for_ranking=False,
         )
-        session.add(signal)
-        session.flush()
+        if parent_materialization is None:
+            session.add(signal)
+            session.flush()
         materialization = HistoricalSignalMaterialization(
             draft_id=draft.id,
             signal_id=signal.id,
+            related_materialization_id=parent_materialization.id if parent_materialization else None,
             revision_id=revision.id,
             evidence_id=revision.evidence_id,
             materialization_kind=draft.draft_kind,
