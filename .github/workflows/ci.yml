@@ -85,6 +85,8 @@ jobs:
         env:
           RECONCILIATION_EXPECTED_DB: capitalguard_fresh
         run: PYTHONPATH=src python scripts/reconcile_existing_data.py
+      - name: Verify G5 materialization PostgreSQL concurrency
+        run: PYTHONPATH=src python scripts/verify_g5_postgres_concurrency.py
 
   web-contract-coverage:
     runs-on: ubuntu-latest
