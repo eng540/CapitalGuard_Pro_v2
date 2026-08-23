@@ -40,6 +40,7 @@ from .historical_signal import (
     HistoricalSignalAttribution,
 )
 from .historical_forwarding import HistoricalForwardReceipt
+from .historical_message import HistoricalCanonicalMessage, HistoricalMessageRevision, HistoricalMessageRelationship
 from .historical_shadow_channel import HistoricalShadowChannel
 from .temporal_forward_decision import TemporalForwardDecision
 from .web_command_audit import WebCommandAudit
@@ -85,6 +86,9 @@ __all__ = [
     "HistoricalSignalEvent",
     "HistoricalSignalAttribution",
     "HistoricalForwardReceipt",
+    "HistoricalCanonicalMessage",
+    "HistoricalMessageRevision",
+    "HistoricalMessageRelationship",
     "HistoricalShadowChannel",
     "TemporalForwardDecision",
     "WebCommandAudit",
