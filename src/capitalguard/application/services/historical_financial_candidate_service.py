@@ -37,6 +37,15 @@ class HistoricalFinancialCandidateService:
         condition = re.search(r"(?:IF|WHEN|إذا|عند)\s+([^\n.]+)", normalized, re.I)
         if condition:
             candidates.append(("CONDITION", condition.group(1).strip(), condition.group(0), Decimal("0.6500")))
+        for match in re.finditer(r"\b([0-9٠-٩][0-9٠-٩,.]*)\s*%", normalized):
+            value = self.parser._parse_one_number(match.group(1))
+            if value is not None and value <= 100:
+                candidates.append(("PERCENTAGE", {"value": str(value)}, match.group(0), Decimal("0.8000")))
+        for match in re.finditer(r"\b(USD|USDT|EUR|BTC|ETH)\b", normalized, re.I):
+            candidates.append(("CURRENCY", match.group(1).upper(), match.group(0), Decimal("0.7500")))
+        strategy = re.search(r"(?:STRATEGY|SETUP|استراتيجية)\s*[:=\-]?\s*([^\n.]+)", normalized, re.I)
+        if strategy:
+            candidates.append(("STRATEGY", strategy.group(1).strip(), strategy.group(0), Decimal("0.6000")))
         saved=[]
         conflicting = {field for field in {candidate[0] for candidate in candidates} if len({str(candidate[1]) for candidate in candidates if candidate[0] == field}) > 1 and field in {"ENTRY", "STOP_LOSS", "LEVERAGE", "RISK_PERCENT"}}
         for field, value, span, confidence in candidates:
