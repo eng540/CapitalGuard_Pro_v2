@@ -310,7 +310,29 @@ pytest: 288 passed, 1 skipped
 
 ## 30. Commit / PR Numbers
 
-تُملأ هذه الخانة بعد commit وفتح PR على GitHub. لا يُعتبر هذا التقرير تصريحًا ببدء G7.
+تم تنفيذ التغييرات في:
+
+```text
+Commit: 44323c132fa7f8d767f9bddaac4b7d3570e173c9
+Branch: feature/g6-historical-replay-integration
+Pull Request: #337
+URL: https://github.com/eng540/CapitalGuard_Pro_v2/pull/337
+Base: main
+```
+
+حالة PR عند إعداد التقرير: `OPEN`. لا يُعتبر هذا التقرير تصريحًا ببدء G7.
+
+## 31. CI Results After PR
+
+اكتملت فحوصات GitHub Actions للـpush والـpull request بنجاح:
+
+| Check | Push | Pull Request |
+|---|---|---|
+| `CI/test` | PASS | PASS |
+| `CI/fresh-postgres-migration` | PASS | PASS |
+| `CI/web-contract-coverage` | PASS | PASS |
+
+المحصلة: `6 successful, 0 failing, 0 cancelled, 0 skipped`.
 
 ---
 
