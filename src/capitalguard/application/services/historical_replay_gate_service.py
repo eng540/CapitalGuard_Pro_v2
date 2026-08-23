@@ -15,10 +15,27 @@ class ReplayGateReport:
 
 
 class HistoricalReplayGateService:
-    """Prevents unverified outcomes from silently entering replay-derived reputation."""
+    """Provides replay readiness without allowing G6 to decide reputation."""
 
     def __init__(self, reconciliation_service: HistoricalOutcomeReconciliationService | None = None):
         self.reconciliation_service = reconciliation_service or HistoricalOutcomeReconciliationService()
+
+    def assess_replay(
+        self,
+        *,
+        parse_status: str,
+        timeline_events: Iterable[TimelineEventInput] = (),
+        market_data_available: bool = False,
+    ) -> ReplayGateReport:
+        """G6-only readiness report; reputation eligibility is always false here."""
+        if parse_status != "PARSED":
+            return ReplayGateReport("BLOCKED_PARSE_INCOMPLETE", False, False, ("PARSER_NOT_COMPLETE",))
+        timeline = self.reconciliation_service.reconcile_timeline(timeline_events)
+        if not timeline.is_consistent:
+            return ReplayGateReport("OWNER_REVIEW_REQUIRED", False, False, tuple(timeline.errors + ["TIMELINE_RECONCILIATION_FAILED"]))
+        if not market_data_available:
+            return ReplayGateReport("REPLAY_PENDING", False, False, ("HISTORICAL_OHLCV_MISSING",))
+        return ReplayGateReport("REPLAY_READY", True, False, ("PARSER_COMPLETE", "TIMELINE_CONSISTENT", "HISTORICAL_OHLCV_AVAILABLE"))
 
     def assess(
         self,

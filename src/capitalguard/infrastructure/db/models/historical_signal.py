@@ -93,6 +93,7 @@ class HistoricalMarketEvidence(Base):
 
     id = Column(Integer, primary_key=True)
     signal_id = Column(Integer, ForeignKey("historical_signals.id", ondelete="CASCADE"), nullable=False, index=True)
+    replay_run_id = Column(Integer, ForeignKey("historical_replay_runs.id", ondelete="RESTRICT"), nullable=True, index=True)
     replay_run_ref = Column(String(48), nullable=False, unique=True, index=True)
     provider = Column(String(80), nullable=False, index=True)
     provider_endpoint = Column(String(255), nullable=True)
@@ -108,6 +109,7 @@ class HistoricalMarketEvidence(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     signal = relationship("HistoricalSignal", back_populates="market_evidence")
+    replay_run = relationship("HistoricalReplayRun", back_populates="market_evidence")
 
 
 class HistoricalSignalEvent(Base):
@@ -115,6 +117,7 @@ class HistoricalSignalEvent(Base):
 
     id = Column(Integer, primary_key=True)
     signal_id = Column(Integer, ForeignKey("historical_signals.id", ondelete="CASCADE"), nullable=False, index=True)
+    replay_run_id = Column(Integer, ForeignKey("historical_replay_runs.id", ondelete="RESTRICT"), nullable=True, index=True)
     source_evidence_id = Column(Integer, ForeignKey("historical_signal_evidence.id", ondelete="SET NULL"), nullable=True, index=True)
     event_type = Column(String(40), nullable=False, index=True)
     event_timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
@@ -128,6 +131,7 @@ class HistoricalSignalEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     signal = relationship("HistoricalSignal", back_populates="events")
+    replay_run = relationship("HistoricalReplayRun", back_populates="events")
     source_evidence = relationship("HistoricalSignalEvidence")
 
 

@@ -112,6 +112,12 @@ class HistoricalBatchBinanceReplayCommand(BaseModel):
     idempotency_key: str
 
 
+class HistoricalG6ReplayCommand(BaseModel):
+    actor_telegram_id: int
+    signal_id: int
+    idempotency_key: str
+
+
 class HistoricalDraftMaterializationCommand(BaseModel):
     actor_telegram_id: int
     draft_id: int
@@ -779,6 +785,26 @@ async def execute_reviewed_batch_binance_replay(batch_id: int, command: Historic
             )
     except WebCommandError as exc:
         raise HTTPException(status_code=409, detail="Historical batch replay rejected") from exc
+
+
+@router.post("/owner/historical-signals/{signal_id}/g6-replay")
+async def execute_g6_historical_replay(signal_id: int, command: HistoricalG6ReplayCommand, request: Request):
+    """Run G6 from a G5 materialized HistoricalSignal with Core-derived bounds."""
+    require_core_service_key(request.headers.get("authorization"))
+    if signal_id != command.signal_id or len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Invalid G6 historical replay command")
+    try:
+        with session_scope() as session:
+            return WebCommandService().replay_g6_historical_signal(
+                session,
+                actor_telegram_id=command.actor_telegram_id,
+                signal_id=signal_id,
+                idempotency_key=command.idempotency_key,
+            )
+    except WebCommandError as exc:
+        detail = str(exc)
+        status_code = 409 if detail.startswith("G6 replay") else 403
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
 @router.get("/owner/operations-feed")
