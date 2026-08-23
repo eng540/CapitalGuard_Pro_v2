@@ -31,6 +31,12 @@ class HistoricalFinancialCandidateService:
         for index, match in enumerate(re.finditer(r"(?:TP|TARGET)\s*\d*\s*[:=\-]?\s*([0-9٠-٩][0-9٠-٩,.]*[KkMmBb]?)", normalized, re.I), start=1):
             value = self.parser._parse_one_number(match.group(1))
             if value is not None: candidates.append(("TARGET", {"index": index, "value": str(value)}, match.group(0), Decimal("0.8500")))
+        timeframe = re.search(r"\b(1m|5m|15m|30m|1h|4h|1d|1w)\b", normalized, re.I)
+        if timeframe:
+            candidates.append(("TIMEFRAME", timeframe.group(1).upper(), timeframe.group(0), Decimal("0.8000")))
+        condition = re.search(r"(?:IF|WHEN|إذا|عند)\s+([^\n.]+)", normalized, re.I)
+        if condition:
+            candidates.append(("CONDITION", condition.group(1).strip(), condition.group(0), Decimal("0.6500")))
         saved=[]
         conflicting = {field for field in {candidate[0] for candidate in candidates} if len({str(candidate[1]) for candidate in candidates if candidate[0] == field}) > 1 and field in {"ENTRY", "STOP_LOSS", "LEVERAGE", "RISK_PERCENT"}}
         for field, value, span, confidence in candidates:

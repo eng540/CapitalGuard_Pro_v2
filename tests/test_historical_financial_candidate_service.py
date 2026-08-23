@@ -32,3 +32,14 @@ def test_g3_marks_multiple_entry_candidates_for_review(db_session):
     entries = [item for item in candidates if item.field_type == "ENTRY"]
     assert len(entries) == 2
     assert {(item.status, item.review_status) for item in entries} == {("CONFLICT", "REVIEW_REQUIRED")}
+
+
+def test_g3_extracts_timeframe_and_condition_as_candidates(db_session):
+    _, receipt = make_reviewed_batch(db_session)
+    receipt.raw_text = "#BTCUSDT LONG 4h If BTC closes above 62000"
+    receipt.content_hash = "h" * 64
+    revision = HistoricalMessageFoundationService().record_receipt(db_session, receipt=receipt)
+    interpretation = HistoricalContentUnderstandingService().interpret_revision(db_session, revision_id=revision.id)
+    candidates = HistoricalFinancialCandidateService().extract(db_session, interpretation_id=interpretation.id)
+    assert {item.field_type for item in candidates}.issuperset({"ASSET", "DIRECTION", "TIMEFRAME", "CONDITION"})
+    assert all(item.status == "CANDIDATE" for item in candidates)
