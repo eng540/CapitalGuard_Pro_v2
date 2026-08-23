@@ -23,6 +23,22 @@
 | System interpretation | `HistoricalParseResult` and copied signal fields | partial; provenance/version/spans are incomplete |
 | Market fact | `HistoricalMarketEvidence` and replay-created `HistoricalSignalEvent` | present for successful bounded replay |
 
+## Assurance Matrix — current evidence, not a readiness claim
+
+| Stage | Status | Code evidence | What is still required before assurance |
+|---|---|---|---|
+| Message intake | **Proven** for authorized historical forwards | `direct_historical_forward_handler()` → `FrictionlessIngestionService.stage_direct_message()` | live/external import parity inventory |
+| Immutable source evidence | **Proven** for reviewed forwards | `HistoricalForwardReceipt` → `HistoricalSignalEvidence` through `ingest_reviewed_batch()` | revision lineage aggregate |
+| Parsing / classification | **Partial** | `HistoricalParserService.parse()` produces PARSED/PARTIAL/UNPARSED and financial fields | content taxonomy, source spans, parser/ruleset versions, non-recommendation classification |
+| Relationship | **Not implemented** | source reply ID is stored only | explicit relationship graph, confidence and review rules |
+| Historical signal / events | **Partial** | fully parsed evidence creates `HistoricalSignal`; replay writes verified events | source-authored update lifecycle and message evidence links |
+| Replay | **Proven** for bounded complete signals | `HistoricalMarketReplayService.replay_from_binance()` / `replay_candles()` | real-provider UAT that produces a documented outcome, not merely command success |
+| Market evidence | **Proven** when candles exist | `HistoricalMarketEvidence` artifact hash/range/provider | provider availability and retained artifact verification in UAT |
+| Outcome / metrics | **Partial** | activation/SL/TP replay events and historical quality/reputation services | MFE, MAE, R, duration and a verified aggregate metric contract |
+| Admin / end-user traceability | **Partial** | owner batch/replay surface exists | drill-down source → interpretation → relationship → signal → market evidence → outcome |
+
+> **Release rule:** CapitalGuard must not claim that the complete Channel Intelligence & Evidence Reconstruction Pipeline is guaranteed, complete, or production-ready until a documented E2E test proves the entire row sequence above from a real or approved historical message set to an auditable rendered outcome. `UNKNOWN`, `PARTIAL`, `CONFLICT`, provider failure, and review-required are correct fail-closed results—not evidence of readiness.
+
 ## Gap register
 
 | Capability | Existing component | Gap | G0 action |
