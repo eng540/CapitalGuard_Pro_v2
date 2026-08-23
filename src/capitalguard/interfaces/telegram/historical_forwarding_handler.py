@@ -5,8 +5,8 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 from capitalguard.application.services.frictionless_ingestion_service import (
     FrictionlessIngestionService,
@@ -28,6 +28,7 @@ from capitalguard.application.services.historical_forwarding_service import (
     ForwardedMessageInput,
     HistoricalForwardingService,
 )
+from capitalguard.application.services.historical_signal_service import HistoricalSignalValidationError
 from capitalguard.infrastructure.db.models import (
     ChannelCatalog,
     HistoricalForwardReceipt,
@@ -47,6 +48,7 @@ BATCH_KEY = "historical_forward_batch_id"
 AUTO_BATCH_KEY = "frictionless_auto_batch_id"
 AUTO_JOB_PREFIX = "frictionless-historical"
 AUTO_DEBOUNCE_SECONDS = 3
+PREVIEW_ACTION_PREFIX = "historical-preview"
 
 
 def historical_forwarding_active(context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -97,6 +99,17 @@ def _forwarded_input(message, *, user_id: int, details: dict) -> ForwardedMessag
 
 def _auto_job_name(chat_id: int, batch_id: int) -> str:
     return f"{AUTO_JOB_PREFIX}:{chat_id}:{batch_id}"
+
+
+def _preview_action_markup(batch_id: int, allowed_actions: set[str]) -> InlineKeyboardMarkup | None:
+    buttons = []
+    if "IMPORT_HISTORICAL" in allowed_actions:
+        buttons.append(InlineKeyboardButton("استيراد للمراجعة", callback_data=f"{PREVIEW_ACTION_PREFIX}:{batch_id}:IMPORT_HISTORICAL"))
+    if "TRACK_ONLY" in allowed_actions:
+        buttons.append(InlineKeyboardButton("تتبع فقط", callback_data=f"{PREVIEW_ACTION_PREFIX}:{batch_id}:TRACK_ONLY"))
+    if "DISMISS" in allowed_actions:
+        buttons.append(InlineKeyboardButton("تجاهل الدفعة", callback_data=f"{PREVIEW_ACTION_PREFIX}:{batch_id}:DISMISS"))
+    return InlineKeyboardMarkup([buttons]) if buttons else None
 
 
 async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
@@ -179,6 +192,8 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             metadata["auto_batch_finalized"] = True
             if batch:
                 batch.metadata_json = metadata
+            allowed_action_sets = [set(str(item).upper() for item in actions) for actions in review_actions_by_mode.values()]
+            allowed_actions = set.intersection(*allowed_action_sets) if allowed_action_sets else {"DISMISS"}
             source_label = metadata.get("source_title") or metadata.get("source_chat_id") or "Unknown source"
             claim_status = metadata.get("claim_status", "UNVERIFIED")
             text = (
@@ -201,11 +216,10 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 f"financial_warnings={', '.join(financial_outcome_warnings.keys()) or 'N/A'}\n"
                 f"replay_gate={dict(replay_gate_status) or 'NOT_ASSESSED'}\n"
                 f"replay_gate_reasons={', '.join(replay_gate_reasons.keys()) or 'N/A'}\n"
-                f"review_actions={review_actions_by_mode or 'N/A'}\n"
                 f"replay_status={'REPLAY_PENDING' if parsed_count else 'NOT_PARSED'}\n"
-                "No live recommendation or trader position was created."
+                "اختر قراراً واضحاً أدناه. لا ينشئ أي خيار توصية أو مركزاً حياً."
             )
-        await context.bot.send_message(chat_id=chat_id, text=text)
+        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=_preview_action_markup(batch_id, allowed_actions))
     except Exception:
         log.exception("Automatic historical batch finalization failed for batch %s", batch_id)
         await context.bot.send_message(
@@ -303,6 +317,34 @@ async def direct_historical_forward_handler(
         f"receipt_id={receipt.id}\n"
         "More forwarded messages received within the next 3 seconds will be grouped automatically."
     )
+
+
+@uow_transaction
+@require_active_user
+async def historical_preview_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, db_session, db_user, **kwargs):
+    query = update.callback_query
+    if not query or not db_user or not query.data:
+        return
+    try:
+        _, batch_text, action = query.data.split(":", 2)
+        batch_id = int(batch_text)
+        batch = HistoricalForwardingService().apply_preview_decision(
+            db_session,
+            batch_id=batch_id,
+            requested_by_user_id=db_user.id,
+            action=action,
+        )
+        await query.answer()
+        messages = {
+            "IMPORT_HISTORICAL": "✅ تم إرسال الدفعة إلى طابور Owner Review. لا يزال Evidence وReplay خطوتين منفصلتين.",
+            "TRACK_ONLY": "✅ تم حفظ الدفعة كتتبع فقط. لم تُنشأ توصية أو صفقة أو عملية Replay.",
+            "DISMISS": "✅ تم تجاهل الدفعة. لم تُنشأ توصية أو صفقة أو دليل تاريخي.",
+        }
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(f"{messages[action]}\nbatch_id={batch.id}\nstatus={batch.status}")
+    except (ValueError, HistoricalSignalValidationError) as exc:
+        await query.answer("تعذر تطبيق القرار", show_alert=True)
+        await query.message.reply_text(f"⚠️ Historical decision rejected: {exc}")
 
 
 def _allowed(db_user, chat_id: int) -> bool:
@@ -711,3 +753,4 @@ def register_historical_forwarding_handlers(application: Application):
     application.add_handler(CommandHandler("historical_forward_status", historical_forward_status_cmd), group=0)
     application.add_handler(CommandHandler("historical_forward_review", historical_forward_review_cmd), group=0)
     application.add_handler(CommandHandler("historical_forward_ingest", historical_forward_ingest_cmd), group=0)
+    application.add_handler(CallbackQueryHandler(historical_preview_decision_callback, pattern=rf"^{PREVIEW_ACTION_PREFIX}:"), group=0)

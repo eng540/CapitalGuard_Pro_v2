@@ -199,6 +199,8 @@ class HistoricalForwardingService:
         batch = session.get(HistoricalImportBatch, batch_id)
         if batch is None:
             raise HistoricalSignalValidationError("Forwarding batch does not exist")
+        if batch.status not in {"STAGING", "DRY_RUN"}:
+            raise HistoricalSignalValidationError("Only a staged batch can be previewed")
         receipts = list(session.execute(
             select(HistoricalForwardReceipt).where(HistoricalForwardReceipt.batch_id == batch_id)
         ).scalars().all())
@@ -232,6 +234,7 @@ class HistoricalForwardingService:
         batch.total_records = len(receipts)
         batch.accepted_records = len(accepted)
         batch.rejected_records = len(rejected)
+        batch.status = "DRY_RUN"
         batch.metadata_json = {**(batch.metadata_json or {}), "intake_status": "DRY_RUN"}
         session.flush()
         return ForwardingPreview(
@@ -243,6 +246,54 @@ class HistoricalForwardingService:
             hidden_origin_records=len(hidden),
             manifest=manifest,
         )
+
+    def apply_preview_decision(
+        self,
+        session: Session,
+        *,
+        batch_id: int,
+        requested_by_user_id: int,
+        action: str,
+    ) -> HistoricalImportBatch:
+        """Apply a human decision to a dry-run historical batch without creating live entities."""
+        batch = session.get(HistoricalImportBatch, batch_id)
+        if batch is None:
+            raise HistoricalSignalValidationError("Forwarding batch does not exist")
+        if batch.status != "DRY_RUN":
+            raise HistoricalSignalValidationError("Historical preview is no longer awaiting a decision")
+        if not requested_by_user_id or batch.requested_by_user_id != requested_by_user_id:
+            raise HistoricalSignalValidationError("Only the batch requester can choose a historical preview action")
+
+        normalized = action.strip().upper()
+        metadata = dict(batch.metadata_json or {})
+        review_modes = ((metadata.get("parser_preview") or {}).get("review_actions_by_mode") or {}).values()
+        allowed_sets = [set(str(item).upper() for item in actions) for actions in review_modes]
+        allowed_actions = set.intersection(*allowed_sets) if allowed_sets else {"DISMISS"}
+        if normalized not in allowed_actions:
+            raise HistoricalSignalValidationError("Historical preview action is not allowed for this batch")
+
+        now = datetime.now(timezone.utc).isoformat()
+        metadata["preview_decision"] = {
+            "action": normalized,
+            "requested_by_user_id": requested_by_user_id,
+            "decided_at": now,
+        }
+        if normalized == "IMPORT_HISTORICAL":
+            if batch.accepted_records <= 0:
+                raise HistoricalSignalValidationError("Cannot request historical review without accepted records")
+            batch.status = "REVIEW_REQUIRED"
+            metadata["intake_status"] = "REVIEW_REQUIRED"
+        elif normalized == "TRACK_ONLY":
+            batch.status = "TRACK_ONLY"
+            metadata["intake_status"] = "TRACK_ONLY"
+        elif normalized == "DISMISS":
+            batch.status = "DISMISSED"
+            metadata["intake_status"] = "DISMISSED"
+        else:
+            raise HistoricalSignalValidationError("Unsupported historical preview action")
+        batch.metadata_json = metadata
+        session.flush()
+        return batch
 
     def validate_batch(self, session: Session, *, batch_id: int, owner_note: str) -> HistoricalImportBatch:
         preview = self.preview_batch(session, batch_id=batch_id)
