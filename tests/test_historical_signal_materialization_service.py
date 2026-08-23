@@ -75,3 +75,11 @@ def test_g5_uses_proven_source_timestamp_not_review_or_runtime_time(db_session):
 
     assert signal.decision_timestamp.replace(tzinfo=revision.source_timestamp.tzinfo) == revision.source_timestamp
     assert signal.decision_timestamp <= draft.reviewed_at
+
+
+def test_g5_fails_closed_for_lifecycle_draft_until_parent_link_is_materialized(db_session):
+    draft, _ = accepted_g5_draft(db_session)
+    draft.related_draft_id = draft.id
+    with pytest.raises(HistoricalSignalMaterializationBlocked, match="LIFECYCLE_PARENT_MATERIALIZATION_REQUIRED"):
+        HistoricalSignalMaterializationService().materialize(db_session, draft_id=draft.id)
+    assert db_session.execute(select(HistoricalSignal)).scalars().all() == []
