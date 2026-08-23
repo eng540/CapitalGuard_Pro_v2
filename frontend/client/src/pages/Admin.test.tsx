@@ -22,13 +22,15 @@ describe("Admin R4.1 Core read model", () => {
   it("does not expose manual signal or UTC replay inputs", () => { render(<Admin />); expect(screen.queryByText(/signal_id|UTC|رقم السجل التاريخي/i)).toBeNull(); });
   it("shows Replay only for an EVIDENCE_INGESTED batch and sends only its batchId", () => {
     batchesState = { isLoading: false, isError: false, isSuccess: true, refetch: vi.fn(), data: [
-      { id: 7, ref: "HB-000007", status: "VALIDATED", source_kind: "FORWARD", total_records: 1, accepted_records: 1, rejected_records: 0 },
+      { id: 7, ref: "HB-000007", status: "EVIDENCE_INGESTED", source_kind: "FORWARD", total_records: 1, accepted_records: 1, rejected_records: 0 },
       { id: 9, ref: "HB-000009", status: "EVIDENCE_INGESTED", source_kind: "FORWARD", total_records: 1, accepted_records: 1, rejected_records: 0 },
     ] };
     render(<Admin />);
-    expect(screen.getAllByRole("button", { name: "تشغيل Replay Binance" })).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "تشغيل Replay Binance" }));
+    expect(screen.getAllByRole("button", { name: "تشغيل Replay Binance" })).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole("button", { name: "تشغيل Replay Binance" })[1]);
     expect(replayMutation).toHaveBeenCalledWith({ batchId: 9 });
+    expect(screen.getAllByRole("button", { name: "جارٍ تشغيل replay…" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "تشغيل Replay Binance" })).toHaveLength(1);
   });
   it("renders an explicit Core error for the owner queue", () => { batchesState = { isLoading: false, isError: true, isSuccess: false, data: undefined, refetch: vi.fn() }; render(<Admin />); expect(screen.getByText("تعذر جلب طابور Core الحي. لم تُعرض أي بيانات بديلة؛ راجع اتصال API وصلاحية المالك ثم أعد المحاولة.")).toBeTruthy(); });
   it("renders an explicit Core loading state for the owner queue", () => { batchesState = { isLoading: true, isError: false, isSuccess: false, data: undefined, refetch: vi.fn() }; render(<Admin />); expect(screen.getByText("جارٍ تحميل طابور Core…")).toBeTruthy(); });
