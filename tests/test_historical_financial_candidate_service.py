@@ -20,3 +20,15 @@ def test_g3_extracts_provenanced_candidates_without_financial_side_effects(db_se
     assert db_session.execute(select(HistoricalSignal)).scalars().all() == []
     assert db_session.execute(select(Recommendation)).scalars().all() == []
     assert db_session.execute(select(UserTrade)).scalars().all() == []
+
+
+def test_g3_marks_multiple_entry_candidates_for_review(db_session):
+    _, receipt = make_reviewed_batch(db_session)
+    receipt.raw_text = "#BTCUSDT LONG Entry 62000 Entry 62500 SL 60000"
+    receipt.content_hash = "g" * 64
+    revision = HistoricalMessageFoundationService().record_receipt(db_session, receipt=receipt)
+    interpretation = HistoricalContentUnderstandingService().interpret_revision(db_session, revision_id=revision.id)
+    candidates = HistoricalFinancialCandidateService().extract(db_session, interpretation_id=interpretation.id)
+    entries = [item for item in candidates if item.field_type == "ENTRY"]
+    assert len(entries) == 2
+    assert {(item.status, item.review_status) for item in entries} == {("CONFLICT", "REVIEW_REQUIRED")}
