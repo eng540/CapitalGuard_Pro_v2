@@ -32,3 +32,31 @@ def test_g4_lifecycle_fails_closed_without_accepted_message_relationship(db_sess
         candidate.review_status = "ACCEPTED"
     draft = service.adjudicate_lifecycle(db_session, revision_id=update_revision.id, related_draft_id=parent.id)
     assert draft.status == "REVIEW_REQUIRED"
+
+
+def test_g4_e2e_reviewed_update_remains_historical_draft(db_session):
+    from datetime import datetime, timezone
+    from decimal import Decimal
+    from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalMessageRelationship, HistoricalSignal, Recommendation, UserTrade
+    from sqlalchemy import select
+    batch, receipt = make_reviewed_batch(db_session)
+    receipt.raw_text = "#BTCUSDT LONG Entry 62000"
+    receipt.content_hash = "o" * 64
+    foundation = HistoricalMessageFoundationService()
+    first = foundation.record_receipt(db_session, receipt=receipt)
+    first_i = HistoricalContentUnderstandingService().interpret_revision(db_session, revision_id=first.id)
+    for candidate in HistoricalFinancialCandidateService().extract(db_session, interpretation_id=first_i.id): candidate.review_status = "ACCEPTED"
+    service = HistoricalAdjudicationService(); parent = service.adjudicate(db_session, revision_id=first.id)
+    service.review(db_session, draft_id=parent.id, reviewer_user_id=99, decision="ACCEPTED")
+    update_receipt = HistoricalForwardReceipt(batch_id=batch.id, forwarding_user_id=99, receiver_chat_id=500, receiver_message_id=998, source_chat_id=-100123, source_message_id=998, source_message_revision=0, source_origin_type="CHANNEL", source_message_timestamp=datetime(2026, 8, 20, 12, 30, tzinfo=timezone.utc), source_reply_to_message_id=receipt.source_message_id, raw_text="Move SL to 61000", content_hash="p" * 64, validation_status="STAGED", metadata_json={})
+    db_session.add(update_receipt); db_session.flush()
+    update = foundation.record_receipt(db_session, receipt=update_receipt)
+    relation = foundation.propose_relationship(db_session, source_message_id=update.message_id, target_message_id=first.message_id, relationship_type="POSSIBLE_UPDATE_OF", confidence=Decimal("0.90"), evidence={"reply_to": True})
+    foundation.review_relationship(db_session, relationship_id=relation.id, reviewer_user_id=99, status="ACCEPTED", note="reply evidence")
+    update_i = HistoricalContentUnderstandingService().interpret_revision(db_session, revision_id=update.id)
+    for candidate in HistoricalFinancialCandidateService().extract(db_session, interpretation_id=update_i.id): candidate.review_status = "ACCEPTED"
+    draft = service.adjudicate_lifecycle(db_session, revision_id=update.id, related_draft_id=parent.id)
+    assert draft.status == "DRAFT" and draft.draft_kind == "SL_UPDATE", draft.adjudication_reason
+    assert db_session.execute(select(HistoricalSignal)).scalars().all() == []
+    assert db_session.execute(select(Recommendation)).scalars().all() == []
+    assert db_session.execute(select(UserTrade)).scalars().all() == []

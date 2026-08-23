@@ -23,7 +23,7 @@ class HistoricalFinancialCandidateService:
                 candidates.append((field, value, value, Decimal("0.9000")))
         labels = {"ENTRY": r"ENTRY|IN|دخول", "STOP_LOSS": r"STOP(?:\s*LOSS)?|SL|وقف", "LEVERAGE": r"LEVERAGE|رافعة", "RISK_PERCENT": r"RISK|مخاطرة"}
         for field, labels_pattern in labels.items():
-            matches = list(re.finditer(rf"(?:{labels_pattern})\s*[:=\-]?\s*([0-9٠-٩][0-9٠-٩,.]*[KkMmBb]?%?x?)", normalized, re.I))
+            matches = list(re.finditer(rf"(?:{labels_pattern})\s*(?::|=|\-|TO|إلى)?\s*([0-9٠-٩][0-9٠-٩,.]*[KkMmBb]?%?x?)", normalized, re.I))
             for match in matches:
                 span = match.group(0); token = match.group(1).rstrip("%xX")
                 value = self.parser._parse_one_number(token)
