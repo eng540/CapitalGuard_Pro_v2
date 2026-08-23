@@ -204,6 +204,19 @@ def test_reviewed_batch_binance_replay_requires_the_core_service_key(client: Tes
     assert response.status_code == 401
 
 
+def test_reviewed_batch_binance_replay_rejects_path_body_mismatch(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "test-service-key")
+    response = client.post(
+        "/api/webapp/owner/review-batches/9/replay-binance",
+        headers={"Authorization": "Bearer test-service-key"},
+        json={"actor_telegram_id": 123456, "batch_id": 10, "idempotency_key": "historical-batch-replay-key-0001"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_operations_feed_requires_the_core_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     from capitalguard.config import settings
 
