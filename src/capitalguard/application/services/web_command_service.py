@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from capitalguard.application.services.historical_evidence_ingestion_service import HistoricalEvidenceIngestionService
 from capitalguard.application.services.historical_owner_review_service import HistoricalOwnerReviewService
 from capitalguard.config import settings
-from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalSignal, UserTrade, UserTradeStatusEnum, WebCommandAudit
+from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalSignal, HistoricalSignalEvidence, UserTrade, UserTradeStatusEnum, WebCommandAudit
 from capitalguard.infrastructure.db.repository import UserRepository
 
 
@@ -143,6 +143,43 @@ class WebCommandService:
             raise WebCommandError("Historical Binance replay failed without changes") from exc
         response = {"ok": True, "signal_id": signal_id, "event_count": len(events), "replayed": False, "commercial_enabled": False}
         self._record(session, idempotency_key=idempotency_key, command_type=self.REPLAY_BINANCE, actor_user_id=owner.id, target_type="HISTORICAL_SIGNAL", target_id=signal_id, request_hash=request_hash, response=response)
+        return response
+
+    def replay_reviewed_batch_from_binance(self, session: Session, *, actor_telegram_id: int, batch_id: int, idempotency_key: str) -> dict:
+        """Replay all reviewed signals in one ingested batch using Core-derived windows.
+
+        The Web client never supplies a signal identifier or timestamps.  A one-day
+        1m window ending at the source decision timestamp is deliberately bounded
+        by the provider's 1500-candle limit and is recorded in command audit.
+        """
+        owner = self._require_owner(session, actor_telegram_id)
+        batch = session.get(HistoricalImportBatch, batch_id)
+        if batch is None or batch.status != "EVIDENCE_INGESTED":
+            raise WebCommandError("Historical replay requires evidence ingested from this batch")
+        signals = session.execute(
+            select(HistoricalSignal)
+            .join(HistoricalSignalEvidence, HistoricalSignal.evidence_id == HistoricalSignalEvidence.id)
+            .where(HistoricalSignalEvidence.batch_id == batch_id)
+            .order_by(HistoricalSignal.id)
+        ).scalars().all()
+        if not signals:
+            raise WebCommandError("Historical batch has no reviewed signals ready for replay")
+        request_hash = self._fingerprint(self.REPLAY_BINANCE, actor_telegram_id, "HISTORICAL_IMPORT_BATCH", batch_id, {"window": "SOURCE_TIMESTAMP_MINUS_24H", "interval": "1m", "limit": 1500})
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+        from capitalguard.application.services.historical_market_replay_service import HistoricalMarketReplayService
+        from capitalguard.infrastructure.market.binance_client import HistoricalMarketProviderError
+        total_events = 0
+        for signal in signals:
+            end = signal.decision_timestamp
+            start = end - timedelta(hours=24)
+            try:
+                total_events += len(HistoricalMarketReplayService().replay_from_binance(session, signal_id=signal.id, start=start, replay_end=end, interval="1m", limit=1500))
+            except HistoricalMarketProviderError as exc:
+                raise WebCommandError("Historical Binance source unavailable; replay made no changes") from exc
+        response = {"ok": True, "batch_id": batch_id, "signal_ids": [signal.id for signal in signals], "event_count": total_events, "window": "SOURCE_TIMESTAMP_MINUS_24H", "commercial_enabled": False, "replayed": True}
+        self._record(session, idempotency_key=idempotency_key, command_type=self.REPLAY_BINANCE, actor_user_id=owner.id, target_type="HISTORICAL_IMPORT_BATCH", target_id=batch_id, request_hash=request_hash, response=response)
         return response
 
     async def close_user_trade(

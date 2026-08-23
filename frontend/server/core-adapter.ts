@@ -68,6 +68,8 @@ export type CoreHistoricalTrustQuality = { status: "HOLD" | "EVIDENCE_READY"; qu
 export type CoreHistoricalTrustReadiness = { status: "HOLD" | "READY_FOR_OWNER_RELEASE"; reasons: string[]; public_ranking_enabled: false; commercial_enabled: false; snapshot: { sample_size: number; replay_coverage_percent: number; reviewed_attributions: number; pending_attributions: number } };
 export type CoreHistoricalBinanceReplayInput = { actorTelegramId: number; signalId: number; start: string; end: string; interval: "1m" | "5m" | "15m" | "1h"; limit: number; idempotencyKey: string };
 export type CoreHistoricalBinanceReplayConfirmation = { ok: true; signal_id: number; event_count: number; replayed: boolean; commercial_enabled: false };
+export type CoreHistoricalBatchBinanceReplayInput = { actorTelegramId: number; batchId: number; idempotencyKey: string };
+export type CoreHistoricalBatchBinanceReplayConfirmation = { ok: true; batch_id: number; signal_ids: number[]; event_count: number; window: string; replayed: boolean; commercial_enabled: false };
 export type CoreAnalystRecommendationInput = { actorTelegramId: number; asset: string; side: "LONG" | "SHORT"; market: string; orderType: "LIMIT" | "MARKET" | "STOP_MARKET"; entry: number; stopLoss: number; targetsRaw: string; notes?: string; leverage?: string; channelIds: number[] };
 export type CoreAnalystRecommendationPreview = { schema_version: number; mode: "PREVIEW"; asset: string; side: "LONG" | "SHORT"; market: string; order_type: "LIMIT" | "MARKET" | "STOP_MARKET"; entry: string; stop_loss: string; targets: Array<{ price: string; close_percent: number }>; live_price: string | null; publication: { state: "NOT_QUEUED"; eligible_channel_count: number } };
 export type CoreAnalystRecommendationConfirmation = { ok: true; entity_type: "RECOMMENDATION"; public_ref: string; publication: { state: "SAVED" | "QUEUED"; queued_delivery_count: number }; replayed: boolean };
@@ -392,6 +394,13 @@ export async function coreReplayHistoricalSignalFromBinance(input: CoreHistorica
   const result = await coreCommand(`/api/webapp/owner/historical-signals/${input.signalId}/replay-binance`, { actor_telegram_id: input.actorTelegramId, signal_id: input.signalId, start: input.start, end: input.end, interval: input.interval, limit: input.limit, idempotency_key: input.idempotencyKey }, fetchImpl, env);
   if (result.ok !== true || result.signal_id !== input.signalId || typeof result.event_count !== "number" || result.commercial_enabled !== false) throw new Error("CAPITALGUARD_OWNER_REPLAY_INVALID");
   return result as CoreHistoricalBinanceReplayConfirmation;
+}
+
+export async function coreReplayReviewedBatchFromBinance(input: CoreHistoricalBatchBinanceReplayInput, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreHistoricalBatchBinanceReplayConfirmation> {
+  if (!Number.isSafeInteger(input.actorTelegramId) || input.actorTelegramId <= 0 || !Number.isSafeInteger(input.batchId) || input.batchId <= 0 || input.idempotencyKey.trim().length < 16) throw new Error("CAPITALGUARD_OWNER_BATCH_REPLAY_INPUT_INVALID");
+  const result = await coreCommand(`/api/webapp/owner/review-batches/${input.batchId}/replay-binance`, { actor_telegram_id: input.actorTelegramId, batch_id: input.batchId, idempotency_key: input.idempotencyKey }, fetchImpl, env);
+  if (result.ok !== true || result.batch_id !== input.batchId || !Array.isArray(result.signal_ids) || typeof result.event_count !== "number" || result.commercial_enabled !== false) throw new Error("CAPITALGUARD_OWNER_BATCH_REPLAY_INVALID");
+  return result as CoreHistoricalBatchBinanceReplayConfirmation;
 }
 
 /**

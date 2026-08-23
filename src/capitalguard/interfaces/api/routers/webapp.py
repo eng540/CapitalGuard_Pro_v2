@@ -105,6 +105,12 @@ class HistoricalBinanceReplayCommand(BaseModel):
     limit: int = 1500
     idempotency_key: str
 
+
+class HistoricalBatchBinanceReplayCommand(BaseModel):
+    actor_telegram_id: int
+    batch_id: int
+    idempotency_key: str
+
 # --- Helpers ---
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
     if not bot_token:
@@ -728,14 +734,26 @@ async def execute_evidence_ingestion(batch_id: int, command: EvidenceIngestComma
 
 @router.post("/owner/historical-signals/{signal_id}/replay-binance")
 async def execute_historical_binance_replay(signal_id: int, command: HistoricalBinanceReplayCommand, request: Request):
+    # Retired deliberately: the user-facing operation is now batch-derived, so
+    # Core alone chooses the reviewed signals and bounded historical time range.
+    raise HTTPException(status_code=410, detail="Manual historical replay retired; replay the EVIDENCE_INGESTED batch instead")
+
+
+@router.post("/owner/review-batches/{batch_id}/replay-binance")
+async def execute_reviewed_batch_binance_replay(batch_id: int, command: HistoricalBatchBinanceReplayCommand, request: Request):
     require_core_service_key(request.headers.get("authorization"))
-    if signal_id != command.signal_id or len(command.idempotency_key.strip()) < 16:
-        raise HTTPException(status_code=422, detail="Invalid historical replay command")
+    if batch_id != command.batch_id or len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Invalid historical batch replay command")
     try:
         with session_scope() as session:
-            return WebCommandService().replay_historical_signal_from_binance(session, actor_telegram_id=command.actor_telegram_id, signal_id=signal_id, start=command.start, end=command.end, interval=command.interval, limit=command.limit, idempotency_key=command.idempotency_key)
+            return WebCommandService().replay_reviewed_batch_from_binance(
+                session,
+                actor_telegram_id=command.actor_telegram_id,
+                batch_id=batch_id,
+                idempotency_key=command.idempotency_key,
+            )
     except WebCommandError as exc:
-        raise HTTPException(status_code=409, detail="Historical replay rejected") from exc
+        raise HTTPException(status_code=409, detail="Historical batch replay rejected") from exc
 
 
 @router.get("/owner/operations-feed")
