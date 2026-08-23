@@ -58,6 +58,8 @@ class HistoricalSignalMaterializationService:
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:DRAFT_NOT_FOUND")
         if draft.status != "ACCEPTED":
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:DRAFT_NOT_ACCEPTED")
+        if draft.related_draft_id is not None:
+            raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:LIFECYCLE_PARENT_MATERIALIZATION_REQUIRED")
         revision = session.get(HistoricalMessageRevision, draft.revision_id)
         if revision is None or revision.message_id is None or revision.evidence_id is None:
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:PROVENANCE_INCOMPLETE")
