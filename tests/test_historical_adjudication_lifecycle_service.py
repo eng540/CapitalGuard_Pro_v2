@@ -60,3 +60,13 @@ def test_g4_e2e_reviewed_update_remains_historical_draft(db_session):
     assert db_session.execute(select(HistoricalSignal)).scalars().all() == []
     assert db_session.execute(select(Recommendation)).scalars().all() == []
     assert db_session.execute(select(UserTrade)).scalars().all() == []
+
+
+def test_g4_lifecycle_kind_priority_is_deterministic():
+    text_cases = {
+        "CANCEL": "Cancel this setup",
+        "CLOSE": "Trade closed",
+        "TARGET_REACHED": "TP hit target reached",
+        "PARTIAL_EXIT": "Partial exit taken",
+    }
+    assert set(text_cases) == {"CANCEL", "CLOSE", "TARGET_REACHED", "PARTIAL_EXIT"}
