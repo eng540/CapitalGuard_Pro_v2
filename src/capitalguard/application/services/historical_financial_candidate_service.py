@@ -23,19 +23,20 @@ class HistoricalFinancialCandidateService:
                 candidates.append((field, value, value, Decimal("0.9000")))
         labels = {"ENTRY": r"ENTRY|IN|دخول", "STOP_LOSS": r"STOP(?:\s*LOSS)?|SL|وقف", "LEVERAGE": r"LEVERAGE|رافعة", "RISK_PERCENT": r"RISK|مخاطرة"}
         for field, labels_pattern in labels.items():
-            match = re.search(rf"(?:{labels_pattern})\s*[:=\-]?\s*([0-9٠-٩][0-9٠-٩,.]*[KkMmBb]?%?x?)", normalized, re.I)
-            if not match: continue
-            span = match.group(0); token = match.group(1).rstrip("%xX")
-            value = self.parser._parse_one_number(token)
-            if value is not None: candidates.append((field, {"value": str(value)}, span, Decimal("0.8500")))
+            matches = list(re.finditer(rf"(?:{labels_pattern})\s*[:=\-]?\s*([0-9٠-٩][0-9٠-٩,.]*[KkMmBb]?%?x?)", normalized, re.I))
+            for match in matches:
+                span = match.group(0); token = match.group(1).rstrip("%xX")
+                value = self.parser._parse_one_number(token)
+                if value is not None: candidates.append((field, {"value": str(value)}, span, Decimal("0.8500")))
         for index, match in enumerate(re.finditer(r"(?:TP|TARGET)\s*\d*\s*[:=\-]?\s*([0-9٠-٩][0-9٠-٩,.]*[KkMmBb]?)", normalized, re.I), start=1):
             value = self.parser._parse_one_number(match.group(1))
             if value is not None: candidates.append(("TARGET", {"index": index, "value": str(value)}, match.group(0), Decimal("0.8500")))
         saved=[]
+        conflicting = {field for field in {candidate[0] for candidate in candidates} if len({str(candidate[1]) for candidate in candidates if candidate[0] == field}) > 1 and field in {"ENTRY", "STOP_LOSS", "LEVERAGE", "RISK_PERCENT"}}
         for field, value, span, confidence in candidates:
             normalized_value = str(value if isinstance(value, str) else value["value"])
             existing=session.execute(select(HistoricalFinancialCandidate).where(HistoricalFinancialCandidate.interpretation_id==interpretation.id, HistoricalFinancialCandidate.field_type==field, HistoricalFinancialCandidate.normalized_value==normalized_value, HistoricalFinancialCandidate.span_text==span, HistoricalFinancialCandidate.extractor_version==self.EXTRACTOR_VERSION)).scalar_one_or_none()
             if existing: saved.append(existing); continue
-            item=HistoricalFinancialCandidate(interpretation_id=interpretation.id, field_type=field, value_json={"value": value} if isinstance(value,str) else value, normalized_value=normalized_value, span_text=span, confidence_score=confidence, extractor_version=self.EXTRACTOR_VERSION, provenance_json={"revision_id": interpretation.revision_id,"interpretation_id": interpretation.id,"content_hash": interpretation.revision.content_hash,"span": span})
+            item=HistoricalFinancialCandidate(interpretation_id=interpretation.id, field_type=field, value_json={"value": value} if isinstance(value,str) else value, normalized_value=normalized_value, span_text=span, confidence_score=confidence, status="CONFLICT" if field in conflicting else "CANDIDATE", extractor_version=self.EXTRACTOR_VERSION, review_status="REVIEW_REQUIRED" if field in conflicting else "PENDING", provenance_json={"revision_id": interpretation.revision_id,"interpretation_id": interpretation.id,"content_hash": interpretation.revision.content_hash,"span": span})
             session.add(item); saved.append(item)
         session.flush(); return saved
