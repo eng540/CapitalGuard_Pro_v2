@@ -105,28 +105,28 @@ class HistoricalSignalMaterializationService:
             confidence_score=Decimal(str(draft.confidence_score or 0)),
             eligible_for_ranking=False,
         )
-        if parent_materialization is None:
-            session.add(signal)
-            session.flush()
-        materialization = HistoricalSignalMaterialization(
-            draft_id=draft.id,
-            signal_id=signal.id,
-            related_materialization_id=parent_materialization.id if parent_materialization else None,
-            revision_id=revision.id,
-            evidence_id=revision.evidence_id,
-            materialization_kind=draft.draft_kind,
-            source_timestamp=source_timestamp,
-            provenance_json={
-                "draft_id": draft.id,
-                "candidate_ids": candidate_ids,
-                "revision_id": revision.id,
-                "canonical_message_id": revision.message_id,
-                "evidence_id": revision.evidence_id,
-                "source_timestamp": source_timestamp.isoformat(),
-            },
-        )
-        session.add(materialization)
         try:
+            if parent_materialization is None:
+                session.add(signal)
+                session.flush()
+            materialization = HistoricalSignalMaterialization(
+                draft_id=draft.id,
+                signal_id=signal.id,
+                related_materialization_id=parent_materialization.id if parent_materialization else None,
+                revision_id=revision.id,
+                evidence_id=revision.evidence_id,
+                materialization_kind=draft.draft_kind,
+                source_timestamp=source_timestamp,
+                provenance_json={
+                    "draft_id": draft.id,
+                    "candidate_ids": candidate_ids,
+                    "revision_id": revision.id,
+                    "canonical_message_id": revision.message_id,
+                    "evidence_id": revision.evidence_id,
+                    "source_timestamp": source_timestamp.isoformat(),
+                },
+            )
+            session.add(materialization)
             session.flush()
         except IntegrityError:
             session.rollback()
