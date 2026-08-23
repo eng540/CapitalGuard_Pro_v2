@@ -10,12 +10,12 @@ class HistoricalSignalMaterialization(Base):
     __tablename__ = "historical_signal_materializations"
     __table_args__ = (
         UniqueConstraint("draft_id", name="uq_hist_signal_materialization_draft"),
-        UniqueConstraint("signal_id", name="uq_hist_signal_materialization_signal"),
     )
 
     id = Column(Integer, primary_key=True)
     draft_id = Column(Integer, ForeignKey("historical_recommendation_drafts.id", ondelete="RESTRICT"), nullable=False, index=True)
     signal_id = Column(Integer, ForeignKey("historical_signals.id", ondelete="RESTRICT"), nullable=False, index=True)
+    related_materialization_id = Column(Integer, ForeignKey("historical_signal_materializations.id", ondelete="RESTRICT"), nullable=True, index=True)
     revision_id = Column(Integer, ForeignKey("historical_message_revisions.id", ondelete="RESTRICT"), nullable=False, index=True)
     evidence_id = Column(Integer, ForeignKey("historical_signal_evidence.id", ondelete="RESTRICT"), nullable=False, index=True)
     materialization_kind = Column(String(40), nullable=False, index=True)
@@ -25,5 +25,6 @@ class HistoricalSignalMaterialization(Base):
 
     draft = relationship("HistoricalRecommendationDraft")
     signal = relationship("HistoricalSignal")
+    related_materialization = relationship("HistoricalSignalMaterialization", remote_side=[id])
     revision = relationship("HistoricalMessageRevision")
     evidence = relationship("HistoricalSignalEvidence")
