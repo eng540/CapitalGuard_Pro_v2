@@ -43,6 +43,7 @@ from .historical_forwarding import HistoricalForwardReceipt
 from .historical_message import HistoricalCanonicalMessage, HistoricalMessageRevision, HistoricalMessageRelationship
 from .historical_content_interpretation import HistoricalContentInterpretation
 from .historical_financial_candidate import HistoricalFinancialCandidate
+from .historical_adjudication import HistoricalRecommendationDraft
 from .historical_shadow_channel import HistoricalShadowChannel
 from .temporal_forward_decision import TemporalForwardDecision
 from .web_command_audit import WebCommandAudit
@@ -93,6 +94,7 @@ __all__ = [
     "HistoricalMessageRelationship",
     "HistoricalContentInterpretation",
     "HistoricalFinancialCandidate",
+    "HistoricalRecommendationDraft",
     "HistoricalShadowChannel",
     "TemporalForwardDecision",
     "WebCommandAudit",
