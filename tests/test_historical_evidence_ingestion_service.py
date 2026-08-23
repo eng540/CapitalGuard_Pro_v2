@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy import select
 
 from capitalguard.application.services.historical_evidence_ingestion_service import (
     HistoricalEvidenceIngestionError,
     HistoricalEvidenceIngestionService,
 )
 from capitalguard.application.services.historical_signal_service import HistoricalSignalService
-from capitalguard.infrastructure.db.models import HistoricalForwardReceipt
+from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalSignal
 
 
 def make_reviewed_batch(db_session):
@@ -65,6 +66,12 @@ def test_reviewed_receipts_become_evidence_and_are_idempotent(db_session):
     assert receipt.validation_status == "INGESTED"
     assert receipt.evidence_id is not None
     evidence_id = receipt.evidence_id
+    signal = db_session.execute(select(HistoricalSignal).where(HistoricalSignal.evidence_id == evidence_id)).scalar_one()
+    assert signal.asset == "BTCUSDT"
+    assert signal.side == "LONG"
+    assert signal.entry == 69000
+    assert signal.stop_loss == 68000
+    assert signal.decision_timestamp.replace(tzinfo=timezone.utc) == receipt.source_message_timestamp
 
     ingested_again, skipped_again = service.ingest_reviewed_batch(
         db_session,
@@ -73,3 +80,4 @@ def test_reviewed_receipts_become_evidence_and_are_idempotent(db_session):
     )
     assert (ingested_again, skipped_again) == (0, 1)
     assert receipt.evidence_id == evidence_id
+    assert db_session.execute(select(HistoricalSignal).where(HistoricalSignal.evidence_id == evidence_id)).scalars().all() == [signal]

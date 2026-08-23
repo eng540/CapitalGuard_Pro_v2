@@ -156,6 +156,7 @@ class WebCommandService:
         batch = session.get(HistoricalImportBatch, batch_id)
         if batch is None or batch.status != "EVIDENCE_INGESTED":
             raise WebCommandError("Historical replay requires evidence ingested from this batch")
+        HistoricalEvidenceIngestionService().ensure_replayable_signals(session, batch_id=batch_id)
         signals = session.execute(
             select(HistoricalSignal)
             .join(HistoricalSignalEvidence, HistoricalSignal.evidence_id == HistoricalSignalEvidence.id)
