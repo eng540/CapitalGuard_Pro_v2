@@ -54,7 +54,7 @@ def test_ingestion_requires_owner_approval(db_session):
         )
 
 
-def test_reviewed_receipts_become_evidence_and_are_idempotent(db_session):
+def test_reviewed_receipts_become_evidence_and_require_g5_materialization(db_session):
     batch, receipt = make_reviewed_batch(db_session)
     service = HistoricalEvidenceIngestionService()
     ingested, skipped = service.ingest_reviewed_batch(
@@ -66,12 +66,9 @@ def test_reviewed_receipts_become_evidence_and_are_idempotent(db_session):
     assert receipt.validation_status == "INGESTED"
     assert receipt.evidence_id is not None
     evidence_id = receipt.evidence_id
-    signal = db_session.execute(select(HistoricalSignal).where(HistoricalSignal.evidence_id == evidence_id)).scalar_one()
-    assert signal.asset == "BTCUSDT"
-    assert signal.side == "LONG"
-    assert signal.entry == 69000
-    assert signal.stop_loss == 68000
-    assert signal.decision_timestamp.replace(tzinfo=timezone.utc) == receipt.source_message_timestamp
+    assert receipt.metadata_json["g5_materialization"] == "REQUIRED"
+    assert receipt.metadata_json["legacy_direct_signal_creation"] == "BLOCKED"
+    assert db_session.execute(select(HistoricalSignal).where(HistoricalSignal.evidence_id == evidence_id)).scalars().all() == []
 
     ingested_again, skipped_again = service.ingest_reviewed_batch(
         db_session,
@@ -80,4 +77,4 @@ def test_reviewed_receipts_become_evidence_and_are_idempotent(db_session):
     )
     assert (ingested_again, skipped_again) == (0, 1)
     assert receipt.evidence_id == evidence_id
-    assert db_session.execute(select(HistoricalSignal).where(HistoricalSignal.evidence_id == evidence_id)).scalars().all() == [signal]
+    assert db_session.execute(select(HistoricalSignal).where(HistoricalSignal.evidence_id == evidence_id)).scalars().all() == []
