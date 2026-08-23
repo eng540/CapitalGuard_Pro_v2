@@ -17,6 +17,7 @@ def test_g4_creates_reviewable_draft_only_from_accepted_candidates(db_session):
     service = HistoricalAdjudicationService()
     draft = service.adjudicate(db_session, revision_id=revision.id)
     assert draft.status == "DRAFT" and draft.draft_kind == "NEW_RECOMMENDATION"
+    assert service.adjudicate(db_session, revision_id=revision.id).id == draft.id
     assert service.review(db_session, draft_id=draft.id, reviewer_user_id=99, decision="ACCEPTED", note="evidence reviewed").status == "ACCEPTED"
     assert db_session.execute(select(HistoricalRecommendationDraft)).scalar_one().evidence_chain_json
     assert db_session.execute(select(HistoricalSignal)).scalars().all() == []
