@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch, HistoricalSignal
+from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch
 from capitalguard.infrastructure.db.repository import ParsingRepository
 
 from .historical_parser_service import HistoricalParserService
@@ -25,43 +25,21 @@ class HistoricalEvidenceIngestionService:
         self.parser = parser or HistoricalParserService(ParsingService(ParsingRepository))
 
     def _ensure_replayable_signal(self, session: Session, *, receipt: HistoricalForwardReceipt) -> bool:
-        """Create exactly one historical-only signal when immutable evidence parses fully."""
-        if not receipt.evidence_id or receipt.source_message_timestamp is None:
-            return False
-        existing = session.execute(
-            select(HistoricalSignal).where(HistoricalSignal.evidence_id == receipt.evidence_id)
-        ).scalar_one_or_none()
-        if existing is not None:
-            return False
-        parsed = self.parser.parse(receipt.raw_text or "")
+        """G5 blocks direct Evidence/Parser → HistoricalSignal materialization.
+
+        Evidence Ingestion records immutable source material only. The sole signal
+        writer is G5 and requires an ACCEPTED G4 draft with an auditable chain.
+        """
         receipt.metadata_json = {
             **(receipt.metadata_json or {}),
-            "historical_parse_status": parsed.parse_status,
-            "historical_parse_errors": list(parsed.errors),
+            "g5_materialization": "REQUIRED",
+            "legacy_direct_signal_creation": "BLOCKED",
         }
-        if parsed.parse_status != "PARSED":
-            return False
-        data = parsed.data or {}
-        self.signal_service.create_signal(
-            session,
-            evidence_id=receipt.evidence_id,
-            decision_timestamp=receipt.source_message_timestamp,
-            channel_catalog_id=receipt.batch.channel_catalog_id if receipt.batch else None,
-            asset=data.get("asset"),
-            side=data.get("side"),
-            entry=data.get("entry"),
-            stop_loss=data.get("stop_loss"),
-            targets=data.get("targets"),
-            market=data.get("market"),
-        )
-        return True
+        session.flush()
+        return False
 
     def ensure_replayable_signals(self, session: Session, *, batch_id: int) -> int:
-        """Backfill only historical parsed signals for an already-ingested batch.
-
-        This is idempotent and repairs batches created before signal construction
-        was made part of Evidence Ingestion; it never creates live entities.
-        """
+        """Deprecated compatibility method: G5 blocks legacy direct signal backfill."""
         batch = session.get(HistoricalImportBatch, batch_id)
         if batch is None or batch.status != "EVIDENCE_INGESTED":
             raise HistoricalEvidenceIngestionError("Batch requires evidence ingestion before replay preparation")
@@ -71,9 +49,10 @@ class HistoricalEvidenceIngestionService:
                 HistoricalForwardReceipt.validation_status == "INGESTED",
             )
         ).scalars().all()
-        created = sum(1 for receipt in receipts if self._ensure_replayable_signal(session, receipt=receipt))
+        for receipt in receipts:
+            self._ensure_replayable_signal(session, receipt=receipt)
         session.flush()
-        return created
+        return 0
 
     def ingest_reviewed_batch(
         self,
