@@ -185,3 +185,85 @@ def test_forwarding_normalizes_chat_ids_and_allows_retry_in_new_batch(db_session
     assert preview.total_records == 1
     assert preview.accepted_records == 1
     assert preview.rejected_records == 0
+
+
+def test_preview_decisions_are_explicit_audited_and_never_create_live_entities(db_session):
+    requester = UserRepository(db_session).find_or_create(
+        telegram_id=930003,
+        user_type=UserType.ANALYST,
+        first_name="Explicit Preview Requester",
+    )
+    catalog = ChannelCatalog(
+        telegram_channel_id=-1009201,
+        channel_code="CH-FWD-DECISION",
+        public_ref="CH-FWD-DECISION",
+        title="Decision Channel",
+    )
+    db_session.add(catalog)
+    db_session.flush()
+    service = HistoricalForwardingService()
+
+    def prepared_batch(receiver_message_id: int):
+        batch = service.start_batch(
+            db_session,
+            channel_catalog_id=catalog.id,
+            requested_by_user_id=requester.id,
+            expected_source_chat_id=catalog.telegram_channel_id,
+        )
+        service.stage_message(
+            db_session,
+            batch_id=batch.id,
+            message=ForwardedMessageInput(
+                receiver_chat_id=requester.telegram_user_id,
+                receiver_message_id=receiver_message_id,
+                forwarding_user_id=requester.id,
+                source_chat_id=catalog.telegram_channel_id,
+                source_message_id=receiver_message_id,
+                source_origin_type="CHANNEL",
+                source_message_timestamp=_ts(14),
+                raw_text="#BTCUSDT LONG Entry 100 SL 95 TP1 105@100%",
+            ),
+        )
+        service.preview_batch(db_session, batch_id=batch.id)
+        batch.metadata_json = {
+            **(batch.metadata_json or {}),
+            "parser_preview": {
+                "review_actions_by_mode": {
+                    "HISTORICAL_RECONSTRUCTION": ["IMPORT_HISTORICAL", "TRACK_ONLY", "DISMISS"]
+                }
+            },
+        }
+        db_session.flush()
+        return batch
+
+    import_batch = prepared_batch(301)
+    imported = service.apply_preview_decision(
+        db_session,
+        batch_id=import_batch.id,
+        requested_by_user_id=requester.id,
+        action="IMPORT_HISTORICAL",
+    )
+    assert imported.status == "REVIEW_REQUIRED"
+    assert imported.metadata_json["preview_decision"]["action"] == "IMPORT_HISTORICAL"
+
+    track_batch = prepared_batch(302)
+    tracked = service.apply_preview_decision(
+        db_session,
+        batch_id=track_batch.id,
+        requested_by_user_id=requester.id,
+        action="TRACK_ONLY",
+    )
+    assert tracked.status == "TRACK_ONLY"
+
+    dismiss_batch = prepared_batch(303)
+    dismissed = service.apply_preview_decision(
+        db_session,
+        batch_id=dismiss_batch.id,
+        requested_by_user_id=requester.id,
+        action="DISMISS",
+    )
+    assert dismissed.status == "DISMISSED"
+
+    assert db_session.scalar(select(func.count()).select_from(Recommendation)) == 0
+    assert db_session.scalar(select(func.count()).select_from(UserTrade)) == 0
+    assert db_session.scalar(select(func.count()).select_from(PublicationDelivery)) == 0
