@@ -22,6 +22,7 @@ class WebCommandError(ValueError):
 class WebCommandService:
     REVIEW = "HISTORICAL_OWNER_REVIEW"
     INGEST = "HISTORICAL_EVIDENCE_INGEST"
+    MATERIALIZE = "HISTORICAL_SIGNAL_MATERIALIZE"
     REPLAY_BINANCE = "HISTORICAL_BINANCE_REPLAY"
     CLOSE_USER_TRADE = "USER_TRADE_MANUAL_CLOSE"
     PARTIAL_CLOSE_USER_TRADE = "USER_TRADE_MANUAL_PARTIAL_CLOSE"
@@ -125,6 +126,30 @@ class WebCommandService:
         )
         response = {"ok": True, "batch_id": batch_id, "ingested": ingested, "skipped": skipped, "replayed": False}
         self._record(session, idempotency_key=idempotency_key, command_type=self.INGEST, actor_user_id=owner.id, target_type="HISTORICAL_IMPORT_BATCH", target_id=batch_id, request_hash=request_hash, response=response)
+        return response
+
+    def materialize_accepted_historical_draft(self, session: Session, *, actor_telegram_id: int, draft_id: int, idempotency_key: str) -> dict:
+        """Owner-only G5 boundary; browser never supplies financial fields or replay inputs."""
+        owner = self._require_owner(session, actor_telegram_id)
+        request_hash = self._fingerprint(self.MATERIALIZE, actor_telegram_id, "HISTORICAL_RECOMMENDATION_DRAFT", draft_id, {})
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+        from capitalguard.application.services.historical_signal_materialization_service import HistoricalSignalMaterializationService
+        try:
+            signal = HistoricalSignalMaterializationService().materialize(session, draft_id=draft_id)
+        except ValueError as exc:
+            raise WebCommandError(str(exc)) from exc
+        response = {
+            "ok": True,
+            "draft_id": draft_id,
+            "signal_id": signal.id,
+            "public_ref": signal.public_ref,
+            "status": signal.status,
+            "replayed": False,
+            "commercial_enabled": False,
+        }
+        self._record(session, idempotency_key=idempotency_key, command_type=self.MATERIALIZE, actor_user_id=owner.id, target_type="HISTORICAL_RECOMMENDATION_DRAFT", target_id=draft_id, request_hash=request_hash, response=response)
         return response
 
     def replay_historical_signal_from_binance(self, session: Session, *, actor_telegram_id: int, signal_id: int, start: datetime, end: datetime, interval: str, limit: int, idempotency_key: str) -> dict:

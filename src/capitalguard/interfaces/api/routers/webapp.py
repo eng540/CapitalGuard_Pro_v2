@@ -111,6 +111,12 @@ class HistoricalBatchBinanceReplayCommand(BaseModel):
     batch_id: int
     idempotency_key: str
 
+
+class HistoricalDraftMaterializationCommand(BaseModel):
+    actor_telegram_id: int
+    draft_id: int
+    idempotency_key: str
+
 # --- Helpers ---
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
     if not bot_token:
@@ -737,6 +743,25 @@ async def execute_historical_binance_replay(signal_id: int, command: HistoricalB
     # Retired deliberately: the user-facing operation is now batch-derived, so
     # Core alone chooses the reviewed signals and bounded historical time range.
     raise HTTPException(status_code=410, detail="Manual historical replay retired; replay the EVIDENCE_INGESTED batch instead")
+
+
+@router.post("/owner/historical-drafts/{draft_id}/materialize")
+async def execute_historical_draft_materialization(draft_id: int, command: HistoricalDraftMaterializationCommand, request: Request):
+    """G5 owner command: materialize an accepted historical draft only, never replay."""
+    require_core_service_key(request.headers.get("authorization"))
+    if draft_id != command.draft_id or len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Invalid historical draft materialization command")
+    try:
+        with session_scope() as session:
+            return WebCommandService().materialize_accepted_historical_draft(
+                session,
+                actor_telegram_id=command.actor_telegram_id,
+                draft_id=draft_id,
+                idempotency_key=command.idempotency_key,
+            )
+    except WebCommandError as exc:
+        detail = str(exc)
+        raise HTTPException(status_code=409 if detail.startswith("MATERIALIZATION_BLOCKED") else 403, detail=detail) from exc
 
 
 @router.post("/owner/review-batches/{batch_id}/replay-binance")
