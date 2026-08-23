@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from capitalguard.application.services.historical_evidence_ingestion_service import HistoricalEvidenceIngestionService
 from capitalguard.application.services.historical_owner_review_service import HistoricalOwnerReviewService
 from capitalguard.config import settings
-from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalSignal, HistoricalSignalEvidence, UserTrade, UserTradeStatusEnum, WebCommandAudit
+from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalSignal, HistoricalSignalEvidence, HistoricalSignalMaterialization, UserTrade, UserTradeStatusEnum, WebCommandAudit
 from capitalguard.infrastructure.db.repository import UserRepository
 
 
@@ -24,6 +24,7 @@ class WebCommandService:
     INGEST = "HISTORICAL_EVIDENCE_INGEST"
     MATERIALIZE = "HISTORICAL_SIGNAL_MATERIALIZE"
     REPLAY_BINANCE = "HISTORICAL_BINANCE_REPLAY"
+    G6_REPLAY = "G6_HISTORICAL_REPLAY"
     CLOSE_USER_TRADE = "USER_TRADE_MANUAL_CLOSE"
     PARTIAL_CLOSE_USER_TRADE = "USER_TRADE_MANUAL_PARTIAL_CLOSE"
     MOVE_USER_TRADE_STOP_TO_BREAKEVEN = "USER_TRADE_MOVE_STOP_TO_BREAKEVEN"
@@ -60,7 +61,7 @@ class WebCommandService:
         return dict(existing.response_json or {})
 
     @staticmethod
-    def _record(session: Session, *, idempotency_key: str, command_type: str, actor_user_id: int, target_type: str, target_id: int, request_hash: str, response: dict) -> None:
+    def _record(session: Session, *, idempotency_key: str, command_type: str, actor_user_id: int, target_type: str, target_id: int, request_hash: str, response: dict, status: str = "COMPLETED") -> None:
         session.add(WebCommandAudit(
             idempotency_key=idempotency_key,
             command_type=command_type,
@@ -68,7 +69,7 @@ class WebCommandService:
             target_type=target_type,
             target_id=target_id,
             request_hash=request_hash,
-            status="COMPLETED",
+            status=status,
             response_json=response,
         ))
         session.flush()
@@ -206,6 +207,85 @@ class WebCommandService:
                 raise WebCommandError("Historical Binance source unavailable; replay made no changes") from exc
         response = {"ok": True, "batch_id": batch_id, "signal_ids": [signal.id for signal in signals], "event_count": total_events, "window": "SOURCE_TIMESTAMP_MINUS_24H", "commercial_enabled": False, "replayed": True}
         self._record(session, idempotency_key=idempotency_key, command_type=self.REPLAY_BINANCE, actor_user_id=owner.id, target_type="HISTORICAL_IMPORT_BATCH", target_id=batch_id, request_hash=request_hash, response=response)
+        return response
+
+    def replay_g6_historical_signal(self, session: Session, *, actor_telegram_id: int, signal_id: int, idempotency_key: str) -> dict:
+        """Execute the G6 contract from a G5 materialized signal only.
+
+        The Web caller supplies only identity and idempotency. The Core derives the
+        historical window and all market parameters from the source signal.
+        """
+        owner = self._require_owner(session, actor_telegram_id)
+        signal = session.get(HistoricalSignal, signal_id)
+        materialization = session.execute(
+            select(HistoricalSignalMaterialization)
+            .where(HistoricalSignalMaterialization.signal_id == signal_id)
+            .order_by(HistoricalSignalMaterialization.id)
+        ).scalars().first()
+        if signal is None or materialization is None:
+            raise WebCommandError("G6 replay requires a G5 materialized HistoricalSignal")
+        if signal.decision_timestamp is None or signal.decision_timestamp.tzinfo is None:
+            raise WebCommandError("G6 replay requires a timezone-aware source decision timestamp")
+        from datetime import timedelta
+        start = signal.decision_timestamp
+        end = signal.decision_timestamp + timedelta(hours=24)
+        interval = "1m"
+        limit = 1500
+        request_hash = self._fingerprint(
+            self.G6_REPLAY,
+            actor_telegram_id,
+            "HISTORICAL_SIGNAL",
+            signal_id,
+            {
+                "materialization_id": materialization.id,
+                "window": "SOURCE_TIMESTAMP_PLUS_24H",
+                "interval": interval,
+                "limit": limit,
+            },
+        )
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+        from capitalguard.application.services.historical_market_replay_service import HistoricalMarketReplayService
+        try:
+            result = HistoricalMarketReplayService().replay_g6(
+                session,
+                signal_id=signal_id,
+                materialization_id=materialization.id,
+                start=start,
+                replay_end=end,
+                interval=interval,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise WebCommandError(str(exc)) from exc
+        run = result["run"]
+        response = {
+            "ok": result["status"] != "FAILED",
+            "signal_id": signal_id,
+            "materialization_id": materialization.id,
+            "replay_run_id": run.id,
+            "replay_run_ref": run.run_ref,
+            "status": result["status"],
+            "event_count": len(result["events"]),
+            "window": "SOURCE_TIMESTAMP_PLUS_24H",
+            "replay_version": run.replay_version,
+            "ambiguity_status": run.ambiguity_status,
+            "quality_status": run.quality_status,
+            "failure_reason": result.get("failure_reason"),
+            "commercial_enabled": False,
+        }
+        self._record(
+            session,
+            idempotency_key=idempotency_key,
+            command_type=self.G6_REPLAY,
+            actor_user_id=owner.id,
+            target_type="HISTORICAL_SIGNAL",
+            target_id=signal_id,
+            request_hash=request_hash,
+            response=response,
+            status="FAILED" if result["status"] == "FAILED" else "COMPLETED",
+        )
         return response
 
     async def close_user_trade(

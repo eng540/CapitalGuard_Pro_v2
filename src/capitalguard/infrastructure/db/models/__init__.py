@@ -45,6 +45,7 @@ from .historical_content_interpretation import HistoricalContentInterpretation
 from .historical_financial_candidate import HistoricalFinancialCandidate
 from .historical_adjudication import HistoricalRecommendationDraft
 from .historical_signal_materialization import HistoricalSignalMaterialization
+from .historical_replay_run import HistoricalReplayRun
 from .historical_shadow_channel import HistoricalShadowChannel
 from .temporal_forward_decision import TemporalForwardDecision
 from .web_command_audit import WebCommandAudit
@@ -97,6 +98,7 @@ __all__ = [
     "HistoricalFinancialCandidate",
     "HistoricalRecommendationDraft",
     "HistoricalSignalMaterialization",
+    "HistoricalReplayRun",
     "HistoricalShadowChannel",
     "TemporalForwardDecision",
     "WebCommandAudit",

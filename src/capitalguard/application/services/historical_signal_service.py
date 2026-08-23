@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from capitalguard.infrastructure.db.models import (
@@ -266,6 +267,8 @@ class HistoricalSignalService:
         event_confidence: Any = Decimal("0"),
         event_data: dict[str, Any] | None = None,
         source_evidence_id: int | None = None,
+        replay_run_id: int | None = None,
+        refresh_ranking: bool = True,
     ) -> HistoricalSignalEvent:
         signal = session.get(HistoricalSignal, signal_id)
         if signal is None:
@@ -289,6 +292,7 @@ class HistoricalSignalService:
             return existing
         event = HistoricalSignalEvent(
             signal_id=signal_id,
+            replay_run_id=replay_run_id,
             source_evidence_id=source_evidence_id,
             event_type=event_type.strip().upper(),
             event_timestamp=event_time,
@@ -300,9 +304,19 @@ class HistoricalSignalService:
             event_data=event_data or {},
             dedup_key=dedup_key,
         )
-        session.add(event)
-        session.flush()
-        self.refresh_ranking_eligibility(session, signal_id)
+        try:
+            with session.begin_nested():
+                session.add(event)
+                session.flush()
+        except IntegrityError:
+            existing = session.execute(
+                select(HistoricalSignalEvent).where(HistoricalSignalEvent.dedup_key == dedup_key)
+            ).scalar_one_or_none()
+            if existing is None:
+                raise
+            return existing
+        if refresh_ranking:
+            self.refresh_ranking_eligibility(session, signal_id)
         return event
 
     def add_attribution(
