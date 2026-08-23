@@ -10,7 +10,8 @@ from sqlalchemy.orm import sessionmaker
 from capitalguard.application.services.historical_signal_materialization_service import (
     HistoricalSignalMaterializationService,
 )
-from capitalguard.infrastructure.db.models import HistoricalSignal, HistoricalSignalMaterialization
+from capitalguard.domain.entities import UserType
+from capitalguard.infrastructure.db.models import HistoricalSignal, HistoricalSignalMaterialization, User
 from tests.test_historical_signal_materialization_service import accepted_g5_draft
 
 
@@ -21,6 +22,17 @@ def main() -> None:
 
     setup_session = Session()
     try:
+        setup_session.add(
+            User(
+                id=99,
+                telegram_user_id=990000099,
+                user_type=UserType.TRADER,
+                username="g5_concurrency_fixture",
+                first_name="G5 Fixture",
+                is_active=True,
+            )
+        )
+        setup_session.flush()
         draft, _ = accepted_g5_draft(setup_session)
         setup_session.commit()
         draft_id = draft.id
