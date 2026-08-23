@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -10,11 +11,69 @@ from capitalguard.application.services.historical_market_replay_service import (
     MarketObservation,
 )
 from capitalguard.application.services.historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
-from capitalguard.infrastructure.db.models import HistoricalMarketEvidence
+from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
+from capitalguard.config import settings
+from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalMarketEvidence, WebCommandAudit
+from capitalguard.infrastructure.db.repository import UserRepository
+from capitalguard.infrastructure.market.binance_client import HistoricalMarketProviderError
 
 
 def _time(day: int, hour: int):
     return datetime(2026, 1, day, hour, 0, tzinfo=timezone.utc)
+
+
+def _reviewed_batch_signal(db_session, telegram_id: int):
+    owner = UserRepository(db_session).find_or_create(telegram_id=telegram_id, first_name="Replay owner")
+    batch = HistoricalImportBatch(batch_ref=f"HB-TEST-{telegram_id}", source_kind="FORWARD", requested_by_user_id=owner.id, status="EVIDENCE_INGESTED", manifest_hash=f"manifest-{telegram_id}")
+    db_session.add(batch)
+    db_session.flush()
+    signal_service = HistoricalSignalService()
+    evidence = signal_service.ingest_evidence(db_session, source_kind="AUTHORIZED_USER_HISTORY", message_timestamp=_time(2, 9), raw_text="#BTCUSDT LONG Entry 100 Stop 90")
+    evidence.batch_id = batch.id
+    evidence.ownership_proof_ref = "test://reviewed/ownership"
+    signal = signal_service.create_signal(db_session, evidence_id=evidence.id, decision_timestamp=_time(2, 9), asset="BTCUSDT", side="LONG", entry=Decimal("100"), stop_loss=Decimal("90"), targets=[])
+    db_session.flush()
+    return batch, signal
+
+
+def test_reviewed_batch_replay_derives_window_and_replays_idempotently(db_session, monkeypatch):
+    telegram_id = 97001
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_CHAT_ID", str(telegram_id))
+    batch, signal = _reviewed_batch_signal(db_session, telegram_id)
+    calls = []
+
+    def replay(_self, _session, **kwargs):
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(HistoricalMarketReplayService, "replay_from_binance", replay)
+    service = WebCommandService()
+    first = service.replay_reviewed_batch_from_binance(db_session, actor_telegram_id=telegram_id, batch_id=batch.id, idempotency_key="batch-replay-once")
+    again = service.replay_reviewed_batch_from_binance(db_session, actor_telegram_id=telegram_id, batch_id=batch.id, idempotency_key="batch-replay-once")
+
+    assert first["replayed"] is True
+    assert again == first
+    assert len(calls) == 1
+    assert calls[0]["signal_id"] == signal.id
+    assert calls[0]["start"] == signal.decision_timestamp - timedelta(hours=24)
+    assert calls[0]["replay_end"] == signal.decision_timestamp
+    assert calls[0]["interval"] == "1m"
+    assert calls[0]["limit"] == 1500
+
+
+def test_reviewed_batch_replay_rejects_binance_unavailability_without_success_audit(db_session, monkeypatch):
+    telegram_id = 97002
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_CHAT_ID", str(telegram_id))
+    batch, _signal = _reviewed_batch_signal(db_session, telegram_id)
+
+    def unavailable(_self, _session, **_kwargs):
+        raise HistoricalMarketProviderError("provider unavailable")
+
+    monkeypatch.setattr(HistoricalMarketReplayService, "replay_from_binance", unavailable)
+    with pytest.raises(WebCommandError, match="source unavailable"):
+        WebCommandService().replay_reviewed_batch_from_binance(db_session, actor_telegram_id=telegram_id, batch_id=batch.id, idempotency_key="batch-replay-provider-failure")
+
+    assert db_session.execute(select(WebCommandAudit).where(WebCommandAudit.idempotency_key == "batch-replay-provider-failure")).scalar_one_or_none() is None
 
 
 def test_replay_records_activation_targets_and_eligibility(db_session):
