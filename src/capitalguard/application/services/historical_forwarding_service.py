@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch
 
+from .historical_message_foundation_service import HistoricalMessageFoundationService
 from .historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
 
 
@@ -45,8 +46,13 @@ class HistoricalForwardingService:
     SOURCE_KIND = "TELEGRAM_FORWARD"
     VALID_ORIGIN_TYPES = {"CHANNEL", "MESSAGE_ORIGIN_CHANNEL"}
 
-    def __init__(self, signal_service: HistoricalSignalService | None = None):
+    def __init__(
+        self,
+        signal_service: HistoricalSignalService | None = None,
+        message_foundation_service: HistoricalMessageFoundationService | None = None,
+    ):
         self.signal_service = signal_service or HistoricalSignalService()
+        self.message_foundation_service = message_foundation_service or HistoricalMessageFoundationService()
 
     @staticmethod
     def _normalize_chat_id(value: Any) -> int | None:
@@ -193,6 +199,8 @@ class HistoricalForwardingService:
         )
         session.add(receipt)
         session.flush()
+        if receipt.validation_status == "STAGED":
+            self.message_foundation_service.record_receipt(session, receipt=receipt)
         return receipt
 
     def preview_batch(self, session: Session, *, batch_id: int) -> ForwardingPreview:
