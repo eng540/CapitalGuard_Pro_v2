@@ -49,9 +49,45 @@ class WebCommandService:
         return self._require_owner(session, actor_telegram_id)
 
     @staticmethod
-    def _fingerprint(command_type: str, actor_telegram_id: int, target_type: str, target_id: int, payload: dict) -> str:
-        raw = json.dumps({"command_type": command_type, "actor": actor_telegram_id, "target_type": target_type, "target_id": target_id, "payload": payload}, sort_keys=True, separators=(",", ":"))
+    def _fingerprint(
+        command_type: str,
+        actor_telegram_id: int,
+        target_type: str,
+        target_id: int,
+        payload: dict,
+    ) -> str:
+        raw = json.dumps(
+            {
+                "command_type": command_type,
+                "actor": actor_telegram_id,
+                "target_type": target_type,
+                "target_id": target_id,
+                "payload": payload,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
         return hashlib.sha256(raw.encode()).hexdigest()
+
+    @staticmethod
+    def derive_compatibility_idempotency_key(
+        actor_telegram_id: int,
+        recommendation: dict,
+    ) -> str:
+        """Derive a stable key for legacy payloads that have no command key."""
+        payload = dict(recommendation)
+        payload["target_channel_ids"] = sorted(
+            int(channel_id)
+            for channel_id in payload.get("target_channel_ids", set())
+        )
+        raw = json.dumps(
+            {"actor": actor_telegram_id, "payload": payload},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return "legacy-create-" + hashlib.sha256(raw.encode()).hexdigest()
 
     @staticmethod
     def _replay_or_reject(session: Session, *, idempotency_key: str, request_hash: str) -> dict | None:
