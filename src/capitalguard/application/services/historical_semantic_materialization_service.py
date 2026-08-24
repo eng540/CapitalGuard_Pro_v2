@@ -241,11 +241,18 @@ class HistoricalSemanticMaterializationService:
                     "candidate_id": row.id,
                     "modality": (row.provenance_json or {}).get("modality", "TEXT"),
                     "span": row.span_text,
+                    "raw_value": row.value_json,
                     "normalized_value": row.normalized_value,
+                    "normalization": {
+                        "source_span": row.span_text,
+                        "normalized_value": row.normalized_value,
+                    },
                     "extractor_version": row.extractor_version,
                     "provenance": row.provenance_json,
                     "status": row.status,
+                    "validation_status": row.status,
                     "review_status": row.review_status,
+                    "final_semantic_status": None,
                 }
                 for row in rows
             ]
@@ -266,11 +273,17 @@ class HistoricalSemanticMaterializationService:
             status = "AMBIGUOUS"
         else:
             status = "SUCCESS"
+        for rows in evidence.values():
+            for item in rows:
+                item["final_semantic_status"] = status
         canonical["market"] = self._market_value(raw_text, image_payload)
         if canonical["market"] is None:
             missing.append("market")
             if status == "SUCCESS":
                 status = "INCOMPLETE"
+                for rows in evidence.values():
+                    for item in rows:
+                        item["final_semantic_status"] = status
         return {
             "materialization_version": self.MATERIALIZATION_VERSION,
             "status": status,

@@ -76,8 +76,12 @@ def test_text_contract_materializes_canonical_values_with_field_evidence(db_sess
         "targets": ["78000"],
         "market": "FUTURES",
     }
-    assert result["field_evidence"]["entry"][0]["modality"] == "TEXT"
-    assert "Entry 77K" in result["field_evidence"]["entry"][0]["span"]
+    entry_evidence = result["field_evidence"]["entry"][0]
+    assert entry_evidence["modality"] == "TEXT"
+    assert "Entry 77K" in entry_evidence["span"]
+    assert entry_evidence["normalization"]["normalized_value"] == "77000"
+    assert entry_evidence["validation_status"] == "CANDIDATE"
+    assert entry_evidence["final_semantic_status"] == "SUCCESS"
 
 
 def test_missing_values_remain_incomplete_and_are_not_invented(db_session):
@@ -117,6 +121,8 @@ def test_image_candidates_are_materialized_with_media_provenance(db_session):
     entry_evidence = result["field_evidence"]["entry"][0]
     assert entry_evidence["modality"] == "IMAGE"
     assert entry_evidence["provenance"]["media_id"] == "photo-unique-1"
+    assert entry_evidence["normalization"]["normalized_value"] == "77000"
+    assert entry_evidence["final_semantic_status"] == "SUCCESS"
 
 
 def test_text_image_conflict_is_preserved_without_silent_winner(db_session):
