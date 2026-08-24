@@ -85,7 +85,12 @@ class HistoricalMessageFoundationService:
             classification_confidence=confidence,
             receipt_id=receipt.id,
             evidence_id=receipt.evidence_id,
-            provenance_json={"batch_id": receipt.batch_id, "receiver_chat_id": receipt.receiver_chat_id, "receiver_message_id": receipt.receiver_message_id},
+            provenance_json={
+                "batch_id": receipt.batch_id,
+                "receiver_chat_id": receipt.receiver_chat_id,
+                "receiver_message_id": receipt.receiver_message_id,
+                "source_metadata": receipt.metadata_json or {},
+            },
         )
         session.add(revision)
         message.latest_revision_number += 1

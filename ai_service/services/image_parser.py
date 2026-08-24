@@ -62,7 +62,8 @@ if not all([LLM_API_KEY, LLM_API_URL, LLM_MODEL]):
 SYSTEM_PROMPT_VISION = os.getenv("LLM_SYSTEM_PROMPT_VISION") or """ You are an expert financial analyst. Your task is to extract structured data from an IMAGE of a trade signal.
 CRITICAL VALIDATION RULES:
 1. Asset/Side/Entry/SL/Targets: You must find all five fields. If any are missing, respond with {"error": "Missing required fields."}.
-2. LONG Validation: If "side" is "LONG", "stop_loss" must be less than "entry".
+2. Leverage: If leverage is visibly stated, return it as a string field; if it is absent or unclear, return null and never infer it.
+3. LONG Validation: If "side" is "LONG", "stop_loss" must be less than "entry".
 3. SHORT Validation: If "side" is "SHORT", "stop_loss" must be greater than "entry".
 4. If validation fails, respond with {"error": "Financial validation failed (e.g., SL vs Entry)."}.
 

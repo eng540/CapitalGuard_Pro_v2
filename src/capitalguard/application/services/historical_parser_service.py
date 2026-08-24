@@ -51,8 +51,13 @@ class HistoricalParserService:
         return self.parsing_service._parse_one_number(match.group(1)) if match else None
 
     def _target_tokens(self, text: str) -> list[str]:
+        # Consume a target index only when it is structurally separated from
+        # the price (for example `TP1:78K` or `TP 1 78K`).  Without the
+        # lookahead, `TP 78K` consumes the leading `7` as an index and leaves
+        # `8K`, corrupting the canonical target value.
+        target_marker = r"(?:TP(?:\s*\d+(?=\s+(?:[0-9٠-٩])|\s*[:=\-]))?|TARGET(?:\s*\d+(?=\s+(?:[0-9٠-٩])|\s*[:=\-]))?)"
         matches = re.findall(
-            rf"(?:TP\s*\d*|TARGET\s*\d*)\s*[:=\-]?\s*({self._NUMBER}(?:\s*@\s*\d+(?:\.\d+)?\s*%?)?)",
+            rf"{target_marker}\s*[:=\-]?\s*({self._NUMBER}(?:\s*@\s*\d+(?:\.\d+)?\s*%?)?)",
             text,
             re.IGNORECASE,
         )

@@ -12,6 +12,8 @@ from capitalguard.application.services.frictionless_ingestion_service import (
     FrictionlessIngestionService,
 )
 from capitalguard.application.services.historical_parser_service import HistoricalParserService
+from capitalguard.application.services.historical_semantic_materialization_service import HistoricalSemanticMaterializationService
+from capitalguard.application.services.image_parsing_service import ImageParsingService
 from capitalguard.application.services.historical_replay_gate_service import HistoricalReplayGateService
 from capitalguard.application.services.live_review_service import LiveReviewService
 from capitalguard.application.services.historical_evidence_ingestion_service import (
@@ -74,6 +76,17 @@ def _origin_details(message):
 
 def _forwarded_input(message, *, user_id: int, details: dict) -> ForwardedMessageInput:
     origin = details["origin"]
+    photos = list(getattr(message, "photo", None) or [])
+    largest_photo = photos[-1] if photos else None
+    media = None
+    if largest_photo is not None:
+        media = {
+            "media_type": "PHOTO",
+            "file_id": getattr(largest_photo, "file_id", None),
+            "media_unique_id": getattr(largest_photo, "file_unique_id", None),
+            "width": getattr(largest_photo, "width", None),
+            "height": getattr(largest_photo, "height", None),
+        }
     return ForwardedMessageInput(
         receiver_chat_id=message.chat_id,
         receiver_message_id=message.message_id,
@@ -93,8 +106,46 @@ def _forwarded_input(message, *, user_id: int, details: dict) -> ForwardedMessag
             "source_title": details["source_title"],
             "source_username": details["source_username"],
             "intake_mode": "DIRECT_AUTO",
+            "media": media,
         },
     )
+
+
+async def _materialize_historical_content(db_session, db_user, receipt: HistoricalForwardReceipt):
+    """Materialize staged text and, when present, image through existing contracts."""
+    if receipt.validation_status != "STAGED":
+        return None
+    media = (receipt.metadata_json or {}).get("media") or {}
+    file_id = media.get("file_id")
+    image_result = None
+    try:
+        if file_id:
+            image_result = await ImageParsingService().parse_image_from_file_id(db_user.id, str(file_id))
+        forwarding = HistoricalForwardingService()
+        revision = forwarding.message_foundation_service.record_receipt(db_session, receipt=receipt)
+        return HistoricalSemanticMaterializationService().materialize_revision(
+            db_session,
+            revision_id=revision.id,
+            image_result=image_result,
+            image_provenance={
+                "media_id": media.get("media_unique_id"),
+                "file_id": media.get("file_id"),
+                "media_type": media.get("media_type"),
+                "source_message_id": receipt.source_message_id,
+                "source_chat_id": receipt.source_chat_id,
+                "parser_path": (image_result or {}).get("parser_path_used"),
+            } if file_id else None,
+        )
+    except Exception:
+        log.exception("Historical semantic materialization failed for receipt %s", receipt.id)
+        metadata = dict(receipt.metadata_json or {})
+        metadata["semantic_materialization"] = {
+            "status": "FAILED",
+            "modality": "IMAGE" if file_id else "TEXT",
+            "error": "HISTORICAL_SEMANTIC_MATERIALIZATION_FAILED",
+        }
+        receipt.metadata_json = metadata
+        return None
 
 
 def _auto_job_name(chat_id: int, batch_id: int) -> str:
@@ -292,6 +343,7 @@ async def direct_historical_forward_handler(
         market_data_available=market_data_available,
         market_snapshot_time=market_snapshot_time,
     )
+    await _materialize_historical_content(db_session, db_user, receipt)
     context.user_data[AUTO_BATCH_KEY] = batch.id
 
     job_name = _auto_job_name(message.chat_id, batch.id)
@@ -559,6 +611,15 @@ async def historical_forward_message_handler(update: Update, context: ContextTyp
     source_message_id = getattr(origin, "message_id", None) if origin else None
     source_chat_id = getattr(origin_chat, "id", None) if origin_chat else None
     raw_text = message.text or message.caption or ""
+    photos = list(getattr(message, "photo", None) or [])
+    largest_photo = photos[-1] if photos else None
+    media = {
+        "media_type": "PHOTO",
+        "file_id": getattr(largest_photo, "file_id", None),
+        "media_unique_id": getattr(largest_photo, "file_unique_id", None),
+        "width": getattr(largest_photo, "width", None),
+        "height": getattr(largest_photo, "height", None),
+    } if largest_photo is not None else None
     receipt = HistoricalForwardingService().stage_message(
         db_session,
         batch_id=batch_id,
@@ -578,9 +639,11 @@ async def historical_forward_message_handler(update: Update, context: ContextTyp
                     getattr(message, "reply_to_message", None), "message_id", None
                 ),
                 "origin_author_signature": getattr(origin, "author_signature", None) if origin else None,
+                "media": media,
             },
         ),
     )
+    await _materialize_historical_content(db_session, db_user, receipt)
     batch = db_session.get(HistoricalImportBatch, batch_id)
     expected_source_chat_id = (batch.metadata_json or {}).get("expected_source_chat_id") if batch else None
     if receipt.validation_status == "REJECTED_CHANNEL":

@@ -47,6 +47,7 @@ class ParsedDataResponse(BaseModel):
     entry: str
     stop_loss: str
     targets: List[TargetResponse]
+    leverage: Optional[str] = None
     market: Optional[str] = "Futures"
     order_type: Optional[str] = "LIMIT"
     notes: Optional[str] = None

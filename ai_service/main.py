@@ -72,6 +72,7 @@ def _serialize_data_for_response(data: Dict[str, Any]) -> Dict[str, Any]:
                 "close_percent": t.get("close_percent", 0.0)
             } for t in targets
         ],
+        "leverage": str(data.get("leverage")) if data.get("leverage") is not None else None,
         "market": data.get("market", "Futures"),
         "order_type": data.get("order_type", "LIMIT"),
         "notes": data.get("notes")

@@ -33,7 +33,8 @@ class HistoricalFinancialCandidateService:
             lower = self.parser._parse_one_number(zone.group(1)); upper = self.parser._parse_one_number(zone.group(2))
             if lower is not None and upper is not None:
                 candidates.append(("ENTRY_ZONE", {"lower": str(min(lower, upper)), "upper": str(max(lower, upper))}, zone.group(0), Decimal("0.8000")))
-        for index, match in enumerate(re.finditer(r"(?:TP|TARGET)\s*\d*\s*[:=\-]?\s*([0-9٠-٩][0-9٠-٩,.]*[KkMmBb]?)", normalized, re.I), start=1):
+        target_marker = r"(?:TP(?:\s*\d+(?=\s+(?:[0-9٠-٩])|\s*[:=\-]))?|TARGET(?:\s*\d+(?=\s+(?:[0-9٠-٩])|\s*[:=\-]))?)"
+        for index, match in enumerate(re.finditer(rf"{target_marker}\s*[:=\-]?\s*([0-9٠-٩][0-9٠-٩,.]*[KkMmBb]?)", normalized, re.I), start=1):
             value = self.parser._parse_one_number(match.group(1))
             if value is not None: candidates.append(("TARGET", {"index": index, "value": str(value)}, match.group(0), Decimal("0.8500")))
         timeframe = re.search(r"\b(1m|5m|15m|30m|1h|4h|1d|1w)\b", normalized, re.I)
