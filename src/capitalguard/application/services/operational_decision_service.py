@@ -18,6 +18,7 @@ from capitalguard.application.decision_boundary import (
     OperationalTarget,
     decision_boundary_for,
 )
+from capitalguard.application.decision_trace import DecisionTrace
 
 
 class OperationalDecisionError(ValueError):
@@ -34,6 +35,7 @@ class OperationalDecision:
     decision_fingerprint: str
     canonical: dict[str, Any]
     evidence: dict[str, Any]
+    trace: DecisionTrace
     execution_allowed: bool = False
 
     def as_dict(self) -> dict[str, Any]:
@@ -44,6 +46,7 @@ class OperationalDecision:
             "decision_fingerprint": self.decision_fingerprint,
             "canonical": self.canonical,
             "evidence": self.evidence,
+            "trace": self.trace.as_dict(),
             "execution_allowed": self.execution_allowed,
         }
 
@@ -112,7 +115,16 @@ class OperationalDecisionService:
         decision_boundary_for("canonical_to_analysis")
         normalized = self._normalize_canonical(canonical)
         evidence_payload = dict(evidence or {})
+        source_ref = str(evidence_payload.get("source_ref") or evidence_payload.get("source") or "").strip()
+        if not source_ref:
+            raise OperationalDecisionError("source_ref is required for operational decision traceability")
         fingerprint = self._fingerprint(normalized, evidence_payload)
+        trace = DecisionTrace.build(
+            source_ref=source_ref,
+            input_payload={"canonical": normalized, "evidence": evidence_payload},
+            correlation_id=evidence_payload.get("correlation_id"),
+            causation_id=evidence_payload.get("causation_id"),
+        )
         return OperationalDecision(
             status="READY_FOR_ANALYSIS",
             target=target,
@@ -120,5 +132,6 @@ class OperationalDecisionService:
             decision_fingerprint=fingerprint,
             canonical=normalized,
             evidence=evidence_payload,
+            trace=trace,
             execution_allowed=False,
         )
