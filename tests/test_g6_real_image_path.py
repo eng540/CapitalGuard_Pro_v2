@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "ai_service"))
-from PIL import Image, ImageDraw, ImageFont
 
 from ai_service.services import image_parser
 from capitalguard.application.services.historical_message_foundation_service import (
@@ -42,18 +41,8 @@ class _ImageClient:
 
 
 def _make_signal_png(path):
-    image = Image.new("RGB", (900, 420), "white")
-    draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default()
-    lines = [
-        "BTC Futures",
-        "LONG",
-        "Entry 77K    SL 76K    TP 78K",
-        "Leverage 5X",
-    ]
-    for index, line in enumerate(lines):
-        draw.text((40, 40 + index * 70), line, fill="black", font=font)
-    image.save(path, format="PNG")
+    fixture = Path(__file__).parent / "fixtures" / "g6_btc_signal.png"
+    path.write_bytes(fixture.read_bytes())
 
 
 async def _fake_post_with_retries(*_args, **_kwargs):
@@ -282,3 +271,54 @@ async def test_historical_handler_helper_runs_file_id_to_semantic_materializatio
     assert result["field_evidence"]["entry"][0]["modality"] == "IMAGE"
     assert result["field_evidence"]["entry"][0]["provenance"]["media_id"] == "telegram-photo-unique-2"
     assert revision.id == result["field_evidence"]["asset"][0]["provenance"]["revision_id"]
+
+
+@pytest.mark.asyncio
+async def test_historical_handler_helper_preserves_text_image_conflict(db_session, monkeypatch):
+    from types import SimpleNamespace
+    from capitalguard.interfaces.telegram.historical_forwarding_handler import (
+        _materialize_historical_content,
+    )
+
+    _, receipt = make_reviewed_batch(db_session)
+    receipt.raw_text = "BTC Futures LONG Entry 77K SL 76K TP 78K"
+    receipt.metadata_json = {
+        "media": {
+            "media_type": "PHOTO",
+            "file_id": "telegram-photo-conflict",
+            "media_unique_id": "telegram-photo-conflict-unique",
+        }
+    }
+    image_payload = {
+        "status": "success",
+        "data": {
+            "asset": "BTC",
+            "market": "Futures",
+            "side": "LONG",
+            "entry": "78000",
+            "stop_loss": "76000",
+            "targets": [{"price": "79000", "close_percent": 100.0}],
+            "leverage": "5",
+        },
+    }
+
+    async def fake_parse(self, user_id, file_id):
+        assert user_id == 99
+        assert file_id == "telegram-photo-conflict"
+        return image_payload
+
+    monkeypatch.setattr(
+        "capitalguard.interfaces.telegram.historical_forwarding_handler.ImageParsingService.parse_image_from_file_id",
+        fake_parse,
+    )
+
+    result = await _materialize_historical_content(
+        db_session,
+        SimpleNamespace(id=99),
+        receipt,
+    )
+
+    assert result["status"] == "CONFLICT"
+    assert result["canonical"]["entry"] is None
+    assert {item["modality"] for item in result["field_evidence"]["entry"]} == {"TEXT", "IMAGE"}
+    assert "entry" in result["conflicting_fields"]

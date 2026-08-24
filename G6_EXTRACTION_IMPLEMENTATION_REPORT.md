@@ -12,7 +12,7 @@ The shared historical parser now preserves target suffixes such as `78K` as `780
 
 A new application service, `HistoricalSemanticMaterializationService`, reuses the existing G2 interpretation, G3 financial-candidate extraction, G4 draft, and G1 revision provenance contracts. It produces a canonical semantic projection inside the existing `HistoricalRecommendationDraft.evidence_chain_json`. It does not create a `HistoricalSignal`, invoke Replay, or create live trading objects.
 
-The service supports text-only materialization, image candidate materialization, text-plus-image comparison, conflict preservation, missing-field classification, field-level evidence, modality attribution, extractor version, media identity, normalized values, validation status, final semantic status, and idempotent reprocessing.
+The service supports text-only materialization, image candidate materialization, text-plus-image comparison through the historical handler helper, conflict preservation, missing-field classification, field-level evidence, modality attribution, extractor version, media identity, normalized values, validation status, final semantic status, and idempotent reprocessing.
 
 Historical Telegram forwarding now preserves photo identity in the existing receipt metadata and source revision provenance. Both direct automatic historical intake and manual historical forwarding call the same semantic materialization helper. Vision remains an external parser; image results remain candidates until existing review/adjudication controls accept them.
 
@@ -41,14 +41,14 @@ The branch adds contract coverage for:
 Final local validation:
 
 ```text
-302 passed, 1 skipped
+303 passed, 1 skipped
 compileall: PASS
 git diff --check: PASS
 pip-audit: PASS — No known vulnerabilities found
 bandit on changed application paths: PASS
 ```
 
-Proof Closure coverage includes a real generated PNG passed through the existing Vision adapter with mocked network boundaries, an existing `ImageParsingService` file-id proxy path, and the historical handler materialization helper. The proof verifies BTC, Futures, LONG, 77000, 76000, 78000, and leverage 5, then persists IMAGE candidates and provenance in the existing G4 Draft boundary. The network boundaries are deterministic test doubles; no external Telegram or LLM credentials were used.
+Proof Closure coverage includes a committed visible PNG fixture containing the BTC/Futures/LONG/Entry 77K/SL 76K/TP 78K/Leverage 5X signal, passed through the existing Vision adapter with deterministic mocked provider boundaries, the existing `ImageParsingService` file-id proxy path, and the historical handler materialization helper. It also proves a handler-level Text + Image conflict with separate modality evidence. The proof verifies BTC, Futures, LONG, 77000, 76000, 78000, and leverage 5, then persists IMAGE candidates and provenance in the existing G4 Draft boundary. No external Telegram or LLM credentials were used.
 
 The repository-wide `flake8` baseline remains non-zero because of pre-existing style violations in unrelated files. No unrelated style cleanup was included in this branch. The PR workflow checks remain green; `flake8` is not a required workflow check for this repository.
 
