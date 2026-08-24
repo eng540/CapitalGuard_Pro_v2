@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import List, Optional, Dict, Any
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Header
+from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Header, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
@@ -58,6 +58,10 @@ class WebAppSignal(BaseModel):
 
 class AnalystRecommendationConfirm(WebAppSignal):
     idempotency_key: str
+
+
+class LegacyWebAppSignal(WebAppSignal):
+    idempotency_key: Optional[str] = None
 
 
 class UserTradeCloseCommand(BaseModel):
@@ -486,37 +490,83 @@ async def confirm_recommendation_webapp(payload: AnalystRecommendationConfirm, r
         return {"ok": False, "error": {"code": "INTERNAL_ERROR", "message": "Unable to confirm recommendation"}}
 
 
-@router.post("/create")
-async def create_trade_webapp(payload: WebAppSignal, request: Request):
+def _web_recommendation_from_payload(payload: WebAppSignal) -> dict:
+    """Convert either Web create payload into the one canonical command payload."""
+    targets = parse_targets_list(payload.targets_raw.split())
+    if not targets:
+        raise ValueError("At least one valid target is required")
+    return {
+        "asset": payload.asset,
+        "side": payload.side,
+        "market": payload.market,
+        "order_type": payload.order_type,
+        "entry": Decimal(str(payload.entry)),
+        "stop_loss": Decimal(str(payload.stop_loss)),
+        "targets": targets,
+        "notes": f"Lev: {payload.leverage}x | {payload.notes or ''}".strip(),
+        "target_channel_ids": {
+            int(channel_id) for channel_id in (payload.channel_ids or [])
+        },
+    }
+
+
+@router.post("/create", deprecated=True)
+async def create_trade_webapp(
+    payload: LegacyWebAppSignal,
+    request: Request,
+    response: Response,
+):
+    """Deprecated compatibility adapter; it owns no creation logic."""
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = (
+        '</api/webapp/recommendations/confirm; rel="successor-version"'
+    )
     try:
-        user_data = validate_telegram_data(payload.initData, settings.TELEGRAM_BOT_TOKEN)
-        svc = request.app.state.services.get("creation_service")
-        with session_scope() as session:
-            user = UserRepository(session).find_by_telegram_id(user_data['id'])
-            if not user or str(user.user_type.value).upper() != "ANALYST":
-                return {"ok": False, "error": "Permission Denied"}
-            targets = parse_targets_list(payload.targets_raw.split())
-            if not targets: return {"ok": False, "error": "Invalid Targets"}
-            notes = f"Lev: {payload.leverage}x | {payload.notes or ''}".strip()
-            target_channel_ids = {int(channel_id) for channel_id in (payload.channel_ids or [])}
-            rec, _ = await svc.create_and_publish_recommendation_async(
-                user_id=str(user_data['id']), db_session=session,
-                asset=payload.asset, side=payload.side, market=payload.market,
-                order_type=payload.order_type, entry=Decimal(str(payload.entry)),
-                stop_loss=Decimal(str(payload.stop_loss)), targets=targets, notes=notes,
-                target_channel_ids=target_channel_ids,
-            )
+        actor_telegram_id = resolve_webapp_actor(payload, request)
+        creation_service = (
+            request.app.state.services.get("creation_service")
+            if request.app.state.services
+            else None
+        )
+        if not creation_service:
             return {
-                "ok": True,
-                "entity_type": "RECOMMENDATION",
-                "public_ref": rec.public_ref,
-                "publication": {
-                    "state": "QUEUED" if target_channel_ids else "SAVED",
-                    "delivery_count": len(target_channel_ids),
+                "ok": False,
+                "error": {
+                    "code": "SERVICE_UNAVAILABLE",
+                    "message": "Recommendation service unavailable",
                 },
             }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+        recommendation = _web_recommendation_from_payload(payload)
+        idempotency_key = payload.idempotency_key or (
+            WebCommandService.derive_compatibility_idempotency_key(
+                actor_telegram_id,
+                recommendation,
+            )
+        )
+        with session_scope() as session:
+            result = await WebCommandService().confirm_analyst_recommendation(
+                session,
+                actor_telegram_id=actor_telegram_id,
+                idempotency_key=idempotency_key,
+                creation_service=creation_service,
+                recommendation=recommendation,
+            )
+        return result
+    except HTTPException:
+        raise
+    except WebCommandError as exc:
+        return {"ok": False, "error": {"code": "COMMAND_REJECTED", "message": str(exc)}}
+    except (KeyError, ValueError, RuntimeError) as exc:
+        return {"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(exc)}}
+    except Exception:
+        log.exception("Deprecated Web recommendation create adapter failed")
+        return {
+            "ok": False,
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Unable to create recommendation",
+            },
+        }
 
 @router.get("/portfolio")
 async def get_user_portfolio(initData: str, request: Request):
