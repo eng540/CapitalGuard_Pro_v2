@@ -54,3 +54,17 @@ def test_historical_parser_exposes_source_outcome_mismatch_for_closed_signal():
     assert result.data["financial_outcome"]["status"] == "MISMATCH"
     assert result.data["financial_outcome"]["derived_pnl_pct"] == "-7.142857142857142857142857143"
     assert "FINANCIAL_CONSISTENCY_REVIEW" in result.data["financial_outcome"]["warnings"]
+
+
+def test_historical_parser_normalizes_k_suffix_targets_without_truncating_price():
+    result = parser().parse(
+        "#BTCUSDT LONG Entry 77K SL 76K TP 78K Leverage 5X"
+    )
+
+    assert result.parse_status == "PARSED"
+    assert result.data["asset"] == "BTCUSDT"
+    assert result.data["side"] == "LONG"
+    assert result.data["entry"] == Decimal("77000")
+    assert result.data["stop_loss"] == Decimal("76000")
+    assert result.data["targets"][0]["price"] == Decimal("78000")
+    assert result.data["financial_consistency"]["is_consistent"] is True

@@ -72,6 +72,24 @@ class HistoricalForwardingService:
         return value.astimezone(timezone.utc)
 
     @staticmethod
+    def _source_content_hash(raw_text: str | None, metadata: dict[str, Any]) -> str:
+        """Hash the raw semantic input, including media identity when present."""
+        import hashlib
+        import json
+
+        media = metadata.get("media") or {}
+        payload = {
+            "raw_text": raw_text or "",
+            "media": {
+                "file_id": media.get("file_id"),
+                "media_unique_id": media.get("media_unique_id"),
+                "media_type": media.get("media_type"),
+            },
+        }
+        normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _validate_positive(value: int, field: str) -> None:
         if not isinstance(value, int) or value <= 0:
             raise HistoricalSignalValidationError(f"{field} must be a positive integer")
@@ -145,7 +163,7 @@ class HistoricalForwardingService:
         source_timestamp = self._utc(message.source_message_timestamp)
         edit_date = self._utc(message.source_edit_date)
         source_revision = max(0, int(message.source_message_revision or 0))
-        content_hash = self.signal_service._content_hash(message.raw_text)
+        content_hash = self._source_content_hash(message.raw_text, metadata)
         rejection_reason = None
         validation_status = "STAGED"
         origin_type = str(message.source_origin_type or "UNKNOWN").upper()
