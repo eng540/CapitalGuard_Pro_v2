@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildAnalystComparison, calculateRiskPlan } from "./capitalguard";
+import { buildAnalystComparison, calculateRiskPlan, compareSelectedAnalysts } from "./capitalguard";
+import type { CoreAnalystReadModel } from "./core-adapter";
 
 describe("calculateRiskPlan", () => {
   it("calculates a bounded long position from capital and stop distance", () => {
@@ -22,5 +23,28 @@ describe("buildAnalystComparison", () => {
     ]);
     expect(comparison.leader?.analystCode).toBe("AN-1");
     expect(comparison.confidence).toBe("SUFFICIENT_SAMPLE");
+  });
+
+  it("compares only requested Core analysts and rejects an unknown analyst", () => {
+    const analyst = (code: string, totalPnlPct: number): CoreAnalystReadModel => ({
+      analyst_code: code,
+      public_ref: null,
+      public_name: code,
+      sample_size: 40,
+      win_rate_pct: 65,
+      total_pnl_pct: totalPnlPct,
+      max_drawdown_pct: 4,
+      active_recommendations: 1,
+      risk_exposure_pct: 2,
+      eligible_for_ranking: true,
+      freshness_days: 1,
+    });
+    const rows = [analyst("AN-1", 8), analyst("AN-2", 15), analyst("AN-3", 100)];
+
+    const comparison = compareSelectedAnalysts(rows, ["AN-1", "AN-2"]);
+
+    expect(comparison.rows.map(row => row.analystCode)).toEqual(["AN-2", "AN-1"]);
+    expect(comparison.leader?.analystCode).toBe("AN-2");
+    expect(() => compareSelectedAnalysts(rows, ["AN-1", "AN-9"])).toThrow("ANALYST_NOT_FOUND");
   });
 });

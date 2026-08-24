@@ -4,6 +4,7 @@ import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
 import { coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreCreateHistoricalIntake, coreGetAnalystAssets, coreListHistoricalIntake, coreGetHistoricalIntakeReport, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetHistoricalIntake, coreGetHistoricalTrustQuality, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReplayHistoricalSignalFromBinance, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, probeCoreHealth } from "./core-adapter";
+import type { CoreAnalystReadModel } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -46,6 +47,42 @@ export function buildAnalystComparison(rows: AnalystComparisonRow[]) {
   return { leader, rows: ranked, confidence: leader && leader.sampleSize >= 30 ? "SUFFICIENT_SAMPLE" : "LOW_SAMPLE" };
 }
 
+const analystComparisonInput = z.object({
+  codes: z.array(z.string().trim().min(1).max(80)).min(2).max(3),
+}).superRefine((value, ctx) => {
+  const uniqueCodes = new Set(value.codes.map(code => code.trim()));
+  if (uniqueCodes.size !== value.codes.length) {
+    ctx.addIssue({ code: "custom", path: ["codes"], message: "Analyst codes must be unique" });
+  }
+});
+
+function analystComparisonRow(analyst: CoreAnalystReadModel): AnalystComparisonRow {
+  const analystCode = analyst.analyst_code ?? analyst.public_ref ?? "";
+  if (!analystCode) throw new Error("CAPITALGUARD_ANALYST_IDENTITY_MISSING");
+  return {
+    analystCode,
+    winRate: analyst.win_rate_pct,
+    totalPnlPct: analyst.total_pnl_pct,
+    maxDrawdownPct: analyst.max_drawdown_pct,
+    sampleSize: analyst.sample_size,
+  };
+}
+
+export function compareSelectedAnalysts(analysts: CoreAnalystReadModel[], codes: string[]) {
+  const requestedCodes = codes.map(code => code.trim());
+  if (new Set(requestedCodes).size !== requestedCodes.length) {
+    throw new Error("CAPITALGUARD_ANALYST_COMPARISON_CODES_MUST_BE_UNIQUE");
+  }
+  const selected = analysts.filter(analyst => {
+    const analystCode = analyst.analyst_code ?? analyst.public_ref ?? "";
+    return requestedCodes.includes(analystCode);
+  });
+  if (selected.length !== requestedCodes.length) {
+    throw new Error("CAPITALGUARD_ANALYST_COMPARISON_ANALYST_NOT_FOUND");
+  }
+  return buildAnalystComparison(selected.map(analystComparisonRow));
+}
+
 /**
  * These procedures deliberately return no local financial records. Core API is the
  * only source of truth for financial data and will progressively supply read models.
@@ -77,7 +114,13 @@ export const capitalguardRouter = router({
   recommendations: protectedProcedure.query(({ ctx }) => coreGetTraderRecommendations(telegramIdFromWebSession(ctx.user.openId))),
   recommendationDetail: protectedProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80) })).query(({ ctx, input }) => coreGetTraderRecommendationDetail(telegramIdFromWebSession(ctx.user.openId), input.publicRef)),
   discoverAnalysts: protectedProcedure.query(() => coreGetAnalysts()),
-  compareAnalysts: protectedProcedure.input(z.object({ codes: z.array(z.string().min(1)).min(2).max(3) })).query(() => ({ leader: null, rows: [], confidence: "CORE_DATA_PENDING" })),
+  compareAnalysts: protectedProcedure.input(analystComparisonInput).query(async ({ input }) => {
+    const snapshot = await coreGetAnalysts();
+    return {
+      asOf: snapshot.as_of,
+      ...compareSelectedAnalysts(snapshot.items, input.codes),
+    };
+  }),
   historicalBatches: protectedProcedure.query(({ ctx }) => coreGetTraderHistorical(telegramIdFromWebSession(ctx.user.openId))),
   historicalWallet: protectedProcedure.query(({ ctx }) => coreGetTraderHistorical(telegramIdFromWebSession(ctx.user.openId))),
   historicalIntake: protectedProcedure.input(z.object({

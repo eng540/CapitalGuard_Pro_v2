@@ -33,7 +33,7 @@ Use `environment.template.txt` for a copyable list of variables and `ENVIRONMENT
 
 ## Core integration safety
 
-The Web service calls Core from the server only. The browser never receives `CAPITALGUARD_CORE_API_KEY`, Telegram tokens, exchange secrets, or direct PostgreSQL access. Current Web routes are read-only (`health`, price, signal details, and TMA portfolio); they do not create a recommendation, user trade, publication outbox message, or copy-trading order.
+The Web service calls Core from the server only. The browser never receives `CAPITALGUARD_CORE_API_KEY`, Telegram tokens, exchange secrets, or direct PostgreSQL access. Core-owned Read Model routes (`health`, price, signal details, analyst discovery, trader read models, and TMA portfolio) do not persist financial records in Web PostgreSQL. Separate role-gated Command APIs exist for explicit analyst confirmation, UserTrade lifecycle actions, Owner Review, evidence ingestion, and historical replay; these commands remain server-side, require Core authorization and idempotency where applicable, and must not be confused with read-only queries.
 
 ## Vercel deployment
 
