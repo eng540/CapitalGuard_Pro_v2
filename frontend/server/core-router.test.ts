@@ -3,6 +3,9 @@ import { telegramIdFromWebSession } from "./capitalguard";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
+process.env.CAPITALGUARD_CORE_BASE_URL = "https://core.example";
+process.env.CAPITALGUARD_CORE_API_KEY = "private-service-key";
+
 function coreContext(): TrpcContext {
   return {
     user: { id: 101, openId: "core-route-test", email: "test@example.com", name: "Core Route Test", loginMethod: "manus", role: "admin", createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date() },

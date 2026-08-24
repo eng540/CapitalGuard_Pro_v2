@@ -193,6 +193,13 @@ app.state.services = None
 app.state.background_tasks: set[asyncio.Task] = set()
 app.state.ready = False
 
+
+def _register_background_task(task: asyncio.Task) -> None:
+    """Track a long-lived task so shutdown cancels and awaits it cleanly."""
+    app.state.background_tasks.add(task)
+    task.add_done_callback(app.state.background_tasks.discard)
+
+
 # ✅ WEBAPP SUPPORT: Mount static files for WebApp
 app.mount("/static", StaticFiles(directory="src/capitalguard/interfaces/api/static"), name="static")
 
@@ -277,7 +284,11 @@ async def on_startup():
         # ✅ P4-FIX: Circuit Breaker auto-recovery loop
         # يُعيد محاولة Binance تلقائياً بعد cooldown (30 دقيقة افتراضياً)
         # لا يستهلك موارد — ينام حتى ينتهي الـ cooldown
-        asyncio.create_task(market_data_service._auto_refresh_loop())
+        market_refresh_task = asyncio.create_task(
+            market_data_service._auto_refresh_loop(),
+            name="market-data-auto-refresh",
+        )
+        _register_background_task(market_refresh_task)
         log.info("MarketDataService auto-refresh loop started.")
     else:
         log.error("MarketDataService not found, cache will not be populated on startup.")
@@ -297,8 +308,7 @@ async def on_startup():
 
     # Start recurring work only after all critical dependencies are ready.
     backup_task = asyncio.create_task(auto_backup_loop(), name="auto-backup")
-    app.state.background_tasks.add(backup_task)
-    backup_task.add_done_callback(app.state.background_tasks.discard)
+    _register_background_task(backup_task)
 
     private_commands = [
         BotCommand("newrec", "📊 New Recommendation"),

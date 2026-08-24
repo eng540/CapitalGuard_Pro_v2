@@ -47,7 +47,7 @@ describe("CapitalGuard Core adapter", () => {
     cancelled.abort();
 
     await expect(coreReadOnlyFetch("/api/webapp/price?symbol=BTCUSDT", { signal: cancelled.signal }, hangingFetch as typeof fetch, env)).rejects.toThrow("CAPITALGUARD_CORE_TIMEOUT");
-    await expect(coreReadOnlyFetch("/api/webapp/price?symbol=BTCUSDT", unavailableFetch as typeof fetch, env)).rejects.toThrow("CAPITALGUARD_CORE_UNAVAILABLE");
+    await expect(coreReadOnlyFetch("/api/webapp/price?symbol=BTCUSDT", {}, unavailableFetch as typeof fetch, env)).rejects.toThrow("CAPITALGUARD_CORE_UNAVAILABLE");
   });
 
   it("accepts Telegram data only when the Core verifier confirms it", async () => {
