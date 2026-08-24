@@ -70,6 +70,52 @@ export type CoreHistoricalBinanceReplayInput = { actorTelegramId: number; signal
 export type CoreHistoricalBinanceReplayConfirmation = { ok: true; signal_id: number; event_count: number; replayed: boolean; commercial_enabled: false };
 export type CoreHistoricalBatchBinanceReplayInput = { actorTelegramId: number; batchId: number; idempotencyKey: string };
 export type CoreHistoricalBatchBinanceReplayConfirmation = { ok: true; batch_id: number; signal_ids: number[]; event_count: number; window: string; replayed: boolean; commercial_enabled: false };
+export type CoreHistoricalIntakeItem = {
+  itemKey?: string;
+  rawText?: string | null;
+  sourceChatId?: number;
+  sourceMessageId?: number;
+  sourceMessageRevision?: number;
+  sourceMessageTimestamp?: string;
+  sourceReplyToMessageId?: number;
+  sourceUri?: string;
+  sourceOriginType?: string;
+  relatedItemKey?: string;
+  media?: Record<string, unknown>;
+};
+export type CoreHistoricalIntakeBatch = {
+  id: number;
+  ref: string;
+  status: string;
+  source_kind: string;
+  total_records: number;
+  accepted_records: number;
+  rejected_records: number;
+  created_at: string | null;
+  metadata: Record<string, unknown>;
+  items: Array<{
+    id: number;
+    order: number | null;
+    item_key: string | null;
+    status: string;
+    semantic_status: string;
+    parse_status: string | null;
+    source_verification: string;
+    source_chat_id: number | null;
+    source_message_id: number | null;
+    source_timestamp: string | null;
+    raw_text: string | null;
+    content_hash: string;
+    missing_fields: string[];
+    conflicting_fields: string[];
+    canonical: Record<string, unknown>;
+    rejection_reason: string | null;
+    metadata: Record<string, unknown>;
+  }>;
+};
+export type CoreHistoricalIntakeResponse = { ok: true; batch: CoreHistoricalIntakeBatch };
+export type CoreHistoricalIntakeListResponse = { ok: true; batches: CoreHistoricalIntakeBatch[] };
+export type CoreHistoricalIntakeReportResponse = { ok: true; report: { batch_id: number; batch_ref: string; status: string; source_kind: string; counts: Record<string, number>; readiness: Record<string, boolean>; signals: Array<Record<string, unknown>>; next_action: string } };
 export type CoreAnalystRecommendationInput = { actorTelegramId: number; asset: string; side: "LONG" | "SHORT"; market: string; orderType: "LIMIT" | "MARKET" | "STOP_MARKET"; entry: number; stopLoss: number; targetsRaw: string; notes?: string; leverage?: string; channelIds: number[] };
 export type CoreAnalystRecommendationPreview = { schema_version: number; mode: "PREVIEW"; asset: string; side: "LONG" | "SHORT"; market: string; order_type: "LIMIT" | "MARKET" | "STOP_MARKET"; entry: string; stop_loss: string; targets: Array<{ price: string; close_percent: number }>; live_price: string | null; publication: { state: "NOT_QUEUED"; eligible_channel_count: number } };
 export type CoreAnalystRecommendationConfirmation = { ok: true; entity_type: "RECOMMENDATION"; public_ref: string; publication: { state: "SAVED" | "QUEUED"; queued_delivery_count: number }; replayed: boolean };
@@ -334,6 +380,55 @@ export async function coreUpdatePendingUserTradeEntry(input: CorePendingUserTrad
   const result = await coreCommand(path, { actor_telegram_id: input.actorTelegramId, entry: input.entry, idempotency_key: idempotencyKey }, fetchImpl, env);
   if (result.entity_type !== "USER_TRADE" || result.public_ref !== publicRef || (result.status !== "WATCHLIST" && result.status !== "PENDING_ACTIVATION") || typeof result.entry !== "number") throw new Error("CAPITALGUARD_CORE_PENDING_ENTRY_INVALID");
   return result as unknown as CorePendingUserTradeEntryConfirmation;
+}
+
+export async function coreCreateHistoricalIntake(input: { actorTelegramId: number; sourceKind: "TELEGRAM_EXPORT" | "MANUAL_ADMIN_IMPORT"; inputMode: "PASTE" | "UPLOAD" | "TELEGRAM_EXPORT"; items: CoreHistoricalIntakeItem[]; isPartial: boolean; batchLabel?: string }, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreHistoricalIntakeResponse> {
+  if (!Number.isSafeInteger(input.actorTelegramId) || input.actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > 5000) throw new Error("CAPITALGUARD_HISTORICAL_ITEMS_INVALID");
+  const items = input.items.map(item => ({
+    item_key: item.itemKey,
+    raw_text: item.rawText,
+    source_chat_id: item.sourceChatId,
+    source_message_id: item.sourceMessageId,
+    source_message_revision: item.sourceMessageRevision ?? 0,
+    source_message_timestamp: item.sourceMessageTimestamp,
+    source_reply_to_message_id: item.sourceReplyToMessageId,
+    source_uri: item.sourceUri,
+    source_origin_type: item.sourceOriginType,
+    related_item_key: item.relatedItemKey,
+    media: item.media,
+  }));
+  const result = await coreCommand("/api/webapp/historical/intake", {
+    actor_telegram_id: input.actorTelegramId,
+    source_kind: input.sourceKind,
+    input_mode: input.inputMode,
+    items,
+    is_partial: input.isPartial,
+    batch_label: input.batchLabel,
+  }, fetchImpl, env);
+  if (!result.batch || typeof result.batch !== "object" || !Array.isArray((result.batch as { items?: unknown }).items)) throw new Error("CAPITALGUARD_HISTORICAL_INTAKE_INVALID");
+  return result as unknown as CoreHistoricalIntakeResponse;
+}
+
+export async function coreListHistoricalIntake(actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreHistoricalIntakeListResponse> {
+  if (!Number.isSafeInteger(actorTelegramId) || actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const result = await coreReadOnlyFetch(query("/api/webapp/historical/intake", { actor_telegram_id: String(actorTelegramId), limit: "25" }), {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { batches?: unknown }).batches)) throw new Error("CAPITALGUARD_HISTORICAL_INTAKE_LIST_INVALID");
+  return result as CoreHistoricalIntakeListResponse;
+}
+
+export async function coreGetHistoricalIntakeReport(batchId: number, actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreHistoricalIntakeReportResponse> {
+  if (!Number.isSafeInteger(batchId) || batchId <= 0 || !Number.isSafeInteger(actorTelegramId) || actorTelegramId <= 0) throw new Error("CAPITALGUARD_HISTORICAL_INTAKE_INPUT_INVALID");
+  const result = await coreReadOnlyFetch(query(`/api/webapp/historical/intake/${batchId}/report`, { actor_telegram_id: String(actorTelegramId) }), {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !(result as { report?: unknown }).report) throw new Error("CAPITALGUARD_HISTORICAL_REPORT_INVALID");
+  return result as CoreHistoricalIntakeReportResponse;
+}
+
+export async function coreGetHistoricalIntake(batchId: number, actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreHistoricalIntakeResponse> {
+  if (!Number.isSafeInteger(batchId) || batchId <= 0 || !Number.isSafeInteger(actorTelegramId) || actorTelegramId <= 0) throw new Error("CAPITALGUARD_HISTORICAL_INTAKE_INPUT_INVALID");
+  const result = await coreReadOnlyFetch(query(`/api/webapp/historical/intake/${batchId}`, { actor_telegram_id: String(actorTelegramId) }), {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !(result as { batch?: unknown }).batch) throw new Error("CAPITALGUARD_HISTORICAL_INTAKE_INVALID");
+  return result as CoreHistoricalIntakeResponse;
 }
 
 export async function coreGetTraderHistorical(telegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ as_of: string; items: CoreHistoricalRecord[] }> {

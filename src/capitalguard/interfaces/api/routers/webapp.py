@@ -29,6 +29,7 @@ from capitalguard.application.services.performance_service import PerformanceSer
 from capitalguard.application.services.analyst_discovery_service import AnalystDiscoveryService
 from capitalguard.application.services.historical_reputation_service import HistoricalReputationService
 from capitalguard.application.services.historical_signal_query_service import HistoricalSignalQueryService
+from capitalguard.application.services.historical_web_intake_service import HistoricalWebIntakeError, HistoricalWebIntakeService
 from capitalguard.application.services.historical_trust_release_service import HistoricalTrustReleaseService
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
@@ -126,6 +127,29 @@ class HistoricalDraftMaterializationCommand(BaseModel):
     actor_telegram_id: int
     draft_id: int
     idempotency_key: str
+
+
+class HistoricalWebIntakeItem(BaseModel):
+    item_key: Optional[str] = None
+    raw_text: Optional[str] = None
+    source_chat_id: Optional[int] = None
+    source_message_id: Optional[int] = None
+    source_message_revision: int = 0
+    source_message_timestamp: Optional[datetime] = None
+    source_reply_to_message_id: Optional[int] = None
+    source_uri: Optional[str] = None
+    source_origin_type: Optional[str] = None
+    related_item_key: Optional[str] = None
+    media: Optional[Dict[str, Any]] = None
+
+
+class HistoricalWebIntakeCommand(BaseModel):
+    actor_telegram_id: int
+    source_kind: str = "MANUAL_ADMIN_IMPORT"
+    input_mode: str = "PASTE"
+    items: List[HistoricalWebIntakeItem]
+    is_partial: bool = False
+    batch_label: Optional[str] = None
 
 # --- Helpers ---
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
@@ -745,6 +769,82 @@ async def get_analyst_read_model(request: Request):
                 "freshness_days": float(row["freshness_days"]) if row["freshness_days"] is not None else None,
             })
         return {"ok": True, "as_of": datetime.utcnow().isoformat() + "Z", "items": items}
+
+
+@router.post("/historical/intake")
+async def create_historical_web_intake(command: HistoricalWebIntakeCommand, request: Request):
+    """Stage Web paste/upload items through the existing historical batch/receipt model."""
+    require_core_service_key(request.headers.get("authorization"))
+    if not command.items or len(command.items) > HistoricalWebIntakeService.MAX_ITEMS:
+        raise HTTPException(status_code=422, detail="Historical intake requires between 1 and 5000 items")
+    try:
+        with session_scope() as session:
+            user = UserRepository(session).find_by_telegram_id(command.actor_telegram_id)
+            if not user:
+                raise HTTPException(status_code=404, detail="Historical intake actor was not found")
+            result = HistoricalWebIntakeService().create_batch(
+                session,
+                requested_by_user_id=user.id,
+                source_kind=command.source_kind,
+                input_mode=command.input_mode,
+                items=[item.model_dump() for item in command.items],
+                is_partial=command.is_partial,
+                batch_label=command.batch_label,
+            )
+            return result
+    except HistoricalWebIntakeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/historical/intake")
+async def list_historical_web_intake(actor_telegram_id: int, request: Request, limit: int = 25):
+    require_core_service_key(request.headers.get("authorization"))
+    with session_scope() as session:
+        user = UserRepository(session).find_by_telegram_id(actor_telegram_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Historical intake actor was not found")
+        try:
+            return HistoricalWebIntakeService().list_batches(
+                session,
+                requested_by_user_id=user.id,
+                limit=limit,
+            )
+        except HistoricalWebIntakeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/historical/intake/{batch_id}/report")
+async def get_historical_web_intake_report(batch_id: int, actor_telegram_id: int, request: Request):
+    require_core_service_key(request.headers.get("authorization"))
+    with session_scope() as session:
+        user = UserRepository(session).find_by_telegram_id(actor_telegram_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Historical intake actor was not found")
+        try:
+            return HistoricalWebIntakeService().batch_report(
+                session,
+                batch_id=batch_id,
+                requested_by_user_id=user.id,
+            )
+        except HistoricalWebIntakeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/historical/intake/{batch_id}")
+async def get_historical_web_intake(batch_id: int, actor_telegram_id: int, request: Request):
+    require_core_service_key(request.headers.get("authorization"))
+    with session_scope() as session:
+        user = UserRepository(session).find_by_telegram_id(actor_telegram_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Historical intake actor was not found")
+        try:
+            return HistoricalWebIntakeService().get_batch(
+                session,
+                batch_id=batch_id,
+                requested_by_user_id=user.id,
+            )
+        except HistoricalWebIntakeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/owner/review-batches")
