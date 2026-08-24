@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetHistoricalTrustQuality, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReplayHistoricalSignalFromBinance, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, probeCoreHealth } from "./core-adapter";
+import { coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreCreateHistoricalIntake, coreGetAnalystAssets, coreListHistoricalIntake, coreGetHistoricalIntakeReport, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetHistoricalIntake, coreGetHistoricalTrustQuality, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReplayHistoricalSignalFromBinance, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, probeCoreHealth } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
@@ -80,6 +80,31 @@ export const capitalguardRouter = router({
   compareAnalysts: protectedProcedure.input(z.object({ codes: z.array(z.string().min(1)).min(2).max(3) })).query(() => ({ leader: null, rows: [], confidence: "CORE_DATA_PENDING" })),
   historicalBatches: protectedProcedure.query(({ ctx }) => coreGetTraderHistorical(telegramIdFromWebSession(ctx.user.openId))),
   historicalWallet: protectedProcedure.query(({ ctx }) => coreGetTraderHistorical(telegramIdFromWebSession(ctx.user.openId))),
+  historicalIntake: protectedProcedure.input(z.object({
+    sourceKind: z.enum(["TELEGRAM_EXPORT", "MANUAL_ADMIN_IMPORT"]),
+    inputMode: z.enum(["PASTE", "UPLOAD", "TELEGRAM_EXPORT"]),
+    items: z.array(z.object({
+      itemKey: z.string().trim().max(120).optional(),
+      rawText: z.string().max(50_000).nullable().optional(),
+      sourceChatId: z.number().int().optional(),
+      sourceMessageId: z.number().int().optional(),
+      sourceMessageRevision: z.number().int().min(0).max(1000).optional(),
+      sourceMessageTimestamp: z.string().datetime().optional(),
+      sourceReplyToMessageId: z.number().int().optional(),
+      sourceUri: z.string().trim().max(500).optional(),
+      sourceOriginType: z.string().trim().max(40).optional(),
+      relatedItemKey: z.string().trim().max(120).optional(),
+      media: z.record(z.string(), z.unknown()).optional(),
+    })).min(1).max(5000),
+    isPartial: z.boolean().default(false),
+    batchLabel: z.string().trim().max(255).optional(),
+  })).mutation(({ ctx, input }) => coreCreateHistoricalIntake({
+    actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
+    ...input,
+  })),
+  historicalIntakeList: protectedProcedure.query(({ ctx }) => coreListHistoricalIntake(telegramIdFromWebSession(ctx.user.openId))),
+  historicalIntakeReport: protectedProcedure.input(z.object({ batchId: z.number().int().positive() })).query(({ ctx, input }) => coreGetHistoricalIntakeReport(input.batchId, telegramIdFromWebSession(ctx.user.openId))),
+  historicalIntakeDetail: protectedProcedure.input(z.object({ batchId: z.number().int().positive() })).query(({ ctx, input }) => coreGetHistoricalIntake(input.batchId, telegramIdFromWebSession(ctx.user.openId))),
   smartAnalyze: protectedProcedure.input(smartAnalysisInput).mutation(async ({ input }) => analyzeForwardText(input.text)),
   core: router({
     health: protectedProcedure.query(() => probeCoreHealth()),

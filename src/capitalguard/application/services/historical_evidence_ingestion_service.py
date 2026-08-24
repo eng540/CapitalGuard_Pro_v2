@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch
+from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch, HistoricalMessageRevision
 from capitalguard.infrastructure.db.repository import ParsingRepository
 
 from .historical_parser_service import HistoricalParserService
@@ -90,7 +90,7 @@ class HistoricalEvidenceIngestionService:
             try:
                 evidence = self.signal_service.ingest_evidence(
                     session,
-                    source_kind="TELEGRAM_FORWARD",
+                    source_kind=batch.source_kind,
                     batch_id=batch.id,
                     channel_catalog_id=batch.channel_catalog_id,
                     telegram_channel_id=receipt.source_chat_id,
@@ -98,7 +98,12 @@ class HistoricalEvidenceIngestionService:
                     message_revision=receipt.source_message_revision or 0,
                     message_timestamp=receipt.source_message_timestamp,
                     raw_text=receipt.raw_text,
-                    source_uri=f"telegram://{receipt.source_chat_id}/{receipt.source_message_id}",
+                    source_uri=(receipt.metadata_json or {}).get("source_uri")
+                    or (
+                        f"telegram://{receipt.source_chat_id}/{receipt.source_message_id}"
+                        if receipt.source_chat_id is not None and receipt.source_message_id is not None
+                        else f"manual://batch/{batch.id}/receipt/{receipt.id}"
+                    ),
                     ownership_proof_type="OWNER_REVIEW",
                     ownership_proof_ref=f"batch:{batch.id}:reviewer:{reviewer_user_id}",
                     metadata={
@@ -111,6 +116,11 @@ class HistoricalEvidenceIngestionService:
             except HistoricalSignalValidationError as exc:
                 raise HistoricalEvidenceIngestionError(str(exc)) from exc
             receipt.evidence_id = evidence.id
+            linked_revisions = session.execute(
+                select(HistoricalMessageRevision).where(HistoricalMessageRevision.receipt_id == receipt.id)
+            ).scalars().all()
+            for revision in linked_revisions:
+                revision.evidence_id = evidence.id
             receipt.validation_status = "INGESTED"
             receipt.metadata_json = {
                 **(receipt.metadata_json or {}),

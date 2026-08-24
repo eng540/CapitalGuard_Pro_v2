@@ -46,19 +46,22 @@ class HistoricalMessageFoundationService:
         return "TEXT", Decimal("0.5000")
 
     def record_receipt(self, session: Session, *, receipt: HistoricalForwardReceipt) -> HistoricalMessageRevision:
-        if receipt.source_chat_id is None or receipt.source_message_id is None:
-            raise HistoricalMessageFoundationError("Canonical source identity requires source chat and message identifiers")
+        metadata = receipt.metadata_json or {}
+        is_telegram_source = receipt.source_chat_id is not None and receipt.source_message_id is not None
+        canonical_source_kind = "TELEGRAM" if is_telegram_source else "WEB_UNVERIFIED"
+        canonical_source_chat_id = receipt.source_chat_id if is_telegram_source else -(receipt.forwarding_user_id or 1)
+        canonical_external_message_id = receipt.source_message_id if is_telegram_source else receipt.receiver_message_id
         message = session.execute(select(HistoricalCanonicalMessage).where(
-            HistoricalCanonicalMessage.source_kind == "TELEGRAM",
-            HistoricalCanonicalMessage.source_chat_id == receipt.source_chat_id,
-            HistoricalCanonicalMessage.external_message_id == receipt.source_message_id,
+            HistoricalCanonicalMessage.source_kind == canonical_source_kind,
+            HistoricalCanonicalMessage.source_chat_id == canonical_source_chat_id,
+            HistoricalCanonicalMessage.external_message_id == canonical_external_message_id,
         )).scalar_one_or_none()
         observed_at = self._utc(receipt.created_at or receipt.source_message_timestamp)
         if message is None:
             message = HistoricalCanonicalMessage(
-                source_kind="TELEGRAM",
-                source_chat_id=receipt.source_chat_id,
-                external_message_id=receipt.source_message_id,
+                source_kind=canonical_source_kind,
+                source_chat_id=canonical_source_chat_id,
+                external_message_id=canonical_external_message_id,
                 ingestion_mode="HISTORICAL",
                 first_observed_at=observed_at,
             )
@@ -87,6 +90,10 @@ class HistoricalMessageFoundationService:
             evidence_id=receipt.evidence_id,
             provenance_json={
                 "batch_id": receipt.batch_id,
+                "canonical_source_kind": canonical_source_kind,
+                "canonical_source_chat_id": canonical_source_chat_id,
+                "canonical_external_message_id": canonical_external_message_id,
+                "source_verification": metadata.get("source_verification", "UNVERIFIED"),
                 "receiver_chat_id": receipt.receiver_chat_id,
                 "receiver_message_id": receipt.receiver_message_id,
                 "source_metadata": receipt.metadata_json or {},

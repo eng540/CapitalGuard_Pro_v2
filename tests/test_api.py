@@ -290,3 +290,36 @@ def test_historical_quality_requires_the_core_service_key(client: TestClient, mo
 def test_removed_legacy_recommendations_surface_is_not_accidentally_reintroduced(client: TestClient):
     response = client.get("/recommendations")
     assert response.status_code == 404
+
+
+def test_historical_intake_surface_requires_core_service_key(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "test-service-key")
+    payload = {
+        "actor_telegram_id": 123456,
+        "source_kind": "MANUAL_ADMIN_IMPORT",
+        "input_mode": "PASTE",
+        "items": [{"item_key": "one", "raw_text": "#BTCUSDT LONG Entry 100 SL 95 TP1 105"}],
+    }
+    create = client.post("/api/webapp/historical/intake", json=payload)
+    listing = client.get("/api/webapp/historical/intake", params={"actor_telegram_id": 123456})
+    detail = client.get("/api/webapp/historical/intake/1", params={"actor_telegram_id": 123456})
+
+    assert create.status_code == 401
+    assert listing.status_code == 401
+    assert detail.status_code == 401
+
+
+def test_historical_intake_rejects_empty_items_after_service_auth(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from capitalguard.config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "test-service-key")
+    response = client.post(
+        "/api/webapp/historical/intake",
+        headers={"Authorization": "Bearer test-service-key"},
+        json={"actor_telegram_id": 123456, "source_kind": "MANUAL_ADMIN_IMPORT", "input_mode": "PASTE", "items": []},
+    )
+
+    assert response.status_code == 422
+    assert "between 1 and 5000" in response.json()["detail"]
