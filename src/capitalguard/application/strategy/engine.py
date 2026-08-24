@@ -222,7 +222,8 @@ class StrategyEngine:
         self._state.clear()
         for rec in recs:
             try:
-                if rec.get("status") and str(rec.get("status")).upper().endswith("ACTIVE"):
+                status = str(rec.get("status", "")).upper()
+                if status in {"ACTIVE", "ACTIVATED"}:
                     self.initialize_state_for_recommendation(rec)
             except Exception:
                 logger.exception("Failed to initialize state for rec in rebuild: %s", rec.get("id"))
@@ -291,7 +292,7 @@ class StrategyEngine:
     def _evaluate_single_locked(self, rec: Dict[str, Any], high: Decimal, low: Decimal, close: Decimal, ts: int) -> List[Action]:
         actions: List[Action] = []
         # Basic validation and eligibility
-        if not rec or str(rec.get("status", "")).upper() != "ACTIVE" or not rec.get("profit_stop_active", False):
+        if not rec or str(rec.get("status", "")).upper() not in {"ACTIVE", "ACTIVATED"} or not rec.get("profit_stop_active", False):
             return actions
 
         rec_id = int(rec["id"])

@@ -19,7 +19,7 @@ type IntakeItem = {
   relatedItemKey?: string;
 };
 
-type IntakeMode = "PASTE" | "UPLOAD" | "TELEGRAM_EXPORT";
+export type IntakeMode = "PASTE" | "UPLOAD" | "TELEGRAM_EXPORT";
 type SourceKind = "TELEGRAM_EXPORT" | "MANUAL_ADMIN_IMPORT";
 
 export function parseIntakeText(value: string, mode: IntakeMode): { sourceKind: SourceKind; items: IntakeItem[] } {

@@ -58,6 +58,9 @@ def test_analyst_metrics_include_drawdown_and_active_exposure(db_session):
     assert record["active_recommendations"] == 1
     assert record["max_drawdown_pct"] > Decimal("0")
     assert record["exposure_proxy"] == 1
+    assert record["profit_factor"] > Decimal("0")
+    assert record["signal_health"]["target_observation_count"] >= 0
+    assert "most_profitable_pairs" in record["signal_health"]
 
 
 def test_discovery_supports_window_and_risk_exposure(db_session):

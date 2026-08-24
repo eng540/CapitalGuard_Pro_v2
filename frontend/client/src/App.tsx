@@ -9,6 +9,8 @@ import Home from "./pages/Home";
 import Workspace from "./pages/Workspace";
 import Recommendations from "./pages/Recommendations";
 import Analysts from "./pages/Analysts";
+import AnalystDossier from "./pages/AnalystDossier";
+import SignalDiscovery from "./pages/SignalDiscovery";
 import Historical from "./pages/Historical";
 import RiskStudio from "./pages/RiskStudio";
 import Admin from "./pages/Admin";
@@ -23,6 +25,8 @@ function Router() {
       <Route path={"/app"} component={Workspace} />
       <Route path={"/recommendations"} component={Recommendations} />
       <Route path={"/analysts"} component={Analysts} />
+      <Route path={"/analysts/:code"} component={AnalystDossier} />
+      <Route path={"/signals"} component={SignalDiscovery} />
       <Route path={"/analyst/workspace"} component={AnalystWorkspace} />
       <Route path={"/historical"} component={Historical} />
       <Route path={"/risk"} component={RiskStudio} />

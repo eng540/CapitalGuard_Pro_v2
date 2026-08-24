@@ -20,7 +20,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useIsMobile } from "@/hooks/useMobile";
-import { BarChart3, Bot, FileClock, LayoutDashboard, LogOut, PanelLeft, ShieldCheck, Target, Users } from "lucide-react";
+import { BarChart3, Bot, FileClock, LayoutDashboard, LogOut, PanelLeft, Search, ShieldCheck, Target, Users } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
@@ -30,6 +30,7 @@ const menuItems = [
   { icon: LayoutDashboard, label: "نظرة عامة", path: "/app" },
   { icon: Target, label: "التوصيات", path: "/recommendations" },
   { icon: BarChart3, label: "اكتشاف المحللين", path: "/analysts" },
+  { icon: Search, label: "اكتشاف الإشارات", path: "/signals" },
   { icon: Target, label: "مساحة المحلل", path: "/analyst/workspace" },
   { icon: Bot, label: "Smart Dropzone", path: "/smart" },
   { icon: FileClock, label: "التاريخ وReplay", path: "/historical" },

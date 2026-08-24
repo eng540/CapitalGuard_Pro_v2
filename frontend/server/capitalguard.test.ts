@@ -5,7 +5,13 @@ import type { CoreAnalystReadModel } from "./core-adapter";
 describe("calculateRiskPlan", () => {
   it("calculates a bounded long position from capital and stop distance", () => {
     const result = calculateRiskPlan({ capital: 10_000, riskPercent: 1, entry: 70_000, stop: 69_500, side: "long" });
-    expect(result).toEqual({ valid: true, reason: "RISK_PLAN_READY", riskAmount: 100, quantity: 0.2, notional: 14000 });
+    expect(result).toMatchObject({ valid: true, reason: "RISK_PLAN_READY", riskAmount: 100, quantity: 0.2, notional: 14000, leverage: 1, marginRequired: 14000 });
+  });
+
+  it("uses an explicit risk amount when supplied", () => {
+    const result = calculateRiskPlan({ capital: 10_000, riskPercent: 1, riskAmount: 50, entry: 70_000, stop: 69_500, side: "long" });
+    expect(result.riskAmount).toBe(50);
+    expect(result.quantity).toBe(0.1);
   });
 
   it("rejects a stop that invalidates short-side risk direction", () => {

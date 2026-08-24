@@ -9,7 +9,7 @@ import json
 import hmac
 import hashlib
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
 from urllib.parse import parse_qs
@@ -33,7 +33,7 @@ from capitalguard.application.services.historical_web_intake_service import Hist
 from capitalguard.application.services.historical_trust_release_service import HistoricalTrustReleaseService
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
-from capitalguard.infrastructure.db.models import Channel, HistoricalImportBatch, HistoricalSignalEvent, PublicationDelivery, Recommendation, RecommendationEvent, RecommendationStatusEnum, UserTrade, WebCommandAudit
+from capitalguard.infrastructure.db.models import AnalystProfile, Channel, HistoricalImportBatch, HistoricalSignalEvent, PublicationDelivery, Recommendation, RecommendationEvent, RecommendationStatusEnum, User, UserTrade, WebCommandAudit
 from capitalguard.infrastructure.market.symbol_catalog import SymbolCatalog
 
 log = logging.getLogger(__name__)
@@ -228,11 +228,18 @@ def _serialize_live_position(entity: Any, live_price: float | None) -> dict[str,
         "market": str(getattr(entity, "market", "Futures")),
         "entry": float(entry),
         "stop_loss": float(stop_loss),
+        "open_size_percent": float(getattr(entity, "open_size_percent", 100) or 100),
         "live_price": live_price,
         "pnl_live_pct": _pct(entry, live_price, side) if live_price is not None else 0.0,
         "status": str(getattr(entity, "unified_status", "WATCHLIST")),
         "source_type": "TRADER_LOG" if getattr(entity, "is_user_trade", False) else "ANALYST_RECOMMENDATION",
         "targets": targets,
+        "protection": {
+            "mode": getattr(entity, "profit_stop_mode", "NONE"),
+            "active": bool(getattr(entity, "profit_stop_active", False)),
+            "trailing_value": float(getattr(entity, "profit_stop_trailing_value", 0) or 0) if getattr(entity, "profit_stop_trailing_value", None) is not None else None,
+            "break_even_after_profit_pct": float(getattr(entity, "break_even_after_profit_pct", 0) or 0) if getattr(entity, "break_even_after_profit_pct", None) is not None else None,
+        },
         "created_at": created_at.isoformat() if created_at else None,
     }
 
@@ -269,6 +276,12 @@ def _serialize_trade_read_model(trade: UserTrade) -> dict[str, Any]:
             {"event_type": event.event_type, "event_timestamp": event.event_timestamp.isoformat()}
             for event in events
         ],
+        "protection": {
+            "mode": getattr(trade, "profit_stop_mode", "NONE"),
+            "active": bool(getattr(trade, "profit_stop_active", False)),
+            "trailing_value": float(trade.profit_stop_trailing_value) if trade.profit_stop_trailing_value is not None else None,
+            "break_even_after_profit_pct": float(trade.break_even_after_profit_pct) if trade.break_even_after_profit_pct is not None else None,
+        },
     }
 
 
@@ -280,6 +293,16 @@ def _find_owned_user_trade_by_public_ref(session: Any, user_id: int, public_ref:
             UserTrade.public_ref == public_ref,
         )
     ).scalar_one_or_none()
+
+
+def _serialize_signal_health(value: Any) -> dict[str, Any]:
+    value = value or {}
+    return {
+        "avg_minutes_to_first_target": float(value["avg_minutes_to_first_target"]) if value.get("avg_minutes_to_first_target") is not None else None,
+        "target_observation_count": int(value.get("target_observation_count", 0)),
+        "reversed_before_entry_count": int(value.get("reversed_before_entry_count", 0)),
+        "most_profitable_pairs": [{"asset": item["asset"], "pnl_pct": float(item["pnl_pct"])} for item in value.get("most_profitable_pairs", [])],
+    }
 
 
 def _serialize_historical_signal_read_model(signal: Any) -> dict[str, Any]:
@@ -762,13 +785,91 @@ async def get_analyst_read_model(request: Request):
                 "sample_size": int(row["sample_size"]),
                 "win_rate_pct": float(row["win_rate_pct"]),
                 "total_pnl_pct": float(row["total_pnl_pct"]),
+                "profit_factor": None if str(row.get("profit_factor")) == "Infinity" else float(row["profit_factor"]),
+                "profit_factor_infinite": str(row.get("profit_factor")) == "Infinity",
                 "max_drawdown_pct": float(row["max_drawdown_pct"]),
                 "active_recommendations": int(row["active_recommendations"]),
                 "risk_exposure_pct": float(row["risk_exposure_pct"]),
                 "eligible_for_ranking": bool(row["eligible_for_ranking"]),
                 "freshness_days": float(row["freshness_days"]) if row["freshness_days"] is not None else None,
+                "signal_health": _serialize_signal_health(row.get("signal_health")),
             })
         return {"ok": True, "as_of": datetime.utcnow().isoformat() + "Z", "items": items}
+
+
+@router.get("/read-models/analyst/{telegram_id}/dashboard")
+async def get_analyst_dashboard_read_model(telegram_id: int, request: Request):
+    """Return an analyst-owned, read-only dashboard using the canonical discovery metrics."""
+    require_core_service_key(request.headers.get("authorization"))
+    with session_scope() as session:
+        analyst = UserRepository(session).find_by_telegram_id(telegram_id)
+        if not analyst or str(getattr(analyst.user_type, "value", analyst.user_type)).upper() != "ANALYST":
+            raise HTTPException(status_code=403, detail="Analyst role required")
+        record = AnalystDiscoveryService().get_analyst(session, analyst.id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Analyst profile was not found")
+        return {
+            "ok": True,
+            "schema_version": "2026-08-24.1",
+            "as_of": datetime.utcnow().isoformat() + "Z",
+            "profile": {
+                "analyst_code": record["analyst_code"],
+                "public_ref": record["public_ref"],
+                "public_name": record["public_name"],
+                "bio": record["bio"],
+                "specialty_market": record["specialty_market"],
+                "strategy_style": record["strategy_style"],
+            },
+            "health": {
+                "sample_size": int(record["sample_size"]),
+                "win_rate_pct": float(record["win_rate_pct"]),
+                "total_pnl_pct": float(record["total_pnl_pct"]),
+                "profit_factor": None if str(record.get("profit_factor")) == "Infinity" else float(record["profit_factor"]),
+                "profit_factor_infinite": str(record.get("profit_factor")) == "Infinity",
+                "max_drawdown_pct": float(record["max_drawdown_pct"]),
+                "active_recommendations": int(record["active_recommendations"]),
+                "risk_exposure_pct": float(record["risk_exposure_pct"]),
+                "freshness_days": float(record["freshness_days"]) if record["freshness_days"] is not None else None,
+                "eligible_for_ranking": bool(record["eligible_for_ranking"]),
+                "minimum_sample_size": int(record["minimum_sample_size"]),
+                "signal_health": _serialize_signal_health(record.get("signal_health")),
+            },
+        }
+
+
+@router.get("/read-models/signals")
+async def get_public_signal_discovery(request: Request, asset: Optional[str] = None, window_days: int = 30, min_pnl_pct: Optional[float] = None):
+    require_core_service_key(request.headers.get("authorization"))
+    if window_days < 1 or window_days > 3650:
+        raise HTTPException(status_code=422, detail="window_days must be between 1 and 3650")
+    normalized_asset = asset.strip().upper() if asset else None
+    with session_scope() as session:
+        query = select(Recommendation, User).join(User, User.id == Recommendation.analyst_id).outerjoin(AnalystProfile, AnalystProfile.user_id == User.id).where(
+            Recommendation.is_shadow.is_(False),
+            User.user_type == "ANALYST",
+            (AnalystProfile.is_public.is_(True)) | (AnalystProfile.id.is_(None)),
+            Recommendation.created_at >= datetime.utcnow() - timedelta(days=window_days),
+        ).order_by(Recommendation.created_at.desc(), Recommendation.id.desc()).limit(200)
+        if normalized_asset:
+            query = query.where(Recommendation.asset == normalized_asset)
+        rows = session.execute(query).all()
+        items = []
+        for recommendation, analyst in rows:
+            pnl = AnalystDiscoveryService._pnl_pct(recommendation)
+            if min_pnl_pct is not None and (pnl is None or float(pnl) < min_pnl_pct):
+                continue
+            items.append({
+                "public_ref": recommendation.public_ref,
+                "analyst_code": analyst.analyst_code,
+                "analyst_name": analyst.first_name or analyst.username or analyst.analyst_code,
+                "asset": recommendation.asset,
+                "side": recommendation.side,
+                "status": getattr(recommendation.status, "value", str(recommendation.status)),
+                "pnl_pct": float(pnl) if pnl is not None else None,
+                "created_at": recommendation.created_at.isoformat() if recommendation.created_at else None,
+                "closed_at": recommendation.closed_at.isoformat() if recommendation.closed_at else None,
+            })
+        return {"ok": True, "as_of": datetime.utcnow().isoformat() + "Z", "window_days": window_days, "items": items}
 
 
 @router.post("/historical/intake")
