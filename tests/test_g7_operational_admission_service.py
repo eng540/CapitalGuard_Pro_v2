@@ -21,8 +21,10 @@ CANONICAL = {
 
 
 def _decision():
-    return OperationalDecisionService().prepare(
+    return OperationalDecisionService().prepare_recommendation(
         CANONICAL,
+        actor_ref="analyst:7",
+        command_id="command:41",
         evidence={"source_ref": "revision:1", "correlation_id": "batch:1"},
     )
 
