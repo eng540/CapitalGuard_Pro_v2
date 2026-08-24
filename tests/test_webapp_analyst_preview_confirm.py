@@ -4,6 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from capitalguard.application.services.creation_service import CreationService
+from capitalguard.application.services.operational_decision_service import (
+    OperationalDecisionError,
+    OperationalDecisionService,
+)
 from capitalguard.application.services.publication_outbox_service import PublicationOutboxService
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
 from capitalguard.domain.entities import UserType as UserTypeEntity
@@ -113,6 +117,59 @@ async def test_preview_rejects_foreign_or_inactive_channel_without_writing(db_se
     assert db_session.query(Recommendation).count() == 0
 
 
+async def test_confirm_rejects_non_analyst_before_creation(db_session):
+    trader = UserRepository(db_session).find_or_create(
+        telegram_id=874005,
+        first_name="Trader Caller",
+        user_type=UserTypeEntity.TRADER,
+        is_active=True,
+    )
+    creation_service = _creation_service(with_outbox=True)
+    before = (db_session.query(Recommendation).count(), db_session.query(WebCommandAudit).count())
+    with pytest.raises(WebCommandError, match="Analyst authorization required"):
+        await WebCommandService().confirm_analyst_recommendation(
+            db_session,
+            actor_telegram_id=trader.telegram_user_id,
+            idempotency_key="unauthorized-confirm-0001",
+            creation_service=creation_service,
+            recommendation=_recommendation_payload(-1000000000005),
+        )
+    assert (db_session.query(Recommendation).count(), db_session.query(WebCommandAudit).count()) == before
+
+
+async def test_confirm_rejects_inactive_analyst_before_creation(db_session):
+    inactive = UserRepository(db_session).find_or_create(
+        telegram_id=874006,
+        first_name="Inactive Analyst",
+        user_type=UserTypeEntity.ANALYST,
+        is_active=False,
+    )
+    creation_service = _creation_service(with_outbox=True)
+    before = (db_session.query(Recommendation).count(), db_session.query(WebCommandAudit).count())
+    with pytest.raises(WebCommandError, match="Analyst authorization required"):
+        await WebCommandService().confirm_analyst_recommendation(
+            db_session,
+            actor_telegram_id=inactive.telegram_user_id,
+            idempotency_key="inactive-confirm-0001",
+            creation_service=creation_service,
+            recommendation=_recommendation_payload(-1000000000006),
+        )
+    assert (db_session.query(Recommendation).count(), db_session.query(WebCommandAudit).count()) == before
+
+
+async def test_analysis_cannot_emit_recommendation_target():
+    canonical = {
+        "asset": "BTCUSDT",
+        "direction": "LONG",
+        "entry": "77000",
+        "stop_loss": "76000",
+        "targets": ["78000"],
+        "market": "FUTURES",
+    }
+    with pytest.raises(OperationalDecisionError, match="only supports ANALYTICAL_RESULT"):
+        OperationalDecisionService().prepare(canonical, evidence={"source_ref": "test:analysis"}, target="RECOMMENDATION")
+
+
 async def test_confirm_is_idempotent_and_queues_one_delivery(db_session):
     analyst, channel = _analyst_and_channel(db_session, 874004)
     creation_service = _creation_service(with_outbox=True)
@@ -135,8 +192,12 @@ async def test_confirm_is_idempotent_and_queues_one_delivery(db_session):
     )
 
     assert replay == first
-    assert set(first) == {"ok", "entity_type", "public_ref", "publication", "replayed"}
+    assert set(first) == {"ok", "entity_type", "public_ref", "publication", "decision", "replayed"}
     assert first["publication"] == {"state": "QUEUED", "queued_delivery_count": 1}
+    assert first["decision"]["status"] == "READY_FOR_RECOMMENDATION"
+    assert first["decision"]["target"] == "RECOMMENDATION"
+    assert first["decision"]["admission_status"] == "READY_FOR_EXPLICIT_COMMAND"
+    assert first["decision"]["trace_id"]
     assert db_session.query(Recommendation).count() == 1
     assert db_session.query(PublicationDelivery).count() == 1
     assert db_session.query(WebCommandAudit).count() == 1

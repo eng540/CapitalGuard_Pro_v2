@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from capitalguard.application.services.historical_evidence_ingestion_service import HistoricalEvidenceIngestionService
 from capitalguard.application.services.historical_owner_review_service import HistoricalOwnerReviewService
+from capitalguard.application.services.operational_admission_service import OperationalAdmissionService
+from capitalguard.application.services.operational_decision_service import OperationalDecisionService
 from capitalguard.config import settings
 from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalSignal, HistoricalSignalEvidence, HistoricalSignalMaterialization, UserTrade, UserTradeStatusEnum, WebCommandAudit
 from capitalguard.infrastructure.db.repository import UserRepository
@@ -630,7 +632,11 @@ class WebCommandService:
     ) -> dict:
         """Persist a reviewed analyst recommendation exactly once through Core."""
         actor = UserRepository(session).find_by_telegram_id(actor_telegram_id)
-        if actor is None or getattr(getattr(actor, "user_type", None), "value", "") != "ANALYST":
+        if (
+            actor is None
+            or not bool(getattr(actor, "is_active", False))
+            or getattr(getattr(actor, "user_type", None), "value", "") != "ANALYST"
+        ):
             raise WebCommandError("Analyst authorization required")
 
         normalized_channels = sorted({int(channel_id) for channel_id in recommendation.get("target_channel_ids", set())})
@@ -659,6 +665,31 @@ class WebCommandService:
         if existing is not None:
             return existing
 
+        canonical = {
+            "asset": fingerprint_payload["asset"],
+            "direction": fingerprint_payload["side"],
+            "market": fingerprint_payload["market"],
+            "entry": fingerprint_payload["entry"],
+            "stop_loss": fingerprint_payload["stop_loss"],
+            "targets": [item["price"] for item in fingerprint_payload["targets"]],
+        }
+        decision = OperationalDecisionService().prepare_recommendation(
+            canonical,
+            actor_ref=str(actor.telegram_user_id),
+            command_id=idempotency_key,
+            evidence={
+                "source_ref": f"web:analyst-recommendation:{idempotency_key}",
+                "correlation_id": idempotency_key,
+                "causation_id": str(actor.id),
+            },
+        )
+        admission = OperationalAdmissionService().admit_recommendation(
+            decision,
+            actor_ref=str(actor.telegram_user_id),
+            command_id=idempotency_key,
+        )
+        OperationalAdmissionService.validate_admission_payload(admission.payload)
+
         rec, report = await creation_service.create_and_publish_recommendation_async(
             user_id=str(actor_telegram_id),
             db_session=session,
@@ -673,6 +704,13 @@ class WebCommandService:
             "publication": {
                 "state": "QUEUED" if normalized_channels else "SAVED",
                 "queued_delivery_count": len(normalized_channels),
+            },
+            "decision": {
+                "status": decision.status,
+                "target": decision.target.value,
+                "decision_fingerprint": decision.decision_fingerprint,
+                "trace_id": decision.trace.trace_id,
+                "admission_status": admission.status.value,
             },
             "replayed": False,
         }

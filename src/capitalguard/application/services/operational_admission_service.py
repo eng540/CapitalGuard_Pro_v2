@@ -60,15 +60,30 @@ class OperationalAdmissionService:
         review_required: bool = False,
     ) -> RecommendationAdmission:
         if decision.input_state != DecisionInputState.CANONICAL_ACCEPTED:
-            raise OperationalDecisionError("only canonical accepted input can be admitted")
-        if decision.target not in {OperationalTarget.ANALYTICAL_RESULT, OperationalTarget.RECOMMENDATION}:
-            raise OperationalDecisionError("decision target is not eligible for recommendation admission")
+            raise OperationalDecisionError(
+                "only canonical accepted input can be admitted"
+            )
+        is_recommendation = (
+            decision.target == OperationalTarget.RECOMMENDATION
+            and decision.status == "READY_FOR_RECOMMENDATION"
+        )
+        if not is_recommendation:
+            raise OperationalDecisionError(
+                "recommendation admission requires an explicit recommendation decision"
+            )
         if not actor_ref.strip() or not command_id.strip():
-            raise OperationalDecisionError("actor_ref and command_id are required")
+            raise OperationalDecisionError(
+                "actor_ref and command_id are required"
+            )
         if not command_type.strip():
             raise OperationalDecisionError("command_type is required")
+        status = (
+            AdmissionStatus.REQUIRES_REVIEW
+            if review_required
+            else AdmissionStatus.READY_FOR_EXPLICIT_COMMAND
+        )
         return RecommendationAdmission(
-            status=(AdmissionStatus.REQUIRES_REVIEW if review_required else AdmissionStatus.READY_FOR_EXPLICIT_COMMAND),
+            status=status,
             command_type=command_type.strip().upper(),
             decision_fingerprint=decision.decision_fingerprint,
             trace_id=decision.trace.trace_id,
@@ -86,4 +101,6 @@ class OperationalAdmissionService:
         """Reject payloads that attempt to turn an admission into execution."""
 
         if bool(payload.get("execution_allowed")):
-            raise OperationalDecisionError("recommendation admission cannot authorize execution")
+            raise OperationalDecisionError(
+                "recommendation admission cannot authorize execution"
+            )
