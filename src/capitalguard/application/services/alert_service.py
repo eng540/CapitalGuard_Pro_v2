@@ -560,10 +560,15 @@ class AlertService:
                     "processed_events": {
                         e.event_type for e in (getattr(trade, "events", []) or [])
                     },
-                    "profit_stop_mode": "NONE",
-                    "profit_stop_price": None,
-                    "profit_stop_trailing_value": None,
-                    "profit_stop_active": False,
+                    # Tracked trades inherit the source recommendation's protection
+                    # policy. Direct inputs keep the safe NONE default until an
+                    # explicit strategy configuration is introduced.
+                    "profit_stop_mode": getattr(getattr(trade, "source_recommendation", None), "profit_stop_mode", "NONE"),
+                    "profit_stop_price": _to_decimal(getattr(getattr(trade, "source_recommendation", None), "profit_stop_price", None)) if getattr(getattr(trade, "source_recommendation", None), "profit_stop_price", None) is not None else None,
+                    "profit_stop_trailing_value": _to_decimal(getattr(getattr(trade, "source_recommendation", None), "profit_stop_trailing_value", None)) if getattr(getattr(trade, "source_recommendation", None), "profit_stop_trailing_value", None) is not None else None,
+                    "profit_stop_active": bool(getattr(getattr(trade, "source_recommendation", None), "profit_stop_active", False)),
+                    "break_even_after_profit_pct": getattr(getattr(trade, "source_recommendation", None), "break_even_after_profit_pct", None),
+                    "break_even_buffer": getattr(getattr(trade, "source_recommendation", None), "break_even_buffer", "0"),
                     "original_published_at": trade.original_published_at,
                 }
         except Exception:
@@ -693,7 +698,7 @@ class AlertService:
         self.strategy_engine.clear_all_states()
         for triggers in new_index.values():
             for t in triggers:
-                if t.get("item_type") == "recommendation":
+                if t.get("item_type") in {"recommendation", "user_trade"}:
                     self.strategy_engine.initialize_state_for_recommendation(t)
 
     async def _run_index_sync(self, interval_seconds: int = 600) -> None:

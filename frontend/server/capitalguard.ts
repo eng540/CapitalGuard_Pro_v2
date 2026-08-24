@@ -3,15 +3,17 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import { coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreCreateHistoricalIntake, coreGetAnalystAssets, coreListHistoricalIntake, coreGetHistoricalIntakeReport, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetHistoricalIntake, coreGetHistoricalTrustQuality, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReplayHistoricalSignalFromBinance, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, probeCoreHealth } from "./core-adapter";
+import {   coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreCreateHistoricalIntake, coreGetAnalystAssets, coreGetAnalystDashboard, coreGetSignalDiscovery, coreListHistoricalIntake, coreGetHistoricalIntakeReport, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetHistoricalIntake, coreGetHistoricalTrustQuality, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReplayHistoricalSignalFromBinance, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, probeCoreHealth } from "./core-adapter";
 import type { CoreAnalystReadModel } from "./core-adapter";
 
 const riskInput = z.object({
   capital: z.number().positive(),
-  riskPercent: z.number().positive().max(10),
+  riskPercent: z.number().positive().max(10).default(1),
+  riskAmount: z.number().positive().optional(),
   entry: z.number().positive(),
   stop: z.number().positive(),
   side: z.enum(["long", "short"]),
+  leverage: z.number().finite().positive().max(125).default(1),
 });
 
 const analystRecommendationInput = z.object({
@@ -32,12 +34,24 @@ const analystRecommendationInput = z.object({
 });
 
 export function calculateRiskPlan(input: z.infer<typeof riskInput>) {
-  const riskAmount = input.capital * (input.riskPercent / 100);
+  const riskAmount = input.riskAmount ?? input.capital * ((input.riskPercent ?? 1) / 100);
   const priceRisk = Math.abs(input.entry - input.stop);
   const validDirection = input.side === "long" ? input.stop < input.entry : input.stop > input.entry;
   if (!validDirection || priceRisk === 0) return { valid: false, reason: "STOP_DIRECTION_INVALID", riskAmount: 0, quantity: 0, notional: 0 };
   const quantity = riskAmount / priceRisk;
-  return { valid: true, reason: "RISK_PLAN_READY", riskAmount: Number(riskAmount.toFixed(2)), quantity: Number(quantity.toFixed(6)), notional: Number((quantity * input.entry).toFixed(2)) };
+  const leverage = input.leverage ?? 1;
+  const notional = quantity * input.entry;
+  const marginRequired = notional / leverage;
+  return {
+    valid: true,
+    reason: "RISK_PLAN_READY",
+    riskAmount: Number(riskAmount.toFixed(2)),
+    quantity: Number(quantity.toFixed(6)),
+    notional: Number(notional.toFixed(2)),
+    leverage,
+    marginRequired: Number(marginRequired.toFixed(2)),
+    liquidationBufferNote: leverage > 10 ? "HIGH_LEVERAGE_REVIEW_REQUIRED" : "MANUAL_REVIEW_REQUIRED",
+  };
 }
 
 export type AnalystComparisonRow = { analystCode: string; winRate: number; totalPnlPct: number; maxDrawdownPct: number; sampleSize: number };
@@ -114,6 +128,7 @@ export const capitalguardRouter = router({
   recommendations: protectedProcedure.query(({ ctx }) => coreGetTraderRecommendations(telegramIdFromWebSession(ctx.user.openId))),
   recommendationDetail: protectedProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80) })).query(({ ctx, input }) => coreGetTraderRecommendationDetail(telegramIdFromWebSession(ctx.user.openId), input.publicRef)),
   discoverAnalysts: protectedProcedure.query(() => coreGetAnalysts()),
+  signalDiscovery: protectedProcedure.input(z.object({ asset: z.string().trim().max(24).optional(), windowDays: z.number().int().min(1).max(3650).default(30), minPnlPct: z.number().finite().optional() })).query(({ input }) => coreGetSignalDiscovery(input)),
   compareAnalysts: protectedProcedure.input(analystComparisonInput).query(async ({ input }) => {
     const snapshot = await coreGetAnalysts();
     return {
@@ -184,7 +199,7 @@ export const capitalguardRouter = router({
     })),
   }),
   analyst: router({
-    dashboard: analystProcedure.query(() => ({ profile: null, recommendations: [] })),
+    dashboard: analystProcedure.query(({ ctx }) => coreGetAnalystDashboard(telegramIdFromWebSession(ctx.user.openId))),
     assets: analystProcedure.input(z.object({ market: z.enum(["Spot", "Futures"]) })).query(({ input }) => coreGetAnalystAssets(input.market)),
     publicationChannels: analystProcedure.query(({ ctx }) => coreGetAnalystPublicationChannels(telegramIdFromWebSession(ctx.user.openId))),
     recommendationPublication: analystProcedure.input(z.object({ publicRef: z.string().trim().min(1).max(80) })).query(({ ctx, input }) => coreGetAnalystRecommendationPublication(telegramIdFromWebSession(ctx.user.openId), input.publicRef)),

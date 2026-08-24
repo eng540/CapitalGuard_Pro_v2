@@ -548,7 +548,13 @@ class CreationService:
                 source_type=source_type,
                 original_published_at=original_published_at,
                 watched_channel_id=watched_channel.id if watched_channel else None,
-                activated_at=None 
+                activated_at=None,
+                profit_stop_mode=str(trade_data.get("profit_stop_mode", "NONE")),
+                profit_stop_price=trade_data.get("profit_stop_price"),
+                profit_stop_trailing_value=trade_data.get("profit_stop_trailing_value"),
+                profit_stop_active=bool(trade_data.get("profit_stop_active", False)),
+                break_even_after_profit_pct=trade_data.get("break_even_after_profit_pct"),
+                break_even_buffer=trade_data.get("break_even_buffer", 0),
             )
             db_session.add(new_trade)
             db_session.flush()
@@ -667,6 +673,12 @@ class CreationService:
                 source_type="TRACKED_RECOMMENDATION",
                 watched_channel_id=watched_channel.id if watched_channel else None,
                 open_size_percent=getattr(rec_orm, "open_size_percent", Decimal("100.00")),
+                profit_stop_mode=getattr(rec_orm, "profit_stop_mode", "NONE"),
+                profit_stop_price=getattr(rec_orm, "profit_stop_price", None),
+                profit_stop_trailing_value=getattr(rec_orm, "profit_stop_trailing_value", None),
+                profit_stop_active=bool(getattr(rec_orm, "profit_stop_active", False)),
+                break_even_after_profit_pct=getattr(rec_orm, "break_even_after_profit_pct", None),
+                break_even_buffer=getattr(rec_orm, "break_even_buffer", Decimal("0")),
             )
             db_session.add(new_trade)
             db_session.flush()

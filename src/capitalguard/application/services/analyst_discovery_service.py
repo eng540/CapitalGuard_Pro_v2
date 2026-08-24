@@ -47,6 +47,9 @@ class AnalystDiscoveryService:
         sample_size = len(pnls)
         winning = sum(1 for pnl in pnls if pnl > 0)
         total_pnl = sum(pnls, Decimal("0"))
+        total_profit = sum((pnl for pnl in pnls if pnl > 0), Decimal("0"))
+        total_loss = sum((pnl for pnl in pnls if pnl < 0), Decimal("0"))
+        profit_factor = (total_profit / abs(total_loss)) if total_loss < 0 else (Decimal("Infinity") if total_profit > 0 else Decimal("0"))
 
         cumulative = Decimal("0")
         peak = Decimal("0")
@@ -92,10 +95,29 @@ class AnalystDiscoveryService:
             )
 
         assets = sorted({recommendation.asset for recommendation in active})
+        activation_to_target_minutes: list[Decimal] = []
+        reversed_before_entry = 0
+        pair_pnl: dict[str, Decimal] = {}
+        for recommendation, pnl in valid:
+            pair_pnl[recommendation.asset] = pair_pnl.get(recommendation.asset, Decimal("0")) + pnl
+            events = sorted(getattr(recommendation, "events", []) or [], key=lambda event: event.event_timestamp)
+            activation = recommendation.activated_at or next((event.event_timestamp for event in events if event.event_type == "ACTIVATED"), None)
+            first_target = next((event.event_timestamp for event in events if (lambda name: name.startswith("TP") and (name.endswith("HIT") or name[2:].isdigit()))(str(event.event_type).upper())), None)
+            if activation is not None and first_target is not None:
+                activation_to_target_minutes.append(Decimal(str((first_target - activation).total_seconds())) / Decimal("60"))
+            if any(str(event.event_type).upper() in {"INVALIDATED", "REVERSED_BEFORE_ENTRY"} for event in events):
+                reversed_before_entry += 1
+        signal_health = {
+            "avg_minutes_to_first_target": (sum(activation_to_target_minutes, Decimal("0")) / Decimal(len(activation_to_target_minutes))) if activation_to_target_minutes else None,
+            "target_observation_count": len(activation_to_target_minutes),
+            "reversed_before_entry_count": reversed_before_entry,
+            "most_profitable_pairs": sorted(({"asset": asset, "pnl_pct": pnl} for asset, pnl in pair_pnl.items()), key=lambda item: item["pnl_pct"], reverse=True)[:5],
+        }
         return {
             "sample_size": sample_size,
             "win_rate_pct": (Decimal(winning) / Decimal(sample_size) * Decimal("100")) if sample_size else Decimal("0"),
             "total_pnl_pct": total_pnl,
+            "profit_factor": profit_factor,
             "max_drawdown_pct": max_drawdown,
             "active_recommendations": len(active),
             "activated_recommendations": len(activated),
@@ -109,6 +131,8 @@ class AnalystDiscoveryService:
             "freshness_days": freshness_days,
             "eligible_for_ranking": sample_size >= self.minimum_sample_size,
             "minimum_sample_size": self.minimum_sample_size,
+            "signal_health": signal_health,
+            "as_of": effective_as_of,
         }
 
     def _recommendations_for(

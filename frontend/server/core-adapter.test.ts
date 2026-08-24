@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetHistoricalTrustReadiness, coreGetSignalDiscovery, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -181,6 +181,17 @@ describe("CapitalGuard Core adapter", () => {
     const result = await coreGetHistoricalTrustReadiness(123456, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
     expect(requestUrl).toBe("https://core.example/api/webapp/owner/historical-trust-readiness?actor_telegram_id=123456");
     expect(result).toMatchObject({ status: "HOLD", public_ranking_enabled: false, commercial_enabled: false });
+  });
+
+  it("retrieves public signal discovery with server-side filters", async () => {
+    let requestUrl = "";
+    const fakeFetch = async (input: string | URL | Request) => {
+      requestUrl = String(input);
+      return new Response(JSON.stringify({ ok: true, as_of: "2026-08-24T00:00:00Z", window_days: 30, items: [] }), { status: 200 });
+    };
+    const result = await coreGetSignalDiscovery({ asset: "btc", windowDays: 30, minPnlPct: 2 }, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
+    expect(requestUrl).toBe("https://core.example/api/webapp/read-models/signals?window_days=30&asset=BTC&min_pnl_pct=2");
+    expect(result.items).toEqual([]);
   });
 
   it("keeps trader and analyst read models behind the Core service adapter", async () => {

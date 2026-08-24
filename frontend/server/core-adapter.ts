@@ -17,11 +17,13 @@ export type CoreTraderReadModel = {
       market: string;
       entry: number;
       stop_loss: number;
+      open_size_percent?: number;
       live_price: number | null;
       pnl_live_pct: number;
       status: string;
       source_type: string;
       targets: Array<{ price: number; percent: number; hit: boolean }>;
+      protection?: { mode: string; active: boolean; trailing_value: number | null; break_even_after_profit_pct: number | null };
       created_at: string | null;
     }>;
   };
@@ -60,9 +62,10 @@ export type CoreTraderRecommendation = {
   activated_at: string | null;
   closed_at: string | null;
   timeline: Array<{ event_type: string; event_timestamp: string }>;
+  protection?: { mode: string; active: boolean; trailing_value: number | null; break_even_after_profit_pct: number | null };
 };
 export type CoreHistoricalRecord = { public_ref: string; asset: string | null; side: string | null; status: string; trust_tier: string; eligible_for_ranking: boolean; decision_timestamp: string | null };
-export type CoreAnalystReadModel = { analyst_code: string | null; public_ref: string | null; public_name: string; sample_size: number; win_rate_pct: number; total_pnl_pct: number; max_drawdown_pct: number; active_recommendations: number; risk_exposure_pct: number; eligible_for_ranking: boolean; freshness_days: number | null };
+export type CoreAnalystReadModel = { analyst_code: string | null; public_ref: string | null; public_name: string; sample_size: number; win_rate_pct: number; total_pnl_pct: number; profit_factor?: number | null; profit_factor_infinite?: boolean; max_drawdown_pct: number; active_recommendations: number; risk_exposure_pct: number; eligible_for_ranking: boolean; freshness_days: number | null; signal_health?: { avg_minutes_to_first_target: number | null; target_observation_count: number; reversed_before_entry_count: number; most_profitable_pairs: Array<{ asset: string; pnl_pct: number }> } };
 export type CoreR5Readiness = { status: "HOLD"; reasons: string[]; commercial_enabled: false; copy_trading_enabled: false; execution_controls: { auto_trade_enabled: boolean; trade_live_enabled: boolean }; observation: { started_at: string | null; required_hours: number; elapsed_hours: number; remaining_hours: number; complete: boolean }; snapshot: { outbox_backlog: number; owner_review_backlog: number; replay_backlog: number }; as_of: string };
 export type CoreHistoricalTrustQuality = { status: "HOLD" | "EVIDENCE_READY"; quality: { analyst_id: number | null; channel_id: number | null; total_signals: number; verified_signals: number; rank_eligible_signals: number; excluded_signals: number; unfilled_signals: number; verified_replay_events: number; market_evidence_artifacts: number; replay_coverage_percent: number; reviewed_attributions: number; pending_attributions: number; confidence_weighted_sample: number }; commercial_enabled: false };
 export type CoreHistoricalTrustReadiness = { status: "HOLD" | "READY_FOR_OWNER_RELEASE"; reasons: string[]; public_ranking_enabled: false; commercial_enabled: false; snapshot: { sample_size: number; replay_coverage_percent: number; reviewed_attributions: number; pending_attributions: number } };
@@ -438,10 +441,36 @@ export async function coreGetTraderHistorical(telegramId: number, fetchImpl: typ
   return result as { as_of: string; items: CoreHistoricalRecord[] };
 }
 
+export type CoreSignalDiscoveryItem = { public_ref: string | null; analyst_code: string | null; analyst_name: string | null; asset: string; side: string; status: string; pnl_pct: number | null; created_at: string | null; closed_at: string | null };
+
+export async function coreGetSignalDiscovery(input: { asset?: string; windowDays: number; minPnlPct?: number }, fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ as_of: string; window_days: number; items: CoreSignalDiscoveryItem[] }> {
+  const params: Record<string, string> = { window_days: String(input.windowDays) };
+  if (input.asset?.trim()) params.asset = input.asset.trim().toUpperCase();
+  if (input.minPnlPct !== undefined) params.min_pnl_pct = String(input.minPnlPct);
+  const result = await coreReadOnlyFetch(query("/api/webapp/read-models/signals", params), {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_SIGNAL_DISCOVERY_INVALID");
+  return result as { as_of: string; window_days: number; items: CoreSignalDiscoveryItem[] };
+}
+
 export async function coreGetAnalysts(fetchImpl: typeof fetch = fetch, env = process.env): Promise<{ as_of: string; items: CoreAnalystReadModel[] }> {
   const result = await coreReadOnlyFetch("/api/webapp/read-models/analysts", {}, fetchImpl, env);
   if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !Array.isArray((result as { items?: unknown }).items)) throw new Error("CAPITALGUARD_CORE_ANALYSTS_INVALID");
   return result as { as_of: string; items: CoreAnalystReadModel[] };
+}
+
+export type CoreAnalystDashboard = {
+  ok: true;
+  schema_version: string;
+  as_of: string;
+  profile: { analyst_code: string | null; public_ref: string | null; public_name: string; bio: string | null; specialty_market: string | null; strategy_style: string | null };
+  health: { sample_size: number; win_rate_pct: number; total_pnl_pct: number; profit_factor: number | null; profit_factor_infinite: boolean; max_drawdown_pct: number; active_recommendations: number; risk_exposure_pct: number; freshness_days: number | null; eligible_for_ranking: boolean; minimum_sample_size: number; signal_health: { avg_minutes_to_first_target: number | null; target_observation_count: number; reversed_before_entry_count: number; most_profitable_pairs: Array<{ asset: string; pnl_pct: number }> } };
+};
+
+export async function coreGetAnalystDashboard(actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreAnalystDashboard> {
+  if (!Number.isSafeInteger(actorTelegramId) || actorTelegramId <= 0) throw new Error("CAPITALGUARD_TMA_TELEGRAM_ID_REQUIRED");
+  const result = await coreReadOnlyFetch(`/api/webapp/read-models/analyst/${actorTelegramId}/dashboard`, {}, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !(result as { profile?: unknown }).profile || !(result as { health?: unknown }).health) throw new Error("CAPITALGUARD_CORE_ANALYST_DASHBOARD_INVALID");
+  return result as CoreAnalystDashboard;
 }
 
 export async function coreGetR5Readiness(actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreR5Readiness> {

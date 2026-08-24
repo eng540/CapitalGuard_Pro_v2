@@ -196,11 +196,10 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
             headers_or = _headers_for_call("openrouter_bearer", LLM_API_KEY)
             payload_or = _build_openrouter_openai_style_payload(image_b64, mime)
             candidates.append((LLM_API_URL, headers_or, payload_or, family if family != "unknown" else "openai"))
-        
+
         else:
-            headers = _headers_for_call("openrouter_bearer", LLM_API_KEY)
-            payload = _build_openrouter_openai_style_payload(image_b64, mime)
-            candidates.append((LLM_API_URL, headers, payload, "openai"))
+            log.error("Unsupported LLM_PROVIDER=%r; refusing to send an ambiguous vision request.", prov)
+            return None
             
     except Exception as e:
         log.exception(f"Failed to build candidate payloads: {e}")

@@ -71,6 +71,8 @@ class Recommendation(Base):
     profit_stop_price = Column(Numeric(20, 8), nullable=True)
     profit_stop_trailing_value = Column(Numeric(20, 8), nullable=True)
     profit_stop_active = Column(Boolean, nullable=False, server_default=sa.text('false'), index=True)
+    break_even_after_profit_pct = Column(Numeric(10, 4), nullable=True)
+    break_even_buffer = Column(Numeric(20, 8), nullable=False, server_default='0')
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     activated_at = Column(DateTime(timezone=True), nullable=True)
@@ -108,7 +110,16 @@ class UserTrade(Base):
     open_size_percent = Column(Numeric(5, 2), nullable=False, server_default='100.00')
     source_forwarded_text = Column(Text, nullable=True)
     source_type = Column(String(32), nullable=False, server_default="FORWARD", index=True)
-    
+
+    # UserTrade protection policy mirrors Recommendation so tracked trades can
+    # inherit one canonical StrategyEngine contract without a parallel engine.
+    profit_stop_mode = Column(String(32), nullable=False, server_default="NONE")
+    profit_stop_price = Column(Numeric(20, 8), nullable=True)
+    profit_stop_trailing_value = Column(Numeric(20, 8), nullable=True)
+    profit_stop_active = Column(Boolean, nullable=False, server_default=sa.text("false"), index=True)
+    break_even_after_profit_pct = Column(Numeric(10, 4), nullable=True)
+    break_even_buffer = Column(Numeric(20, 8), nullable=False, server_default="0")
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     
     original_published_at = Column(DateTime(timezone=True), nullable=True) 

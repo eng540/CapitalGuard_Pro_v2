@@ -15,9 +15,10 @@ from services.parsing_utils import (
 
 log = logging.getLogger(__name__)
 
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google").strip().lower()
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_API_URL = os.getenv("LLM_API_URL")
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-1.5-flash")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-1.5-flash").strip()
 
 # ✅ UPDATED PROMPT: Explicitly handles synonyms and performance reports
 SYSTEM_PROMPT_TEXT = """
@@ -60,15 +61,26 @@ def _build_openai_payload(text):
         "response_format": {"type": "json_object"}
     }
 
+def _build_openrouter_payload(text):
+    """Build the OpenAI-compatible request accepted by OpenRouter."""
+    return _build_openai_payload(text)
+
 async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
-    if not LLM_API_KEY: return None
-    
+    if not LLM_API_KEY or not LLM_API_URL or not LLM_MODEL:
+        log.warning("Text LLM configuration is incomplete; skipping LLM parse.")
+        return None
+
     family = _model_family(LLM_MODEL)
-    headers = _headers_for_call("google_direct" if family == "google" else "openai_direct", LLM_API_KEY)
-    
-    if family == "google":
+    if LLM_PROVIDER == "openrouter":
+        # Ox Alpha does not guarantee strict JSON-schema enforcement, so keep
+        # the existing JSON-object contract and downstream validation.
+        headers = _headers_for_call("openrouter_bearer", LLM_API_KEY)
+        payload = _build_openrouter_payload(text)
+    elif family == "google":
+        headers = _headers_for_call("google_direct", LLM_API_KEY)
         payload = _build_google_payload(text)
     else:
+        headers = _headers_for_call("openai_direct", LLM_API_KEY)
         payload = _build_openai_payload(text)
 
     success, resp_json, _, _ = await _post_with_retries(LLM_API_URL, headers, payload)
