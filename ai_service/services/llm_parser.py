@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any
 from services.parsing_utils import (
     normalize_targets, _financial_consistency_check,
     _model_family, _headers_for_call, _post_with_retries,
-    _safe_outer_json_extract, _extract_google_response, _extract_openai_response
+    configured_fallback_models, _safe_outer_json_extract, _extract_google_response, _extract_openai_response
 )
 
 log = logging.getLogger(__name__)
@@ -62,8 +62,12 @@ def _build_openai_payload(text):
     }
 
 def _build_openrouter_payload(text):
-    """Build the OpenAI-compatible request accepted by OpenRouter."""
-    return _build_openai_payload(text)
+    """Build an OpenRouter request with explicitly configured model fallbacks."""
+    payload = _build_openai_payload(text)
+    fallbacks = configured_fallback_models()
+    if fallbacks:
+        payload["models"] = [LLM_MODEL, *fallbacks]
+    return payload
 
 async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
     if not LLM_API_KEY or not LLM_API_URL or not LLM_MODEL:
@@ -83,9 +87,12 @@ async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
         headers = _headers_for_call("openai_direct", LLM_API_KEY)
         payload = _build_openai_payload(text)
 
-    success, resp_json, _, _ = await _post_with_retries(LLM_API_URL, headers, payload)
+    success, resp_json, status, _ = await _post_with_retries(LLM_API_URL, headers, payload)
     
-    if not success: return None
+    if not success:
+        if status == 429:
+            return {"__error_code__": "provider_rate_limited"}
+        return None
     
     try:
         if family == "google": raw = _extract_google_response(resp_json)

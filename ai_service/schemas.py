@@ -61,6 +61,7 @@ class ParseResponse(BaseModel):
     # ❌ REMOVED: attempt_id
     parser_path_used: Optional[str] = None # 'regex', 'llm', 'vision', 'failed'
     error: Optional[str] = None
+    error_code: Optional[str] = None
 
 # ❌ REMOVED: CorrectionResponse
 # ❌ REMOVED: TemplateSuggestResponse

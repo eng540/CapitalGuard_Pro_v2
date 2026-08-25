@@ -13,6 +13,7 @@ import logging
 import asyncio
 import httpx
 from decimal import Decimal, InvalidOperation
+from typing import Callable, Awaitable
 from typing import Dict, Any, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
@@ -194,13 +195,59 @@ def _headers_for_call(style: str, key: str) -> Dict[str, str]:
     if style == "google_direct": return _build_google_headers(key)
     return _build_openai_headers(key)
 
+
+def configured_fallback_models() -> List[str]:
+    """Return at most three explicitly configured OpenRouter fallback models."""
+    raw = os.getenv("LLM_FALLBACK_MODELS", "")
+    return [model.strip() for model in raw.split(",") if model.strip()][:3]
+
+def redact_sensitive_text(value: Any) -> str:
+    """Remove Telegram bot tokens and authorization-like values from log text."""
+    text = str(value or "")
+    text = re.sub(r"(https?://api\.telegram\.org/file/bot)[^/\s]+", r"\1<redacted>", text)
+    text = re.sub(r"(bot)\d{6,}:[A-Za-z0-9_-]+", r"\1<redacted>", text, flags=re.IGNORECASE)
+    text = re.sub(r"(Bearer\s+)[A-Za-z0-9._~-]+", r"\1<redacted>", text, flags=re.IGNORECASE)
+    return text
+
+
+def redact_sensitive_url(value: Any) -> str:
+    return redact_sensitive_text(value)
+
+
 async def _post_with_retries(url, headers, payload):
-    async with httpx.AsyncClient() as client:
+    """POST with bounded exponential backoff for transient provider failures."""
+    try:
+        max_attempts = max(1, min(int(os.getenv("LLM_MAX_ATTEMPTS", "2")), 3))
+    except Exception:
+        max_attempts = 2
+    try:
+        backoff_base = max(0.1, min(float(os.getenv("LLM_BACKOFF_BASE", "1.0")), 8.0))
+    except Exception:
+        backoff_base = 1.0
+
+    retryable_statuses = {408, 409, 425, 429, 500, 502, 503, 504}
+    last_status = 503
+    last_text = ""
+    for attempt in range(max_attempts):
         try:
-            resp = await client.post(url, headers=headers, json=payload, timeout=30.0)
-            return True, resp.json(), resp.status_code, resp.text
-        except Exception as e:
-            return False, None, 500, str(e)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, headers=headers, json=payload, timeout=30.0)
+            last_status = resp.status_code
+            last_text = redact_sensitive_text(resp.text)
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            if 200 <= resp.status_code < 300 and body is not None:
+                return True, body, resp.status_code, last_text
+            if resp.status_code not in retryable_statuses or attempt == max_attempts - 1:
+                return False, body, resp.status_code, last_text
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError) as exc:
+            last_text = redact_sensitive_text(str(exc))
+            if attempt == max_attempts - 1:
+                return False, None, last_status, last_text
+        await asyncio.sleep(min(backoff_base * (2 ** attempt), 8.0))
+    return False, None, last_status, last_text
 
 def _extract_google_response(resp):
     try: return resp["candidates"][0]["content"]["parts"][0]["text"]
