@@ -363,6 +363,7 @@ async def on_startup():
         log.info(f"✅ Bot is running as @{ptb_app.bot.username}")
 
     app.state.ready = True
+    app.state.runtime_status = "ready"
     log.info("🚀 Application startup sequence complete.")
 
 @app.on_event("shutdown")

@@ -174,13 +174,21 @@ class ParsingManager:
                 "status": "success",
                 "data": self.parsed_data, # (يحتوي على Decimals)
                 "parser_path_used": self.parser_path_used,
-                "latency_ms": latency_ms
+                "latency_ms": latency_ms,
+                "error_code": self.error_code,
             }
         else:
             return {
                 "status": "error",
-                "error": "Could not recognize a valid trade signal from the image.",
-                "parser_path_used": "failed",
-                "latency_ms": latency_ms
+                "error": (
+                    "AI provider is temporarily rate-limited; retry later."
+                    if self.error_code == "provider_rate_limited"
+                    else "AI provider routes are unavailable; retry later."
+                    if self.error_code == "provider_unavailable"
+                    else "Could not recognize a valid trade signal from the image."
+                ),
+                "parser_path_used": self.parser_path_used,
+                "latency_ms": latency_ms,
+                "error_code": self.error_code,
             }
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/parsing_manager.py ---
