@@ -36,6 +36,7 @@ from services.parsing_utils import (
     redact_sensitive_text,
     redact_sensitive_url,
 )
+from services.provider_router import get_provider_router, extract_text_response, router_enabled
 
 log = logging.getLogger(__name__)
 telemetry_log = logging.getLogger("ai_service.telemetry")
@@ -182,40 +183,63 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
 
     # 2) Build candidate calls
     candidates: List[Tuple[str, Dict[str, str], Dict[str, Any], str]] = []
+    router = None
+    route_by_candidate: Dict[Tuple[str, str], Any] = {}
     try:
-        prov = provider
-        if prov == "google":
-            headers = _headers_for_call("google_direct", LLM_API_KEY)
-            payload = _build_google_vision_payload(image_b64, mime)
-            candidates.append((LLM_API_URL, headers, payload, "google"))
-            
-        elif prov == "openai":
-            key = OPENAI_API_KEY if OPENAI_API_KEY else LLM_API_KEY
-            headers = _headers_for_call("openai_direct", key)
-            payload = _build_openai_vision_payload(image_b64, mime)
-            candidates.append((LLM_API_URL, headers, payload, "openai"))
-            
-        elif prov == "anthropic":
-            headers = _headers_for_call("anthropic_direct", LLM_API_KEY)
-            payload = _build_claude_vision_payload(image_b64, mime)
-            candidates.append((LLM_API_URL, headers, payload, "anthropic"))
-            
-        elif prov == "openrouter":
-            headers_or = _headers_for_call("openrouter_bearer", LLM_API_KEY)
-            payload_or = _build_openrouter_openai_style_payload(image_b64, mime)
-            candidates.append((LLM_API_URL, headers_or, payload_or, family if family != "unknown" else "openai"))
-
+        if router_enabled():
+            router = get_provider_router()
+            for route in router.routes_for("vision"):
+                if route.protocol == "fal":
+                    safe_mime = mime if mime in ["image/jpeg", "image/png", "image/webp"] else "image/jpeg"
+                    payload = {
+                        "prompt": SYSTEM_PROMPT_VISION,
+                        "image_url": f"data:{safe_mime};base64,{image_b64}",
+                    }
+                    candidates.append((route.api_url, route.headers(), payload, "fal"))
+                    route_by_candidate[(route.api_url, "fal")] = route
+                else:
+                    payload = _build_openai_vision_payload(image_b64, mime)
+                    payload["model"] = route.model
+                    candidates.append((route.api_url, route.headers(), payload, "openai"))
+                    route_by_candidate[(route.api_url, "openai")] = route
+            if not candidates:
+                log.error("AI router is enabled but no healthy vision routes are configured.")
+                return {"__error_code__": "provider_unavailable"}
         else:
-            log.error("Unsupported LLM_PROVIDER=%r; refusing to send an ambiguous vision request.", prov)
-            return None
-            
+            prov = provider
+            if prov == "google":
+                headers = _headers_for_call("google_direct", LLM_API_KEY)
+                payload = _build_google_vision_payload(image_b64, mime)
+                candidates.append((LLM_API_URL, headers, payload, "google"))
+            elif prov == "openai":
+                key = OPENAI_API_KEY if OPENAI_API_KEY else LLM_API_KEY
+                headers = _headers_for_call("openai_direct", key)
+                payload = _build_openai_vision_payload(image_b64, mime)
+                candidates.append((LLM_API_URL, headers, payload, "openai"))
+            elif prov == "anthropic":
+                headers = _headers_for_call("anthropic_direct", LLM_API_KEY)
+                payload = _build_claude_vision_payload(image_b64, mime)
+                candidates.append((LLM_API_URL, headers, payload, "anthropic"))
+            elif prov == "openrouter":
+                headers_or = _headers_for_call("openrouter_bearer", LLM_API_KEY)
+                payload_or = _build_openrouter_openai_style_payload(image_b64, mime)
+                candidates.append((LLM_API_URL, headers_or, payload_or, family if family != "unknown" else "openai"))
+            else:
+                log.error("Unsupported LLM_PROVIDER=%r; refusing to send an ambiguous vision request.", prov)
+                return None
     except Exception as e:
-        log.exception(f"Failed to build candidate payloads: {e}")
+        log.error("Failed to build candidate payloads: %s", type(e).__name__)
         return None
 
     # 3) Iterate candidates and apply fallback logic
     for api_url, headers, payload, call_family in candidates:
-        meta = {**log_meta_base, "api_url": api_url, "attempt_family": call_family}
+        active_route = route_by_candidate.get((api_url, call_family))
+        meta = {
+            **log_meta_base,
+            "api_url": api_url,
+            "attempt_family": call_family,
+            "route": active_route.route_name if active_route is not None else call_family,
+        }
         telemetry_log.info(json.dumps({**meta, "attempt": "primary"}))
         
         success, resp_json, status, resp_text = await _post_with_retries(api_url, headers, payload)
@@ -229,6 +253,8 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                     raw_text = _extract_claude_response(resp_json)
                 elif call_family == "qwen":
                     raw_text = _extract_qwen_response(resp_json)
+                elif call_family in {"fal", "openai"} and router is not None:
+                    raw_text = extract_text_response(resp_json)
                 else: # Default to OpenAI
                     raw_text = _extract_openai_response(resp_json)
             except Exception as e:
@@ -305,6 +331,8 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                 parsed_object.setdefault("notes", parsed_object.get("notes", ""))
                 
                 telemetry_log.info(json.dumps({**meta, "success": True, "asset": parsed_object.get("asset"), "side": parsed_object.get("side"), "num_targets": len(parsed_object.get("targets", []))}))
+                if router is not None and active_route is not None:
+                    router.record_success(active_route)
                 return parsed_object  # ✅ SUCCESS (Returns dict with Decimals)
 
             except Exception as e:
@@ -313,6 +341,8 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                 continue
         
         else: # Primary call failed
+            if router is not None and active_route is not None:
+                router.record_failure(active_route, status)
             telemetry_log.info(json.dumps({**meta, "success": False, "status": status, "resp_snip": redact_sensitive_text((resp_text or "")[:400])}))
 
             # Fallback Logic
@@ -369,6 +399,8 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
     telemetry_log.info(json.dumps({**log_meta_base, "success": False, "attempted": attempted, "errors": final_errors}))
     if any(item.get("status") == 429 for item in attempted):
         return {"__error_code__": "provider_rate_limited"}
+    if router is not None and attempted:
+        return {"__error_code__": "provider_unavailable"}
     log.warning("Vision parse failed for image source=%s. Attempts=%s Errors=%s", safe_image_url.split("/file/")[0], len(attempted), final_errors)
     return None
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/image_parser.py ---

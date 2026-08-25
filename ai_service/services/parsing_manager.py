@@ -120,7 +120,13 @@ class ParsingManager:
         else:
             return {
                 "status": "error",
-                "error": "AI provider is temporarily rate-limited; retry later." if self.error_code == "provider_rate_limited" else "Could not recognize a valid trade signal.",
+                "error": (
+                    "AI provider is temporarily rate-limited; retry later."
+                    if self.error_code == "provider_rate_limited"
+                    else "AI provider routes are unavailable; retry later."
+                    if self.error_code == "provider_unavailable"
+                    else "Could not recognize a valid trade signal."
+                ),
                 "parser_path_used": self.parser_path_used,
                 "latency_ms": latency_ms,
                 "error_code": self.error_code,

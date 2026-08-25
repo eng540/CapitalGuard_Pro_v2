@@ -27,6 +27,7 @@ from schemas import (
 )
 from services.parsing_manager import ParsingManager
 from services.parsing_utils import redact_sensitive_url
+from services.provider_router import get_provider_router, router_enabled
 # ❌ REMOVED DB IMPORTS
 
 # --- تهيئة التطبيق ---
@@ -40,7 +41,9 @@ app = FastAPI(
 async def startup_event():
     log.info("AI Parsing Service (Decoupled) is starting up...")
     if not os.getenv("LLM_API_KEY"):
-        log.warning("LLM_API_KEY is not set. LLM/Vision fallback will be disabled.")
+        log.warning("LLM_API_KEY is not set. Legacy LLM/Vision fallback will be disabled.")
+    if router_enabled():
+        log.info("AI provider router enabled routes=%s", get_provider_router().public_status())
     log.info("AI Service startup complete.")
 
 # --- نقاط النهاية (Endpoints) ---
@@ -98,10 +101,14 @@ async def parse_trade_text(request: ParseRequest):
                 parser_path_used=result_dict.get("parser_path_used")
             )
         else:
-            if result_dict.get("error_code") == "provider_rate_limited":
+            if result_dict.get("error_code") in {"provider_rate_limited", "provider_unavailable"}:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="AI provider is temporarily rate-limited; retry later.",
+                    detail=(
+                        "AI provider is temporarily rate-limited; retry later."
+                        if result_dict.get("error_code") == "provider_rate_limited"
+                        else "AI provider routes are unavailable; retry later."
+                    ),
                     headers={"Retry-After": "5"},
                 )
             return ParseResponse(
@@ -135,10 +142,14 @@ async def parse_trade_image(request: ImageParseRequest):
     try:
         manager = ParsingManager(user_id=request.user_id, image_url=str(request.image_url))
         result_dict = await manager.analyze_image()
-        if result_dict.get("error_code") == "provider_rate_limited":
+        if result_dict.get("error_code") in {"provider_rate_limited", "provider_unavailable"}:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="AI provider is temporarily rate-limited; retry later.",
+                detail=(
+                    "AI provider is temporarily rate-limited; retry later."
+                    if result_dict.get("error_code") == "provider_rate_limited"
+                    else "AI provider routes are unavailable; retry later."
+                ),
                 headers={"Retry-After": "5"},
             )
         
