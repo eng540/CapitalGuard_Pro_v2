@@ -12,6 +12,7 @@ from services.parsing_utils import (
     _model_family, _headers_for_call, _post_with_retries,
     configured_fallback_models, _safe_outer_json_extract, _extract_google_response, _extract_openai_response
 )
+from services.provider_router import get_provider_router, extract_text_response, router_enabled
 
 log = logging.getLogger(__name__)
 
@@ -51,9 +52,9 @@ def _build_google_payload(text):
         "generationConfig": {"responseMimeType": "application/json"}
     }
 
-def _build_openai_payload(text):
+def _build_openai_payload(text, model=None):
     return {
-        "model": LLM_MODEL,
+        "model": model or LLM_MODEL,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT_TEXT},
             {"role": "user", "content": text}
@@ -69,7 +70,53 @@ def _build_openrouter_payload(text):
         payload["models"] = [LLM_MODEL, *fallbacks]
     return payload
 
+def _normalize_llm_output(raw: str) -> Optional[Dict[str, Any]]:
+    try:
+        json_str = _safe_outer_json_extract(raw)
+        if not json_str:
+            return None
+        data = json.loads(json_str)
+        if data.get("error"):
+            return None
+        data["targets"] = normalize_targets(data.get("targets"))
+        return data if _financial_consistency_check(data) else None
+    except Exception as exc:
+        log.warning("LLM output normalization failed: %s", type(exc).__name__)
+        return None
+
+
+async def _parse_with_configured_routes(text: str) -> Optional[Dict[str, Any]]:
+    router = get_provider_router()
+    rate_limited = False
+    routes = router.routes_for("text")
+    if not routes:
+        return {"__error_code__": "provider_unavailable"}
+    for route in routes:
+        if route.protocol == "fal":
+            payload = {"prompt": SYSTEM_PROMPT_TEXT + "\\n\\nInput Text:\\n" + text}
+        else:
+            payload = _build_openai_payload(text, model=route.model)
+        success, body, status, _ = await _post_with_retries(route.api_url, route.headers(), payload)
+        if success:
+            parsed = _normalize_llm_output(extract_text_response(body))
+            if parsed:
+                router.record_success(route)
+                return parsed
+            router.record_failure(route, 200)
+        else:
+            router.record_failure(route, status)
+            rate_limited = rate_limited or status == 429
+    if rate_limited:
+        return {"__error_code__": "provider_rate_limited"}
+    return {"__error_code__": "provider_unavailable"}
+
+
 async def parse_with_llm(text: str) -> Optional[Dict[str, Any]]:
+    if router_enabled():
+        routed_result = await _parse_with_configured_routes(text)
+        if routed_result is not None:
+            return routed_result
+
     if not LLM_API_KEY or not LLM_API_URL or not LLM_MODEL:
         log.warning("Text LLM configuration is incomplete; skipping LLM parse.")
         return None
