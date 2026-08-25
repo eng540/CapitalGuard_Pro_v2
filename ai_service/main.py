@@ -26,6 +26,7 @@ from schemas import (
     ParsedDataResponse
 )
 from services.parsing_manager import ParsingManager
+from services.parsing_utils import redact_sensitive_url
 # ❌ REMOVED DB IMPORTS
 
 # --- تهيئة التطبيق ---
@@ -97,12 +98,20 @@ async def parse_trade_text(request: ParseRequest):
                 parser_path_used=result_dict.get("parser_path_used")
             )
         else:
+            if result_dict.get("error_code") == "provider_rate_limited":
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="AI provider is temporarily rate-limited; retry later.",
+                    headers={"Retry-After": "5"},
+                )
             return ParseResponse(
                 status="error",
                 error=result_dict.get("error", "Unknown error"),
                 parser_path_used=result_dict.get("parser_path_used")
             )
 
+    except HTTPException:
+        raise
     except ValidationError as e:
         log.error(f"Validation error during text parsing: {e}")
         return ParseResponse(
@@ -122,10 +131,16 @@ async def parse_trade_image(request: ImageParseRequest):
     """
     نقطة النهاية الرئيسية لتحليل *الصورة*.
     """
-    log.info(f"Received image parse request for user {request.user_id}, url: ...{str(request.image_url)[-50:]}")
+    log.info("Received image parse request for user %s, source=%s", request.user_id, redact_sensitive_url(request.image_url).split("/file/")[0])
     try:
         manager = ParsingManager(user_id=request.user_id, image_url=str(request.image_url))
         result_dict = await manager.analyze_image()
+        if result_dict.get("error_code") == "provider_rate_limited":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="AI provider is temporarily rate-limited; retry later.",
+                headers={"Retry-After": "5"},
+            )
         
         if result_dict.get("status") == "success":
             # ✅ (v3.1) Serialize Decimals to strings for the response
@@ -142,6 +157,8 @@ async def parse_trade_image(request: ImageParseRequest):
                 parser_path_used=result_dict.get("parser_path_used")
             )
 
+    except HTTPException:
+        raise
     except ValidationError as e:
         log.error(f"Validation error during image parsing: {e}")
         return ParseResponse(

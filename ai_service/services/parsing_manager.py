@@ -39,6 +39,7 @@ class ParsingManager:
         self.parser_path_used: str = "failed"
         self.template_id_used: Optional[int] = None
         self.parsed_data: Optional[Dict[str, Any]] = None
+        self.error_code: Optional[str] = None
 
     # ❌ REMOVED: _create_initial_attempt (DB logic)
     # ❌ REMOVED: _update_final_attempt (DB logic)
@@ -77,7 +78,11 @@ class ParsingManager:
             log.info(f"User {self.user_id}: Regex failed, falling back to LLM.")
             try:
                 llm_result = await llm_parser.parse_with_llm(self.text)
-                if llm_result:
+                if llm_result and llm_result.get("__error_code__"):
+                    self.error_code = llm_result["__error_code__"]
+                    self.parser_path_used = self.error_code
+                    self.parsed_data = None
+                elif llm_result:
                     if all(k in llm_result for k in required_keys):
                         if not llm_result.get("targets"):
                              log.warning(f"LLM result for user {self.user_id} returned 0 targets. Failing.")
@@ -109,14 +114,16 @@ class ParsingManager:
                 "status": "success",
                 "data": self.parsed_data, # (يحتوي على Decimals)
                 "parser_path_used": self.parser_path_used,
-                "latency_ms": latency_ms
+                "latency_ms": latency_ms,
+                "error_code": self.error_code,
             }
         else:
             return {
                 "status": "error",
-                "error": "Could not recognize a valid trade signal.",
-                "parser_path_used": "failed",
-                "latency_ms": latency_ms
+                "error": "AI provider is temporarily rate-limited; retry later." if self.error_code == "provider_rate_limited" else "Could not recognize a valid trade signal.",
+                "parser_path_used": self.parser_path_used,
+                "latency_ms": latency_ms,
+                "error_code": self.error_code,
             }
 
     async def analyze_image(self) -> Dict[str, Any]:
@@ -130,7 +137,11 @@ class ParsingManager:
         try:
             vision_result = await image_parser.parse_with_vision(self.image_url)
             
-            if vision_result:
+            if vision_result and vision_result.get("__error_code__"):
+                self.error_code = vision_result["__error_code__"]
+                self.parser_path_used = self.error_code
+                self.parsed_data = None
+            elif vision_result:
                 if all(k in vision_result for k in required_keys) and vision_result.get("targets"):
                     self.parser_path_used = "vision"
                     self.parsed_data = vision_result # (يحتوي على Decimals)

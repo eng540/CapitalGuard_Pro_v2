@@ -31,7 +31,10 @@ from services.parsing_utils import (
     _extract_openai_response,
     _build_google_headers,
     _build_openai_headers,
-    _smart_signal_selector # (لإصلاح خطأ JSON Array)
+    _smart_signal_selector, # (لإصلاح خطأ JSON Array)
+    configured_fallback_models,
+    redact_sensitive_text,
+    redact_sensitive_url,
 )
 
 log = logging.getLogger(__name__)
@@ -126,7 +129,11 @@ def _build_claude_vision_payload(image_b64: str, mime: str) -> Dict[str, Any]:
     }
 
 def _build_openrouter_openai_style_payload(image_b64: str, mime: str) -> Dict[str, Any]:
-    return _build_openai_vision_payload(image_b64, mime)
+    payload = _build_openai_vision_payload(image_b64, mime)
+    fallbacks = configured_fallback_models()
+    if fallbacks:
+        payload["models"] = [LLM_MODEL, *fallbacks]
+    return payload
 
 # ------------------------
 # Main function: parse_with_vision
@@ -140,7 +147,8 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
 
     family = _model_family(LLM_MODEL)
     provider = (LLM_PROVIDER or "").lower()
-    log_meta_base = {"event": "vision_parse", "provider": provider, "model": LLM_MODEL, "family": family, "image_url": image_url}
+    safe_image_url = redact_sensitive_url(image_url)
+    log_meta_base = {"event": "vision_parse", "provider": provider, "model": LLM_MODEL, "family": family, "image_url": safe_image_url}
     attempted: List[Dict[str, Any]] = []
     final_errors: List[str] = []
 
@@ -164,11 +172,11 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                 log.warning("Image larger than 4.5MB; consider resizing to avoid provider limits.", extra=log_meta_base)
             image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     except httpx.RequestError as e:
-        log.error(f"Failed to download image: {e}", exc_info=True)
+        log.error("Failed to download image: %s", type(e).__name__)
         telemetry_log.info(json.dumps({**log_meta_base, "success": False, "error": "download_failed"}))
         return None
     except Exception as e:
-        log.exception(f"Image download/processing error: {e}")
+        log.error("Image download/processing error: %s", type(e).__name__)
         telemetry_log.info(json.dumps({**log_meta_base, "success": False, "error": "download_exception"}))
         return None
 
@@ -211,7 +219,7 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
         telemetry_log.info(json.dumps({**meta, "attempt": "primary"}))
         
         success, resp_json, status, resp_text = await _post_with_retries(api_url, headers, payload)
-        attempted.append({"api_url": api_url, "family": call_family, "status": status, "resp_snip": (resp_text or "")[:800]})
+        attempted.append({"api_url": api_url, "family": call_family, "status": status, "resp_snip": redact_sensitive_text((resp_text or "")[:800])})
         
         if success and resp_json:
             try:
@@ -305,7 +313,7 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                 continue
         
         else: # Primary call failed
-            telemetry_log.info(json.dumps({**meta, "success": False, "status": status, "resp_snip": (resp_text or "")[:400]}))
+            telemetry_log.info(json.dumps({**meta, "success": False, "status": status, "resp_snip": redact_sensitive_text((resp_text or "")[:400])}))
 
             # Fallback Logic
             if provider == "openrouter" and GOOGLE_API_KEY:
@@ -359,6 +367,8 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
 
     # nothing succeeded
     telemetry_log.info(json.dumps({**log_meta_base, "success": False, "attempted": attempted, "errors": final_errors}))
-    log.warning(f"Vision parse failed for image {image_url}. Attempts: {len(attempted)} Errors: {final_errors}")
+    if any(item.get("status") == 429 for item in attempted):
+        return {"__error_code__": "provider_rate_limited"}
+    log.warning("Vision parse failed for image source=%s. Attempts=%s Errors=%s", safe_image_url.split("/file/")[0], len(attempted), final_errors)
     return None
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/services/image_parser.py ---
