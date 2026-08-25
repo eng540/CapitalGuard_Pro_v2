@@ -37,6 +37,7 @@ from capitalguard.domain.entities import (
     Recommendation as RecommendationEntity,
 )
 from capitalguard.application.services.identity_service import IdentityService
+from capitalguard.domain.protection_policy import ProtectionPolicy
 
 # Type-only imports
 if False:
@@ -660,14 +661,26 @@ class LifecycleService:
         if not rec: 
             raise ValueError("Not found")
         
-        rec.profit_stop_mode = mode
+        candidate = {
+            "profit_stop_mode": mode,
+            "profit_stop_active": active,
+            "side": rec.side,
+            "entry": rec.entry,
+            "stop_loss": rec.stop_loss,
+            "profit_stop_price": price if price is not None else rec.profit_stop_price,
+            "profit_stop_trailing_value": trailing_value if trailing_value is not None else rec.profit_stop_trailing_value,
+            "break_even_after_profit_pct": getattr(rec, "break_even_after_profit_pct", None),
+            "break_even_buffer": getattr(rec, "break_even_buffer", Decimal("0")),
+        }
+        ProtectionPolicy.from_record(candidate).validate()
+        rec.profit_stop_mode = str(mode).upper()
         rec.profit_stop_active = active
-        if price: 
+        if price is not None:
             rec.profit_stop_price = price
-        if trailing_value: 
+        if trailing_value is not None:
             rec.profit_stop_trailing_value = trailing_value
-        
-        msg = f"📈 Strategy: {mode}" if active else "❌ Strategy Cancelled"
+
+        msg = f"📈 Strategy: {rec.profit_stop_mode}" if active else "❌ Strategy Cancelled"
         
         # ✅ FIXED: Added await (from v106)
         await self.notify_reply(rec.id, msg, session)
