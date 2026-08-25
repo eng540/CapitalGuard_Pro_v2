@@ -16,6 +16,18 @@ def test_jwt_validation_rejects_missing_or_default_secret(monkeypatch):
         auth.validate_security_settings()
 
 
+def test_access_token_round_trip_works_with_valid_security_settings(monkeypatch):
+    monkeypatch.setattr(auth, "JWT_SECRET", "x" * 48)
+    monkeypatch.setattr(auth, "JWT_ALG", "HS256")
+    monkeypatch.setattr(auth, "JWT_EXPIRE_MIN", 60)
+
+    token = auth.create_access_token("user-42", roles=["TRADER"])
+    claims = auth.decode_token(token)
+
+    assert claims["sub"] == "user-42"
+    assert claims["roles"] == ["TRADER"]
+
+
 def test_jwt_validation_accepts_strong_hs256_secret(monkeypatch):
     monkeypatch.setattr(auth, "JWT_SECRET", "x" * 48)
     monkeypatch.setattr(auth, "JWT_ALG", "HS256")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -22,6 +23,8 @@ class WebCommandError(ValueError):
 
 
 class WebCommandService:
+    _IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$")
+
     REVIEW = "HISTORICAL_OWNER_REVIEW"
     INGEST = "HISTORICAL_EVIDENCE_INGEST"
     MATERIALIZE = "HISTORICAL_SIGNAL_MATERIALIZE"
@@ -89,17 +92,32 @@ class WebCommandService:
         )
         return "legacy-create-" + hashlib.sha256(raw.encode()).hexdigest()
 
-    @staticmethod
-    def _replay_or_reject(session: Session, *, idempotency_key: str, request_hash: str) -> dict | None:
+    @classmethod
+    def _validate_idempotency_key(cls, idempotency_key: str) -> str:
+        if not isinstance(idempotency_key, str) or not cls._IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key):
+            raise WebCommandError("Idempotency key must be 8-160 safe characters")
+        return idempotency_key
+
+    @classmethod
+    def _replay_or_reject(cls, session: Session, *, idempotency_key: str, request_hash: str) -> dict | None:
+        idempotency_key = cls._validate_idempotency_key(idempotency_key)
         existing = session.execute(select(WebCommandAudit).where(WebCommandAudit.idempotency_key == idempotency_key)).scalar_one_or_none()
         if existing is None:
             return None
         if existing.request_hash != request_hash:
             raise WebCommandError("Idempotency key cannot be reused with a different command")
-        return dict(existing.response_json or {})
+        replayed = dict(existing.response_json or {})
+        replayed.pop("_meta", None)
+        return replayed
 
-    @staticmethod
-    def _record(session: Session, *, idempotency_key: str, command_type: str, actor_user_id: int, target_type: str, target_id: int, request_hash: str, response: dict, status: str = "COMPLETED") -> None:
+    @classmethod
+    def _record(cls, session: Session, *, idempotency_key: str, command_type: str, actor_user_id: int, target_type: str, target_id: int, request_hash: str, response: dict, status: str = "COMPLETED") -> None:
+        idempotency_key = cls._validate_idempotency_key(idempotency_key)
+        audit_response = dict(response)
+        audit_response["_meta"] = {
+            "correlation_id": idempotency_key,
+            "request_hash": request_hash,
+        }
         session.add(WebCommandAudit(
             idempotency_key=idempotency_key,
             command_type=command_type,
@@ -108,7 +126,7 @@ class WebCommandService:
             target_id=target_id,
             request_hash=request_hash,
             status=status,
-            response_json=response,
+            response_json=audit_response,
         ))
         session.flush()
 
