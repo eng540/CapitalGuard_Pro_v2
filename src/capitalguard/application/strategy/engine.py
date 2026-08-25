@@ -27,6 +27,8 @@ from decimal import Decimal, getcontext, Context
 from dataclasses import dataclass, asdict, field
 from typing import Dict, Any, List, Optional, Callable, Iterable, Tuple
 
+from capitalguard.domain.protection_policy import ProtectionPolicy, ProtectionPolicyError
+
 # Types for lifecycle_service and storage are loosely typed to avoid circular imports.
 # lifecycle_service must implement side-effect methods (used externally by caller).
 # storage is optional: expected methods get(key)->str|None, set(key, str)->None, delete(key)->None.
@@ -296,6 +298,12 @@ class StrategyEngine:
             return actions
 
         rec_id = int(rec["id"])
+        try:
+            policy = ProtectionPolicy.from_record(rec)
+            policy.validate()
+        except ProtectionPolicyError as exc:
+            logger.warning("Skipping invalid protection policy for rec #%d: %s", rec_id, exc)
+            return actions
         # ensure state exists
         if rec_id not in self._state:
             self.initialize_state_for_recommendation(rec)
@@ -304,8 +312,8 @@ class StrategyEngine:
         # Update last tick ts
         state.last_tick_ts = ts
 
-        side = str(rec.get("side", "LONG")).upper()
-        mode = str(rec.get("profit_stop_mode", "NONE")).upper()
+        side = policy.side
+        mode = policy.mode
 
         # Update highest/lowest tracked
         if side == "LONG":
