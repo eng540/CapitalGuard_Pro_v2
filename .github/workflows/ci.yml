@@ -42,6 +42,9 @@ jobs:
       - name: Alembic heads
         run: PYTHONPATH=src alembic heads
 
+      - name: Verify single Alembic head
+        run: PYTHONPATH=src python scripts/verify_alembic_single_head.py
+
       - name: Tests
         run: pytest -q
 

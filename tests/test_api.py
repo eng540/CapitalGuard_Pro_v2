@@ -23,6 +23,51 @@ def test_root_endpoint(client: TestClient):
     assert "CapitalGuard API" in response.json()["message"]
 
 
+def test_http_correlation_id_is_returned_and_invalid_values_are_replaced(client: TestClient):
+    supplied = client.get("/", headers={"X-Request-ID": "request-2026.08.25"})
+    assert supplied.status_code == 200
+    assert supplied.headers["X-Request-ID"] == "request-2026.08.25"
+
+    generated = client.get("/")
+    assert generated.status_code == 200
+    assert generated.headers["X-Request-ID"]
+    assert len(generated.headers["X-Request-ID"]) == 32
+
+
+def test_liveness_is_available_before_external_dependencies_start(client: TestClient):
+    app.state.runtime_status = "starting"
+    app.state.ready = False
+    app.state.ptb_app = None
+    app.state.services = None
+
+    response = client.get("/live")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "runtime_status": "starting"}
+
+
+def test_readiness_is_fail_closed_with_structured_dependency_state(client: TestClient):
+    app.state.runtime_status = "starting"
+    app.state.ready = False
+    app.state.ptb_app = None
+    app.state.services = None
+    app.state.degraded_tasks.clear()
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "status": "not_ready",
+        "runtime_status": "starting",
+        "checks": {
+            "startup_complete": False,
+            "telegram": False,
+            "services": False,
+            "background_tasks": [],
+        },
+    }
+
+
 def test_health_is_fail_closed_before_startup(client: TestClient):
     app.state.ready = False
     app.state.ptb_app = None

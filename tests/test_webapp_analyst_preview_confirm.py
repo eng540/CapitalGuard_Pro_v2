@@ -117,6 +117,13 @@ async def test_preview_rejects_foreign_or_inactive_channel_without_writing(db_se
     assert db_session.query(Recommendation).count() == 0
 
 
+async def test_idempotency_key_policy_rejects_unsafe_values(db_session):
+    with pytest.raises(WebCommandError, match="Idempotency key must be 8-160 safe characters"):
+        WebCommandService()._validate_idempotency_key("short")
+    with pytest.raises(WebCommandError, match="Idempotency key must be 8-160 safe characters"):
+        WebCommandService()._validate_idempotency_key("unsafe key 01")
+
+
 async def test_confirm_rejects_non_analyst_before_creation(db_session):
     trader = UserRepository(db_session).find_or_create(
         telegram_id=874005,
@@ -201,6 +208,9 @@ async def test_confirm_is_idempotent_and_queues_one_delivery(db_session):
     assert db_session.query(Recommendation).count() == 1
     assert db_session.query(PublicationDelivery).count() == 1
     assert db_session.query(WebCommandAudit).count() == 1
+    audit = db_session.query(WebCommandAudit).one()
+    assert audit.response_json["_meta"]["correlation_id"] == "analyst-confirm-key-0001"
+    assert audit.response_json["_meta"]["request_hash"] == audit.request_hash
 
     changed_payload = {**payload, "entry": Decimal("101")}
     with pytest.raises(WebCommandError, match="cannot be reused"):

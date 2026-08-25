@@ -11,6 +11,7 @@ import html
 import json
 import hmac
 import traceback
+import uuid
 from time import perf_counter
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -191,17 +192,40 @@ app = FastAPI(title="CapitalGuard Pro API", version="27.2-webapp") # ✅ Version
 app.state.ptb_app = None
 app.state.services = None
 app.state.background_tasks: set[asyncio.Task] = set()
+app.state.degraded_tasks: set[str] = set()
 app.state.ready = False
+app.state.runtime_status = "starting"
+
+
+def _on_background_task_done(task: asyncio.Task) -> None:
+    app.state.background_tasks.discard(task)
+    if task.cancelled():
+        return
+    try:
+        error = task.exception()
+    except asyncio.CancelledError:
+        return
+    if error is not None:
+        task_name = task.get_name()
+        app.state.degraded_tasks.add(task_name)
+        log.error("Background task failed: %s", task_name, exc_info=(type(error), error, error.__traceback__))
 
 
 def _register_background_task(task: asyncio.Task) -> None:
     """Track a long-lived task so shutdown cancels and awaits it cleanly."""
     app.state.background_tasks.add(task)
-    task.add_done_callback(app.state.background_tasks.discard)
+    task.add_done_callback(_on_background_task_done)
 
 
 # ✅ WEBAPP SUPPORT: Mount static files for WebApp
 app.mount("/static", StaticFiles(directory="src/capitalguard/interfaces/api/static"), name="static")
+
+
+def _request_correlation_id(request: Request) -> str:
+    candidate = request.headers.get("X-Request-ID", "").strip()
+    if candidate and len(candidate) <= 128 and re.fullmatch(r"[A-Za-z0-9._:-]+", candidate):
+        return candidate
+    return uuid.uuid4().hex
 
 
 def _metric_route_label(request: Request) -> str:
@@ -214,8 +238,11 @@ def _metric_route_label(request: Request) -> str:
 async def observe_http_request(request: Request, call_next):
     """Record only method, route template, status, and duration for non-scrape requests."""
     started = perf_counter()
+    correlation_id = _request_correlation_id(request)
+    request.state.correlation_id = correlation_id
     try:
         response = await call_next(request)
+        response.headers["X-Request-ID"] = correlation_id
     except Exception:
         if request.url.path != "/metrics":
             labels = {"method": request.method, "route": _metric_route_label(request), "status": "500"}
@@ -233,6 +260,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @app.on_event("startup")
 async def on_startup():
+    app.state.runtime_status = "starting"
+    app.state.ready = False
+    app.state.degraded_tasks.clear()
     log.info("🚀 Application startup sequence initiated...")
 
     validate_security_settings()
@@ -337,6 +367,7 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    app.state.runtime_status = "stopping"
     log.info("🔌 Application shutdown sequence initiated...")
     app.state.ready = False
     for task in list(app.state.background_tasks):
@@ -357,7 +388,27 @@ async def on_shutdown():
         await app.state.ptb_app.stop()
         await app.state.ptb_app.shutdown()
         log.info("Telegram app shut down.")
+    app.state.runtime_status = "stopped"
     log.info("🔌 Application shutdown complete.")
+
+@app.get("/live", status_code=200, tags=["System"])
+def liveness_check():
+    """Process liveness: independent from external dependencies and startup readiness."""
+    return {"status": "ok", "runtime_status": app.state.runtime_status}
+
+
+@app.get("/ready", status_code=200, tags=["System"])
+def readiness_check():
+    """Dependency readiness with explicit degraded background-task reporting."""
+    checks = {
+        "startup_complete": bool(app.state.ready),
+        "telegram": bool(app.state.ptb_app),
+        "services": bool(app.state.services),
+        "background_tasks": sorted(app.state.degraded_tasks),
+    }
+    if not app.state.ready or not app.state.ptb_app or not app.state.services or app.state.degraded_tasks:
+        raise HTTPException(status_code=503, detail={"status": "not_ready", "runtime_status": app.state.runtime_status, "checks": checks})
+    return {"status": "ok", "runtime_status": app.state.runtime_status, "checks": checks}
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(
