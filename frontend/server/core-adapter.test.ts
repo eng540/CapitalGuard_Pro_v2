@@ -297,4 +297,19 @@ describe("CapitalGuard Core adapter", () => {
     expect(result.execution_controls).toEqual({ auto_trade_enabled: false, trade_live_enabled: false });
     expect(result.observation).toMatchObject({ required_hours: 168, complete: false });
   });
+  it("preserves a safe Core replay rejection code for the web UI", async () => {
+    const rejectedFetch = async () => new Response(JSON.stringify({
+      detail: { code: "HISTORICAL_REPLAY_NOT_READY", message: "Historical batch replay is not currently eligible" },
+    }), { status: 409, headers: { "Content-Type": "application/json" } });
+    await expect(coreReplayReviewedBatchFromBinance({ actorTelegramId: 123456, batchId: 52, idempotencyKey: "binance-batch-replay-key-0052" }, rejectedFetch as typeof fetch, {
+      CAPITALGUARD_CORE_BASE_URL: "https://core.example",
+      CAPITALGUARD_CORE_API_KEY: "private-service-key",
+    })).rejects.toThrow("CAPITALGUARD_CORE_API_409:HISTORICAL_REPLAY_NOT_READY");
+  });
+
+  it("uses the configured timeout ceiling for slow but valid Core reads", async () => {
+    const env = { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key", CAPITALGUARD_CORE_TIMEOUT_MS: "15000" };
+    const response = await coreReadOnlyFetch("/api/webapp/owner/review-batches?actor_telegram_id=123456", {}, async () => new Response(JSON.stringify({ ok: true, batches: [] }), { status: 200 }) as Response, env);
+    expect(response).toEqual({ ok: true, batches: [] });
+  });
 });

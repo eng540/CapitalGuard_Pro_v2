@@ -1,5 +1,5 @@
 const HEALTH_TIMEOUT_MS = 10_000;
-const CORE_REQUEST_TIMEOUT_MS = 8_000;
+const CORE_REQUEST_TIMEOUT_MS = 15_000;
 
 type CoreConfig = { baseUrl: string; apiKey: string };
 export type CoreHealth = { status: "ok"; baseUrl: string };
@@ -40,6 +40,9 @@ export type CoreOwnerReviewBatch = {
   rejected_records: number;
   created_at: string | null;
   owner_review: { approved?: boolean; note?: string; reviewed_at?: string } | null;
+  replay_ready: boolean;
+  replay_signal_count: number;
+  replay_block_reason: "HISTORICAL_REPLAY_NOT_READY" | null;
 };
 export type CoreOperationsEvent = { id: string; category: "PUBLICATION" | "LIFECYCLE" | "AUDIT"; code: string; severity: "info" | "warning" | "critical"; record_ref: string; occurred_at: string };
 export type CoreOperationsFeed = { events: CoreOperationsEvent[]; summary: { critical: number; warning: number; total: number } };
@@ -73,6 +76,7 @@ export type CoreHistoricalBinanceReplayInput = { actorTelegramId: number; signal
 export type CoreHistoricalBinanceReplayConfirmation = { ok: true; signal_id: number; event_count: number; replayed: boolean; commercial_enabled: false };
 export type CoreHistoricalBatchBinanceReplayInput = { actorTelegramId: number; batchId: number; idempotencyKey: string };
 export type CoreHistoricalBatchBinanceReplayConfirmation = { ok: true; batch_id: number; signal_ids: number[]; event_count: number; window: string; replayed: boolean; commercial_enabled: false };
+export type CoreCommandError = Error & { code?: string; status?: number };
 export type CoreHistoricalIntakeItem = {
   itemKey?: string;
   rawText?: string | null;
@@ -196,7 +200,26 @@ export async function coreReadOnlyFetch(path: string, init: RequestInit = {}, fe
       signal: controller.signal,
       headers: { ...init.headers, Authorization: `Bearer ${config.apiKey}`, Accept: "application/json" },
     });
-    if (!response.ok) throw new Error(`CAPITALGUARD_CORE_API_${response.status}`);
+    if (!response.ok) {
+      let errorCode: string | undefined;
+      try {
+        const errorPayload = await response.clone().json() as { detail?: unknown; code?: unknown };
+        const detail = errorPayload.detail;
+        if (detail && typeof detail === "object" && typeof (detail as { code?: unknown }).code === "string") {
+          errorCode = (detail as { code: string }).code;
+        } else if (typeof errorPayload.code === "string") {
+          errorCode = errorPayload.code;
+        } else if (typeof detail === "string") {
+          errorCode = detail;
+        }
+      } catch {
+        // Preserve the stable HTTP error when Core has no JSON detail.
+      }
+      const error = new Error(`CAPITALGUARD_CORE_API_${response.status}${errorCode ? `:${errorCode}` : ""}`) as CoreCommandError;
+      error.code = errorCode;
+      error.status = response.status;
+      throw error;
+    }
     return response.json() as Promise<unknown>;
   } catch (error) {
     if (controller.signal.aborted) throw new Error("CAPITALGUARD_CORE_TIMEOUT");

@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from capitalguard.application.services.continuum_handoff_gate import ContinuumHandoffFacts, ContinuumHandoffGate
@@ -142,8 +142,25 @@ class WebCommandService:
             .order_by(HistoricalImportBatch.created_at.desc())
             .limit(100)
         ).scalars().all()
-        return [
-            {
+        batch_ids = [batch.id for batch in batches]
+        reviewed_signal_counts = {}
+        if batch_ids:
+            reviewed_signal_counts = dict(
+                session.execute(
+                    select(HistoricalSignalEvidence.batch_id, func.count(HistoricalSignal.id))
+                    .join(HistoricalSignal, HistoricalSignal.evidence_id == HistoricalSignalEvidence.id)
+                    .where(HistoricalSignalEvidence.batch_id.in_(batch_ids))
+                    .group_by(HistoricalSignalEvidence.batch_id)
+                ).all()
+            )
+        result = []
+        for batch in batches:
+            replay_signal_count = int(reviewed_signal_counts.get(batch.id, 0))
+            replay_ready = batch.status == "EVIDENCE_INGESTED" and replay_signal_count > 0
+            replay_block_reason = None
+            if batch.status == "EVIDENCE_INGESTED" and not replay_ready:
+                replay_block_reason = "HISTORICAL_REPLAY_NOT_READY"
+            result.append({
                 "id": batch.id,
                 "ref": batch.batch_ref,
                 "status": batch.status,
@@ -153,9 +170,11 @@ class WebCommandService:
                 "rejected_records": batch.rejected_records,
                 "created_at": batch.created_at.isoformat() if batch.created_at else None,
                 "owner_review": (batch.metadata_json or {}).get("owner_review"),
-            }
-            for batch in batches
-        ]
+                "replay_ready": replay_ready,
+                "replay_signal_count": replay_signal_count,
+                "replay_block_reason": replay_block_reason,
+            })
+        return result
 
     def review_batch(self, session: Session, *, actor_telegram_id: int, batch_id: int, approved: bool, note: str | None, idempotency_key: str) -> dict:
         owner = self._require_owner(session, actor_telegram_id)

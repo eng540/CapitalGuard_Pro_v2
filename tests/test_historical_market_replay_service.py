@@ -204,3 +204,29 @@ def test_replay_rejects_observation_after_replay_end(db_session):
             replay_end=_time(1, 10),
             observations=[MarketObservation("ETHUSDT", "Futures", _time(1, 11), Decimal("101"), "test")],
         )
+
+
+def test_reviewable_batch_read_model_exposes_replay_readiness(db_session, monkeypatch):
+    telegram_id = 97006
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_CHAT_ID", str(telegram_id))
+    ready_batch, _signal = _reviewed_batch_signal(db_session, telegram_id)
+    owner = UserRepository(db_session).find_or_create(telegram_id=telegram_id, first_name="Replay owner")
+    blocked_batch = HistoricalImportBatch(
+        batch_ref="HB-TEST-NO-SIGNAL",
+        source_kind="FORWARD",
+        requested_by_user_id=owner.id,
+        status="EVIDENCE_INGESTED",
+        manifest_hash="manifest-no-signal",
+    )
+    db_session.add(blocked_batch)
+    db_session.flush()
+
+    result = WebCommandService().list_reviewable_batches(db_session, actor_telegram_id=telegram_id)
+    by_id = {item["id"]: item for item in result}
+
+    assert by_id[ready_batch.id]["replay_ready"] is True
+    assert by_id[ready_batch.id]["replay_signal_count"] == 1
+    assert by_id[ready_batch.id]["replay_block_reason"] is None
+    assert by_id[blocked_batch.id]["replay_ready"] is False
+    assert by_id[blocked_batch.id]["replay_signal_count"] == 0
+    assert by_id[blocked_batch.id]["replay_block_reason"] == "HISTORICAL_REPLAY_NOT_READY"
