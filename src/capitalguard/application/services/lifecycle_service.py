@@ -252,15 +252,15 @@ class LifecycleService:
             db_session.commit()
             return
         
-        def _handle_task_error(task):
-            try:
-                task.result()
-            except Exception as e:
-                logger.error(f"Failed to send reply for rec #{rec_id}: {e}")
-        
-        for m in msgs:
-            task = asyncio.create_task(self._send_reply(m.telegram_channel_id, m.telegram_message_id, text))
-            task.add_done_callback(_handle_task_error)
+        # Await direct notifications instead of leaving untracked tasks behind.
+        # The outbox path above remains the preferred durable path in production.
+        await asyncio.gather(
+            *(
+                self._send_reply(m.telegram_channel_id, m.telegram_message_id, text)
+                for m in msgs
+            ),
+            return_exceptions=True,
+        )
 
     async def _send_reply(self, ch, msg, text):
         """✅ FIXED: Now logs errors instead of silently ignoring them."""

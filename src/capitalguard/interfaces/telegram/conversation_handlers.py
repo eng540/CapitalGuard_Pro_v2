@@ -542,12 +542,14 @@ async def review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, db_
             msg = f"✅ تم الحفظ! (ID: {identity})\n\nجاري النشر الآن في {len(selected_ids)} قناة..."
             await safe_edit_message(query, text=msg)
 
-            asyncio.create_task(
+            context.application.create_task(
                 creation_service.background_publish_and_index(
                     rec_id=created_rec_entity.id,
                     user_db_id=db_user.id,
                     target_channel_ids=selected_ids
-                )
+                ),
+                update=update,
+                name=f"background-publish-{created_rec_entity.id}",
             )
             
             clean_creation_state(context)
@@ -630,12 +632,14 @@ async def channel_picker_handler(update: Update, context: ContextTypes.DEFAULT_T
             msg = f"✅ تم الحفظ! (ID: {identity})\n\nجاري النشر الآن في {len(selected_ids)} قناة..."
             await safe_edit_message(query, text=msg)
 
-            asyncio.create_task(
+            context.application.create_task(
                 creation_service.background_publish_and_index(
                     rec_id=created_rec_entity.id,
                     user_db_id=db_user.id,
                     target_channel_ids=selected_ids
-                )
+                ),
+                update=update,
+                name=f"background-publish-{created_rec_entity.id}",
             )
             
             clean_creation_state(context)
