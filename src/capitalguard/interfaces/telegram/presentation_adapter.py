@@ -260,6 +260,7 @@ def build_batch_summary(
     *,
     allowed_actions: Sequence[str] | None = None,
     callback_data_factory: Callable[[str], str] | None = None,
+    extracted_items: Sequence[Any] | None = None,
 ) -> BatchSummaryView:
     """Build a concise user-facing summary without operational identifiers."""
 
@@ -291,6 +292,17 @@ def build_batch_summary(
     )
     if duplicate:
         lines.append(f"مكررة: {_text(duplicate)}")
+    if extracted_items:
+        lines.extend(["", "<b>عينات مما استُخرج:</b>"])
+        for index, item in enumerate(extracted_items[:3], start=1):
+            asset = _value(item, "asset", _value(item, "symbol"))
+            side = _value(item, "side", _value(item, "direction"))
+            entry = _value(item, "entry", _value(item, "entry_price"))
+            stop_loss = _value(item, "stop_loss", _value(item, "sl"))
+            targets = _value(item, "targets", _value(item, "take_profits"))
+            lines.append(f"{index}. <code>{_text(asset)}</code> · {_text(side)} · دخول {_text(entry)} · وقف {_text(stop_loss)}")
+            if targets:
+                lines.append(f"   الأهداف: {_text(_format_targets(targets).replace(chr(10), '، '))}")
     if incomplete or unavailable:
         lines.append("تظهر الحالات التي تحتاج تدخلك فقط، بينما تبقى التفاصيل الكاملة متاحة في مساحة المراجعة.")
     else:

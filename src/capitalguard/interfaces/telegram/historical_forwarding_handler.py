@@ -205,6 +205,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             parsed_count = 0
             partial_count = 0
             parsed_assets = []
+            extracted_items = []
             temporal_modes = Counter()
             temporal_routes = Counter()
             temporal_reasons = Counter()
@@ -246,6 +247,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                     asset = (parsed.data or {}).get("asset")
                     if asset:
                         parsed_assets.append(str(asset))
+                        extracted_items.append(parsed.data or {})
                 else:
                     partial_count += 1
             batch = session.get(HistoricalImportBatch, batch_id)
@@ -285,6 +287,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                     "unavailable_records": preview.rejected_records,
                     "duplicate_records": preview.duplicate_records,
                 },
+                extracted_items=extracted_items,
                 allowed_actions=allowed_actions,
                 callback_data_factory=lambda action: f"{PREVIEW_ACTION_PREFIX}:{batch_id}:{action}",
             )
