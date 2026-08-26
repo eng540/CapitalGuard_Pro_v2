@@ -123,6 +123,13 @@ class HistoricalG6ReplayCommand(BaseModel):
     idempotency_key: str
 
 
+class ContinuumHandoffDecisionCommand(BaseModel):
+    actor_telegram_id: int
+    signal_id: int
+    consent_given: bool
+    idempotency_key: str
+
+
 class HistoricalDraftMaterializationCommand(BaseModel):
     actor_telegram_id: int
     draft_id: int
@@ -1036,6 +1043,27 @@ async def execute_reviewed_batch_binance_replay(batch_id: int, command: Historic
             )
     except WebCommandError as exc:
         raise HTTPException(status_code=409, detail="Historical batch replay rejected") from exc
+
+
+@router.post("/owner/historical-signals/{signal_id}/continuum-handoff/decision")
+async def execute_continuum_handoff_decision(signal_id: int, command: ContinuumHandoffDecisionCommand, request: Request):
+    """Evaluate replay-to-live readiness only; no live entity or subscription is created."""
+    require_core_service_key(request.headers.get("authorization"))
+    if signal_id != command.signal_id or len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Invalid Continuum Handoff decision command")
+    try:
+        with session_scope() as session:
+            return WebCommandService().assess_continuum_handoff(
+                session,
+                actor_telegram_id=command.actor_telegram_id,
+                signal_id=signal_id,
+                consent_given=command.consent_given,
+                idempotency_key=command.idempotency_key,
+            )
+    except WebCommandError as exc:
+        detail = str(exc)
+        status_code = 409 if "requires" in detail.lower() else 403
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
 @router.post("/owner/historical-signals/{signal_id}/g6-replay")
