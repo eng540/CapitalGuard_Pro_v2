@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -70,6 +70,81 @@ class HistoricalForwardingService:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def canonical_order_key(message: Any) -> tuple[int, datetime, int, int]:
+        """Return deterministic source ordering for receipts and manifest records."""
+        source_chat_id = HistoricalForwardingService._normalize_chat_id(
+            message.get("source_chat_id") if isinstance(message, Mapping) else getattr(message, "source_chat_id", None)
+        )
+        source_timestamp = (
+            message.get("source_message_timestamp")
+            if isinstance(message, Mapping)
+            else getattr(message, "source_message_timestamp", None)
+        )
+        source_message_id = HistoricalForwardingService._normalize_chat_id(
+            message.get("source_message_id") if isinstance(message, Mapping) else getattr(message, "source_message_id", None)
+        )
+        revision = (
+            message.get("source_message_revision", 0)
+            if isinstance(message, Mapping)
+            else getattr(message, "source_message_revision", 0)
+        )
+        if source_timestamp is None and isinstance(message, Mapping):
+            source_timestamp = message.get("message_timestamp")
+        if source_timestamp is None:
+            source_timestamp = datetime.min.replace(tzinfo=timezone.utc)
+        elif source_timestamp.tzinfo is None:
+            source_timestamp = source_timestamp.replace(tzinfo=timezone.utc)
+        else:
+            source_timestamp = source_timestamp.astimezone(timezone.utc)
+        try:
+            revision_value = max(0, int(revision or 0))
+        except (TypeError, ValueError):
+            revision_value = 0
+        return (
+            source_chat_id if source_chat_id is not None else -(2**63),
+            source_timestamp,
+            source_message_id if source_message_id is not None else -1,
+            revision_value,
+        )
+
+    @classmethod
+    def ordered_receipts(cls, receipts: Iterable[HistoricalForwardReceipt]) -> list[HistoricalForwardReceipt]:
+        """Order receipts by source facts, never by receiver arrival order."""
+        return sorted(list(receipts), key=cls.canonical_order_key)
+
+    @classmethod
+    def _timeline_annotations(cls, receipts: Iterable[HistoricalForwardReceipt]) -> dict[int, dict[str, Any]]:
+        """Annotate reply relationships without guessing unrelated messages together."""
+        ordered = cls.ordered_receipts(receipts)
+        source_ids = {
+            receipt.source_message_id
+            for receipt in ordered
+            if receipt.source_message_id is not None
+        }
+        annotations: dict[int, dict[str, Any]] = {}
+        for receipt in ordered:
+            parent_id = receipt.source_reply_to_message_id
+            if parent_id is not None and parent_id in source_ids:
+                annotations[receipt.id] = {
+                    "timeline_role": "CHILD_UPDATE",
+                    "timeline_parent_message_id": parent_id,
+                    "timeline_link_status": "EXPLICIT_REPLY",
+                }
+            elif parent_id is not None:
+                annotations[receipt.id] = {
+                    "timeline_role": "UNRESOLVED_CHILD",
+                    "timeline_parent_message_id": parent_id,
+                    "timeline_link_status": "PENDING_REVIEW",
+                }
+            else:
+                annotations[receipt.id] = {
+                    "timeline_role": "ROOT_CANDIDATE",
+                    "timeline_parent_message_id": None,
+                    "timeline_link_status": "UNLINKED",
+                }
+        return annotations
 
     @staticmethod
     def _source_content_hash(raw_text: str | None, metadata: dict[str, Any]) -> str:
@@ -234,8 +309,11 @@ class HistoricalForwardingService:
         rejected = [receipt for receipt in receipts if receipt.validation_status.startswith("REJECTED")]
         hidden = [receipt for receipt in receipts if receipt.validation_status == "REJECTED_ORIGIN"]
         duplicates = [receipt for receipt in receipts if receipt.validation_status == "DUPLICATE"]
+        ordered_accepted = self.ordered_receipts(accepted)
+        timeline_annotations = self._timeline_annotations(ordered_accepted)
         manifest = {
             "source_kind": self.SOURCE_KIND,
+            "ordering": "source_chat_id,source_message_timestamp,source_message_id,source_message_revision",
             "records": [
                 {
                     "telegram_channel_id": receipt.source_chat_id,
@@ -252,9 +330,10 @@ class HistoricalForwardingService:
                         "source_edit_date": receipt.source_edit_date.isoformat() if receipt.source_edit_date else None,
                         "source_reply_to_message_id": receipt.source_reply_to_message_id,
                         "forwarding_receipt_id": receipt.id,
+                        **timeline_annotations.get(receipt.id, {}),
                     },
                 }
-                for receipt in accepted
+                for receipt in ordered_accepted
             ],
         }
         batch.total_records = len(receipts)

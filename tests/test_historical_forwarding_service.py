@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+from types import SimpleNamespace
+
 from sqlalchemy import func, select
 
 from capitalguard.application.services.historical_forwarding_service import (
@@ -267,3 +269,110 @@ def test_preview_decisions_are_explicit_audited_and_never_create_live_entities(d
     assert db_session.scalar(select(func.count()).select_from(Recommendation)) == 0
     assert db_session.scalar(select(func.count()).select_from(UserTrade)) == 0
     assert db_session.scalar(select(func.count()).select_from(PublicationDelivery)) == 0
+
+
+def test_preview_orders_records_by_source_time_and_marks_explicit_reply_timeline(db_session):
+    reviewer = UserRepository(db_session).find_or_create(
+        telegram_id=930010,
+        user_type=UserType.ANALYST,
+        first_name="Timeline Reviewer",
+    )
+    catalog = ChannelCatalog(
+        telegram_channel_id=-1009010,
+        channel_code="CH-TL-01",
+        public_ref="CH-TL-01",
+        title="Timeline Channel",
+    )
+    db_session.add(catalog)
+    db_session.flush()
+    service = HistoricalForwardingService()
+    batch = service.start_batch(
+        db_session,
+        channel_catalog_id=catalog.id,
+        requested_by_user_id=reviewer.id,
+        expected_source_chat_id=-1009010,
+        mode="BATCH",
+        max_records=10,
+    )
+
+    messages = [
+        ForwardedMessageInput(
+            receiver_chat_id=reviewer.telegram_user_id,
+            receiver_message_id=301,
+            forwarding_user_id=reviewer.id,
+            source_chat_id=-1009010,
+            source_message_id=30,
+            source_origin_type="CHANNEL",
+            source_message_timestamp=_ts(12),
+            raw_text="TP1 hit for BTCUSDT",
+            source_reply_to_message_id=10,
+        ),
+        ForwardedMessageInput(
+            receiver_chat_id=reviewer.telegram_user_id,
+            receiver_message_id=302,
+            forwarding_user_id=reviewer.id,
+            source_chat_id=-1009010,
+            source_message_id=10,
+            source_origin_type="CHANNEL",
+            source_message_timestamp=_ts(10),
+            raw_text="#BTCUSDT LONG Entry 100 SL 95 TP1 105",
+        ),
+        ForwardedMessageInput(
+            receiver_chat_id=reviewer.telegram_user_id,
+            receiver_message_id=303,
+            forwarding_user_id=reviewer.id,
+            source_chat_id=-1009010,
+            source_message_id=20,
+            source_origin_type="CHANNEL",
+            source_message_timestamp=_ts(11),
+            raw_text="BTCUSDT update",
+        ),
+    ]
+    for message in messages:
+        service.stage_message(db_session, batch_id=batch.id, message=message)
+
+    preview = service.preview_batch(db_session, batch_id=batch.id)
+    records = preview.manifest["records"]
+
+    assert [record["telegram_message_id"] for record in records] == [10, 20, 30]
+    assert records[0]["metadata"]["timeline_role"] == "ROOT_CANDIDATE"
+    assert records[1]["metadata"]["timeline_role"] == "ROOT_CANDIDATE"
+    assert records[2]["metadata"]["timeline_role"] == "CHILD_UPDATE"
+    assert records[2]["metadata"]["timeline_parent_message_id"] == 10
+    assert records[2]["metadata"]["timeline_link_status"] == "EXPLICIT_REPLY"
+    assert preview.manifest["ordering"] == "source_chat_id,source_message_timestamp,source_message_id,source_message_revision"
+
+
+def test_source_order_key_uses_revision_as_final_tie_breaker():
+    timestamp = _ts(10)
+    base = dict(
+        receiver_chat_id=500,
+        receiver_message_id=1,
+        forwarding_user_id=99,
+        source_chat_id=-1009001,
+        source_message_id=77,
+        source_origin_type="CHANNEL",
+        source_message_timestamp=timestamp,
+        raw_text="BTCUSDT LONG",
+    )
+    older = ForwardedMessageInput(**base, source_message_revision=0)
+    newer = ForwardedMessageInput(**base, source_message_revision=1)
+
+    assert HistoricalForwardingService.canonical_order_key(older) < HistoricalForwardingService.canonical_order_key(newer)
+
+
+def test_unresolved_reply_remains_pending_review_instead_of_being_merged():
+    receipt = SimpleNamespace(
+        id=1,
+        source_chat_id=-1009001,
+        source_message_id=88,
+        source_message_timestamp=_ts(10),
+        source_message_revision=0,
+        source_reply_to_message_id=999,
+    )
+
+    annotations = HistoricalForwardingService._timeline_annotations([receipt])
+
+    assert annotations[1]["timeline_role"] == "UNRESOLVED_CHILD"
+    assert annotations[1]["timeline_link_status"] == "PENDING_REVIEW"
+    assert annotations[1]["timeline_parent_message_id"] == 999
