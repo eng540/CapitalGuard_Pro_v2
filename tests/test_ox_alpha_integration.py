@@ -276,3 +276,62 @@ def test_openai_text_payload_bounds_generation_budget(monkeypatch):
 
 
 # --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+
+
+@pytest.mark.asyncio
+async def test_fal_vision_route_uses_official_payload_shape(monkeypatch):
+    calls = []
+
+    class FakeRoute:
+        protocol = "fal"
+        provider = "fal"
+        model = "google/gemini-2.5-flash"
+        api_url = "https://fal.run/openrouter/router/vision"
+        route_name = "fal-gemini-vision"
+
+        def headers(self):
+            return {"Authorization": "Key test-fal-key"}
+
+    class FakeRouter:
+        def routes_for(self, capability):
+            return [FakeRoute()] if capability == "vision" else []
+
+        def record_success(self, route):
+            return None
+
+        def record_failure(self, route, status):
+            return None
+
+    async def fake_post(url, headers, payload):
+        calls.append((url, headers, payload))
+        return True, {"output": json.dumps({
+            "asset": "BTCUSDT",
+            "market": "Futures",
+            "side": "LONG",
+            "entry": "70000",
+            "stop_loss": "69000",
+            "targets": [{"price": "71000", "close_percent": 100.0}],
+        })}, 200, "ok"
+
+    monkeypatch.setattr(image_parser, "LLM_API_KEY", "test-fal-key")
+    monkeypatch.setattr(image_parser, "LLM_API_URL", "https://unused.test")
+    monkeypatch.setattr(image_parser, "LLM_MODEL", "unused-model")
+    monkeypatch.setattr(image_parser, "router_enabled", lambda: True)
+    monkeypatch.setattr(image_parser, "get_provider_router", lambda: FakeRouter())
+    monkeypatch.setattr(image_parser, "_post_with_retries", fake_post)
+    monkeypatch.setattr(image_parser.httpx, "AsyncClient", lambda: _ImageClient())
+
+    result = await image_parser.parse_with_vision("https://telegram.test/file/signal.png")
+
+    assert result is not None
+    assert result["asset"] == "BTCUSDT"
+    assert len(calls) == 1
+    url, headers, payload = calls[0]
+    assert url == "https://fal.run/openrouter/router/vision"
+    assert headers["Authorization"] == "Key test-fal-key"
+    assert payload["model"] == "google/gemini-2.5-flash"
+    assert payload["image_urls"][0].startswith("data:image/png;base64,")
+    assert "image_url" not in payload
+
+
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
