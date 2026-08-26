@@ -134,3 +134,27 @@ def test_unknown_actions_are_not_rendered():
 
     assert view.actions == (CardAction.IMPORT_HISTORICAL.value,)
     assert "UNKNOWN_INTERNAL_ACTION" not in view.text
+
+
+def test_build_batch_summary_shows_extracted_values_without_internal_metadata():
+    view = build_batch_summary(
+        {"total_records": 1, "processed_records": 1, "complete_records": 1},
+        extracted_items=[
+            {
+                "asset": "ETHUSDT",
+                "side": "SHORT",
+                "entry": "3500",
+                "stop_loss": "3600",
+                "targets": [{"price": "3400"}],
+                "batch_id": 99,
+                "replay_gate": "HOLD",
+            }
+        ],
+    )
+
+    assert "ETHUSDT" in view.text
+    assert "SHORT" in view.text
+    assert "3500" in view.text
+    assert "TP1" in view.text and "3400" in view.text
+    assert "batch_id" not in view.text
+    assert "replay_gate" not in view.text
