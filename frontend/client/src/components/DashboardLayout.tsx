@@ -238,17 +238,16 @@ function DashboardLayoutContent({
 
       <SidebarInset>
         {isMobile && (
-          <div className="flex border-b h-14 items-center justify-between bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky top-0 z-40">
-            <div className="flex items-center gap-2">
-              <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
-              <div className="flex items-center gap-3">
-                <div className="flex flex-col gap-1">
-                  <span className="tracking-tight text-foreground">
-                      {activeMenuItem?.label ?? "القائمة"}
-                  </span>
-                </div>
+          <div className="sticky top-0 z-40 border-b bg-background/95 px-2 py-2 backdrop-blur supports-[backdrop-filter]:backdrop-blur">
+            <div className="flex h-10 items-center justify-between">
+              <div className="flex items-center gap-2">
+                <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
+                <span className="tracking-tight text-foreground">{activeMenuItem?.label ?? "القائمة"}</span>
               </div>
             </div>
+            <nav aria-label="محاور CapitalGuard" className="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-white/[.035] p-1">
+              {hubItems.map(item => <button key={item.path} type="button" onClick={() => setLocation(item.path)} className={`rounded-lg px-2 py-2 text-[11px] transition ${item.matches(location) ? "bg-cyan-300/15 font-semibold text-cyan-100" : "text-muted-foreground hover:bg-white/[.05]"}`}>{item.label}</button>)}
+            </nav>
           </div>
         )}
         <main className="flex-1 p-4 md:p-6">{children}</main>
