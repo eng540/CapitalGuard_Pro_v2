@@ -9,6 +9,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from capitalguard.application.services.continuum_handoff_gate import ContinuumHandoffFacts, ContinuumHandoffGate
 from capitalguard.application.services.historical_evidence_ingestion_service import HistoricalEvidenceIngestionService
 from capitalguard.application.services.historical_owner_review_service import HistoricalOwnerReviewService
 from capitalguard.application.services.operational_admission_service import OperationalAdmissionService
@@ -30,6 +31,7 @@ class WebCommandService:
     MATERIALIZE = "HISTORICAL_SIGNAL_MATERIALIZE"
     REPLAY_BINANCE = "HISTORICAL_BINANCE_REPLAY"
     G6_REPLAY = "G6_HISTORICAL_REPLAY"
+    CONTINUUM_HANDOFF_DECISION = "CONTINUUM_HANDOFF_DECISION"
     CLOSE_USER_TRADE = "USER_TRADE_MANUAL_CLOSE"
     PARTIAL_CLOSE_USER_TRADE = "USER_TRADE_MANUAL_PARTIAL_CLOSE"
     MOVE_USER_TRADE_STOP_TO_BREAKEVEN = "USER_TRADE_MOVE_STOP_TO_BREAKEVEN"
@@ -341,6 +343,113 @@ class WebCommandService:
             request_hash=request_hash,
             response=response,
             status="FAILED" if result["status"] == "FAILED" else "COMPLETED",
+        )
+        return response
+
+    def assess_continuum_handoff(
+        self,
+        session: Session,
+        *,
+        actor_telegram_id: int,
+        signal_id: int,
+        consent_given: bool,
+        idempotency_key: str,
+    ) -> dict:
+        """Record a guarded replay-to-live decision without executing a handoff.
+
+        Core derives all facts from the materialized historical signal and its
+        replay evidence. The command deliberately stops at a durable decision;
+        live entity creation, lifecycle mutation, and market subscription remain
+        separate future commands.
+        """
+        owner = self._require_owner(session, actor_telegram_id)
+        signal = session.get(HistoricalSignal, signal_id)
+        if signal is None or signal.evidence is None or signal.evidence.batch is None:
+            raise WebCommandError("Continuum handoff requires a materialized historical signal")
+
+        evidence = signal.evidence
+        batch = evidence.batch
+        materialization = session.execute(
+            select(HistoricalSignalMaterialization)
+            .where(HistoricalSignalMaterialization.signal_id == signal_id)
+            .order_by(HistoricalSignalMaterialization.id)
+        ).scalars().first()
+        if materialization is None:
+            raise WebCommandError("Continuum handoff requires accepted signal materialization")
+
+        latest_replay = None
+        replay_runs = getattr(signal, "market_evidence", None) or []
+        if replay_runs:
+            latest_replay = max(
+                replay_runs,
+                key=lambda item: getattr(item, "created_at", None) or datetime.min,
+            ).replay_run
+        replay_verified = bool(
+            latest_replay
+            and str(getattr(latest_replay, "status", "")).upper() in {"COMPLETED", "VERIFIED"}
+            and str(getattr(latest_replay, "quality_status", "")).upper() in {"VERIFIED", "ACCEPTED", "PASSED"}
+            and str(getattr(latest_replay, "ambiguity_status", "NONE")).upper() in {"NONE", "RESOLVED"}
+        )
+        policy_record = (evidence.metadata_json or {}).get("continuum_protection_policy")
+        lifecycle_status = str(
+            (evidence.metadata_json or {}).get("continuum_lifecycle_status")
+            or getattr(signal, "status", "")
+        ).upper()
+        evidence_metadata = evidence.metadata_json or {}
+        facts = ContinuumHandoffFacts(
+            parse_complete=materialization is not None,
+            source_trusted=bool(evidence.ownership_proof_ref)
+            and str(batch.status).upper() in {"EVIDENCE_INGESTED", "REPLAYED", "VERIFIED"},
+            replay_evidence_verified=replay_verified,
+            lifecycle_status=lifecycle_status,
+            # Missing duplicate proof is unsafe: Core must explicitly establish
+            # that no live entity exists before a future handoff command.
+            duplicate_exists=bool(evidence_metadata.get("continuum_duplicate_exists", True)),
+            protection_policy=policy_record,
+            consent_given=bool(consent_given),
+            idempotency_key=idempotency_key,
+            audit_ready=True,
+        )
+        request_hash = self._fingerprint(
+            self.CONTINUUM_HANDOFF_DECISION,
+            actor_telegram_id,
+            "HISTORICAL_SIGNAL",
+            signal_id,
+            {
+                "materialization_id": materialization.id,
+                "consent_given": bool(consent_given),
+                "replay_run_id": getattr(latest_replay, "id", None),
+            },
+        )
+        existing = self._replay_or_reject(
+            session,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+        if existing is not None:
+            return existing
+        decision = ContinuumHandoffGate().evaluate(facts)
+        response = {
+            "ok": True,
+            "signal_id": signal_id,
+            "materialization_id": materialization.id,
+            "status": decision.status.value,
+            "approved": decision.approved,
+            "reason_codes": list(decision.reason_codes),
+            "execution_allowed": False,
+            "next_step": "EXPLICIT_LIVE_COMMAND_REQUIRED" if decision.approved else "REMEDIATE_BLOCK_REASONS",
+            "replayed": False,
+        }
+        self._record(
+            session,
+            idempotency_key=idempotency_key,
+            command_type=self.CONTINUUM_HANDOFF_DECISION,
+            actor_user_id=owner.id,
+            target_type="HISTORICAL_SIGNAL",
+            target_id=signal_id,
+            request_hash=request_hash,
+            response=response,
+            status=decision.status.value,
         )
         return response
 
