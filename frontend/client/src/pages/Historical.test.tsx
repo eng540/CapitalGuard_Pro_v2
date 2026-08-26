@@ -22,7 +22,8 @@ vi.mock("@/lib/trpc", () => ({ trpc: { capitalguard: {
   historicalIntakeReport: { useQuery: () => intakeReportState },
 } } }));
 
-import Historical, { IntakeBatchView, parseIntakeText } from "./Historical";
+import Historical, { parseIntakeText } from "./Historical";
+import { IntakeBatchView } from "@/components/ForwardResultsInspector";
 
 describe("Historical R4.1 Core read model and 1..N intake", () => {
   afterEach(() => cleanup());
