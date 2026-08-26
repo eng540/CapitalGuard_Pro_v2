@@ -1,6 +1,7 @@
 from capitalguard.application.services.historical_web_intake_service import HistoricalWebIntakeService
 from capitalguard.domain.entities import UserType
 from capitalguard.infrastructure.db.repository import UserRepository
+from capitalguard.infrastructure.db.models import HistoricalForwardReceipt
 
 
 def test_web_historical_intake_supports_single_multiple_partial_batch_and_dedup(db_session):
@@ -80,3 +81,49 @@ def test_web_historical_intake_preserves_telegram_export_provenance(db_session):
     assert item["source_chat_id"] == -1001234567890
     assert item["source_message_id"] == 42
     assert item["semantic_status"] in {"SUCCESS", "INCOMPLETE", "CONFLICT"}
+
+
+def test_web_intake_inspector_recovers_materialization_from_historical_draft(db_session):
+    user = UserRepository(db_session).find_or_create(
+        telegram_id=940003,
+        user_type=UserType.ANALYST,
+        first_name="Telegram Inspector Analyst",
+    )
+    result = HistoricalWebIntakeService().create_batch(
+        db_session,
+        requested_by_user_id=user.id,
+        source_kind="TELEGRAM_EXPORT",
+        input_mode="TELEGRAM_EXPORT",
+        items=[
+            {
+                "item_key": "telegram-77",
+                "raw_text": "#BTCUSDT LONG\nEntry: 100\nSL: 95\nTP1: 105",
+                "source_chat_id": -1001234567890,
+                "source_message_id": 77,
+                "source_message_timestamp": "2025-01-01T10:00:00+00:00",
+                "source_origin_type": "TELEGRAM_EXPORT",
+            }
+        ],
+    )
+    batch_id = result["batch"]["id"]
+    receipt_id = result["batch"]["items"][0]["id"]
+    receipt = db_session.get(HistoricalForwardReceipt, receipt_id)
+    assert receipt is not None
+    metadata = dict(receipt.metadata_json or {})
+    metadata.pop("historical_preview", None)
+    receipt.metadata_json = metadata
+    db_session.flush()
+
+    loaded = HistoricalWebIntakeService().get_batch(
+        db_session,
+        batch_id=batch_id,
+        requested_by_user_id=user.id,
+    )
+    item = loaded["batch"]["items"][0]
+    assert item["order"] == 1
+    assert item["item_key"] == "telegram-77"
+    assert item["parse_status"] == "MATERIALIZED"
+    assert item["semantic_status"] in {"SUCCESS", "INCOMPLETE", "CONFLICT"}
+    assert item["semantic_status"] != "NOT_PROCESSED"
+    assert item["canonical"].get("asset") == "BTCUSDT"
+    assert item["source_verification"] == "VERIFIED_PROVENANCE"
