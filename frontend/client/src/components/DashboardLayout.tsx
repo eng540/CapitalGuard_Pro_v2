@@ -20,22 +20,16 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useIsMobile } from "@/hooks/useMobile";
-import { BarChart3, Bot, FileClock, LayoutDashboard, LogOut, PanelLeft, Search, ShieldCheck, Target, Users } from "lucide-react";
+import { Compass, BriefcaseBusiness, Layers3, LogOut, PanelLeft } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import { Button } from "./ui/button";
 
-const menuItems = [
-  { icon: LayoutDashboard, label: "نظرة عامة", path: "/app" },
-  { icon: Target, label: "التوصيات", path: "/recommendations" },
-  { icon: BarChart3, label: "اكتشاف المحللين", path: "/analysts" },
-  { icon: Search, label: "اكتشاف الإشارات", path: "/signals" },
-  { icon: Target, label: "مساحة المحلل", path: "/analyst/workspace" },
-  { icon: Bot, label: "Smart Dropzone", path: "/smart" },
-  { icon: FileClock, label: "التاريخ وReplay", path: "/historical" },
-  { icon: ShieldCheck, label: "استوديو المخاطر", path: "/risk" },
-  { icon: Users, label: "الإدارة", path: "/admin" },
+const hubItems = [
+  { icon: Compass, label: "رادار التدقيق", path: "/radar", matches: (location: string) => ["/", "/app", "/radar", "/smart", "/historical"].includes(location) },
+  { icon: BriefcaseBusiness, label: "محفظتي الحية", path: "/portfolio", matches: (location: string) => ["/portfolio", "/recommendations", "/risk"].includes(location) },
+  { icon: Layers3, label: "الاستوديو والعمليات", path: "/studio", matches: (location: string) => ["/studio", "/analyst/workspace", "/analysts", "/signals", "/admin"].includes(location) || location.startsWith("/analysts/") },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -112,7 +106,7 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const activeMenuItem = menuItems.find(item => item.path === location);
+  const activeMenuItem = hubItems.find(item => item.matches(location));
   const isMobile = useIsMobile();
 
   useEffect(() => {
@@ -180,8 +174,8 @@ function DashboardLayoutContent({
 
           <SidebarContent className="gap-0" dir="rtl">
             <SidebarMenu className="px-2 py-1">
-              {menuItems.map(item => {
-                const isActive = location === item.path;
+              {hubItems.map(item => {
+                      const isActive = item.matches(location);
                 return (
                   <SidebarMenuItem key={item.path}>
                     <SidebarMenuButton
