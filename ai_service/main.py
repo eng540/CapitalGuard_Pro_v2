@@ -17,6 +17,10 @@ from pydantic import ValidationError
 
 # إعداد التسجيل
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+# httpx/httpcore INFO logs can include full Telegram file URLs. Keep only
+# warnings/errors; application telemetry performs its own redaction.
+for _http_logger_name in ("httpx", "httpcore"):
+    logging.getLogger(_http_logger_name).setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 # استيراد النماذج (Schemas) والمنسق (Manager)
