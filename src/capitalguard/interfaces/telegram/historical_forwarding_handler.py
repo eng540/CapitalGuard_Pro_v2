@@ -42,6 +42,7 @@ from capitalguard.infrastructure.db.repository import ParsingRepository
 from capitalguard.infrastructure.db.uow import session_scope, uow_transaction
 from capitalguard.interfaces.telegram.admin_commands import _is_admin
 from capitalguard.interfaces.telegram.auth import require_active_user
+from capitalguard.interfaces.telegram.presentation_adapter import build_batch_summary
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ AUTO_BATCH_KEY = "frictionless_auto_batch_id"
 AUTO_JOB_PREFIX = "frictionless-historical"
 AUTO_DEBOUNCE_SECONDS = 3
 PREVIEW_ACTION_PREFIX = "historical-preview"
+AUTO_PROGRESS_MESSAGE_KEY = "frictionless_auto_progress_message_id"
 
 
 def historical_forwarding_active(context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -153,14 +155,41 @@ def _auto_job_name(chat_id: int, batch_id: int) -> str:
 
 
 def _preview_action_markup(batch_id: int, allowed_actions: set[str]) -> InlineKeyboardMarkup | None:
-    buttons = []
-    if "IMPORT_HISTORICAL" in allowed_actions:
-        buttons.append(InlineKeyboardButton("استيراد للمراجعة", callback_data=f"{PREVIEW_ACTION_PREFIX}:{batch_id}:IMPORT_HISTORICAL"))
-    if "TRACK_ONLY" in allowed_actions:
-        buttons.append(InlineKeyboardButton("تتبع فقط", callback_data=f"{PREVIEW_ACTION_PREFIX}:{batch_id}:TRACK_ONLY"))
-    if "DISMISS" in allowed_actions:
-        buttons.append(InlineKeyboardButton("تجاهل الدفعة", callback_data=f"{PREVIEW_ACTION_PREFIX}:{batch_id}:DISMISS"))
+    """Backward-compatible keyboard wrapper for the shared presentation adapter."""
+    ordered_actions = [
+        action
+        for action in ("IMPORT_HISTORICAL", "TRACK_ONLY", "DISMISS")
+        if action in allowed_actions
+    ]
+    view = build_batch_summary(
+        {},
+        allowed_actions=ordered_actions,
+        callback_data_factory=lambda action: f"{PREVIEW_ACTION_PREFIX}:{batch_id}:{action}",
+    )
+    if view.reply_markup is None:
+        return None
+    buttons = [button for row in view.reply_markup.inline_keyboard for button in row]
     return InlineKeyboardMarkup([buttons]) if buttons else None
+
+
+async def _safe_edit_historical_message(
+    bot,
+    *,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup=None,
+) -> bool:
+    """Reuse the live parser's Telegram edit/fallback behavior without a module cycle."""
+    from capitalguard.interfaces.telegram.forward_parsing_handler import smart_safe_edit
+
+    return await smart_safe_edit(
+        bot,
+        chat_id=chat_id,
+        message_id=message_id,
+        text=text,
+        reply_markup=reply_markup,
+    )
 
 
 async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
@@ -245,41 +274,55 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 batch.metadata_json = metadata
             allowed_action_sets = [set(str(item).upper() for item in actions) for actions in review_actions_by_mode.values()]
             allowed_actions = set.intersection(*allowed_action_sets) if allowed_action_sets else {"DISMISS"}
-            source_label = metadata.get("source_title") or metadata.get("source_chat_id") or "Unknown source"
-            claim_status = metadata.get("claim_status", "UNVERIFIED")
-            text = (
-                "📜 Historical preview ready\n"
-                f"batch_id={batch_id}\n"
-                f"source={source_label}\n"
-                f"trust={claim_status}\n"
-                f"total={preview.total_records}\n"
-                f"accepted={preview.accepted_records}\n"
-                f"rejected={preview.rejected_records}\n"
-                f"hidden_origin={preview.hidden_origin_records}\n"
-                f"parsed={parsed_count}\n"
-                f"partial_or_unparsed={partial_count}\n"
-                f"assets={', '.join(parsed_assets) or 'N/A'}\n"
-                f"temporal_mode={dict(temporal_modes) or {'UNKNOWN': preview.total_records}}\n"
-                f"temporal_route={dict(temporal_routes) or {'HISTORICAL_CANDIDATE': preview.total_records}}\n"
-                f"temporal_age_seconds={min(temporal_ages) if temporal_ages else 'N/A'}..{max(temporal_ages) if temporal_ages else 'N/A'}\n"
-                f"temporal_reasons={', '.join(temporal_reasons.keys()) or 'N/A'}\n"
-                f"financial_outcome={dict(financial_outcome_status) or 'UNVERIFIABLE'}\n"
-                f"financial_warnings={', '.join(financial_outcome_warnings.keys()) or 'N/A'}\n"
-                f"replay_gate={dict(replay_gate_status) or 'NOT_ASSESSED'}\n"
-                f"replay_gate_reasons={', '.join(replay_gate_reasons.keys()) or 'N/A'}\n"
-                f"replay_status={'REPLAY_PENDING' if parsed_count else 'NOT_PARSED'}\n"
-                "اختر قراراً واضحاً أدناه. لا ينشئ أي خيار توصية أو مركزاً حياً."
+            source_label = metadata.get("source_title") or "المصدر"
+            summary_view = build_batch_summary(
+                {
+                    "source_title": source_label,
+                    "total_records": preview.total_records,
+                    "processed_records": preview.total_records,
+                    "complete_records": parsed_count,
+                    "incomplete_records": partial_count,
+                    "unavailable_records": preview.rejected_records,
+                    "duplicate_records": preview.duplicate_records,
+                },
+                allowed_actions=allowed_actions,
+                callback_data_factory=lambda action: f"{PREVIEW_ACTION_PREFIX}:{batch_id}:{action}",
             )
-        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=_preview_action_markup(batch_id, allowed_actions))
+            text = summary_view.text
+            markup = summary_view.reply_markup
+            progress_message_id = context.user_data.get(AUTO_PROGRESS_MESSAGE_KEY)
+        if progress_message_id:
+            edited = await _safe_edit_historical_message(
+                context.bot,
+                chat_id=chat_id,
+                message_id=progress_message_id,
+                text=text,
+                reply_markup=markup,
+            )
+        else:
+            edited = False
+        if not edited:
+            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
     except Exception:
         log.exception("Automatic historical batch finalization failed for batch %s", batch_id)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="⚠️ Historical preview is temporarily unavailable. The staged receipt was retained for review.",
-        )
+        error_text = "⚠️ تعذر تجهيز ملخص التوصيات مؤقتًا. تم الاحتفاظ بالرسائل للمراجعة."
+        progress_message_id = context.user_data.get(AUTO_PROGRESS_MESSAGE_KEY)
+        if progress_message_id:
+            edited = await _safe_edit_historical_message(
+                context.bot,
+                chat_id=chat_id,
+                message_id=progress_message_id,
+                text=error_text,
+                reply_markup=None,
+            )
+        else:
+            edited = False
+        if not edited:
+            await context.bot.send_message(chat_id=chat_id, text=error_text)
     finally:
         if context.user_data.get(AUTO_BATCH_KEY) == batch_id:
             context.user_data.pop(AUTO_BATCH_KEY, None)
+        context.user_data.pop(AUTO_PROGRESS_MESSAGE_KEY, None)
 
 
 @uow_transaction
@@ -346,6 +389,10 @@ async def direct_historical_forward_handler(
     await _materialize_historical_content(db_session, db_user, receipt)
     context.user_data[AUTO_BATCH_KEY] = batch.id
 
+    if not context.user_data.get(AUTO_PROGRESS_MESSAGE_KEY):
+        progress_message = await message.reply_text("📥 جارٍ تجهيز التوصية ومراجعة بيانات المصدر...")
+        context.user_data[AUTO_PROGRESS_MESSAGE_KEY] = progress_message.message_id
+
     job_name = _auto_job_name(message.chat_id, batch.id)
     for job in context.job_queue.get_jobs_by_name(job_name):
         job.schedule_removal()
@@ -356,18 +403,6 @@ async def direct_historical_forward_handler(
         name=job_name,
         chat_id=message.chat_id,
         user_id=message.from_user.id if message.from_user else None,
-    )
-
-    status = receipt.validation_status
-    source_label = source.title or source.telegram_channel_id or "Unknown source"
-    claim_label = source.claim_status
-    await message.reply_text(
-        "📥 Historical candidate received\n"
-        f"source={source_label}\n"
-        f"claim_status={claim_label}\n"
-        f"status={status}\n"
-        f"receipt_id={receipt.id}\n"
-        "More forwarded messages received within the next 3 seconds will be grouped automatically."
     )
 
 
