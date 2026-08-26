@@ -32,6 +32,7 @@ class WebCommandService:
     REPLAY_BINANCE = "HISTORICAL_BINANCE_REPLAY"
     G6_REPLAY = "G6_HISTORICAL_REPLAY"
     CONTINUUM_HANDOFF_DECISION = "CONTINUUM_HANDOFF_DECISION"
+    CONTINUUM_HANDOFF_EXECUTE = "CONTINUUM_HANDOFF_EXECUTE"
     CLOSE_USER_TRADE = "USER_TRADE_MANUAL_CLOSE"
     PARTIAL_CLOSE_USER_TRADE = "USER_TRADE_MANUAL_PARTIAL_CLOSE"
     MOVE_USER_TRADE_STOP_TO_BREAKEVEN = "USER_TRADE_MOVE_STOP_TO_BREAKEVEN"
@@ -346,7 +347,7 @@ class WebCommandService:
         )
         return response
 
-    def assess_continuum_handoff(
+    def _continuum_handoff_context(
         self,
         session: Session,
         *,
@@ -354,19 +355,12 @@ class WebCommandService:
         signal_id: int,
         consent_given: bool,
         idempotency_key: str,
-    ) -> dict:
-        """Record a guarded replay-to-live decision without executing a handoff.
-
-        Core derives all facts from the materialized historical signal and its
-        replay evidence. The command deliberately stops at a durable decision;
-        live entity creation, lifecycle mutation, and market subscription remain
-        separate future commands.
-        """
+        command_type: str,
+    ):
         owner = self._require_owner(session, actor_telegram_id)
         signal = session.get(HistoricalSignal, signal_id)
         if signal is None or signal.evidence is None or signal.evidence.batch is None:
             raise WebCommandError("Continuum handoff requires a materialized historical signal")
-
         evidence = signal.evidence
         batch = evidence.batch
         materialization = session.execute(
@@ -378,10 +372,10 @@ class WebCommandService:
             raise WebCommandError("Continuum handoff requires accepted signal materialization")
 
         latest_replay = None
-        replay_runs = getattr(signal, "market_evidence", None) or []
-        if replay_runs:
+        market_evidence = getattr(signal, "market_evidence", None) or []
+        if market_evidence:
             latest_replay = max(
-                replay_runs,
+                market_evidence,
                 key=lambda item: getattr(item, "created_at", None) or datetime.min,
             ).replay_run
         replay_verified = bool(
@@ -390,28 +384,26 @@ class WebCommandService:
             and str(getattr(latest_replay, "quality_status", "")).upper() in {"VERIFIED", "ACCEPTED", "PASSED"}
             and str(getattr(latest_replay, "ambiguity_status", "NONE")).upper() in {"NONE", "RESOLVED"}
         )
-        policy_record = (evidence.metadata_json or {}).get("continuum_protection_policy")
-        lifecycle_status = str(
-            (evidence.metadata_json or {}).get("continuum_lifecycle_status")
-            or getattr(signal, "status", "")
-        ).upper()
         evidence_metadata = evidence.metadata_json or {}
         facts = ContinuumHandoffFacts(
-            parse_complete=materialization is not None,
+            parse_complete=True,
             source_trusted=bool(evidence.ownership_proof_ref)
             and str(batch.status).upper() in {"EVIDENCE_INGESTED", "REPLAYED", "VERIFIED"},
             replay_evidence_verified=replay_verified,
-            lifecycle_status=lifecycle_status,
-            # Missing duplicate proof is unsafe: Core must explicitly establish
-            # that no live entity exists before a future handoff command.
+            lifecycle_status=str(
+                evidence_metadata.get("continuum_lifecycle_status")
+                or getattr(signal, "status", "")
+            ).upper(),
+            # Missing duplicate proof is unsafe. Core must explicitly establish
+            # that no pending/live entity exists before a future handoff command.
             duplicate_exists=bool(evidence_metadata.get("continuum_duplicate_exists", True)),
-            protection_policy=policy_record,
+            protection_policy=evidence_metadata.get("continuum_protection_policy"),
             consent_given=bool(consent_given),
             idempotency_key=idempotency_key,
             audit_ready=True,
         )
         request_hash = self._fingerprint(
-            self.CONTINUUM_HANDOFF_DECISION,
+            command_type,
             actor_telegram_id,
             "HISTORICAL_SIGNAL",
             signal_id,
@@ -421,11 +413,54 @@ class WebCommandService:
                 "replay_run_id": getattr(latest_replay, "id", None),
             },
         )
-        existing = self._replay_or_reject(
+        return owner, signal, evidence, materialization, facts, request_hash
+
+    @staticmethod
+    def _continuum_trade_data(signal: HistoricalSignal, evidence_metadata: dict) -> dict:
+        targets = []
+        for target in signal.targets or []:
+            if isinstance(target, dict):
+                targets.append({
+                    "price": target.get("price", target.get("value")),
+                    "close_percent": target.get("close_percent", target.get("percentage", 0.0)),
+                })
+            else:
+                targets.append({"price": target, "close_percent": 0.0})
+        policy = evidence_metadata.get("continuum_protection_policy") or {}
+        return {
+            "asset": signal.asset,
+            "side": signal.side,
+            "market": signal.market or "Futures",
+            "entry": signal.entry,
+            "stop_loss": signal.stop_loss,
+            "targets": targets,
+            "profit_stop_mode": policy.get("profit_stop_mode", "NONE"),
+            "profit_stop_price": policy.get("profit_stop_price"),
+            "profit_stop_trailing_value": policy.get("profit_stop_trailing_value"),
+            "profit_stop_active": bool(policy.get("profit_stop_active", False)),
+            "break_even_after_profit_pct": policy.get("break_even_after_profit_pct"),
+            "break_even_buffer": policy.get("break_even_buffer", 0),
+        }
+
+    def assess_continuum_handoff(
+        self,
+        session: Session,
+        *,
+        actor_telegram_id: int,
+        signal_id: int,
+        consent_given: bool,
+        idempotency_key: str,
+    ) -> dict:
+        """Persist a readiness decision only; it never creates a live entity."""
+        owner, _signal, _evidence, materialization, facts, request_hash = self._continuum_handoff_context(
             session,
+            actor_telegram_id=actor_telegram_id,
+            signal_id=signal_id,
+            consent_given=consent_given,
             idempotency_key=idempotency_key,
-            request_hash=request_hash,
+            command_type=self.CONTINUUM_HANDOFF_DECISION,
         )
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
         if existing is not None:
             return existing
         decision = ContinuumHandoffGate().evaluate(facts)
@@ -437,7 +472,7 @@ class WebCommandService:
             "approved": decision.approved,
             "reason_codes": list(decision.reason_codes),
             "execution_allowed": False,
-            "next_step": "EXPLICIT_LIVE_COMMAND_REQUIRED" if decision.approved else "REMEDIATE_BLOCK_REASONS",
+            "next_step": "EXPLICIT_PENDING_TRACKING_COMMAND_REQUIRED" if decision.approved else "REMEDIATE_BLOCK_REASONS",
             "replayed": False,
         }
         self._record(
@@ -450,6 +485,110 @@ class WebCommandService:
             request_hash=request_hash,
             response=response,
             status=decision.status.value,
+        )
+        return response
+
+    async def execute_continuum_handoff(
+        self,
+        session: Session,
+        *,
+        actor_telegram_id: int,
+        signal_id: int,
+        consent_given: bool,
+        idempotency_key: str,
+        creation_service,
+    ) -> dict:
+        """Create pending tracking only after a fresh, explicit gate approval.
+
+        This reuses CreationService's existing forwarding path. It deliberately
+        requests PENDING_ACTIVATION, never ACTIVATED, and never subscribes to a
+        market stream directly.
+        """
+        owner, signal, evidence, materialization, facts, request_hash = self._continuum_handoff_context(
+            session,
+            actor_telegram_id=actor_telegram_id,
+            signal_id=signal_id,
+            consent_given=consent_given,
+            idempotency_key=idempotency_key,
+            command_type=self.CONTINUUM_HANDOFF_EXECUTE,
+        )
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+        decision = ContinuumHandoffGate().evaluate(facts)
+        if not decision.approved:
+            response = {
+                "ok": True,
+                "signal_id": signal_id,
+                "materialization_id": materialization.id,
+                "status": decision.status.value,
+                "approved": False,
+                "reason_codes": list(decision.reason_codes),
+                "execution_allowed": False,
+                "replayed": False,
+            }
+            self._record(
+                session,
+                idempotency_key=idempotency_key,
+                command_type=self.CONTINUUM_HANDOFF_EXECUTE,
+                actor_user_id=owner.id,
+                target_type="HISTORICAL_SIGNAL",
+                target_id=signal_id,
+                request_hash=request_hash,
+                response=response,
+                status=decision.status.value,
+            )
+            return response
+        if creation_service is None:
+            raise WebCommandError("Continuum pending tracking service unavailable")
+
+        evidence_metadata = evidence.metadata_json or {}
+        channel_info = None
+        if evidence.telegram_channel_id:
+            channel_info = {
+                "id": evidence.telegram_channel_id,
+                "title": evidence_metadata.get("source_title"),
+            }
+        result = await creation_service.create_trade_from_forwarding_async(
+            user_id=str(actor_telegram_id),
+            trade_data=self._continuum_trade_data(signal, evidence_metadata),
+            original_text=evidence.raw_text,
+            db_session=session,
+            status_to_set="PENDING_ACTIVATION",
+            original_published_at=evidence.message_timestamp,
+            channel_info=channel_info,
+            source_type="CONTINUUM_HANDOFF",
+        )
+        if not result.get("success"):
+            raise WebCommandError(result.get("error") or "Continuum pending tracking failed")
+        evidence.metadata_json = {
+            **evidence_metadata,
+            "continuum_duplicate_exists": True,
+            "continuum_handoff_trade_id": result.get("trade_id"),
+            "continuum_handoff_status": "PENDING_ACTIVATION",
+        }
+        session.flush()
+        response = {
+            "ok": True,
+            "signal_id": signal_id,
+            "materialization_id": materialization.id,
+            "trade_id": result.get("trade_id"),
+            "public_ref": result.get("public_ref"),
+            "status": "PENDING_ACTIVATION",
+            "approved": True,
+            "execution_allowed": False,
+            "live_activation": False,
+            "replayed": False,
+        }
+        self._record(
+            session,
+            idempotency_key=idempotency_key,
+            command_type=self.CONTINUUM_HANDOFF_EXECUTE,
+            actor_user_id=owner.id,
+            target_type="HISTORICAL_SIGNAL",
+            target_id=signal_id,
+            request_hash=request_hash,
+            response=response,
         )
         return response
 

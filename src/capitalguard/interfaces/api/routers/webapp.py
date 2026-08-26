@@ -130,6 +130,10 @@ class ContinuumHandoffDecisionCommand(BaseModel):
     idempotency_key: str
 
 
+class ContinuumHandoffExecuteCommand(ContinuumHandoffDecisionCommand):
+    pass
+
+
 class HistoricalDraftMaterializationCommand(BaseModel):
     actor_telegram_id: int
     draft_id: int
@@ -1063,6 +1067,31 @@ async def execute_continuum_handoff_decision(signal_id: int, command: ContinuumH
     except WebCommandError as exc:
         detail = str(exc)
         status_code = 409 if "requires" in detail.lower() else 403
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
+@router.post("/owner/historical-signals/{signal_id}/continuum-handoff/execute")
+async def execute_continuum_handoff(signal_id: int, command: ContinuumHandoffExecuteCommand, request: Request):
+    """Create pending tracking only after a fresh guarded decision; never activate live."""
+    require_core_service_key(request.headers.get("authorization"))
+    if signal_id != command.signal_id or len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Invalid Continuum Handoff execute command")
+    creation_service = request.app.state.services.get("creation_service") if request.app.state.services else None
+    if creation_service is None:
+        raise HTTPException(status_code=503, detail="Continuum tracking service unavailable")
+    try:
+        with session_scope() as session:
+            return await WebCommandService().execute_continuum_handoff(
+                session,
+                actor_telegram_id=command.actor_telegram_id,
+                signal_id=signal_id,
+                consent_given=command.consent_given,
+                idempotency_key=command.idempotency_key,
+                creation_service=creation_service,
+            )
+    except WebCommandError as exc:
+        detail = str(exc)
+        status_code = 409 if "requires" in detail.lower() or "blocked" in detail.lower() else 403
         raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
