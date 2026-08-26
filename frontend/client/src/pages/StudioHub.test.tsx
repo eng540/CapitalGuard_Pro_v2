@@ -12,6 +12,6 @@ describe("Studio hub", () => {
     expect(screen.getByRole("heading", { name: "الاستوديو والعمليات" })).toBeTruthy();
     expect(screen.getByRole("link", { name: /إنشاء ونشر توصية/ }).getAttribute("href")).toBe("/analyst/workspace");
     expect(screen.getByRole("link", { name: /مركز المراجعة/ }).getAttribute("href")).toBe("/admin");
-    expect(screen.getByText(/لا تستخدم هذه المساحة لاستقبال رسالة أو متابعة صفقة/)).toBeTruthy();
+    expect(screen.getByText(/لا تستخدمها لاستقبال رسالة أو متابعة صفقة/)).toBeTruthy();
   });
 });
