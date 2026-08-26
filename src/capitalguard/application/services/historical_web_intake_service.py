@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch, HistoricalSignal, HistoricalSignalEvent, HistoricalSignalEvidence
+from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch, HistoricalMessageRevision, HistoricalRecommendationDraft, HistoricalSignal, HistoricalSignalEvent, HistoricalSignalEvidence
 from capitalguard.application.services.historical_forwarding_service import HistoricalForwardingService
 from capitalguard.application.services.historical_message_foundation_service import HistoricalMessageFoundationService
 from capitalguard.application.services.historical_parser_service import HistoricalParserService
@@ -101,17 +101,59 @@ class HistoricalWebIntakeService:
             "source_verification": "UNVERIFIED",
         }
 
-    def _item_response(self, receipt: HistoricalForwardReceipt) -> dict[str, Any]:
+    def _source_verification(self, receipt: HistoricalForwardReceipt, metadata: dict[str, Any]) -> str:
+        if metadata.get("source_verification"):
+            return str(metadata["source_verification"])
+        return "VERIFIED_PROVENANCE" if receipt.source_chat_id is not None and receipt.source_message_id is not None else "UNVERIFIED"
+
+    def _stored_semantic_preview(self, session: Session, receipt: HistoricalForwardReceipt) -> dict[str, Any] | None:
         metadata = receipt.metadata_json or {}
-        preview = metadata.get("historical_preview") or {}
+        direct_preview = metadata.get("historical_preview")
+        if isinstance(direct_preview, dict) and direct_preview:
+            return direct_preview
+        revision = session.execute(
+            select(HistoricalMessageRevision)
+            .where(HistoricalMessageRevision.receipt_id == receipt.id)
+            .order_by(HistoricalMessageRevision.id.desc())
+        ).scalars().first()
+        if revision is None:
+            return None
+        draft = session.execute(
+            select(HistoricalRecommendationDraft)
+            .where(HistoricalRecommendationDraft.revision_id == revision.id)
+            .order_by(HistoricalRecommendationDraft.id.desc())
+        ).scalars().first()
+        chain = (draft.evidence_chain_json or {}) if draft is not None else {}
+        materialization = chain.get("semantic_materialization")
+        if not isinstance(materialization, dict):
+            return None
+        canonical = dict(materialization.get("canonical") or {})
+        if canonical.get("side") is None and canonical.get("direction") is not None:
+            canonical["side"] = canonical["direction"]
+        return {
+            "status": materialization.get("status", "INCOMPLETE"),
+            "parse_status": "MATERIALIZED",
+            "canonical": canonical,
+            "missing_fields": list(materialization.get("missing_fields") or []),
+            "conflicting_fields": list(materialization.get("conflicting_fields") or []),
+            "source_verification": self._source_verification(receipt, metadata),
+            "materialization_version": materialization.get("materialization_version"),
+            "extraction_source": "HISTORICAL_RECOMMENDATION_DRAFT",
+        }
+
+    def _item_response(self, session: Session, receipt: HistoricalForwardReceipt, fallback_order: int | None = None) -> dict[str, Any]:
+        metadata = receipt.metadata_json or {}
+        preview = self._stored_semantic_preview(session, receipt) or {}
+        order = metadata.get("item_order") or fallback_order
+        item_key = metadata.get("item_key") or (f"message-{receipt.source_message_id}" if receipt.source_message_id is not None else f"item-{order or receipt.id}")
         return {
             "id": receipt.id,
-            "order": metadata.get("item_order"),
-            "item_key": metadata.get("item_key"),
+            "order": order,
+            "item_key": item_key,
             "status": receipt.validation_status,
             "semantic_status": preview.get("status", "NOT_PROCESSED"),
             "parse_status": preview.get("parse_status"),
-            "source_verification": preview.get("source_verification", "UNVERIFIED"),
+            "source_verification": preview.get("source_verification") or self._source_verification(receipt, metadata),
             "source_chat_id": receipt.source_chat_id,
             "source_message_id": receipt.source_message_id,
             "source_timestamp": receipt.source_message_timestamp.isoformat() if receipt.source_message_timestamp else None,
@@ -135,7 +177,7 @@ class HistoricalWebIntakeService:
             .where(HistoricalForwardReceipt.batch_id == batch.id)
             .order_by(HistoricalForwardReceipt.id)
         ).scalars().all()
-        items = [self._item_response(receipt) for receipt in receipts]
+        items = [self._item_response(session, receipt, fallback_order=index) for index, receipt in enumerate(receipts, start=1)]
         return {
             "ok": True,
             "batch": {
