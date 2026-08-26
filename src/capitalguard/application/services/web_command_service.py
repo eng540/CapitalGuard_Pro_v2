@@ -33,6 +33,7 @@ class WebCommandService:
     G6_REPLAY = "G6_HISTORICAL_REPLAY"
     CONTINUUM_HANDOFF_DECISION = "CONTINUUM_HANDOFF_DECISION"
     CONTINUUM_HANDOFF_EXECUTE = "CONTINUUM_HANDOFF_EXECUTE"
+    CONTINUUM_ACTIVATE_USER_TRADE = "CONTINUUM_ACTIVATE_USER_TRADE"
     CLOSE_USER_TRADE = "USER_TRADE_MANUAL_CLOSE"
     PARTIAL_CLOSE_USER_TRADE = "USER_TRADE_MANUAL_PARTIAL_CLOSE"
     MOVE_USER_TRADE_STOP_TO_BREAKEVEN = "USER_TRADE_MOVE_STOP_TO_BREAKEVEN"
@@ -587,6 +588,84 @@ class WebCommandService:
             actor_user_id=owner.id,
             target_type="HISTORICAL_SIGNAL",
             target_id=signal_id,
+            request_hash=request_hash,
+            response=response,
+        )
+        return response
+
+    async def activate_continuum_user_trade(
+        self,
+        session: Session,
+        *,
+        actor_telegram_id: int,
+        public_ref: str,
+        idempotency_key: str,
+        lifecycle_service,
+        price_service,
+    ) -> dict:
+        """Explicitly activate a Continuum pending trade at a Core price only."""
+        actor = UserRepository(session).find_by_telegram_id(actor_telegram_id)
+        if actor is None:
+            raise WebCommandError("Trader identity does not exist in Core")
+        normalized_ref = public_ref.strip()
+        if not normalized_ref:
+            raise WebCommandError("Continuum UserTrade public reference is required")
+        trade = session.query(UserTrade).filter(
+            UserTrade.user_id == actor.id,
+            UserTrade.public_ref == normalized_ref,
+        ).with_for_update().first()
+        if trade is None:
+            raise WebCommandError("Continuum UserTrade was not found")
+        request_hash = self._fingerprint(
+            self.CONTINUUM_ACTIVATE_USER_TRADE,
+            actor_telegram_id,
+            "USER_TRADE",
+            trade.id,
+            {"public_ref": normalized_ref, "source_type": "CONTINUUM_HANDOFF"},
+        )
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+        if str(getattr(trade, "source_type", "")).upper() != "CONTINUUM_HANDOFF":
+            raise WebCommandError("Only a Continuum pending UserTrade can be activated by this command")
+        if trade.status == UserTradeStatusEnum.ACTIVATED:
+            raise WebCommandError("Continuum UserTrade is already activated")
+        if trade.status in (UserTradeStatusEnum.CLOSED, UserTradeStatusEnum.CANCELLED):
+            raise WebCommandError("Continuum UserTrade is terminal")
+        if trade.status not in (UserTradeStatusEnum.PENDING_ACTIVATION, UserTradeStatusEnum.WATCHLIST):
+            raise WebCommandError("Continuum UserTrade is not pending activation")
+        if lifecycle_service is None or price_service is None:
+            raise WebCommandError("Continuum activation services unavailable")
+        live_price = await price_service.get_cached_price(trade.asset, "Futures", True)
+        if not isinstance(live_price, (int, float)) or live_price <= 0:
+            raise WebCommandError("Trusted market price is unavailable; UserTrade was not changed")
+        try:
+            activated_trade = await lifecycle_service.activate_pending_user_trade_async(
+                str(actor_telegram_id),
+                trade.id,
+                Decimal(str(live_price)),
+                session,
+            )
+        except ValueError as exc:
+            raise WebCommandError(str(exc)) from exc
+        if activated_trade is None:
+            raise WebCommandError("Continuum UserTrade activation failed")
+        response = {
+            "ok": True,
+            "entity_type": "USER_TRADE",
+            "public_ref": activated_trade.public_ref,
+            "status": getattr(activated_trade.status, "value", str(activated_trade.status)),
+            "activation_price": float(live_price),
+            "live_activation": True,
+            "replayed": False,
+        }
+        self._record(
+            session,
+            idempotency_key=idempotency_key,
+            command_type=self.CONTINUUM_ACTIVATE_USER_TRADE,
+            actor_user_id=actor.id,
+            target_type="USER_TRADE",
+            target_id=trade.id,
             request_hash=request_hash,
             response=response,
         )
