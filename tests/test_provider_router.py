@@ -158,3 +158,28 @@ def test_json_router_rejects_custom_urls_by_default(monkeypatch):
         "capabilities": ["text"],
     }]))
     assert ProviderRouter.from_env().routes == ()
+
+
+
+def test_router_permanently_isolates_credential_and_route_failures(monkeypatch):
+    monkeypatch.setenv("ROUTER_KEY", "key")
+    monkeypatch.setenv("AI_MODEL_ROUTES", json.dumps([{
+        "name": "route",
+        "provider": "openrouter",
+        "model": "model-a",
+        "api_url": "https://openrouter.ai/api/v1/chat/completions",
+        "api_key_env": "ROUTER_KEY",
+        "capabilities": ["vision"],
+        "priority": 1,
+    }]))
+    monkeypatch.setenv("AI_CIRCUIT_PERMANENT_COOLDOWN_SECONDS", "900")
+
+    router = ProviderRouter.from_env()
+    route = router.routes_for("vision")[0]
+    router.record_failure(route, 403)
+
+    assert router.routes_for("vision") == []
+    assert router.public_status()[0]["circuit_open"] is True
+
+
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---

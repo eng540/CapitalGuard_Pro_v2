@@ -250,7 +250,13 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
         telemetry_log.info(json.dumps({**meta, "attempt": "primary"}))
         
         success, resp_json, status, resp_text = await _post_with_retries(api_url, headers, payload)
-        attempted.append({"api_url": api_url, "family": call_family, "status": status, "resp_snip": redact_sensitive_text((resp_text or "")[:800])})
+        attempted.append({
+            "route": active_route.route_name if active_route is not None else call_family,
+            "provider": active_route.provider if active_route is not None else provider,
+            "model": active_route.model if active_route is not None else LLM_MODEL,
+            "family": call_family,
+            "status": status,
+        })
         
         if success and resp_json:
             try:
@@ -272,7 +278,7 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
             json_block = _safe_outer_json_extract(raw_text)
             if not json_block:
                 final_errors.append(f"no_json_family_{call_family}_status_{status}")
-                telemetry_log.info(json.dumps({**meta, "success": False, "error": "no_json", "snippet": raw_text[:200]}))
+                telemetry_log.info(json.dumps({**meta, "success": False, "error": "no_json"}))
                 continue
 
             try:
@@ -350,7 +356,7 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
         else: # Primary call failed
             if router is not None and active_route is not None:
                 router.record_failure(active_route, status)
-            telemetry_log.info(json.dumps({**meta, "success": False, "status": status, "resp_snip": redact_sensitive_text((resp_text or "")[:400])}))
+            telemetry_log.info(json.dumps({**meta, "success": False, "status": status}))
 
             # Fallback Logic
             if provider == "openrouter" and GOOGLE_API_KEY:
@@ -362,7 +368,7 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                 telemetry_log.info(json.dumps(log_meta_fallback))
                 
                 success2, resp_json2, status2, resp_text2 = await _post_with_retries(google_url, g_headers, g_payload)
-                attempted.append({"api_url": google_url, "family": "google_direct", "status": status2, "resp_snip": (resp_text2 or "")[:800]})
+                attempted.append({"route": "google_direct_fallback", "provider": "google", "model": google_url.rsplit("/models/", 1)[-1].split(":", 1)[0], "family": "google_direct", "status": status2})
                 
                 if success2 and resp_json2:
                     try:

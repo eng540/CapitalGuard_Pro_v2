@@ -48,6 +48,13 @@ class ProviderRouter:
         self.routes = tuple(sorted(routes, key=lambda route: (route.priority, route.provider, route.model)))
         self.failure_threshold = max(1, failure_threshold)
         self.cooldown_seconds = max(1.0, cooldown_seconds)
+        try:
+            self.permanent_cooldown_seconds = max(
+                self.cooldown_seconds,
+                float(os.getenv("AI_CIRCUIT_PERMANENT_COOLDOWN_SECONDS", "900")),
+            )
+        except ValueError:
+            self.permanent_cooldown_seconds = max(self.cooldown_seconds, 900.0)
         self._circuits: Dict[str, _Circuit] = {}
 
     @classmethod
@@ -86,13 +93,16 @@ class ProviderRouter:
     def record_failure(self, route: ProviderRoute, status: int) -> None:
         circuit = self._circuits.setdefault(route.route_name, _Circuit())
         circuit.failures += 1
-        if circuit.failures >= self.failure_threshold:
-            circuit.opened_until = time.monotonic() + self.cooldown_seconds
+        permanent_failure = status in {400, 401, 402, 403, 404, 422}
+        if permanent_failure or circuit.failures >= self.failure_threshold:
+            cooldown = self.permanent_cooldown_seconds if permanent_failure else self.cooldown_seconds
+            circuit.opened_until = time.monotonic() + cooldown
             log.warning(
-                "AI route circuit opened route=%s status=%s cooldown_seconds=%s",
+                "AI route circuit opened route=%s status=%s cooldown_seconds=%s permanent=%s",
                 route.route_name,
                 status,
-                self.cooldown_seconds,
+                cooldown,
+                permanent_failure,
             )
 
     def public_status(self) -> List[Dict[str, Any]]:
@@ -224,6 +234,7 @@ def get_provider_router() -> ProviderRouter:
         "AI_PROVIDER_ORDER",
         "AI_CIRCUIT_FAILURE_THRESHOLD",
         "AI_CIRCUIT_COOLDOWN_SECONDS",
+        "AI_CIRCUIT_PERMANENT_COOLDOWN_SECONDS",
         "LLM_API_URL",
         "LLM_MODEL",
         "HUGGINGFACE_API_URL",
