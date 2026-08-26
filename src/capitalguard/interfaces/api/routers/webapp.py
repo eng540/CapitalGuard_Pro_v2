@@ -1051,7 +1051,19 @@ async def execute_reviewed_batch_binance_replay(batch_id: int, command: Historic
                 idempotency_key=command.idempotency_key,
             )
     except WebCommandError as exc:
-        raise HTTPException(status_code=409, detail="Historical batch replay rejected") from exc
+        detail = str(exc)
+        if "no reviewed signals" in detail.lower():
+            error_code = "HISTORICAL_REPLAY_NOT_READY"
+        elif "source unavailable" in detail.lower():
+            error_code = "HISTORICAL_SOURCE_UNAVAILABLE"
+        elif "requires evidence" in detail.lower():
+            error_code = "HISTORICAL_EVIDENCE_REQUIRED"
+        else:
+            error_code = "HISTORICAL_REPLAY_REJECTED"
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error_code, "message": "Historical batch replay is not currently eligible"},
+        ) from exc
 
 
 @router.post("/owner/historical-signals/{signal_id}/continuum-handoff/decision")
