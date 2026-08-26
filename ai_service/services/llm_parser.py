@@ -105,10 +105,13 @@ async def _parse_with_configured_routes(text: str) -> Optional[Dict[str, Any]]:
             parsed = _normalize_llm_output(extract_text_response(body))
             if parsed:
                 router.record_success(route)
+                log.info("AI text route succeeded route=%s status=%s", route.route_name, status)
                 return parsed
             router.record_failure(route, 200)
+            log.warning("AI text route returned an unusable response route=%s status=%s", route.route_name, status)
         else:
             router.record_failure(route, status)
+            log.warning("AI text route failed route=%s status=%s", route.route_name, status)
             rate_limited = rate_limited or status == 429
     if rate_limited:
         return {"__error_code__": "provider_rate_limited"}

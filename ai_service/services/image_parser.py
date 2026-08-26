@@ -192,8 +192,13 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
                 if route.protocol == "fal":
                     safe_mime = mime if mime in ["image/jpeg", "image/png", "image/webp"] else "image/jpeg"
                     payload = {
-                        "prompt": SYSTEM_PROMPT_VISION,
-                        "image_url": f"data:{safe_mime};base64,{image_b64}",
+                        # fal vision expects a list of image URLs, including data URIs.
+                        "image_urls": [f"data:{safe_mime};base64,{image_b64}"],
+                        "prompt": "Extract the trade signal from this image and return only the required JSON fields.",
+                        "system_prompt": SYSTEM_PROMPT_VISION,
+                        "model": route.model,
+                        "max_tokens": 2048,
+                        "temperature": 0.0,
                     }
                     candidates.append((route.api_url, route.headers(), payload, "fal"))
                     route_by_candidate[(route.api_url, "fal")] = route
@@ -236,6 +241,8 @@ async def parse_with_vision(image_url: str) -> Optional[Dict[str, Any]]:
         active_route = route_by_candidate.get((api_url, call_family))
         meta = {
             **log_meta_base,
+            "provider": active_route.provider if active_route is not None else provider,
+            "model": active_route.model if active_route is not None else LLM_MODEL,
             "api_url": api_url,
             "attempt_family": call_family,
             "route": active_route.route_name if active_route is not None else call_family,
