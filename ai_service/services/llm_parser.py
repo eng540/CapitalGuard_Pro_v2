@@ -59,7 +59,11 @@ def _build_openai_payload(text, model=None):
             {"role": "system", "content": SYSTEM_PROMPT_TEXT},
             {"role": "user", "content": text}
         ],
-        "response_format": {"type": "json_object"}
+        "response_format": {"type": "json_object"},
+        # Keep provider credit usage bounded. Without an explicit limit,
+        # OpenRouter may reserve the model context maximum (65k+ tokens).
+        "max_tokens": 2048,
+        "temperature": 0.0,
     }
 
 def _build_openrouter_payload(text):

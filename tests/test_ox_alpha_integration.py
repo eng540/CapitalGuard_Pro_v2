@@ -253,3 +253,26 @@ def test_fallback_models_are_limited_to_three(monkeypatch):
     monkeypatch.setenv("LLM_FALLBACK_MODELS", "a,b,c,d")
 
     assert parsing_utils.configured_fallback_models() == ["a", "b", "c"]
+
+
+
+def test_openrouter_text_payload_bounds_generation_budget(monkeypatch):
+    monkeypatch.setattr(llm_parser, "LLM_MODEL", "google/gemini-2.5-flash")
+
+    payload = llm_parser._build_openrouter_payload("BTCUSDT LONG entry 70000 SL 69000 TP 71000")
+
+    assert payload["max_tokens"] == 2048
+    assert payload["temperature"] == 0.0
+
+
+
+def test_openai_text_payload_bounds_generation_budget(monkeypatch):
+    monkeypatch.setattr(llm_parser, "LLM_MODEL", "openai/gpt-4o-mini")
+
+    payload = llm_parser._build_openai_payload("BTCUSDT LONG entry 70000 SL 69000 TP 71000")
+
+    assert payload["max_tokens"] == 2048
+    assert payload["temperature"] == 0.0
+
+
+# --- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
