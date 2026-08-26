@@ -19,7 +19,7 @@ describe("Smart Dropzone interaction", () => {
   it("enables analysis only after a usable message and sends text to the server mutation", async () => {
     const user = userEvent.setup();
     render(<SmartDropzone />);
-    const button = screen.getByRole("button", { name: "حلّل البنية" });
+    const button = screen.getByRole("button", { name: "حلّل الرسالة" });
     expect(button.hasAttribute("disabled")).toBe(true);
     await user.type(screen.getByPlaceholderText("الصق الرسالة هنا…"), "BTCUSDT LONG Entry 70000 Stop 69500");
     expect(button.hasAttribute("disabled")).toBe(false);

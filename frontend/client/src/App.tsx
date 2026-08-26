@@ -16,13 +16,17 @@ import RiskStudio from "./pages/RiskStudio";
 import Admin from "./pages/Admin";
 import SmartDropzone from "./pages/SmartDropzone";
 import AnalystWorkspace from "./pages/AnalystWorkspace";
+import StudioHub from "./pages/StudioHub";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
       <Route path={"/"} component={Home} />
-      <Route path={"/app"} component={Workspace} />
+      <Route path={"/app"} component={SmartDropzone} />
+      <Route path={"/radar"} component={SmartDropzone} />
+      <Route path={"/portfolio"} component={Workspace} />
+      <Route path={"/studio"} component={StudioHub} />
       <Route path={"/recommendations"} component={Recommendations} />
       <Route path={"/analysts"} component={Analysts} />
       <Route path={"/analysts/:code"} component={AnalystDossier} />

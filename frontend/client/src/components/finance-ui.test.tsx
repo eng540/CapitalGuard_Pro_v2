@@ -13,7 +13,8 @@ describe("CapitalGuard finance UI", () => {
 
   it("shows a readable temporal safety state", () => {
     render(<StatusPill value="OWNER_REVIEW_REQUIRED" />);
-    expect(screen.getByText("OWNER REVIEW REQUIRED")).toBeTruthy();
+    expect(screen.getByText("بانتظار المراجعة")).toBeTruthy();
+    expect(screen.getByTitle("OWNER_REVIEW_REQUIRED")).toBeTruthy();
   });
 
   it("distinguishes a live Core read model from preview data", () => {
