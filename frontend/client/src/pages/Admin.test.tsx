@@ -36,3 +36,32 @@ describe("Admin R4.1 Core read model", () => {
   it("renders an explicit Core error for the owner queue", () => { batchesState = { isLoading: false, isError: true, isSuccess: false, data: undefined, refetch: vi.fn() }; render(<Admin />); expect(screen.getByText("تعذر جلب طابور Core الحي. لم تُعرض أي بيانات بديلة؛ راجع اتصال API وصلاحية المالك ثم أعد المحاولة.")).toBeTruthy(); });
   it("renders an explicit Core loading state for the owner queue", () => { batchesState = { isLoading: true, isError: false, isSuccess: false, data: undefined, refetch: vi.fn() }; render(<Admin />); expect(screen.getByText("جارٍ تحميل طابور Core…")).toBeTruthy(); });
 });
+
+
+describe("Historical Inspector interaction", () => {
+  it("opens the inspector and gives visible feedback when clicked", () => {
+    batchesState = {
+      isLoading: false,
+      isError: false,
+      isSuccess: true,
+      refetch: vi.fn(),
+      data: [{
+        id: 64,
+        ref: "HIMP-000064",
+        status: "EVIDENCE_INGESTED",
+        source_kind: "TELEGRAM_FORWARD",
+        total_records: 1,
+        accepted_records: 1,
+        rejected_records: 0,
+        replay_ready: false,
+        replay_signal_count: 0,
+        replay_block_reason: "HISTORICAL_REPLAY_NOT_READY",
+      }],
+    };
+    render(<Admin />);
+    fireEvent.click(screen.getByRole("button", { name: "استعراض الاستخراج" }));
+    expect(screen.getByRole("button", { name: "النتائج مفتوحة أدناه" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "ما الذي استخرجه النظام؟" })).toBeTruthy();
+    expect(screen.getByText("تعذر تحميل تفاصيل هذه الدفعة من Core. لم تُعرض بيانات بديلة.")).toBeTruthy();
+  });
+});
