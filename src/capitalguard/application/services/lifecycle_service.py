@@ -850,6 +850,55 @@ class LifecycleService:
                 )
                 await self._commit_and_dispatch(s, trade, rebuild_alerts=True)
 
+    async def activate_pending_user_trade_async(
+        self,
+        user_id: str,
+        trade_id: int,
+        activation_price: Decimal,
+        db_session: Session,
+    ) -> Optional[UserTrade]:
+        """Explicitly activate an owned pending trade only when entry is reached."""
+        user = UserRepository(db_session).find_by_telegram_id(_parse_int_user_id(user_id))
+        if not user:
+            raise ValueError("User not found.")
+        if not isinstance(activation_price, Decimal) or not activation_price.is_finite() or activation_price <= 0:
+            raise ValueError("Activation price must be a positive finite Decimal")
+        trade = db_session.query(UserTrade).filter(
+            UserTrade.id == trade_id,
+            UserTrade.user_id == user.id,
+        ).with_for_update().first()
+        if not trade:
+            raise ValueError(f"Trade #{trade_id} not found")
+        if trade.status == UserTradeStatusEnum.ACTIVATED:
+            return trade
+        if trade.status not in (UserTradeStatusEnum.PENDING_ACTIVATION, UserTradeStatusEnum.WATCHLIST):
+            raise ValueError("Only a pending UserTrade can be explicitly activated")
+        side = str(getattr(trade.side, "value", trade.side) or "").upper()
+        entry = _to_decimal(trade.entry)
+        reached = activation_price >= entry if side == "LONG" else activation_price <= entry if side == "SHORT" else False
+        if not reached:
+            raise ValueError("Entry condition has not been reached")
+        trade.status = UserTradeStatusEnum.ACTIVATED
+        trade.activated_at = datetime.now(timezone.utc)
+        db_session.add(UserTradeEvent(
+            user_trade_id=trade.id,
+            event_type="ACTIVATED",
+            event_data={
+                "mode": "EXPLICIT_CONTINUUM",
+                "activation_price": str(activation_price),
+                "entry": str(entry),
+            },
+        ))
+        await self._notify_trade_event(
+            db_session,
+            trade,
+            "▶️ Trade Activated",
+            f"Asset: <b>#{trade.asset}</b> · Entry: <code>{_format_price(activation_price)}</code>",
+            mode="EXPLICIT_CONTINUUM",
+        )
+        await self._commit_and_dispatch(db_session, trade, rebuild_alerts=True)
+        return trade
+
     async def process_user_trade_invalidation_event(self, item_id: int, price: Decimal):
          with session_scope() as s:
             trade = s.query(UserTrade).filter(UserTrade.id == item_id).with_for_update().first()

@@ -134,6 +134,11 @@ class ContinuumHandoffExecuteCommand(ContinuumHandoffDecisionCommand):
     pass
 
 
+class ContinuumActivationCommand(BaseModel):
+    actor_telegram_id: int
+    idempotency_key: str
+
+
 class HistoricalDraftMaterializationCommand(BaseModel):
     actor_telegram_id: int
     draft_id: int
@@ -1092,6 +1097,33 @@ async def execute_continuum_handoff(signal_id: int, command: ContinuumHandoffExe
     except WebCommandError as exc:
         detail = str(exc)
         status_code = 409 if "requires" in detail.lower() or "blocked" in detail.lower() else 403
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
+@router.post("/owner/continuum-trades/{public_ref}/activate")
+async def activate_continuum_trade(public_ref: str, command: ContinuumActivationCommand, request: Request):
+    """Activate a pending Continuum trade only when Core confirms entry is reached."""
+    require_core_service_key(request.headers.get("authorization"))
+    if len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Invalid Continuum activation command")
+    services = request.app.state.services or {}
+    lifecycle_service = services.get("lifecycle_service")
+    price_service = services.get("price_service")
+    if lifecycle_service is None or price_service is None:
+        raise HTTPException(status_code=503, detail="Continuum activation services unavailable")
+    try:
+        with session_scope() as session:
+            return await WebCommandService().activate_continuum_user_trade(
+                session,
+                actor_telegram_id=command.actor_telegram_id,
+                public_ref=public_ref,
+                idempotency_key=command.idempotency_key,
+                lifecycle_service=lifecycle_service,
+                price_service=price_service,
+            )
+    except WebCommandError as exc:
+        detail = str(exc)
+        status_code = 409 if "price" in detail.lower() or "pending" in detail.lower() or "reached" in detail.lower() else 403
         raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
