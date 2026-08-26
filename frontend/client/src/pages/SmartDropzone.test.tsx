@@ -8,7 +8,7 @@ const batchMutate = vi.fn();
 
 vi.mock("@/components/DashboardLayout", () => ({ default: ({ children }: { children: React.ReactNode }) => <main>{children}</main> }));
 vi.mock("@/lib/trpc", () => ({
-  trpc: { capitalguard: { smartAnalyze: { useMutation: () => ({ mutate, isPending: false, data: undefined, error: null }) }, historicalIntake: { useMutation: () => ({ mutate: batchMutate, isPending: false, data: undefined, error: null }) } } },
+  trpc: { capitalguard: { smartAnalyze: { useMutation: () => ({ mutate, isPending: false, data: undefined, error: null }) }, historicalIntake: { useMutation: () => ({ mutate: batchMutate, isPending: false, data: undefined, error: null }) }, historicalIntakeDetail: { useQuery: () => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() }) }, historicalIntakeReport: { useQuery: () => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() }) } } },
 }));
 
 import SmartDropzone from "./SmartDropzone";
