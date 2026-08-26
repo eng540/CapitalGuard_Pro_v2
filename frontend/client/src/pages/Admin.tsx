@@ -4,7 +4,7 @@ import { KpiCard, PreviewNotice, SectionTitle, StatusPill } from "@/components/f
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { BadgeCheck, DatabaseZap, ShieldCheck, UsersRound } from "lucide-react";
-import { IntakeBatchView } from "./Historical";
+import { IntakeBatchView } from "@/components/ForwardResultsInspector";
 import { toast } from "sonner";
 
 type ReviewBatch = { id: number; ref: string; status: string; source_kind: string; total_records: number; accepted_records: number; rejected_records: number; replay_ready: boolean; replay_signal_count: number; replay_block_reason: string | null };
