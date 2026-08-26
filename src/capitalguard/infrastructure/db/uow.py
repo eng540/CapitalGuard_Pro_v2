@@ -4,7 +4,9 @@
 #    - 1. هذا الملف هو "وحدة العمل" (Unit of Work) الأساسية.
 # 🎯 IMPACT: مطلوب بواسطة جميع المعالجات (Handlers) التي تبدأ بـ `@uow_transaction`.
 
+import asyncio
 import logging
+import threading
 from contextlib import contextmanager
 from functools import wraps
 from typing import Optional, Generator, Any, Callable
@@ -36,9 +38,19 @@ try:
         },
     )
     
-    # Create a thread-safe, scoped session factory
+    # Scope sessions by asyncio task when running async code. A thread-only
+    # scoped_session lets concurrent Telegram/background tasks share one
+    # SQLAlchemy Session and close each other's connections.
     _session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-    SessionScoped = scoped_session(_session_factory)
+
+    def _session_scope_key():
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        return task if task is not None else threading.get_ident()
+
+    SessionScoped = scoped_session(_session_factory, scopefunc=_session_scope_key)
     log.info("Database engine and scoped session factory initialized successfully.")
 
 except Exception as e:
