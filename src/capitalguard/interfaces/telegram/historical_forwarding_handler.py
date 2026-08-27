@@ -312,6 +312,19 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 len(progression_items),
                 [str(item.get("replay_status") or item.get("status") or "UNKNOWN") for item in progression_items],
             )
+            log.warning(
+                "Historical progression item diagnostics batch=%s details=%s",
+                batch_id,
+                [
+                    {
+                        "receipt_id": item.get("receipt_id"),
+                        "status": item.get("status"),
+                        "reason": item.get("reason"),
+                        "replay_status": item.get("replay_status"),
+                    }
+                    for item in progression_items
+                ],
+            )
             auto_by_receipt = {
                 int(item["receipt_id"]): item
                 for item in (auto_progression.get("items") or [])
