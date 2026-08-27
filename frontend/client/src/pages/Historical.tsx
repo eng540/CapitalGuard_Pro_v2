@@ -89,15 +89,30 @@ export default function Historical() {
     setBatchId(id);
     if (typeof window !== "undefined") window.history.replaceState(null, "", historicalSessionPath(id));
   }, []);
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onPopState = () => setBatchId(readBatchIdFromLocation(window.location.search));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
   const intakeList = trpc.capitalguard.historicalIntakeList.useQuery(undefined, { refetchInterval: 10_000 });
   const createIntake = trpc.capitalguard.historicalIntake.useMutation({
-    onSuccess: result => { selectBatch(result.batch.id); void intakeList.refetch(); toast.success(`تم استقبال الدفعة ${result.batch.ref}: ${result.batch.accepted_records} عنصر قابل للمراجعة.`); },
+    onSuccess: result => {
+      selectBatch(result.batch.id);
+      void intakeList.refetch();
+      const message = result.batch.result_status === "NO_CHANGE"
+        ? `تمت معالجة ${result.batch.ref} دون تغييرات جديدة؛ كل العناصر مكررة أو مستبعدة.`
+        : result.batch.result_status === "PARTIAL_CHANGE"
+          ? `تمت معالجة ${result.batch.ref}: ${result.batch.changed_count} تغييرات و${result.batch.rejected_records} مكرر/مرفوض.`
+          : `تم استقبال ${result.batch.ref}: ${result.batch.changed_count} عنصرًا جديدًا من ${result.batch.processed_count}.`;
+      toast.success(message);
+    },
     onError: error => toast.error(error.message || "تعذر استقبال المحتوى التاريخي."),
   });
   const intake = trpc.capitalguard.historicalIntakeDetail.useQuery({ batchId: batchId ?? 1 }, { enabled: batchId !== null, refetchInterval: batchId !== null ? 5_000 : false });
   const intakeReport = trpc.capitalguard.historicalIntakeReport.useQuery({ batchId: batchId ?? 1 }, { enabled: batchId !== null, refetchInterval: batchId !== null ? 5_000 : false });
   const rows = historical.data?.items ?? [];
-  const intakeBatch = intake.data?.batch;
+  const intakeBatch = intake.isLoading || intake.isError ? undefined : intake.data?.batch;
 
   const handleFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -132,6 +147,8 @@ export default function Historical() {
         <textarea value={rawInput} onChange={event => setRawInput(event.target.value)} rows={9} placeholder={'ألصق رسالة واحدة، أو افصل الرسائل المتعددة بسطر --- مستقل.\n\nمثال:\n#BTCUSDT LONG\nEntry: 100\nSL: 95\nTP1: 105\n---\nUpdate: move stop to entry 100'} className="w-full rounded-2xl border border-white/10 bg-slate-950/80 p-4 font-mono text-sm leading-6 text-foreground outline-none ring-cyan-300/40 focus:ring-2"/>
         <div className="flex flex-wrap items-center gap-3"><Button type="submit" disabled={createIntake.isPending || !rawInput.trim()} className="bg-cyan-400 text-slate-950 hover:bg-cyan-300">{createIntake.isPending ? "جارٍ استقبال الدفعة…" : "استقبال وتحليل المحتوى"}</Button><span className="text-xs text-muted-foreground">يمكن أن تحتوي الدفعة على عنصر واحد أو حتى 5000 عنصر.</span></div>
       </form>
+      {batchId !== null && intake.isLoading ? <p className="mt-5 rounded-2xl border border-cyan-400/15 bg-cyan-400/[.035] p-4 text-sm text-cyan-100">جارٍ تحميل جلسة الدفعة من Core…</p> : null}
+      {batchId !== null && intake.isError ? <p className="mt-5 rounded-2xl border border-rose-400/20 bg-rose-400/[.05] p-4 text-sm text-rose-100">تعذر تحميل هذه الجلسة من Core؛ لم تُعرض بيانات قديمة أو بديلة.</p> : null}
       {intakeBatch ? <IntakeBatchView batch={intakeBatch} report={intakeReport.data?.report} onRefresh={() => { void intake.refetch(); void intakeReport.refetch(); }} /> : null}
       <div className="mt-5 rounded-2xl border border-white/8 bg-white/[.02] p-4"><div className="flex items-center justify-between gap-3"><p className="text-sm font-medium">دفعاتك الأخيرة</p><span className="text-xs text-muted-foreground">تُحفظ في Core</span></div>{intakeList.isLoading ? <p className="py-3 text-xs text-muted-foreground">جارٍ تحميل الدفعات…</p> : intakeList.isError ? <p className="py-3 text-xs text-rose-200">تعذر جلب الدفعات السابقة من Core.</p> : (intakeList.data?.batches.length ?? 0) === 0 ? <p className="py-3 text-xs text-muted-foreground">لا توجد دفعات مدخلة بعد.</p> : <div className="mt-3 space-y-2">{intakeList.data?.batches.map(batch => <button type="button" key={batch.id} onClick={() => selectBatch(batch.id)} className="flex w-full flex-wrap items-center justify-between gap-2 rounded-xl border border-white/8 bg-white/[.025] px-3 py-2 text-right text-xs hover:border-cyan-300/35"><span className="font-mono text-cyan-200">{batch.ref}</span><span>{batch.total_records} عنصر</span><StatusPill value={batch.status}/><span className="text-muted-foreground">{batch.metadata?.input_mode ? String(batch.metadata.input_mode) : batch.source_kind}</span></button>)}</div>}</div>
     </section>

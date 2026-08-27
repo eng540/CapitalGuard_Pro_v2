@@ -46,7 +46,7 @@ describe("CapitalGuard Core adapter", () => {
     const cancelled = new AbortController();
     cancelled.abort();
 
-    await expect(coreReadOnlyFetch("/api/webapp/price?symbol=BTCUSDT", { signal: cancelled.signal }, hangingFetch as typeof fetch, env)).rejects.toThrow("CAPITALGUARD_CORE_TIMEOUT");
+    await expect(coreReadOnlyFetch("/api/webapp/price?symbol=BTCUSDT", { signal: cancelled.signal }, hangingFetch as typeof fetch, env)).rejects.toThrow("CAPITALGUARD_CORE_CANCELLED");
     await expect(coreReadOnlyFetch("/api/webapp/price?symbol=BTCUSDT", {}, unavailableFetch as typeof fetch, env)).rejects.toThrow("CAPITALGUARD_CORE_UNAVAILABLE");
   });
 

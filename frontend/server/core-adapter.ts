@@ -193,7 +193,11 @@ export async function coreReadOnlyFetch(path: string, init: RequestInit = {}, fe
   if (!path.startsWith("/api/")) throw new Error("CAPITALGUARD_CORE_READ_PATH_REQUIRED");
   const controller = new AbortController();
   const callerSignal = init.signal;
-  const forwardCallerAbort = () => controller.abort();
+  let callerRequestedAbort = Boolean(callerSignal?.aborted);
+  const forwardCallerAbort = () => {
+    callerRequestedAbort = true;
+    controller.abort();
+  };
   if (callerSignal?.aborted) controller.abort();
   else callerSignal?.addEventListener("abort", forwardCallerAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), getRequestTimeoutMs(env));
@@ -225,7 +229,10 @@ export async function coreReadOnlyFetch(path: string, init: RequestInit = {}, fe
     }
     return response.json() as Promise<unknown>;
   } catch (error) {
-    if (controller.signal.aborted) throw new Error("CAPITALGUARD_CORE_TIMEOUT");
+    if (controller.signal.aborted) {
+      if (callerRequestedAbort) throw new Error("CAPITALGUARD_CORE_CANCELLED");
+      throw new Error("CAPITALGUARD_CORE_TIMEOUT");
+    }
     if (error instanceof Error && error.message.startsWith("CAPITALGUARD_CORE_API_")) throw error;
     throw new Error("CAPITALGUARD_CORE_UNAVAILABLE");
   } finally {
