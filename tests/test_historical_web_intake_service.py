@@ -127,3 +127,61 @@ def test_web_intake_inspector_recovers_materialization_from_historical_draft(db_
     assert item["semantic_status"] != "NOT_PROCESSED"
     assert item["canonical"].get("asset") == "BTCUSDT"
     assert item["source_verification"] == "VERIFIED_PROVENANCE"
+
+
+def test_web_historical_intake_returns_explicit_partial_change_contract(db_session):
+    user = UserRepository(db_session).find_or_create(
+        telegram_id=940004,
+        user_type=UserType.ANALYST,
+        first_name="Zero Result Contract Analyst",
+    )
+    result = HistoricalWebIntakeService().create_batch(
+        db_session,
+        requested_by_user_id=user.id,
+        source_kind="MANUAL_ADMIN_IMPORT",
+        input_mode="PASTE",
+        items=[
+            {"item_key": "accepted", "raw_text": "#BTCUSDT LONG Entry 100 SL 95 TP1 105"},
+            {"item_key": "duplicate", "raw_text": "#BTCUSDT LONG Entry 100 SL 95 TP1 105"},
+        ],
+    )
+
+    batch = result["batch"]
+    assert batch["processed_count"] == 2
+    assert batch["changed_count"] == 1
+    assert batch["result_status"] == "PARTIAL_CHANGE"
+    report = HistoricalWebIntakeService().batch_report(
+        db_session,
+        batch_id=batch["id"],
+        requested_by_user_id=user.id,
+    )
+    assert report["report"]["counts"]["processed_count"] == 2
+    assert report["report"]["counts"]["changed_count"] == 1
+    assert report["report"]["counts"]["result_status"] == "PARTIAL_CHANGE"
+
+
+def test_web_historical_intake_returns_explicit_no_change_contract_when_all_records_are_filtered(db_session):
+    user = UserRepository(db_session).find_or_create(
+        telegram_id=940005,
+        user_type=UserType.ANALYST,
+        first_name="No Change Analyst",
+    )
+    result = HistoricalWebIntakeService().create_batch(
+        db_session,
+        requested_by_user_id=user.id,
+        source_kind="MANUAL_ADMIN_IMPORT",
+        input_mode="PASTE",
+        items=[None],
+    )
+
+    batch = result["batch"]
+    assert batch["status"] == "REJECTED"
+    assert batch["processed_count"] == 0
+    assert batch["changed_count"] == 0
+    assert batch["result_status"] == "NO_CHANGE"
+    loaded = HistoricalWebIntakeService().get_batch(
+        db_session,
+        batch_id=batch["id"],
+        requested_by_user_id=user.id,
+    )
+    assert loaded["batch"]["result_status"] == "NO_CHANGE"

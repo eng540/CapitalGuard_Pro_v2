@@ -80,3 +80,33 @@ describe("Historical R4.1 Core read model and 1..N intake", () => {
     expect(exported.items[0].sourceChatId).toBe(-100123);
   });
 });
+
+
+describe("Historical zero-result presentation", () => {
+  afterEach(() => cleanup());
+
+  it("shows Core no-change result explicitly in the batch inspector", () => {
+    render(
+      <IntakeBatchView
+        batch={{
+          id: 19,
+          ref: "HB-000019",
+          status: "REJECTED",
+          source_kind: "MANUAL_ADMIN_IMPORT",
+          total_records: 1,
+          accepted_records: 0,
+          rejected_records: 1,
+          processed_count: 0,
+          changed_count: 0,
+          result_status: "NO_CHANGE",
+          created_at: null,
+          items: [],
+        }}
+        onRefresh={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("نتيجة: لا تغيير")).toBeTruthy();
+    expect(screen.getByText(/عولج 0/)).toBeTruthy();
+    expect(screen.getByText(/تغيّر 0/)).toBeTruthy();
+  });
+});

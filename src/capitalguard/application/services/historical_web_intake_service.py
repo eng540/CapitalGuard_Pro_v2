@@ -171,6 +171,18 @@ class HistoricalWebIntakeService:
             },
         }
 
+    @staticmethod
+    def _result_contract(batch: HistoricalImportBatch) -> dict[str, Any]:
+        metadata = batch.metadata_json or {}
+        processed_count = int(metadata.get("processed_count", batch.total_records or 0))
+        changed_count = int(metadata.get("changed_count", max(0, (batch.total_records or 0) - (batch.rejected_records or 0))))
+        result_status = str(metadata.get("result_status") or ("NO_CHANGE" if changed_count == 0 else "PARTIAL_CHANGE" if (batch.rejected_records or 0) else "CHANGED"))
+        return {
+            "processed_count": max(0, processed_count),
+            "changed_count": max(0, changed_count),
+            "result_status": result_status,
+        }
+
     def _batch_response(self, session: Session, batch: HistoricalImportBatch) -> dict[str, Any]:
         receipts = session.execute(
             select(HistoricalForwardReceipt)
@@ -188,6 +200,7 @@ class HistoricalWebIntakeService:
                 "total_records": batch.total_records,
                 "accepted_records": batch.accepted_records,
                 "rejected_records": batch.rejected_records,
+                **self._result_contract(batch),
                 "created_at": batch.created_at.isoformat() if batch.created_at else None,
                 "metadata": batch.metadata_json or {},
                 "items": items,
@@ -364,11 +377,17 @@ class HistoricalWebIntakeService:
             json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         batch.status = "REVIEW_REQUIRED" if accepted else "REJECTED"
+        processed_count = len(receipts)
+        changed_count = staged
+        result_status = "NO_CHANGE" if changed_count == 0 else "PARTIAL_CHANGE" if rejected else "CHANGED"
         batch.metadata_json = {
             **(batch.metadata_json or {}),
             "intake_status": batch.status,
             "item_count_staged": staged,
             "item_count_rejected": rejected,
+            "processed_count": processed_count,
+            "changed_count": changed_count,
+            "result_status": result_status,
             "batch_summary": {
                 "partial": bool(is_partial),
                 "has_incomplete": any(
@@ -405,6 +424,9 @@ class HistoricalWebIntakeService:
                     "input_records": batch.total_records,
                     "accepted_records": batch.accepted_records,
                     "rejected_records": batch.rejected_records,
+                    "processed_count": self._result_contract(batch)["processed_count"],
+                    "changed_count": self._result_contract(batch)["changed_count"],
+                    "result_status": self._result_contract(batch)["result_status"],
                     "evidence_records": len(evidence),
                     "historical_signals": len(signals),
                     "replay_events": len(events),
