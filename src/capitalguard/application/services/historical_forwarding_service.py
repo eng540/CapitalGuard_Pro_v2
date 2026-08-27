@@ -609,7 +609,11 @@ class HistoricalForwardingService:
                         raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:CANDIDATE_PROVENANCE_INCOMPLETE")
                     if any(candidate.status != "CANDIDATE" for candidate in candidates):
                         raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:CANDIDATE_CONFLICT")
-                    if any(candidate.review_status not in {"PENDING", "ACCEPTED"} for candidate in candidates):
+                    # REVIEW_REQUIRED is an internal adjudication state. A complete
+                    # semantic projection is the system-policy acceptance boundary;
+                    # genuine field conflicts were already rejected by candidate.status
+                    # above, so this state must not block informational historical replay.
+                    if any(candidate.review_status not in {"PENDING", "ACCEPTED", "REVIEW_REQUIRED"} for candidate in candidates):
                         raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:CANDIDATE_REVIEW_REQUIRED")
                     for candidate in candidates:
                         candidate.review_status = "ACCEPTED"
