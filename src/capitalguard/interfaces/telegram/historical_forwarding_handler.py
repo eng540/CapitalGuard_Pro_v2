@@ -129,6 +129,11 @@ async def _materialize_historical_content(db_session, db_user, receipt: Historic
             db_session,
             revision_id=revision.id,
             image_result=image_result,
+            default_market=(
+                "FUTURES"
+                if (receipt.metadata_json or {}).get("intake_mode") == "DIRECT_AUTO"
+                else None
+            ),
             image_provenance={
                 "media_id": media.get("media_unique_id"),
                 "file_id": media.get("file_id"),

@@ -240,6 +240,7 @@ def build_card(
     entry = _value(candidate, "entry", _value(candidate, "entry_price"))
     stop_loss = _value(candidate, "stop_loss", _value(candidate, "sl"))
     targets = _value(candidate, "targets", _value(candidate, "take_profits"))
+    market = _value(candidate, "market")
 
     lines = [
         f"<b>{status_title}</b>",
@@ -249,6 +250,7 @@ def build_card(
         "",
         f"الأصل: <code>{_text(asset)}</code>",
         f"الاتجاه: <code>{_text(side)}</code>",
+        f"السوق: <code>{_text(market)}</code>",
         f"الدخول: <code>{_text(entry)}</code>",
         f"الأهداف:\n<code>{_format_targets(targets)}</code>",
         f"وقف الخسارة: <code>{_text(stop_loss)}</code>",

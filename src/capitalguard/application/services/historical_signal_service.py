@@ -228,7 +228,12 @@ class HistoricalSignalService:
         decision_time = self._utc(decision_timestamp)
         if decision_time < self._utc(evidence.message_timestamp):
             raise HistoricalSignalValidationError("decision_timestamp cannot precede source message time")
-        trust_tier = self.TRUST_TIER[evidence.source_kind]
+        evidence_metadata = evidence.metadata_json or {}
+        trust_tier = (
+            "UNVERIFIED_HISTORY"
+            if evidence_metadata.get("source_trust") == "UNVERIFIED_FORWARD"
+            else self.TRUST_TIER[evidence.source_kind]
+        )
         confidence = Decimal(str(evidence.evidence_confidence or 0))
         signal = HistoricalSignal(
             public_ref=public_ref or f"HIST-{uuid4().hex[:24].upper()}",

@@ -324,3 +324,25 @@ async def test_historical_handler_helper_preserves_text_image_conflict(db_sessio
     assert result["canonical"]["entry"] is None
     assert {item["modality"] for item in result["field_evidence"]["entry"]} == {"TEXT", "IMAGE"}
     assert "entry" in result["conflicting_fields"]
+
+
+@pytest.mark.asyncio
+async def test_historical_handler_defaults_market_for_direct_auto_without_market(db_session):
+    from types import SimpleNamespace
+    from capitalguard.interfaces.telegram.historical_forwarding_handler import (
+        _materialize_historical_content,
+    )
+
+    _, receipt = make_reviewed_batch(db_session)
+    receipt.raw_text = "#BTCUSDT LONG Entry 77000 SL 76000 TP 78000"
+    receipt.metadata_json = {"intake_mode": "DIRECT_AUTO"}
+
+    result = await _materialize_historical_content(
+        db_session,
+        SimpleNamespace(id=99),
+        receipt,
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert result["canonical"]["market"] == "FUTURES"
+    assert result["market_resolution"] == {"value": "FUTURES", "source": "POLICY_DEFAULT"}

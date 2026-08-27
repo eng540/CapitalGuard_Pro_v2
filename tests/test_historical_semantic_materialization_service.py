@@ -216,3 +216,16 @@ def test_semantic_materialization_stops_before_g5_signal_creation(db_session):
     assert result["status"] == "SUCCESS"
     assert db_session.execute(select(HistoricalRecommendationDraft)).scalar_one().evidence_chain_json["semantic_materialization"]["canonical"]["entry"] == "77000"
     assert db_session.execute(select(HistoricalSignal)).scalars().all() == []
+
+
+def test_direct_auto_can_use_explicit_policy_default_market(db_session):
+    revision = _revision(db_session, "#BTCUSDT LONG Entry 77K SL 76K TP 78K", "i")
+    result = HistoricalSemanticMaterializationService().materialize_revision(
+        db_session,
+        revision_id=revision.id,
+        default_market="FUTURES",
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert result["canonical"]["market"] == "FUTURES"
+    assert "market" not in result["missing_fields"]
