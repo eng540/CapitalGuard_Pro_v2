@@ -1,15 +1,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch
+from capitalguard.infrastructure.db.models import (
+    ChannelCatalog,
+    HistoricalShadowChannel,
+    HistoricalFinancialCandidate,
+    HistoricalForwardReceipt,
+    HistoricalImportBatch,
+    HistoricalMessageRevision,
+    HistoricalRecommendationDraft,
+    HistoricalSignalMaterialization,
+)
 
+from .historical_evidence_ingestion_service import (
+    HistoricalEvidenceIngestionError,
+    HistoricalEvidenceIngestionService,
+)
+from .historical_market_replay_service import HistoricalMarketReplayService
 from .historical_message_foundation_service import HistoricalMessageFoundationService
+from .historical_outcome_reconciliation_service import TimelineEventInput
+from .historical_replay_gate_service import HistoricalReplayGateService
+from .historical_signal_materialization_service import (
+    HistoricalSignalMaterializationBlocked,
+    HistoricalSignalMaterializationService,
+)
 from .historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
 
 
@@ -40,19 +60,39 @@ class ForwardingPreview:
     manifest: dict[str, Any]
 
 
+class _StaticCandleProvider:
+    """Adapter used after the network fetch has completed outside G6 writes."""
+
+    def __init__(self, candles, endpoint: str | None):
+        self.candles = list(candles)
+        self.endpoint = endpoint
+
+    def fetch(self, **kwargs):
+        return list(self.candles), self.endpoint
+
+
 class HistoricalForwardingService:
     """Stages user-forwarded Telegram messages for historical review only."""
 
     SOURCE_KIND = "TELEGRAM_FORWARD"
+    AUTO_PROGRESS_POLICY = "HISTORICAL_AUTO_PROGRESS_V1"
     VALID_ORIGIN_TYPES = {"CHANNEL", "MESSAGE_ORIGIN_CHANNEL"}
 
     def __init__(
         self,
         signal_service: HistoricalSignalService | None = None,
         message_foundation_service: HistoricalMessageFoundationService | None = None,
+        evidence_ingestion_service: HistoricalEvidenceIngestionService | None = None,
+        materialization_service: HistoricalSignalMaterializationService | None = None,
+        replay_service: HistoricalMarketReplayService | None = None,
+        replay_gate_service: HistoricalReplayGateService | None = None,
     ):
         self.signal_service = signal_service or HistoricalSignalService()
         self.message_foundation_service = message_foundation_service or HistoricalMessageFoundationService()
+        self.evidence_ingestion_service = evidence_ingestion_service or HistoricalEvidenceIngestionService(self.signal_service)
+        self.materialization_service = materialization_service or HistoricalSignalMaterializationService()
+        self.replay_service = replay_service or HistoricalMarketReplayService(self.signal_service)
+        self.replay_gate_service = replay_gate_service or HistoricalReplayGateService()
 
     @staticmethod
     def _normalize_chat_id(value: Any) -> int | None:
@@ -399,6 +439,342 @@ class HistoricalForwardingService:
         batch.metadata_json = metadata
         session.flush()
         return batch
+
+    @staticmethod
+    def _interval_seconds(interval: str) -> int:
+        units = {"m": 60, "h": 3600, "d": 86400}
+        try:
+            return int(interval[:-1]) * units[interval[-1]]
+        except (KeyError, TypeError, ValueError):
+            raise HistoricalSignalValidationError("Unsupported replay interval")
+
+    @staticmethod
+    def _auto_replay_interval(start: datetime, end: datetime) -> str:
+        age_seconds = max(0, int((end - start).total_seconds()))
+        if age_seconds <= 2 * 24 * 60 * 60:
+            return "5m"
+        if age_seconds <= 10 * 24 * 60 * 60:
+            return "15m"
+        if age_seconds <= 45 * 24 * 60 * 60:
+            return "1h"
+        if age_seconds <= 180 * 24 * 60 * 60:
+            return "4h"
+        return "1d"
+
+    @staticmethod
+    def _lifecycle_status(signal, events) -> str:
+        event_types = [str(getattr(event, "event_type", "")) for event in events]
+        if "AMBIGUOUS" in event_types:
+            return "AMBIGUOUS"
+        if "SL" in event_types:
+            return "CLOSED_SL"
+        if "CLOSE" in event_types:
+            return "CLOSED_SOURCE"
+        target_count = len(signal.targets or [])
+        hit_targets = {item for item in event_types if item.startswith("TP") and item[2:].isdigit()}
+        if target_count and len(hit_targets) >= target_count:
+            return "CLOSED_TARGETS"
+        if "ACTIVATED" in event_types:
+            return "ACTIVE"
+        return "NOT_ACTIVATED"
+
+    def _canonical_auto_batch(self, session: Session, batch: HistoricalImportBatch) -> bool:
+        """Verify eligibility from canonical Core identity, not copied labels alone."""
+        metadata = batch.metadata_json or {}
+        if metadata.get("mode") != "AUTO" or batch.source_kind != self.SOURCE_KIND:
+            return False
+        catalog = session.get(ChannelCatalog, batch.channel_catalog_id) if batch.channel_catalog_id else None
+        expected_source = self._normalize_chat_id(metadata.get("source_chat_id"))
+        if catalog is None or expected_source is None or catalog.telegram_channel_id != expected_source:
+            return False
+        shadow_id = metadata.get("shadow_channel_id")
+        if shadow_id is None:
+            return metadata.get("claim_status") == "CANONICAL"
+        shadow = session.get(HistoricalShadowChannel, int(shadow_id))
+        return bool(
+            shadow
+            and shadow.claim_status == "VERIFIED"
+            and shadow.telegram_channel_id == expected_source
+            and shadow.canonical_channel_catalog_id == catalog.id
+        )
+
+    def auto_progress_canonical_batch(
+        self,
+        session: Session,
+        *,
+        batch_id: int,
+        replay_end: datetime | None = None,
+        limit: int = 1500,
+        provider=None,
+    ) -> dict[str, Any]:
+        """Advance eligible historical items only; never creates live trading state."""
+        batch = session.get(HistoricalImportBatch, batch_id)
+        if batch is None:
+            raise HistoricalSignalValidationError("Forwarding batch does not exist")
+        previous = ((batch.metadata_json or {}).get("auto_progression") or {}).get("items") or []
+        previous_by_receipt = {int(item["receipt_id"]): item for item in previous if item.get("receipt_id") is not None}
+        if not self._canonical_auto_batch(session, batch):
+            return {
+                "status": "BLOCKED",
+                "reason": "AUTO_PROGRESS_REQUIRES_VERIFIED_CANONICAL_SOURCE",
+                "progressed": 0,
+                "review_required": int(batch.accepted_records or 0),
+                "failed": 0,
+                "items": list(previous),
+            }
+        if not 1 <= limit <= 1500:
+            raise HistoricalSignalValidationError("Replay limit must be between 1 and 1500")
+
+        end = self._utc(replay_end) or datetime.now(timezone.utc)
+        existing_summary = (batch.metadata_json or {}).get("auto_progression")
+        staged_exists = session.scalar(
+            select(HistoricalForwardReceipt.id).where(
+                HistoricalForwardReceipt.batch_id == batch_id,
+                HistoricalForwardReceipt.validation_status == "STAGED",
+            ).limit(1)
+        ) is not None
+        if not staged_exists and existing_summary:
+            return {
+                "status": existing_summary.get("status", "COMPLETED_UNVERIFIABLE"),
+                "progressed": existing_summary.get("progressed", 0),
+                "review_required": existing_summary.get("review_required", 0),
+                "failed": existing_summary.get("failed", 0),
+                "items": existing_summary.get("items", []),
+            }
+        receipts = session.execute(
+            select(HistoricalForwardReceipt)
+            .where(HistoricalForwardReceipt.batch_id == batch_id)
+            .order_by(HistoricalForwardReceipt.id)
+        ).scalars().all()
+        items: list[dict[str, Any]] = []
+        progressed = 0
+        review_required = 0
+        failed = 0
+        replay_statuses: list[str] = []
+
+        for receipt in receipts:
+            if receipt.validation_status != "STAGED":
+                if receipt.id in previous_by_receipt:
+                    items.append(previous_by_receipt[receipt.id])
+                continue
+            item: dict[str, Any] = {"receipt_id": receipt.id, "status": "REVIEW_REQUIRED"}
+            signal = None
+            materialization = None
+            start = None
+            try:
+                with session.begin_nested():
+                    revision = session.execute(
+                        select(HistoricalMessageRevision)
+                        .where(HistoricalMessageRevision.receipt_id == receipt.id)
+                        .order_by(HistoricalMessageRevision.revision_number.desc())
+                    ).scalars().first()
+                    if revision is None:
+                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:REVISION_NOT_FOUND")
+                    draft = session.execute(
+                        select(HistoricalRecommendationDraft).where(
+                            HistoricalRecommendationDraft.revision_id == revision.id,
+                            HistoricalRecommendationDraft.draft_kind == "NEW_RECOMMENDATION",
+                        )
+                    ).scalar_one_or_none()
+                    if draft is None:
+                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:DRAFT_NOT_FOUND")
+                    projection = (draft.evidence_chain_json or {}).get("semantic_materialization") or {}
+                    if projection.get("status") != "SUCCESS":
+                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:SEMANTIC_REVIEW_REQUIRED")
+                    if draft.status not in {"DRAFT", "REVIEW_REQUIRED"}:
+                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:DRAFT_REVIEW_REQUIRED")
+                    if draft.status == "REVIEW_REQUIRED" and not str(draft.adjudication_reason or "").startswith("MISSING_ACCEPTED:"):
+                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:DRAFT_REVIEW_REQUIRED")
+                    candidate_ids = self.materialization_service._flatten_candidate_ids(draft.evidence_chain_json)
+                    candidates = session.execute(
+                        select(HistoricalFinancialCandidate).where(HistoricalFinancialCandidate.id.in_(candidate_ids))
+                    ).scalars().all() if candidate_ids else []
+                    if not candidate_ids or len(candidates) != len(candidate_ids):
+                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:CANDIDATE_PROVENANCE_INCOMPLETE")
+                    if any(candidate.status != "CANDIDATE" for candidate in candidates):
+                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:CANDIDATE_CONFLICT")
+                    if any(candidate.review_status not in {"PENDING", "ACCEPTED"} for candidate in candidates):
+                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:CANDIDATE_REVIEW_REQUIRED")
+                    for candidate in candidates:
+                        candidate.review_status = "ACCEPTED"
+                    draft.status = "ACCEPTED"
+                    draft.reviewed_at = datetime.now(timezone.utc)
+                    draft.review_note = "Accepted by HISTORICAL_AUTO_PROGRESS_V1; this is a system policy action, not owner review."
+                    draft.override_json = {
+                        "policy": self.AUTO_PROGRESS_POLICY,
+                        "actor_type": "SYSTEM_POLICY",
+                        "human_reviewer": False,
+                        "live_activation": False,
+                    }
+                    evidence = self.evidence_ingestion_service.ingest_automatic_canonical_receipt(
+                        session,
+                        batch_id=batch.id,
+                        receipt=receipt,
+                        policy_version=self.AUTO_PROGRESS_POLICY,
+                    )
+                    if evidence is None:
+                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:EVIDENCE_NOT_CREATED")
+                    revision.evidence_id = evidence.id
+                    signal = self.materialization_service.materialize(session, draft_id=draft.id)
+                    materialization = session.execute(
+                        select(HistoricalSignalMaterialization).where(
+                            HistoricalSignalMaterialization.draft_id == draft.id
+                        )
+                    ).scalar_one()
+                    start = self._utc(signal.decision_timestamp)
+                    item.update({
+                        "status": "MATERIALIZED",
+                        "signal_id": signal.id,
+                        "public_ref": signal.public_ref,
+                        "replay_policy": self.AUTO_PROGRESS_POLICY,
+                        "source_timestamp": start.isoformat(),
+                    })
+                progressed += 1
+            except (HistoricalSignalMaterializationBlocked, HistoricalEvidenceIngestionError) as exc:
+                item["reason"] = str(exc)
+                review_required += 1
+                items.append(item)
+                continue
+            except Exception as exc:
+                item["status"] = "PROGRESSION_FAILED"
+                item["reason"] = f"AUTO_PROGRESS_FAILED:{type(exc).__name__}"
+                failed += 1
+                items.append(item)
+                continue
+
+            # Network/provider work happens after the G5 savepoint has released.
+            interval = self._auto_replay_interval(start, end)
+            try:
+                if provider is None:
+                    from capitalguard.infrastructure.market.historical_ohlcv_provider import BinanceHistoricalOhlcvProvider
+                    provider = BinanceHistoricalOhlcvProvider()
+                candles, endpoint = provider.fetch(
+                    asset=str(signal.asset or ""),
+                    market=signal.market,
+                    interval=interval,
+                    start=start,
+                    end=end,
+                    limit=limit,
+                )
+            except Exception as exc:
+                item.update({
+                    "status": "REPLAY_FAILED",
+                    "replay_status": "PROVIDER_UNAVAILABLE",
+                    "reason": "Historical market data could not be fetched; G5 evidence was preserved.",
+                    "error_type": type(exc).__name__,
+                    "interval": interval,
+                })
+                failed += 1
+                items.append(item)
+                continue
+
+            coverage_seconds = self._interval_seconds(interval) * max(0, limit - 1)
+            first_candle_time = min((candle.open_time for candle in candles), default=None)
+            coverage_complete = bool(
+                first_candle_time is not None
+                and first_candle_time <= start
+                and end <= start + timedelta(seconds=coverage_seconds)
+            )
+            if not coverage_complete:
+                item.update({
+                    "status": "REPLAY_PARTIAL",
+                    "replay_status": "PARTIAL_WINDOW",
+                    "reason": "Historical provider returned a bounded window that does not cover the requested T0-to-end range.",
+                    "interval": interval,
+                    "coverage_start": first_candle_time.isoformat() if first_candle_time else None,
+                    "coverage_end": max((candle.open_time for candle in candles), default=None).isoformat() if candles else None,
+                })
+                failed += 1
+                items.append(item)
+                continue
+
+            gate = self.replay_gate_service.assess(
+                parse_status="PARSED",
+                financial_outcome=None,
+                timeline_events=[TimelineEventInput(
+                    event_type=str((receipt.metadata_json or {}).get("event_kind") or "INITIAL_SIGNAL"),
+                    event_time=receipt.source_message_timestamp,
+                    source_message_id=receipt.source_message_id,
+                    reply_to_message_id=receipt.source_reply_to_message_id,
+                    edit_time=receipt.source_edit_date,
+                )],
+                market_data_available=bool(candles),
+            )
+            item["replay_gate"] = gate.status
+            if not gate.replay_allowed:
+                item.update({
+                    "status": "REPLAY_PENDING" if gate.status == "REPLAY_PENDING" else "REVIEW_REQUIRED",
+                    "replay_status": gate.status,
+                    "reason_codes": list(gate.reason_codes),
+                    "interval": interval,
+                })
+                review_required += 1
+                items.append(item)
+                continue
+
+            try:
+                with session.begin_nested():
+                    replay = self.replay_service.replay_g6(
+                        session,
+                        signal_id=signal.id,
+                        materialization_id=materialization.id,
+                        start=start,
+                        replay_end=end,
+                        interval=interval,
+                        limit=limit,
+                        provider=_StaticCandleProvider(candles, endpoint),
+                    )
+                    events = replay.get("events") or []
+                    result_status = str(replay.get("status") or "FAILED")
+                    item.update({
+                        "status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"} else "REPLAY_FAILED",
+                        "replay_status": result_status,
+                        "event_count": len(events),
+                        "last_event": getattr(events[-1], "event_type", None) if events else None,
+                        "lifecycle_status": self._lifecycle_status(signal, events),
+                        "interval": interval,
+                    })
+                    replay_statuses.append(result_status)
+                    if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
+                        failed += 1
+            except Exception as exc:
+                item.update({
+                    "status": "REPLAY_FAILED",
+                    "replay_status": "FAILED",
+                    "reason": "Historical replay failed; prior G5 evidence was preserved.",
+                    "error_type": type(exc).__name__,
+                    "interval": interval,
+                })
+                failed += 1
+            items.append(item)
+
+        remaining_staged = sum(1 for receipt in receipts if receipt.validation_status == "STAGED")
+        if remaining_staged == 0 and progressed:
+            batch.status = "EVIDENCE_INGESTED"
+        overall_status = "PARTIAL"
+        if progressed and not review_required and not failed:
+            overall_status = "COMPLETED_UNVERIFIABLE" if "COMPLETED_UNVERIFIABLE" in replay_statuses else "COMPLETED"
+        batch.metadata_json = {
+            **(batch.metadata_json or {}),
+            "auto_progression": {
+                "policy": self.AUTO_PROGRESS_POLICY,
+                "status": overall_status,
+                "progressed": progressed,
+                "review_required": review_required,
+                "failed": failed,
+                "replay_end": end.isoformat(),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "items": items,
+            },
+        }
+        session.flush()
+        return {
+            "status": overall_status,
+            "progressed": progressed,
+            "review_required": review_required,
+            "failed": failed,
+            "items": items,
+        }
 
     def validate_batch(self, session: Session, *, batch_id: int, owner_note: str) -> HistoricalImportBatch:
         preview = self.preview_batch(session, batch_id=batch_id)

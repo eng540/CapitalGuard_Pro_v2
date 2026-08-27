@@ -289,12 +289,22 @@ def build_single_result_card(
     outcome = dict(financial_outcome or {})
     if outcome.get("exit_price") is None:
         outcome["exit_price"] = _value(candidate, "exit_price")
-    if replay:
-        lines.append("المحاكاة التاريخية: مكتملة من بيانات السوق الموثقة")
-        for label, key in (("الحالة", "status"), ("النتيجة", "pnl_pct"), ("سعر الخروج", "exit_price"), ("المدة", "duration"), ("آخر حدث", "last_event")):
+    replay_status = str(replay.get("replay_status") or "").upper()
+    if replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
+        if replay_status == "COMPLETED_UNVERIFIABLE":
+            lines.append("المحاكاة التاريخية: اكتملت، لكن بيانات السوق غير قابلة للتحقق؛ لا تُستخدم كنتيجة نهائية أو للترتيب.")
+        else:
+            lines.append("المحاكاة التاريخية: اكتملت وفق بيانات السوق المتاحة.")
+        for label, key in (("الحالة", "replay_status"), ("عدد الأحداث", "event_count"), ("آخر حدث", "last_event"), ("دورة الحياة", "lifecycle_status")):
             value = replay.get(key)
             if value is not None:
                 lines.append(f"{label}: <code>{_text(value)}</code>")
+    elif replay:
+        lines.append("المحاكاة التاريخية: لم تكتمل بعد أو تحتاج مراجعة.")
+        if replay_status:
+            lines.append(f"حالة المحاكاة: <code>{_text(replay_status)}</code>")
+        if replay.get("reason"):
+            lines.append(f"السبب: {_text(replay.get('reason'))}")
     elif outcome.get("status") or outcome.get("reported_pnl_pct") is not None or outcome.get("derived_pnl_pct") is not None:
         lines.append("النتيجة الموجودة في الرسالة المصدر (لم تُعتبر Replay موثقًا):")
         if outcome.get("status") is not None:
@@ -365,6 +375,13 @@ def build_batch_summary(
             lines.append(f"{index}. <code>{_text(asset)}</code> · {_text(side)} · دخول {_text(entry)} · وقف {_text(stop_loss)}")
             if targets:
                 lines.append(f"   الأهداف: {_text(_format_targets(targets).replace(chr(10), '، '))}")
+            replay = _value(item, "_replay", {}) or {}
+            replay_status = replay.get("replay_status")
+            if replay_status:
+                detail = f"المحاكاة: {_text(replay_status)} · أحداث {_text(replay.get('event_count', 0))}"
+                if replay.get("last_event"):
+                    detail += f" · آخر حدث {_text(replay.get('last_event'))}"
+                lines.append(f"   {detail}")
     if incomplete or unavailable:
         lines.append("تظهر الحالات التي تحتاج تدخلك فقط، بينما تبقى التفاصيل الكاملة متاحة في مساحة المراجعة.")
     else:

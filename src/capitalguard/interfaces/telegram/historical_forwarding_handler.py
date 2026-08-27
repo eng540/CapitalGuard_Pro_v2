@@ -248,17 +248,39 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                     asset = (parsed.data or {}).get("asset")
                     if asset:
                         parsed_assets.append(str(asset))
-                        extracted_items.append(parsed.data or {})
+                        extracted_item = dict(parsed.data or {})
+                        extracted_item["_receipt_id"] = (record.get("metadata") or {}).get("forwarding_receipt_id")
+                        extracted_items.append(extracted_item)
                         parsed_results.append((parsed, record))
                 else:
                     partial_count += 1
+            forwarding_service = HistoricalForwardingService()
+            auto_progression = forwarding_service.auto_progress_canonical_batch(
+                session,
+                batch_id=batch_id,
+            )
+            auto_by_receipt = {
+                int(item["receipt_id"]): item
+                for item in (auto_progression.get("items") or [])
+                if item.get("receipt_id") is not None
+            }
+            for item in extracted_items:
+                replay = auto_by_receipt.get(item.get("_receipt_id"))
+                if replay:
+                    item["_replay"] = replay
             batch = session.get(HistoricalImportBatch, batch_id)
             metadata = dict(batch.metadata_json or {}) if batch else {}
             metadata["parser_preview"] = {
                 "parsed_count": parsed_count,
                 "partial_count": partial_count,
                 "assets": parsed_assets,
-                "replay_status": "REPLAY_PENDING" if parsed_count else "NOT_PARSED",
+                "replay_status": (
+                    "REPLAYED" if auto_progression.get("progressed") and not auto_progression.get("failed") else
+                    "REVIEW_REQUIRED" if auto_progression.get("review_required") else
+                    "REPLAY_FAILED" if auto_progression.get("failed") else
+                    "REPLAY_PENDING" if parsed_count else "NOT_PARSED"
+                ),
+                "auto_progression": auto_progression,
                 "financial_outcome_status": dict(financial_outcome_status),
                 "financial_outcome_warnings": dict(financial_outcome_warnings),
                 "replay_gate_status": dict(replay_gate_status),
@@ -293,6 +315,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 single_parse, single_record = parsed_results[0]
                 single_metadata = single_record.get("metadata") or {}
                 temporal_decision = single_metadata.get("temporal_decision") or {}
+                replay_result = auto_by_receipt.get(single_metadata.get("forwarding_receipt_id"))
                 summary_view = build_single_result_card(
                     single_parse.data or {},
                     temporal_route=temporal_decision.get("route"),
@@ -300,6 +323,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                     source_title=single_metadata.get("source_title") or source_label,
                     internal_status=single_parse.parse_status,
                     financial_outcome=(single_parse.data or {}).get("financial_outcome"),
+                    replay_result=replay_result,
                     allowed_actions=allowed_actions,
                     callback_data_factory=callback_factory,
                 )

@@ -185,3 +185,37 @@ def test_build_single_result_card_shows_extraction_and_source_outcome_distinctly
     assert "1.76" in view.text
     assert "batch_id" not in view.text
     assert "replay_gate" not in view.text
+
+
+def test_build_single_result_card_labels_unverifiable_replay_truthfully():
+    view = build_single_result_card(
+        {"asset": "BTCUSDT", "side": "LONG", "entry": "100", "stop_loss": "90", "targets": [{"price": "110"}]},
+        temporal_route="HISTORICAL_CANDIDATE",
+        replay_result={
+            "replay_status": "COMPLETED_UNVERIFIABLE",
+            "event_count": 2,
+            "last_event": "TP1",
+            "lifecycle_status": "CLOSED_TARGETS",
+            "replay_run_ref": "HIDDEN-REF",
+        },
+    )
+
+    assert "اكتملت، لكن بيانات السوق غير قابلة للتحقق" in view.text
+    assert "لا تُستخدم كنتيجة نهائية أو للترتيب" in view.text
+    assert "COMPLETED_UNVERIFIABLE" in view.text
+    assert "HIDDEN-REF" not in view.text
+
+
+def test_build_single_result_card_shows_provider_failure_as_pending_not_verified():
+    view = build_single_result_card(
+        {"asset": "BTCUSDT", "side": "LONG", "entry": "100", "stop_loss": "90", "targets": [{"price": "110"}]},
+        temporal_route="HISTORICAL_CANDIDATE",
+        replay_result={
+            "replay_status": "PROVIDER_UNAVAILABLE",
+            "reason": "Historical market data could not be fetched; G5 evidence was preserved.",
+        },
+    )
+
+    assert "لم تكتمل بعد أو تحتاج مراجعة" in view.text
+    assert "PROVIDER_UNAVAILABLE" in view.text
+    assert "بيانات السوق غير قابلة للتحقق" not in view.text

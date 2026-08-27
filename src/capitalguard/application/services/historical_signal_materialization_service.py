@@ -84,12 +84,23 @@ class HistoricalSignalMaterializationService:
         by_field: dict[str, list[HistoricalFinancialCandidate]] = {}
         for item in candidates:
             by_field.setdefault(item.field_type, []).append(item)
-        if any(len(items) > 1 for items in by_field.values()):
+        if any(field != "TARGET" and len(items) > 1 for field, items in by_field.items()):
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:CANDIDATE_CONFLICT")
         if draft.draft_kind == "NEW_RECOMMENDATION" and not self.REQUIRED_NEW.issubset(by_field):
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:REQUIRED_CANDIDATE_MISSING")
 
         values = {field: self._candidate_value(items[0]) for field, items in by_field.items()}
+        target_values = []
+        for index, candidate in enumerate(by_field.get("TARGET", []), start=1):
+            value = self._candidate_value(candidate)
+            if isinstance(value, dict):
+                target_values.append({
+                    "price": value.get("price", value.get("value", value.get("target"))),
+                    "close_percent": value.get("close_percent", value.get("percentage", 0)),
+                    "index": value.get("index", index),
+                })
+            else:
+                target_values.append({"price": value, "close_percent": 0, "index": index})
         signal = parent_materialization.signal if parent_materialization else HistoricalSignal(
             public_ref=f"HIST-G5-{draft.id:012d}",
             evidence_id=revision.evidence_id,
@@ -97,7 +108,7 @@ class HistoricalSignalMaterializationService:
             side=str(values["DIRECTION"]) if "DIRECTION" in values else None,
             entry=Decimal(str(values["ENTRY"])) if "ENTRY" in values else None,
             stop_loss=Decimal(str(values["STOP_LOSS"])) if "STOP_LOSS" in values else None,
-            targets=values.get("TARGET"),
+            targets=target_values,
             market=str(values["MARKET"]) if "MARKET" in values else None,
             decision_timestamp=source_timestamp,
             status="MATERIALIZED",
