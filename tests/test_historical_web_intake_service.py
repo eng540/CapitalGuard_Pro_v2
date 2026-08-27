@@ -1,7 +1,10 @@
+from datetime import datetime, timezone
+
 from capitalguard.application.services.historical_web_intake_service import HistoricalWebIntakeService
+from capitalguard.application.services.historical_signal_service import HistoricalSignalService
 from capitalguard.domain.entities import UserType
 from capitalguard.infrastructure.db.repository import UserRepository
-from capitalguard.infrastructure.db.models import HistoricalForwardReceipt
+from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch
 
 
 def test_web_historical_intake_supports_single_multiple_partial_batch_and_dedup(db_session):
@@ -185,3 +188,86 @@ def test_web_historical_intake_returns_explicit_no_change_contract_when_all_reco
         requested_by_user_id=user.id,
     )
     assert loaded["batch"]["result_status"] == "NO_CHANGE"
+
+
+def test_web_historical_report_exposes_core_lifecycle_and_ordered_timeline(db_session):
+    user = UserRepository(db_session).find_or_create(
+        telegram_id=940006,
+        user_type=UserType.ANALYST,
+        first_name="Timeline Analyst",
+    )
+    batch_result = HistoricalWebIntakeService().create_batch(
+        db_session,
+        requested_by_user_id=user.id,
+        source_kind="TELEGRAM_EXPORT",
+        input_mode="TELEGRAM_EXPORT",
+        items=[
+            {
+                "item_key": "timeline-1",
+                "raw_text": "#BTCUSDT LONG Entry 100 SL 90 TP1 110 TP2 120",
+                "source_chat_id": -100123,
+                "source_message_id": 900,
+                "source_message_timestamp": "2025-01-01T10:00:00+00:00",
+            }
+        ],
+    )
+    batch_id = batch_result["batch"]["id"]
+    db_session.get(HistoricalImportBatch, batch_id).status = "VALIDATED"
+    historical = HistoricalSignalService()
+    evidence = historical.ingest_evidence(
+        db_session,
+        source_kind="TELEGRAM_EXPORT",
+        telegram_channel_id=-100123,
+        telegram_message_id=900,
+        message_timestamp=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc),
+        raw_text="#BTCUSDT LONG Entry 100 SL 90 TP1 110 TP2 120",
+        batch_id=batch_id,
+    )
+    signal = historical.create_signal(
+        db_session,
+        evidence_id=evidence.id,
+        decision_timestamp=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc),
+        asset="BTCUSDT",
+        side="LONG",
+        entry="100",
+        stop_loss="90",
+        targets=[{"price": "110"}, {"price": "120"}],
+        market="Futures",
+        public_ref="HIST-TIMELINE-0001",
+    )
+    historical.record_event(
+        db_session,
+        signal_id=signal.id,
+        event_type="ACTIVATED",
+        event_timestamp=datetime(2025, 1, 1, 10, 1, tzinfo=timezone.utc),
+        market_as_of=datetime(2025, 1, 1, 10, 1, tzinfo=timezone.utc),
+        data_source="BINANCE_FUTURES",
+        replay_status="UNVERIFIED",
+        dedup_key="timeline:activated",
+    )
+    historical.record_event(
+        db_session,
+        signal_id=signal.id,
+        event_type="TP1",
+        event_timestamp=datetime(2025, 1, 1, 10, 2, tzinfo=timezone.utc),
+        market_as_of=datetime(2025, 1, 1, 10, 2, tzinfo=timezone.utc),
+        data_source="BINANCE_FUTURES",
+        price="110",
+        replay_status="AMBIGUOUS",
+        dedup_key="timeline:tp1",
+    )
+
+    report = HistoricalWebIntakeService().batch_report(
+        db_session,
+        batch_id=batch_id,
+        requested_by_user_id=user.id,
+    )
+    view = report["report"]["signals"][0]
+    assert view["public_ref"] == "HIST-TIMELINE-0001"
+    assert view["lifecycle_status"] == "AMBIGUOUS"
+    assert view["events"] == 2
+    assert view["verified_events"] == 0
+    assert view["last_event"] == "TP1"
+    assert [event["event_type"] for event in view["timeline"]] == ["ACTIVATED", "TP1"]
+    assert view["timeline"][1]["replay_status"] == "AMBIGUOUS"
+    assert view["timeline"][1]["price"] == "110.00000000"

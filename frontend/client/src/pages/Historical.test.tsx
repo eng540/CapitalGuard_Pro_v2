@@ -54,11 +54,13 @@ describe("Historical R4.1 Core read model and 1..N intake", () => {
 
   it("shows extracted fields and explains what Core did for a single message", () => {
     intakeDetailState = { isLoading: false, isError: false, data: { batch: { id: 7, ref: "HB-000007", status: "REVIEW_REQUIRED", source_kind: "MANUAL_ADMIN_IMPORT", total_records: 1, accepted_records: 1, rejected_records: 0, created_at: "2026-08-26T12:00:00Z", items: [{ id: 1, order: 1, item_key: "item-1", status: "STAGED", semantic_status: "SUCCESS", parse_status: "PARSED", source_verification: "UNVERIFIED", source_timestamp: "2026-08-26T11:55:00Z", raw_text: "#BTCUSDT LONG Entry 100 SL 95 TP1 105", missing_fields: [], conflicting_fields: [], canonical: { asset: "BTCUSDT", side: "LONG", entry: 100, stop_loss: 95, targets: [{ price: 105, close_percent: 100 }] }, rejection_reason: null }] } } };
-    intakeReportState = { isLoading: false, isError: false, data: { report: { counts: { evidence_records: 0, historical_signals: 0, replay_events: 0, verified_replay_events: 0 }, readiness: { commercial_enabled: false }, next_action: "OWNER_REVIEW", signals: [] } }, refetch: vi.fn() };
+    intakeReportState = { isLoading: false, isError: false, data: { report: { counts: { evidence_records: 1, historical_signals: 1, replay_events: 2, verified_replay_events: 0 }, readiness: { commercial_enabled: false }, next_action: "REPLAY_REVIEW", signals: [{ public_ref: "HIST-TIMELINE-0001", asset: "BTCUSDT", side: "LONG", status: "IMPORTED", confidence_score: "0", events: 2, verified_events: 0, lifecycle_status: "AMBIGUOUS", last_event: "TP1", timeline: [{ event_type: "ACTIVATED", event_timestamp: "2025-01-01T10:01:00Z", replay_status: "UNVERIFIED" }, { event_type: "TP1", event_timestamp: "2025-01-01T10:02:00Z", replay_status: "AMBIGUOUS", price: "110" }] }] } }, refetch: vi.fn() };
     const view = render(<IntakeBatchView batch={(intakeDetailState.data as { batch: Parameters<typeof IntakeBatchView>[0]["batch"] }).batch} report={(intakeReportState.data as { report: Parameters<typeof IntakeBatchView>[0]["report"] }).report} onRefresh={vi.fn()} />);
     expect(view.getByText("ماذا عمل النظام؟")).toBeTruthy();
     expect(view.getByText("عرض البيانات المستخرجة")).toBeTruthy();
     expect(view.getByText(/لا يتم إنشاء توصية أو صفقة حية/)).toBeTruthy();
+    expect(view.getByText(/نتيجة غامضة/)).toBeTruthy();
+    expect(view.getByText("عرض Timeline التاريخي")).toBeTruthy();
   });
 
   it("opens a valid batch session from a stable query deep link and rejects unsafe ids", () => {
