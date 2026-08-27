@@ -22,6 +22,18 @@ def test_g3_extracts_provenanced_candidates_without_financial_side_effects(db_se
     assert db_session.execute(select(UserTrade)).scalars().all() == []
 
 
+def test_g3_ignores_latest_update_tp_marker_without_price(db_session):
+    _, receipt = make_reviewed_batch(db_session)
+    receipt.raw_text = "#BTCUSDT LONG Entry 71687.70 Stop 71500 TP1 71700 TP2 71800\nLatest Updates:\n23:05 Tp1"
+    receipt.content_hash = "g-latest-update" * 4
+    revision = HistoricalMessageFoundationService().record_receipt(db_session, receipt=receipt)
+    interpretation = HistoricalContentUnderstandingService().interpret_revision(db_session, revision_id=revision.id)
+    candidates = HistoricalFinancialCandidateService().extract(db_session, interpretation_id=interpretation.id)
+    targets = [item for item in candidates if item.field_type == "TARGET"]
+    assert [item.normalized_value for item in targets] == ["71700", "71800"]
+    assert all(item.status == "CANDIDATE" for item in targets)
+
+
 def test_g3_marks_multiple_entry_candidates_for_review(db_session):
     _, receipt = make_reviewed_batch(db_session)
     receipt.raw_text = "#BTCUSDT LONG Entry 62000 Entry 62500 SL 60000"

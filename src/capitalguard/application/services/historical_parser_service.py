@@ -55,7 +55,7 @@ class HistoricalParserService:
         # the price (for example `TP1:78K` or `TP 1 78K`).  Without the
         # lookahead, `TP 78K` consumes the leading `7` as an index and leaves
         # `8K`, corrupting the canonical target value.
-        target_marker = r"(?:(?:TP|TARGET)(?:\s*\d+)?(?=\s*[:=\-])|(?:TP|TARGET)\d+(?=\s+[0-9٠-٩])|(?:TP|TARGET)\s+\d+(?=\s+[0-9٠-٩])|(?:TP|TARGET)(?=\s+[0-9٠-٩]))"
+        target_marker = r"(?:(?:TP|TARGET)(?:[ \t]*\d+)?(?=[ \t]*[:=\-])|(?:TP|TARGET)\d+(?=[ \t]+[0-9٠-٩])|(?:TP|TARGET)[ \t]+\d+(?=[ \t]+[0-9٠-٩])|(?:TP|TARGET)(?=[ \t]+[0-9٠-٩]))"
         matches = re.findall(
             rf"{target_marker}\s*[:=\-]?\s*({self._NUMBER}(?:\s*@\s*\d+(?:\.\d+)?\s*%?)?)",
             text,
