@@ -5,7 +5,13 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch, HistoricalMessageRevision
+from capitalguard.infrastructure.db.models import (
+    ChannelCatalog,
+    HistoricalForwardReceipt,
+    HistoricalImportBatch,
+    HistoricalMessageRevision,
+    HistoricalSignalEvidence,
+)
 from capitalguard.infrastructure.db.repository import ParsingRepository
 
 from .historical_parser_service import HistoricalParserService
@@ -53,6 +59,81 @@ class HistoricalEvidenceIngestionService:
             self._ensure_replayable_signal(session, receipt=receipt)
         session.flush()
         return 0
+
+    def ingest_automatic_canonical_receipt(
+        self,
+        session: Session,
+        *,
+        batch_id: int,
+        receipt: HistoricalForwardReceipt,
+        policy_version: str,
+    ):
+        """Ingest one receipt under an explicit canonical system policy.
+
+        The method is intentionally separate from human review. It verifies the
+        canonical catalog in Core, preserves the batch/evidence link, and never
+        writes reviewer identity or live-trading entities.
+        """
+        batch = session.get(HistoricalImportBatch, batch_id)
+        if batch is None or receipt.batch_id != batch.id:
+            raise HistoricalEvidenceIngestionError("Automatic evidence receipt is not attached to the requested batch")
+        metadata = batch.metadata_json or {}
+        catalog = session.get(ChannelCatalog, batch.channel_catalog_id) if batch.channel_catalog_id else None
+        if (
+            batch.status not in {"STAGING", "DRY_RUN", "EVIDENCE_INGESTED"}
+            or batch.source_kind != "TELEGRAM_FORWARD"
+            or metadata.get("mode") != "AUTO"
+            or metadata.get("claim_status") != "CANONICAL"
+            or catalog is None
+            or catalog.telegram_channel_id != receipt.source_chat_id
+            or metadata.get("canonical_channel_catalog_id") not in {None, catalog.id}
+        ):
+            raise HistoricalEvidenceIngestionError("Automatic evidence requires a verified canonical source")
+        if receipt.validation_status != "STAGED":
+            return session.get(HistoricalSignalEvidence, receipt.evidence_id) if receipt.evidence_id else None
+        if receipt.source_message_timestamp is None:
+            raise HistoricalEvidenceIngestionError("Automatic evidence requires a source timestamp")
+        try:
+            evidence = self.signal_service.ingest_evidence(
+                session,
+                source_kind=batch.source_kind,
+                batch_id=None,
+                channel_catalog_id=batch.channel_catalog_id,
+                telegram_channel_id=receipt.source_chat_id,
+                telegram_message_id=receipt.source_message_id,
+                message_revision=receipt.source_message_revision or 0,
+                message_timestamp=receipt.source_message_timestamp,
+                raw_text=receipt.raw_text,
+                source_uri=(receipt.metadata_json or {}).get("source_uri")
+                or f"telegram://{receipt.source_chat_id}/{receipt.source_message_id}",
+                ownership_proof_type="CANONICAL_SOURCE_POLICY",
+                ownership_proof_ref=f"batch:{batch.id}:policy:{policy_version}",
+                metadata={
+                    "receipt_id": receipt.id,
+                    "automatic": True,
+                    "policy_version": policy_version,
+                    "source_chat_id": receipt.source_chat_id,
+                },
+            )
+        except HistoricalSignalValidationError as exc:
+            raise HistoricalEvidenceIngestionError(str(exc)) from exc
+        evidence.batch_id = batch.id
+        receipt.evidence_id = evidence.id
+        linked_revisions = session.execute(
+            select(HistoricalMessageRevision).where(HistoricalMessageRevision.receipt_id == receipt.id)
+        ).scalars().all()
+        for revision in linked_revisions:
+            revision.evidence_id = evidence.id
+        receipt.validation_status = "INGESTED"
+        receipt.metadata_json = {
+            **(receipt.metadata_json or {}),
+            "evidence_id": evidence.id,
+            "automatic_policy": policy_version,
+            "reviewer_type": "SYSTEM_POLICY",
+        }
+        self._ensure_replayable_signal(session, receipt=receipt)
+        session.flush()
+        return evidence
 
     def ingest_reviewed_batch(
         self,
