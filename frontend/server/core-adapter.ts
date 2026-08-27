@@ -98,6 +98,9 @@ export type CoreHistoricalIntakeBatch = {
   total_records: number;
   accepted_records: number;
   rejected_records: number;
+  processed_count: number;
+  changed_count: number;
+  result_status: "CHANGED" | "PARTIAL_CHANGE" | "NO_CHANGE" | string;
   created_at: string | null;
   metadata: Record<string, unknown>;
   items: Array<{
@@ -122,7 +125,7 @@ export type CoreHistoricalIntakeBatch = {
 };
 export type CoreHistoricalIntakeResponse = { ok: true; batch: CoreHistoricalIntakeBatch };
 export type CoreHistoricalIntakeListResponse = { ok: true; batches: CoreHistoricalIntakeBatch[] };
-export type CoreHistoricalIntakeReportResponse = { ok: true; report: { batch_id: number; batch_ref: string; status: string; source_kind: string; counts: Record<string, number>; readiness: Record<string, boolean>; signals: Array<Record<string, unknown>>; next_action: string } };
+export type CoreHistoricalIntakeReportResponse = { ok: true; report: { batch_id: number; batch_ref: string; status: string; source_kind: string; counts: Record<string, number | string>; readiness: Record<string, boolean>; signals: Array<Record<string, unknown>>; next_action: string } };
 export type CoreAnalystRecommendationInput = { actorTelegramId: number; asset: string; side: "LONG" | "SHORT"; market: string; orderType: "LIMIT" | "MARKET" | "STOP_MARKET"; entry: number; stopLoss: number; targetsRaw: string; notes?: string; leverage?: string; channelIds: number[] };
 export type CoreAnalystRecommendationPreview = { schema_version: number; mode: "PREVIEW"; asset: string; side: "LONG" | "SHORT"; market: string; order_type: "LIMIT" | "MARKET" | "STOP_MARKET"; entry: string; stop_loss: string; targets: Array<{ price: string; close_percent: number }>; live_price: string | null; publication: { state: "NOT_QUEUED"; eligible_channel_count: number } };
 export type CoreAnalystRecommendationConfirmation = { ok: true; entity_type: "RECOMMENDATION"; public_ref: string; publication: { state: "SAVED" | "QUEUED"; queued_delivery_count: number }; replayed: boolean };
