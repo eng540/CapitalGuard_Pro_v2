@@ -368,6 +368,7 @@ class HistoricalForwardingService:
                         "receiver_message_id": receipt.receiver_message_id,
                         "source_origin_type": receipt.source_origin_type,
                         "source_edit_date": receipt.source_edit_date.isoformat() if receipt.source_edit_date else None,
+                        "source_message_timestamp": receipt.source_message_timestamp.isoformat() if receipt.source_message_timestamp else None,
                         "source_reply_to_message_id": receipt.source_reply_to_message_id,
                         "forwarding_receipt_id": receipt.id,
                         **timeline_annotations.get(receipt.id, {}),
@@ -596,8 +597,10 @@ class HistoricalForwardingService:
                         raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:SEMANTIC_REVIEW_REQUIRED")
                     if draft.status not in {"DRAFT", "REVIEW_REQUIRED"}:
                         raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:DRAFT_REVIEW_REQUIRED")
-                    if draft.status == "REVIEW_REQUIRED" and not str(draft.adjudication_reason or "").startswith("MISSING_ACCEPTED:"):
-                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:DRAFT_REVIEW_REQUIRED")
+                    # A successful semantic projection is the system-policy acceptance
+                    # boundary for genuine Telegram forwards. The adjudicator may still
+                    # have marked the draft REVIEW_REQUIRED because extracted candidates
+                    # start as PENDING; AUTO progression accepts those candidates below.
                     candidate_ids = self.materialization_service._flatten_candidate_ids(draft.evidence_chain_json)
                     candidates = session.execute(
                         select(HistoricalFinancialCandidate).where(HistoricalFinancialCandidate.id.in_(candidate_ids))
