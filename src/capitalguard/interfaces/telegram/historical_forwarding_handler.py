@@ -350,6 +350,18 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             # leak into this card or block the user's result.
             allowed_actions = {"DISMISS"}
             source_label = metadata.get("source_title") or "المصدر"
+            progression_items = auto_progression.get("items") or []
+            replay_completed = sum(
+                1 for item in progression_items
+                if str(item.get("replay_status") or "").upper()
+                in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}
+            )
+            replay_failed = sum(
+                1 for item in progression_items
+                if str(item.get("replay_status") or "").upper()
+                in {"FAILED", "REPLAY_FAILED", "PROVIDER_UNAVAILABLE", "PARTIAL_WINDOW"}
+            )
+            replay_pending = max(0, len(progression_items) - replay_completed - replay_failed)
             summary_data = {
                 "source_title": source_label,
                 "total_records": preview.total_records,
@@ -358,6 +370,10 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 "incomplete_records": partial_count,
                 "unavailable_records": preview.rejected_records,
                 "duplicate_records": preview.duplicate_records,
+                "replay_status": auto_progression.get("status"),
+                "replay_completed_records": replay_completed,
+                "replay_failed_records": replay_failed,
+                "replay_pending_records": replay_pending,
             }
             callback_factory = lambda action: f"{PREVIEW_ACTION_PREFIX}:{batch_id}:{action}"
             if preview.total_records == 1 and len(parsed_results) == 1:

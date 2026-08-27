@@ -386,6 +386,27 @@ def build_batch_summary(
     )
     if duplicate:
         lines.append(f"مكررة: {_text(duplicate)}")
+    replay_status = str(_value(summary, "replay_status", "") or "").upper()
+    replay_completed = _value(summary, "replay_completed_records", None)
+    replay_failed = _value(summary, "replay_failed_records", None)
+    replay_pending = _value(summary, "replay_pending_records", None)
+    if replay_status or any(value is not None for value in (replay_completed, replay_failed, replay_pending)):
+        lines.append("")
+        lines.append("<b>نتيجة المحاكاة التاريخية:</b>")
+        if replay_completed is not None:
+            lines.append(f"مكتملة: {_text(replay_completed)}")
+        if replay_failed is not None:
+            lines.append(f"تعذر إكمالها: {_text(replay_failed)}")
+        if replay_pending is not None:
+            lines.append(f"تنتظر نتيجة: {_text(replay_pending)}")
+        if replay_status == "COMPLETED_UNVERIFIABLE":
+            lines.append("اكتملت المحاكاة، لكن بيانات السوق غير قابلة للتحقق؛ لا تُستخدم للترتيب أو التداول.")
+        elif replay_status == "COMPLETED":
+            lines.append("اكتملت المحاكاة وفق بيانات السوق المتاحة.")
+        elif replay_failed:
+            lines.append("تم حفظ الاستخراج؛ بعض النتائج التاريخية لم تكتمل.")
+        elif replay_pending:
+            lines.append("تم حفظ الاستخراج؛ بعض النتائج التاريخية لم تكتمل بعد.")
     if extracted_items:
         lines.extend(["", "<b>عينات مما استُخرج:</b>"])
         for index, item in enumerate(extracted_items[:3], start=1):
@@ -407,7 +428,12 @@ def build_batch_summary(
     if incomplete or unavailable:
         lines.append("تظهر التفاصيل الكاملة لكل عنصر، ويمكنك تعديل القيم الناقصة بسرعة من Web.")
     else:
-        lines.append("اكتملت المعالجة دون استثناءات ظاهرة.")
+        if replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"} and not replay_failed and not replay_pending:
+            lines.append("اكتملت المعالجة والمحاكاة التاريخية.")
+        elif replay_failed or replay_pending:
+            lines.append("اكتمل استخراج القيم، وتظهر حالة المحاكاة التاريخية أعلاه.")
+        else:
+            lines.append("اكتملت المعالجة دون استثناءات ظاهرة.")
 
     return BatchSummaryView(
         text="\n".join(lines),
