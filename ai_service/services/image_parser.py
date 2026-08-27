@@ -73,8 +73,10 @@ CRITICAL VALIDATION RULES:
 
 CRITICAL EXTRACTION RULES:
 1. If the image contains multiple trade signals, extract ONLY THE FIRST COMPLETE signal that has all required fields (asset, side, entry, stop_loss, targets).
-2. Prioritize signals with more targets.
-3. Return ONLY ONE JSON object, never an array.
+2. Use values only when they are explicitly attached to the trade signal labels (asset/pair, side, entry, stop loss, TP/target). Never use chart-axis prices, Fibonacci levels, trend-line annotations, watermark numbers, leverage, percentages, or promotional/narrative numbers as trade fields.
+3. A chart or performance claim without an explicitly labeled entry, stop loss, and target list is not a complete trade signal; return {"error": "Missing required fields."} rather than guessing.
+4. Do not invent or repair a symbol from a chart. Preserve the explicit pair text; if it is ambiguous, return an error.
+5. Return ONLY ONE JSON object, never an array.
 
 Respond ONLY with the JSON object. """
 
