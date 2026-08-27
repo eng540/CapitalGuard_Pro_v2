@@ -479,24 +479,37 @@ class HistoricalForwardingService:
         return "NOT_ACTIVATED"
 
     def _canonical_auto_batch(self, session: Session, batch: HistoricalImportBatch) -> bool:
-        """Verify eligibility from canonical Core identity, not copied labels alone."""
+        """Allow historical replay from genuine forwards without claiming trust.
+
+        ``canonical`` remains the stronger provenance tier, but it is not a
+        prerequisite for an informational historical simulation. Every forward
+        still needs immutable Telegram source identity and source timestamp.
+        """
         metadata = batch.metadata_json or {}
         if metadata.get("mode") != "AUTO" or batch.source_kind != self.SOURCE_KIND:
             return False
-        catalog = session.get(ChannelCatalog, batch.channel_catalog_id) if batch.channel_catalog_id else None
         expected_source = self._normalize_chat_id(metadata.get("source_chat_id"))
-        if catalog is None or expected_source is None or catalog.telegram_channel_id != expected_source:
+        if expected_source is None:
+            return False
+        has_forward_provenance = session.scalar(
+            select(HistoricalForwardReceipt.id).where(
+                HistoricalForwardReceipt.batch_id == batch.id,
+                HistoricalForwardReceipt.source_chat_id == expected_source,
+                HistoricalForwardReceipt.source_message_id.is_not(None),
+                HistoricalForwardReceipt.source_message_timestamp.is_not(None),
+            ).limit(1)
+        ) is not None
+        if not has_forward_provenance:
+            return False
+        catalog = session.get(ChannelCatalog, batch.channel_catalog_id) if batch.channel_catalog_id else None
+        if catalog is not None and catalog.telegram_channel_id != expected_source:
             return False
         shadow_id = metadata.get("shadow_channel_id")
-        if shadow_id is None:
-            return metadata.get("claim_status") == "CANONICAL"
-        shadow = session.get(HistoricalShadowChannel, int(shadow_id))
-        return bool(
-            shadow
-            and shadow.claim_status == "VERIFIED"
-            and shadow.telegram_channel_id == expected_source
-            and shadow.canonical_channel_catalog_id == catalog.id
-        )
+        if shadow_id is not None:
+            shadow = session.get(HistoricalShadowChannel, int(shadow_id))
+            if shadow is None or shadow.telegram_channel_id != expected_source:
+                return False
+        return True
 
     def auto_progress_canonical_batch(
         self,
@@ -516,7 +529,7 @@ class HistoricalForwardingService:
         if not self._canonical_auto_batch(session, batch):
             return {
                 "status": "BLOCKED",
-                "reason": "AUTO_PROGRESS_REQUIRES_VERIFIED_CANONICAL_SOURCE",
+                "reason": "AUTO_PROGRESS_REQUIRES_TELEGRAM_FORWARD_PROVENANCE",
                 "progressed": 0,
                 "review_required": int(batch.accepted_records or 0),
                 "failed": 0,
@@ -606,7 +619,7 @@ class HistoricalForwardingService:
                         "human_reviewer": False,
                         "live_activation": False,
                     }
-                    evidence = self.evidence_ingestion_service.ingest_automatic_canonical_receipt(
+                    evidence = self.evidence_ingestion_service.ingest_automatic_forward_receipt(
                         session,
                         batch_id=batch.id,
                         receipt=receipt,

@@ -143,7 +143,7 @@ def test_canonical_complete_auto_progression_materializes_and_replays_without_li
     assert db_session.execute(select(PublicationDelivery)).scalars().all() == []
 
 
-def test_unclaimed_source_is_blocked_before_evidence_or_g5(db_session):
+def test_unclaimed_source_is_replayable_without_becoming_trusted_or_live(db_session):
     batch, receipt, _, _ = _auto_batch(
         db_session,
         raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures",
@@ -159,12 +159,17 @@ def test_unclaimed_source_is_blocked_before_evidence_or_g5(db_session):
         provider=provider,
     )
 
-    assert result["status"] == "BLOCKED"
-    assert result["reason"] == "AUTO_PROGRESS_REQUIRES_VERIFIED_CANONICAL_SOURCE"
-    assert receipt.validation_status == "STAGED"
-    assert provider.calls == 0
-    assert db_session.execute(select(HistoricalSignalEvidence)).scalars().all() == []
-    assert db_session.execute(select(HistoricalSignal)).scalars().all() == []
+    assert result["status"] == "COMPLETED_UNVERIFIABLE"
+    assert result["progressed"] == 1
+    assert receipt.validation_status == "INGESTED"
+    assert provider.calls == 1
+    evidence = db_session.execute(select(HistoricalSignalEvidence)).scalars().all()
+    assert len(evidence) == 1
+    assert evidence[0].metadata_json["source_trust"] == "UNVERIFIED_FORWARD"
+    signals = db_session.execute(select(HistoricalSignal)).scalars().all()
+    assert len(signals) == 1
+    assert signals[0].trust_tier == "UNVERIFIED"
+    assert signals[0].eligible_for_ranking is False
 
 
 def test_incomplete_semantic_projection_stays_review_required(db_session):

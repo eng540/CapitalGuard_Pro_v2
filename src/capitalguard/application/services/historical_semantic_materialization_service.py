@@ -200,7 +200,11 @@ class HistoricalSemanticMaterializationService:
         return sorted({str(item.normalized_value) for item in items})
 
     @staticmethod
-    def _market_value(raw_text: str | None, image_payload: dict[str, Any] | None) -> str | None:
+    def _market_value(
+        raw_text: str | None,
+        image_payload: dict[str, Any] | None,
+        default_market: str | None = None,
+    ) -> str | None:
         image_market = (image_payload or {}).get("market")
         if image_market:
             return str(image_market).strip().upper()
@@ -209,7 +213,7 @@ class HistoricalSemanticMaterializationService:
             return "FUTURES"
         if "SPOT" in text:
             return "SPOT"
-        return None
+        return str(default_market).strip().upper() if default_market else None
 
     def _build_projection(
         self,
@@ -217,6 +221,7 @@ class HistoricalSemanticMaterializationService:
         *,
         raw_text: str | None = None,
         image_payload: dict[str, Any] | None = None,
+        default_market: str | None = None,
     ) -> dict[str, Any]:
         grouped: dict[str, list[HistoricalFinancialCandidate]] = {}
         for item in candidates:
@@ -276,7 +281,14 @@ class HistoricalSemanticMaterializationService:
         for rows in evidence.values():
             for item in rows:
                 item["final_semantic_status"] = status
-        canonical["market"] = self._market_value(raw_text, image_payload)
+        explicit_market = self._market_value(raw_text, image_payload)
+        canonical["market"] = explicit_market or (
+            str(default_market).strip().upper() if default_market else None
+        )
+        market_resolution = {
+            "value": canonical["market"],
+            "source": "EXPLICIT" if explicit_market else ("POLICY_DEFAULT" if canonical["market"] else None),
+        }
         if canonical["market"] is None:
             missing.append("market")
             if status == "SUCCESS":
@@ -291,6 +303,7 @@ class HistoricalSemanticMaterializationService:
             "field_evidence": evidence,
             "missing_fields": missing,
             "conflicting_fields": conflicts,
+            "market_resolution": market_resolution,
         }
 
     def materialize_revision(
@@ -300,6 +313,7 @@ class HistoricalSemanticMaterializationService:
         revision_id: int,
         image_result: dict[str, Any] | None = None,
         image_provenance: dict[str, Any] | None = None,
+        default_market: str | None = None,
     ) -> dict[str, Any]:
         revision = session.get(HistoricalMessageRevision, revision_id)
         if revision is None:
@@ -321,6 +335,7 @@ class HistoricalSemanticMaterializationService:
             candidates,
             raw_text=revision.raw_text,
             image_payload=self._image_payload(image_result),
+            default_market=default_market,
         )
         draft = self.adjudicator.adjudicate(session, revision_id=revision_id)
         draft.evidence_chain_json = {

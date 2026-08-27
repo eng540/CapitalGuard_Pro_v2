@@ -60,7 +60,7 @@ class HistoricalEvidenceIngestionService:
         session.flush()
         return 0
 
-    def ingest_automatic_canonical_receipt(
+    def ingest_automatic_forward_receipt(
         self,
         session: Session,
         *,
@@ -68,27 +68,32 @@ class HistoricalEvidenceIngestionService:
         receipt: HistoricalForwardReceipt,
         policy_version: str,
     ):
-        """Ingest one receipt under an explicit canonical system policy.
+        """Ingest a genuine Telegram forward for historical replay only.
 
-        The method is intentionally separate from human review. It verifies the
-        canonical catalog in Core, preserves the batch/evidence link, and never
-        writes reviewer identity or live-trading entities.
+        Canonical sources retain their stronger proof. Other forwards retain
+        explicit ``UNVERIFIED_FORWARD`` provenance, but are still replayable;
+        replay is informational and never creates live trading state.
         """
         batch = session.get(HistoricalImportBatch, batch_id)
         if batch is None or receipt.batch_id != batch.id:
             raise HistoricalEvidenceIngestionError("Automatic evidence receipt is not attached to the requested batch")
         metadata = batch.metadata_json or {}
         catalog = session.get(ChannelCatalog, batch.channel_catalog_id) if batch.channel_catalog_id else None
+        canonical_source = bool(
+            catalog
+            and catalog.telegram_channel_id == receipt.source_chat_id
+            and metadata.get("claim_status") == "CANONICAL"
+            and metadata.get("canonical_channel_catalog_id") in {None, catalog.id}
+        )
         if (
             batch.status not in {"STAGING", "DRY_RUN", "EVIDENCE_INGESTED"}
             or batch.source_kind != "TELEGRAM_FORWARD"
             or metadata.get("mode") != "AUTO"
-            or metadata.get("claim_status") != "CANONICAL"
-            or catalog is None
-            or catalog.telegram_channel_id != receipt.source_chat_id
-            or metadata.get("canonical_channel_catalog_id") not in {None, catalog.id}
+            or receipt.source_chat_id is None
+            or receipt.source_message_id is None
+            or receipt.source_message_timestamp is None
         ):
-            raise HistoricalEvidenceIngestionError("Automatic evidence requires a verified canonical source")
+            raise HistoricalEvidenceIngestionError("Automatic evidence requires Telegram forward provenance")
         if receipt.validation_status != "STAGED":
             return session.get(HistoricalSignalEvidence, receipt.evidence_id) if receipt.evidence_id else None
         if receipt.source_message_timestamp is None:
@@ -106,13 +111,17 @@ class HistoricalEvidenceIngestionService:
                 raw_text=receipt.raw_text,
                 source_uri=(receipt.metadata_json or {}).get("source_uri")
                 or f"telegram://{receipt.source_chat_id}/{receipt.source_message_id}",
-                ownership_proof_type="CANONICAL_SOURCE_POLICY",
+                ownership_proof_type=(
+                    "CANONICAL_SOURCE_POLICY" if canonical_source else "TELEGRAM_FORWARD_PROVENANCE"
+                ),
                 ownership_proof_ref=f"batch:{batch.id}:policy:{policy_version}",
                 metadata={
                     "receipt_id": receipt.id,
                     "automatic": True,
                     "policy_version": policy_version,
                     "source_chat_id": receipt.source_chat_id,
+                    "source_trust": "CANONICAL" if canonical_source else "UNVERIFIED_FORWARD",
+                    "claim_status": metadata.get("claim_status"),
                 },
             )
         except HistoricalSignalValidationError as exc:
@@ -130,10 +139,27 @@ class HistoricalEvidenceIngestionService:
             "evidence_id": evidence.id,
             "automatic_policy": policy_version,
             "reviewer_type": "SYSTEM_POLICY",
+            "source_trust": "CANONICAL" if canonical_source else "UNVERIFIED_FORWARD",
         }
         self._ensure_replayable_signal(session, receipt=receipt)
         session.flush()
         return evidence
+
+    def ingest_automatic_canonical_receipt(
+        self,
+        session: Session,
+        *,
+        batch_id: int,
+        receipt: HistoricalForwardReceipt,
+        policy_version: str,
+    ):
+        """Backward-compatible name for the generic automatic forward policy."""
+        return self.ingest_automatic_forward_receipt(
+            session,
+            batch_id=batch_id,
+            receipt=receipt,
+            policy_version=policy_version,
+        )
 
     def ingest_reviewed_batch(
         self,
