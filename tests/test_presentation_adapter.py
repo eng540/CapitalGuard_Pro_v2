@@ -235,3 +235,37 @@ def test_build_single_result_card_is_still_visible_when_extraction_fails():
     assert "الأصل" in view.text
     assert "إكمال البيانات" not in view.text
     assert view.actions == (CardAction.RETRY.value, CardAction.MANUAL_ENTRY.value, CardAction.DISMISS.value)
+
+
+def test_complete_extraction_stays_visible_when_semantic_work_is_deferred():
+    view = build_single_result_card(
+        {
+            "asset": "BTCUSDT",
+            "side": "LONG",
+            "entry": "79625.20",
+            "stop_loss": "79000",
+            "targets": [{"price": "79800"}, {"price": "80000"}],
+        },
+        temporal_route="HISTORICAL_CANDIDATE",
+        internal_status="SEMANTIC_REVIEW_REQUIRED",
+    )
+
+    assert view.visual_state is VisualCardState.COMPLETE
+    assert "تم استخراج التوصية" in view.text
+    assert "يحتاج استكمالًا بسيطًا" not in view.text
+    assert "SEMANTIC_REVIEW_REQUIRED" not in view.text
+    assert "BTCUSDT" in view.text and "79625.20" in view.text
+
+
+
+def test_deferred_replay_explains_result_without_exposing_internal_block_reason():
+    view = build_single_result_card(
+        {"asset": "BTCUSDT", "side": "LONG", "entry": "100", "stop_loss": "90", "targets": [{"price": "110"}]},
+        temporal_route="HISTORICAL_CANDIDATE",
+        internal_status="SEMANTIC_REVIEW_REQUIRED",
+        replay_result={"replay_status": "BLOCKED", "reason": "SEMANTIC_REVIEW_REQUIRED"},
+    )
+
+    assert "المحاكاة التاريخية مؤجلة؛ نتيجة الاستخراج جاهزة." in view.text
+    assert "SEMANTIC_REVIEW_REQUIRED" not in view.text
+    assert "AUTO_PROGRESS_BLOCKED" not in view.text
