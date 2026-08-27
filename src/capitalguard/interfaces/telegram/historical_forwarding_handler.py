@@ -42,7 +42,7 @@ from capitalguard.infrastructure.db.repository import ParsingRepository
 from capitalguard.infrastructure.db.uow import session_scope, uow_transaction
 from capitalguard.interfaces.telegram.admin_commands import _is_admin
 from capitalguard.interfaces.telegram.auth import require_active_user
-from capitalguard.interfaces.telegram.presentation_adapter import build_batch_summary
+from capitalguard.interfaces.telegram.presentation_adapter import build_batch_summary, build_single_result_card
 
 log = logging.getLogger(__name__)
 
@@ -206,6 +206,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             partial_count = 0
             parsed_assets = []
             extracted_items = []
+            parsed_results = []
             temporal_modes = Counter()
             temporal_routes = Counter()
             temporal_reasons = Counter()
@@ -248,6 +249,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                     if asset:
                         parsed_assets.append(str(asset))
                         extracted_items.append(parsed.data or {})
+                        parsed_results.append((parsed, record))
                 else:
                     partial_count += 1
             batch = session.get(HistoricalImportBatch, batch_id)
@@ -277,20 +279,37 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             allowed_action_sets = [set(str(item).upper() for item in actions) for actions in review_actions_by_mode.values()]
             allowed_actions = set.intersection(*allowed_action_sets) if allowed_action_sets else {"DISMISS"}
             source_label = metadata.get("source_title") or "المصدر"
-            summary_view = build_batch_summary(
-                {
-                    "source_title": source_label,
-                    "total_records": preview.total_records,
-                    "processed_records": preview.total_records,
-                    "complete_records": parsed_count,
-                    "incomplete_records": partial_count,
-                    "unavailable_records": preview.rejected_records,
-                    "duplicate_records": preview.duplicate_records,
-                },
-                extracted_items=extracted_items,
-                allowed_actions=allowed_actions,
-                callback_data_factory=lambda action: f"{PREVIEW_ACTION_PREFIX}:{batch_id}:{action}",
-            )
+            summary_data = {
+                "source_title": source_label,
+                "total_records": preview.total_records,
+                "processed_records": preview.total_records,
+                "complete_records": parsed_count,
+                "incomplete_records": partial_count,
+                "unavailable_records": preview.rejected_records,
+                "duplicate_records": preview.duplicate_records,
+            }
+            callback_factory = lambda action: f"{PREVIEW_ACTION_PREFIX}:{batch_id}:{action}"
+            if preview.total_records == 1 and len(parsed_results) == 1:
+                single_parse, single_record = parsed_results[0]
+                single_metadata = single_record.get("metadata") or {}
+                temporal_decision = single_metadata.get("temporal_decision") or {}
+                summary_view = build_single_result_card(
+                    single_parse.data or {},
+                    temporal_route=temporal_decision.get("route"),
+                    source_timestamp=single_metadata.get("source_message_timestamp") or single_metadata.get("source_timestamp"),
+                    source_title=single_metadata.get("source_title") or source_label,
+                    internal_status=single_parse.parse_status,
+                    financial_outcome=(single_parse.data or {}).get("financial_outcome"),
+                    allowed_actions=allowed_actions,
+                    callback_data_factory=callback_factory,
+                )
+            else:
+                summary_view = build_batch_summary(
+                    summary_data,
+                    extracted_items=extracted_items,
+                    allowed_actions=allowed_actions,
+                    callback_data_factory=callback_factory,
+                )
             text = summary_view.text
             markup = summary_view.reply_markup
             progress_message_id = context.user_data.get(AUTO_PROGRESS_MESSAGE_KEY)
