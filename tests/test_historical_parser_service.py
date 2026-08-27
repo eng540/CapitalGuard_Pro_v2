@@ -56,6 +56,16 @@ def test_historical_parser_exposes_source_outcome_mismatch_for_closed_signal():
     assert "FINANCIAL_CONSISTENCY_REVIEW" in result.data["financial_outcome"]["warnings"]
 
 
+def test_historical_parser_ignores_tp_markers_in_latest_updates():
+    result = parser().parse(
+        "#BTCUSDT LONG TRADE CLOSED Exit: 73000 Entry: 72839.20 Stop: 72000 "
+        "TP1: 73000 (50%) TP2: 74000 (100%) Latest Updates: 23:05 Final Close 23:05 TP1"
+    )
+
+    assert result.parse_status == "PARSED"
+    assert [item["price"] for item in result.data["targets"]] == [Decimal("73000"), Decimal("74000")]
+
+
 def test_historical_parser_normalizes_k_suffix_targets_without_truncating_price():
     result = parser().parse(
         "#BTCUSDT LONG Entry 77K SL 76K TP 78K Leverage 5X"
