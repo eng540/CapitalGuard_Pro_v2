@@ -57,3 +57,12 @@ async def test_image_provider_unavailable_is_exposed_as_503(monkeypatch):
         )
 
     assert caught.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_ai_observability_endpoints_are_public_and_non_provider_dependent(monkeypatch):
+    monkeypatch.setattr(ai_main, "router_enabled", lambda: True)
+
+    assert await ai_main.health_check() == {"status": "ok"}
+    assert await ai_main.liveness_check() == {"status": "ok", "service": "ai-parsing"}
+    assert await ai_main.readiness_check() == {"status": "ok", "router_enabled": True}

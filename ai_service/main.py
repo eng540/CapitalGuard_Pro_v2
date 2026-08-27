@@ -57,6 +57,18 @@ async def health_check():
     """نقطة نهاية للتحقق من صحة الخدمة."""
     return {"status": "ok"}
 
+
+@app.get("/live", status_code=status.HTTP_200_OK)
+async def liveness_check():
+    """Liveness مستقل لا يفحص مزودًا خارجيًا ولا يسرّب إعدادات حساسة."""
+    return {"status": "ok", "service": "ai-parsing"}
+
+
+@app.get("/ready", status_code=status.HTTP_200_OK)
+async def readiness_check():
+    """Readiness يصف جاهزية الراوتر المحلي دون ادعاء ضمان مزود خارجي."""
+    return {"status": "ok", "router_enabled": router_enabled()}
+
 # --- ✅ NEW (v3.1): Helper function to serialize Decimals ---
 def _serialize_data_for_response(data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -91,7 +103,7 @@ async def parse_trade_text(request: ParseRequest):
     """
     نقطة النهاية الرئيسية لتحليل *النص*.
     """
-    log.info(f"Received text parse request for user {request.user_id}, snippet: {request.text[:50]}...")
+    log.info("Received text parse request user_id=%s chars=%s", request.user_id, len(request.text))
     try:
         manager = ParsingManager(user_id=request.user_id, text=request.text)
         result_dict = await manager.analyze()
@@ -123,18 +135,18 @@ async def parse_trade_text(request: ParseRequest):
 
     except HTTPException:
         raise
-    except ValidationError as e:
-        log.error(f"Validation error during text parsing: {e}")
+    except ValidationError:
+        log.error("Validation error during text parsing")
         return ParseResponse(
             status="error",
-            error=f"Internal data validation error: {e}",
+            error="تعذر التحقق من نتيجة التحليل.",
             parser_path_used="failed"
         )
-    except Exception as e:
-        log.critical(f"Unexpected error in /ai/parse endpoint: {e}", exc_info=True)
+    except Exception as exc:
+        log.error("Unexpected error in /ai/parse endpoint type=%s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected internal error occurred: {e}"
+            detail="AI parsing is temporarily unavailable."
         )
 
 @app.post("/ai/parse_image", response_model=ParseResponse)
@@ -174,17 +186,17 @@ async def parse_trade_image(request: ImageParseRequest):
 
     except HTTPException:
         raise
-    except ValidationError as e:
-        log.error(f"Validation error during image parsing: {e}")
+    except ValidationError:
+        log.error("Validation error during image parsing")
         return ParseResponse(
             status="error",
-            error=f"Internal data validation error: {e}",
+            error="تعذر التحقق من نتيجة تحليل الصورة.",
             parser_path_used="failed"
         )
-    except Exception as e:
-        log.critical(f"Unexpected error in /ai/parse_image endpoint: {e}", exc_info=True)
+    except Exception as exc:
+        log.error("Unexpected error in /ai/parse_image endpoint type=%s", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected internal error occurred: {e}"
+            detail="AI image parsing is temporarily unavailable."
         )
 #--- END OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE: ai_service/main.py ---
