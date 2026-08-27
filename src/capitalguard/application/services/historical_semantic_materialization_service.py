@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -79,7 +80,25 @@ class HistoricalSemanticMaterializationService:
         payload = image_result.get("data", image_result)
         return payload if isinstance(payload, dict) else None
 
+    @staticmethod
+    def _normalize_asset(value: Any) -> str | None:
+        if value is None or not str(value).strip():
+            return None
+        normalized = str(value).strip().upper().replace(" ", "")
+        if "/TETHERUS" in normalized:
+            normalized = normalized.replace("/TETHERUS", "USDT")
+        elif normalized.endswith("/USDT"):
+            normalized = normalized[:-5] + "USDT"
+        elif normalized.endswith("-USDT"):
+            normalized = normalized[:-5] + "USDT"
+        if "/" in normalized or "-" in normalized or not re.fullmatch(r"[A-Z0-9]{3,20}", normalized):
+            return None
+        return normalized
+
     def _candidate_value(self, field: str, value: Any) -> tuple[Any, str] | None:
+        if field == "ASSET":
+            normalized_asset = self._normalize_asset(value)
+            return ({"value": normalized_asset}, normalized_asset) if normalized_asset else None
         if field in {"ENTRY", "STOP_LOSS", "LEVERAGE"}:
             numeric = self._as_decimal(value)
             if numeric is None:

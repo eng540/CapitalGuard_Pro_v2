@@ -96,6 +96,21 @@ def _text(value: Any, default: str = "—") -> str:
     return escape(str(value))
 
 
+def _source_time_text(value: Any) -> str:
+    """Render source T0 clearly while preserving the stored timestamp."""
+    if value is None or value == "":
+        return "—"
+    try:
+        from datetime import datetime, timezone
+
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return escape(parsed.strftime("%Y-%m-%d %H:%M:%S UTC"))
+        return escape(parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
+    except (TypeError, ValueError, OverflowError):
+        return _text(value)
+
+
 def _normalize_actions(actions: Sequence[str] | None) -> tuple[str, ...]:
     if not actions:
         return ()
@@ -246,7 +261,7 @@ def build_card(
         f"<b>{status_title}</b>",
         f"الحالة: {_text(route_label)}",
         f"المصدر: {_text(source_title)}",
-        f"وقت النشر: {_text(source_timestamp)}",
+        f"وقت النشر: {_source_time_text(source_timestamp)}",
         "",
         f"الأصل: <code>{_text(asset)}</code>",
         f"الاتجاه: <code>{_text(side)}</code>",

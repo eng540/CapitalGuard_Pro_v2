@@ -180,6 +180,17 @@ def test_build_batch_summary_shows_extracted_values_without_internal_metadata():
     assert "replay_gate" not in view.text
 
 
+def test_build_card_formats_source_timestamp_for_telegram():
+    view = build_single_result_card(
+        {"asset": "BTCUSDT", "side": "SHORT", "entry": "100", "stop_loss": "110", "targets": [{"price": "90"}]},
+        temporal_route="HISTORICAL_CANDIDATE",
+        source_timestamp="2026-08-19T16:03:31+00:00",
+    )
+
+    assert "وقت النشر: 2026-08-19 16:03:31 UTC" in view.text
+    assert "16:03:31+00:00-08-2026" not in view.text
+
+
 def test_build_single_result_card_shows_extraction_and_source_outcome_distinctly():
     view = build_single_result_card(
         {

@@ -41,11 +41,11 @@ def _revision(db_session, text: str, content_hash: str, metadata=None, batch=Non
     return HistoricalMessageFoundationService().record_receipt(db_session, receipt=receipt)
 
 
-def _image_result(entry="77000", stop_loss="76000", target="78000", leverage="5", side="LONG"):
+def _image_result(entry="77000", stop_loss="76000", target="78000", leverage="5", side="LONG", asset="BTCUSDT"):
     return {
         "status": "success",
         "data": {
-            "asset": "BTCUSDT",
+            "asset": asset,
             "market": "Futures",
             "side": side,
             "entry": entry,
@@ -123,6 +123,23 @@ def test_image_candidates_are_materialized_with_media_provenance(db_session):
     assert entry_evidence["provenance"]["media_id"] == "photo-unique-1"
     assert entry_evidence["normalization"]["normalized_value"] == "77000"
     assert entry_evidence["final_semantic_status"] == "SUCCESS"
+
+
+def test_image_asset_quote_alias_is_normalized_without_inventing_a_symbol(db_session):
+    revision = _revision(
+        db_session,
+        "",
+        "asset-alias",
+        metadata={"media": {"media_type": "PHOTO"}},
+    )
+    result = HistoricalSemanticMaterializationService().materialize_revision(
+        db_session,
+        revision_id=revision.id,
+        image_result=_image_result(asset="ID/TETHERUS"),
+    )
+
+    assert result["canonical"]["asset"] == "IDUSDT"
+    assert result["status"] == "SUCCESS"
 
 
 def test_text_image_conflict_is_preserved_without_silent_winner(db_session):
