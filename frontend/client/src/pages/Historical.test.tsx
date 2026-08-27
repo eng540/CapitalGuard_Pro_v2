@@ -24,6 +24,7 @@ vi.mock("@/lib/trpc", () => ({ trpc: { capitalguard: {
 
 import Historical, { parseIntakeText } from "./Historical";
 import { IntakeBatchView } from "@/components/ForwardResultsInspector";
+import { historicalSessionPath, readBatchIdFromLocation } from "@/lib/historical-session";
 
 describe("Historical R4.1 Core read model and 1..N intake", () => {
   afterEach(() => cleanup());
@@ -58,6 +59,14 @@ describe("Historical R4.1 Core read model and 1..N intake", () => {
     expect(view.getByText("ماذا عمل النظام؟")).toBeTruthy();
     expect(view.getByText("عرض البيانات المستخرجة")).toBeTruthy();
     expect(view.getByText(/لا يتم إنشاء توصية أو صفقة حية/)).toBeTruthy();
+  });
+
+  it("opens a valid batch session from a stable query deep link and rejects unsafe ids", () => {
+    expect(readBatchIdFromLocation("?batch=42")).toBe(42);
+    expect(readBatchIdFromLocation("?batch=0")).toBeNull();
+    expect(readBatchIdFromLocation("?batch=4.2")).toBeNull();
+    expect(readBatchIdFromLocation("?batch=abc")).toBeNull();
+    expect(historicalSessionPath(42)).toBe("/historical?batch=42");
   });
 
   it("maps one message, separated multiple messages, and Telegram export to one 1..N contract", () => {
