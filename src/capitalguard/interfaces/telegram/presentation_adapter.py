@@ -162,6 +162,16 @@ def _format_targets(targets: Any) -> str:
     return "\n".join(rendered) or "—"
 
 
+def _has_complete_extraction(candidate: Any) -> bool:
+    """Keep extraction visibility independent from deferred semantic/replay work."""
+    asset = _value(candidate, "asset", _value(candidate, "symbol"))
+    side = _value(candidate, "side", _value(candidate, "direction"))
+    entry = _value(candidate, "entry", _value(candidate, "entry_price"))
+    stop_loss = _value(candidate, "stop_loss", _value(candidate, "sl"))
+    targets = _value(candidate, "targets", _value(candidate, "take_profits"))
+    return all(value not in (None, "", []) for value in (asset, side, entry, stop_loss, targets))
+
+
 def _button_markup(
     actions: Sequence[str],
     callback_data_factory: Callable[[str], str] | None,
@@ -215,6 +225,9 @@ def build_card(
     conflict = bool(provenance.get("conflict")) or str(substatus or "").upper() == "CONFLICT"
     if conflict:
         state = VisualCardState.INCOMPLETE
+    elif state == VisualCardState.INCOMPLETE and _has_complete_extraction(candidate):
+        # A deferred semantic/replay decision must not hide fields already extracted.
+        state = VisualCardState.COMPLETE
 
     status_title = {
         VisualCardState.COMPLETE: "تم استخراج التوصية",

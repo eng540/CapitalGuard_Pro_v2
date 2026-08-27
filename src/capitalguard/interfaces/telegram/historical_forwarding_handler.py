@@ -355,6 +355,8 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 single_metadata = single_record.get("metadata") or {}
                 temporal_decision = single_metadata.get("temporal_decision") or {}
                 replay_result = auto_by_receipt.get(single_metadata.get("forwarding_receipt_id"))
+                if replay_result is None and auto_progression.get("status") == "BLOCKED":
+                    replay_result = {"replay_status": "BLOCKED"}
                 summary_view = build_single_result_card(
                     single_data,
                     temporal_route=temporal_decision.get("route"),
