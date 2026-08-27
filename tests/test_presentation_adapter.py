@@ -216,7 +216,7 @@ def test_build_single_result_card_shows_provider_failure_as_pending_not_verified
         },
     )
 
-    assert "لم تكتمل بعد؛ تم حفظ الاستخراج" in view.text
+    assert "تعذر جلب بيانات السوق الآن؛ تم حفظ الاستخراج" in view.text
     assert "PROVIDER_UNAVAILABLE" not in view.text
     assert "بيانات السوق غير قابلة للتحقق" not in view.text
 
