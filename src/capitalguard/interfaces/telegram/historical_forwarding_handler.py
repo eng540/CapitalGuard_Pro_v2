@@ -307,7 +307,12 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 if item.get("receipt_id") is not None
             }
             for item in extracted_items:
-                replay = auto_by_receipt.get(item.get("_receipt_id"))
+                receipt_id = item.get("_receipt_id")
+                try:
+                    receipt_id = int(receipt_id) if receipt_id is not None else None
+                except (TypeError, ValueError):
+                    receipt_id = None
+                replay = auto_by_receipt.get(receipt_id)
                 if replay:
                     item["_replay"] = replay
             batch = session.get(HistoricalImportBatch, batch_id)
@@ -359,7 +364,12 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 single_data, single_record, single_status = parsed_results[0]
                 single_metadata = single_record.get("metadata") or {}
                 temporal_decision = single_metadata.get("temporal_decision") or {}
-                replay_result = auto_by_receipt.get(single_metadata.get("forwarding_receipt_id"))
+                single_receipt_id = single_metadata.get("forwarding_receipt_id")
+                try:
+                    single_receipt_id = int(single_receipt_id) if single_receipt_id is not None else None
+                except (TypeError, ValueError):
+                    single_receipt_id = None
+                replay_result = auto_by_receipt.get(single_receipt_id)
                 if replay_result is None and auto_progression.get("status") == "BLOCKED":
                     replay_result = {"replay_status": "BLOCKED"}
                 summary_view = build_single_result_card(
