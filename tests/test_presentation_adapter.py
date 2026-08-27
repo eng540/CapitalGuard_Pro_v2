@@ -3,6 +3,7 @@ from capitalguard.interfaces.telegram.presentation_adapter import (
     VisualCardState,
     build_batch_summary,
     build_card,
+    build_single_result_card,
 )
 
 
@@ -156,5 +157,31 @@ def test_build_batch_summary_shows_extracted_values_without_internal_metadata():
     assert "SHORT" in view.text
     assert "3500" in view.text
     assert "TP1" in view.text and "3400" in view.text
+    assert "batch_id" not in view.text
+    assert "replay_gate" not in view.text
+
+
+def test_build_single_result_card_shows_extraction_and_source_outcome_distinctly():
+    view = build_single_result_card(
+        {
+            "asset": "BTCUSDT",
+            "side": "LONG",
+            "entry": "88246.80",
+            "stop_loss": "87000",
+            "targets": [{"price": "89000", "percentage": 20}, {"price": "90000", "percentage": 80}],
+            "exit_price": "90000",
+        },
+        temporal_route="HISTORICAL_CANDIDATE",
+        source_timestamp="2026-08-27T10:00:00+00:00",
+        financial_outcome={"status": "REPORTED_ONLY", "reported_pnl_pct": "1.76"},
+        allowed_actions=["TRACK_ONLY"],
+    )
+
+    assert "نتيجة ما عمله النظام" in view.text
+    assert "BTCUSDT" in view.text
+    assert "88246.80" in view.text
+    assert "النتيجة الموجودة في الرسالة المصدر" in view.text
+    assert "لم تُعتبر Replay موثقًا" in view.text
+    assert "1.76" in view.text
     assert "batch_id" not in view.text
     assert "replay_gate" not in view.text

@@ -255,6 +255,68 @@ def build_card(
     )
 
 
+def build_single_result_card(
+    candidate: Any,
+    *,
+    temporal_route: str | None = None,
+    source_timestamp: Any = None,
+    source_title: Any = None,
+    allowed_actions: Sequence[str] | None = None,
+    visual_state: VisualCardState | str | None = None,
+    internal_status: str | None = None,
+    substatus: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
+    financial_outcome: Mapping[str, Any] | None = None,
+    replay_result: Mapping[str, Any] | None = None,
+    callback_data_factory: Callable[[str], str] | None = None,
+) -> TelegramCardView:
+    """Build a single-forward card with extraction and explicitly sourced outcome data."""
+
+    base = build_card(
+        candidate,
+        temporal_route=temporal_route,
+        source_timestamp=source_timestamp,
+        source_title=source_title,
+        allowed_actions=allowed_actions,
+        visual_state=visual_state,
+        internal_status=internal_status,
+        substatus=substatus,
+        provenance=provenance,
+        callback_data_factory=callback_data_factory,
+    )
+    lines = [base.text, "", "<b>نتيجة ما عمله النظام</b>"]
+    replay = replay_result or {}
+    outcome = dict(financial_outcome or {})
+    if outcome.get("exit_price") is None:
+        outcome["exit_price"] = _value(candidate, "exit_price")
+    if replay:
+        lines.append("المحاكاة التاريخية: مكتملة من بيانات السوق الموثقة")
+        for label, key in (("الحالة", "status"), ("النتيجة", "pnl_pct"), ("سعر الخروج", "exit_price"), ("المدة", "duration"), ("آخر حدث", "last_event")):
+            value = replay.get(key)
+            if value is not None:
+                lines.append(f"{label}: <code>{_text(value)}</code>")
+    elif outcome.get("status") or outcome.get("reported_pnl_pct") is not None or outcome.get("derived_pnl_pct") is not None:
+        lines.append("النتيجة الموجودة في الرسالة المصدر (لم تُعتبر Replay موثقًا):")
+        if outcome.get("status") is not None:
+            lines.append(f"الحالة: <code>{_text(outcome.get('status'))}</code>")
+        if outcome.get("reported_pnl_pct") is not None:
+            lines.append(f"النتيجة المذكورة: <code>{_text(outcome.get('reported_pnl_pct'))}%</code>")
+        if outcome.get("derived_pnl_pct") is not None:
+            lines.append(f"النتيجة المحسوبة من الدخول والخروج: <code>{_text(outcome.get('derived_pnl_pct'))}%</code>")
+        if outcome.get("exit_price") is not None:
+            lines.append(f"سعر الخروج: <code>{_text(outcome.get('exit_price'))}</code>")
+        lines.append("المحاكاة السوقية التاريخية تحتاج Evidence وReplay مستقلين.")
+    else:
+        lines.append("المحاكاة التاريخية: لم تُنفذ بعد")
+        lines.append("تم حفظ الاستخراج، وتحتاج النتيجة إلى بيانات السوق وReplay قبل اعتبارها محققة.")
+    return TelegramCardView(
+        text="\n".join(lines),
+        reply_markup=base.reply_markup,
+        visual_state=base.visual_state,
+        actions=base.actions,
+    )
+
+
 def build_batch_summary(
     summary: Any,
     *,
@@ -322,4 +384,5 @@ __all__ = [
     "VisualCardState",
     "build_batch_summary",
     "build_card",
+    "build_single_result_card",
 ]
