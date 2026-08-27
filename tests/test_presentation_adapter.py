@@ -58,7 +58,7 @@ def test_build_card_preserves_incomplete_and_conflict_actions():
     )
 
     assert view.visual_state is VisualCardState.INCOMPLETE
-    assert "تحتاج مراجعة" in view.text
+    assert "يحتاج استكمالًا بسيطًا" in view.text
     assert "تعارض" not in view.text
     assert view.actions == (
         CardAction.COMPLETE_DATA.value,
@@ -76,7 +76,7 @@ def test_conflicting_provenance_forces_incomplete_without_choosing_a_source():
     )
 
     assert view.visual_state is VisualCardState.INCOMPLETE
-    assert "تعارض بين مصادر البيانات" in view.text
+    assert "توجد قيم متعارضة" in view.text
     assert "اعتماد النص" in [button.text for row in view.reply_markup.inline_keyboard for button in row]
     assert "اعتماد الصورة" in [button.text for row in view.reply_markup.inline_keyboard for button in row]
 
@@ -114,7 +114,7 @@ def test_build_batch_summary_is_concise_and_hides_batch_identifiers():
     assert "VIP Signals" in view.text
     assert "48" in view.text and "80" in view.text
     assert "مكتملة" in view.text
-    assert "تحتاج مراجعة" in view.text
+    assert "تحتاج استكمالًا:" in view.text
     assert "تعذر تجهيزها" in view.text
     assert "مكررة" in view.text
     assert "batch_id" not in view.text
@@ -216,8 +216,8 @@ def test_build_single_result_card_shows_provider_failure_as_pending_not_verified
         },
     )
 
-    assert "لم تكتمل بعد أو تحتاج مراجعة" in view.text
-    assert "PROVIDER_UNAVAILABLE" in view.text
+    assert "لم تكتمل بعد؛ تم حفظ الاستخراج" in view.text
+    assert "PROVIDER_UNAVAILABLE" not in view.text
     assert "بيانات السوق غير قابلة للتحقق" not in view.text
 
 
