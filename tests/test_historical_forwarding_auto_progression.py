@@ -105,6 +105,29 @@ def _auto_batch(db_session, *, raw_text, claim_status="CANONICAL", source_time=S
     return batch, receipt, revision, projection
 
 
+def test_auto_progression_recovers_reused_revision_without_receipt_binding(db_session):
+    batch, receipt, revision, projection = _auto_batch(
+        db_session,
+        raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures",
+    )
+    # Reproduce G1 content-hash reuse: the canonical revision belongs to an
+    # earlier receipt, so the strict receipt_id lookup cannot find it.
+    revision.receipt_id = receipt.id + 99999
+    db_session.flush()
+
+    result = HistoricalForwardingService().auto_progress_canonical_batch(
+        db_session,
+        batch_id=batch.id,
+        replay_end=SOURCE_TIME + timedelta(minutes=10),
+        limit=3,
+        provider=FakeProvider(_candles(high=111)),
+    )
+
+    assert projection["status"] == "SUCCESS"
+    assert result["progressed"] == 1
+    assert result["items"][0]["replay_status"] == "COMPLETED_UNVERIFIABLE"
+
+
 def test_canonical_complete_auto_progression_materializes_and_replays_without_live_entities(db_session):
     batch, receipt, revision, projection = _auto_batch(
         db_session,
