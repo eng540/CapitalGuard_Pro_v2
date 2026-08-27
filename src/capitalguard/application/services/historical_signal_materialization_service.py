@@ -84,7 +84,13 @@ class HistoricalSignalMaterializationService:
         by_field: dict[str, list[HistoricalFinancialCandidate]] = {}
         for item in candidates:
             by_field.setdefault(item.field_type, []).append(item)
-        if any(field != "TARGET" and len(items) > 1 for field, items in by_field.items()):
+        conflicting_fields = {
+            field
+            for field, items in by_field.items()
+            if field != "TARGET"
+            and len({str(self._candidate_value(item)) for item in items}) > 1
+        }
+        if conflicting_fields:
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:CANDIDATE_CONFLICT")
         if draft.draft_kind == "NEW_RECOMMENDATION" and not self.REQUIRED_NEW.issubset(by_field):
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:REQUIRED_CANDIDATE_MISSING")
