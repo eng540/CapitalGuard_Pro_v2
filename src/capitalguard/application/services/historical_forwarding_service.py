@@ -583,6 +583,16 @@ class HistoricalForwardingService:
                         .order_by(HistoricalMessageRevision.revision_number.desc())
                     ).scalars().first()
                     if revision is None:
+                        # G1 deduplicates canonical revisions by message/content hash.
+                        # A repeated genuine forward can therefore reuse an existing
+                        # revision whose receipt_id points at an earlier receipt. Recover
+                        # that shared revision through the foundation contract instead of
+                        # treating the new receipt as an administrative review failure.
+                        revision = self.message_foundation_service.record_receipt(
+                            session,
+                            receipt=receipt,
+                        )
+                    if revision is None:
                         raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:REVISION_NOT_FOUND")
                     draft = session.execute(
                         select(HistoricalRecommendationDraft).where(
