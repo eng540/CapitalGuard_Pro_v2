@@ -219,3 +219,19 @@ def test_build_single_result_card_shows_provider_failure_as_pending_not_verified
     assert "لم تكتمل بعد أو تحتاج مراجعة" in view.text
     assert "PROVIDER_UNAVAILABLE" in view.text
     assert "بيانات السوق غير قابلة للتحقق" not in view.text
+
+
+def test_build_single_result_card_is_still_visible_when_extraction_fails():
+    view = build_single_result_card(
+        {},
+        temporal_route="QUARANTINE",
+        source_title="Crypto source",
+        source_timestamp="2026-08-27T15:00:00+00:00",
+        internal_status="FAILED",
+        allowed_actions=["RETRY", "MANUAL_ENTRY", "DISMISS"],
+    )
+
+    assert "تعذر تجهيز التوصية مؤقتًا" in view.text
+    assert "الأصل" in view.text
+    assert "إكمال البيانات" not in view.text
+    assert view.actions == (CardAction.RETRY.value, CardAction.MANUAL_ENTRY.value, CardAction.DISMISS.value)

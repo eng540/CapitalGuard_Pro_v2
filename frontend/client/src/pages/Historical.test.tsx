@@ -18,6 +18,7 @@ vi.mock("@/lib/trpc", () => ({ trpc: { capitalguard: {
   historicalWallet: { useQuery: () => historicalState },
   historicalIntakeList: { useQuery: () => intakeListState },
   historicalIntake: { useMutation: () => ({ isPending: false, mutate: vi.fn() }) },
+  historicalCorrectItem: { useMutation: () => ({ isPending: false, mutate: vi.fn() }) },
   historicalIntakeDetail: { useQuery: () => intakeDetailState },
   historicalIntakeReport: { useQuery: () => intakeReportState },
 } } }));
@@ -61,6 +62,7 @@ describe("Historical R4.1 Core read model and 1..N intake", () => {
     expect(view.getByText(/لا يتم إنشاء توصية أو صفقة حية/)).toBeTruthy();
     expect(view.getByText(/نتيجة غامضة/)).toBeTruthy();
     expect(view.getByText("عرض Timeline التاريخي")).toBeTruthy();
+    expect(view.getByText("تعديل سريع")).toBeTruthy();
   });
 
   it("opens a valid batch session from a stable query deep link and rejects unsafe ids", () => {

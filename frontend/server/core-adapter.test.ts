@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreGetAnalystAssets, coreGetAnalysts, coreGetHistoricalTrustReadiness, coreGetSignalDiscovery, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
+import { coreCloseUserTrade, coreConfirmAnalystRecommendation, coreCorrectHistoricalItem, coreGetAnalystAssets, coreGetAnalysts, coreGetHistoricalTrustReadiness, coreGetSignalDiscovery, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReadOnlyFetch, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, coreVerifyTelegramInitData, getCoreConfig, probeCoreHealth } from "./core-adapter";
 
 describe("CapitalGuard Core adapter", () => {
   it("rejects a missing or insecure Core configuration", () => {
@@ -20,6 +20,19 @@ describe("CapitalGuard Core adapter", () => {
     expect(health.status).toBe("ok");
     expect(health.baseUrl).toBe("https://core.example");
     expect(authorization).toBe("Bearer private-service-key");
+  });
+
+  it("proxies a historical correction only to the Core command boundary", async () => {
+    let requestUrl = "";
+    let requestBody = "";
+    const fakeFetch = async (input: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({ ok: true, batch: { id: 7, items: [] } }), { status: 200 });
+    };
+    await coreCorrectHistoricalItem({ actorTelegramId: 123456, batchId: 7, itemId: 9, fields: { asset: "BTCUSDT", entry: 100, stop_loss: 90, targets: [{ price: 110 }] }, idempotencyKey: "correction-key-123456" }, fakeFetch as typeof fetch, { CAPITALGUARD_CORE_BASE_URL: "https://core.example", CAPITALGUARD_CORE_API_KEY: "private-service-key" });
+    expect(requestUrl).toBe("https://core.example/api/webapp/historical/intake/7/items/9/correction");
+    expect(JSON.parse(requestBody)).toMatchObject({ actor_telegram_id: 123456, item_id: 9, fields: { asset: "BTCUSDT", entry: 100, stop_loss: 90 } });
   });
 
   it("proxies only a documented read request and keeps the service key server-side", async () => {

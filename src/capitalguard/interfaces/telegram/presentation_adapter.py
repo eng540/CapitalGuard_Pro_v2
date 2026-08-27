@@ -135,8 +135,8 @@ def _route_badge(route: Any) -> str:
         "HISTORICAL_CANDIDATE": "توصية تاريخية",
         "TIMELINE_EVENT": "تحديث زمني",
         "CLOSED_EVENT": "حدث إغلاق",
-        "QUARANTINE": "تحتاج إثبات المصدر",
-        "REVISION_REVIEW": "تحتاج مراجعة",
+        "QUARANTINE": "تم الاستخراج؛ التتبع ينتظر تحقق المصدر",
+        "REVISION_REVIEW": "تم الاستخراج؛ يحتاج استكمالًا بسيطًا",
         "DUPLICATE": "مكررة",
     }.get(normalized, "تحتاج مراجعة")
 

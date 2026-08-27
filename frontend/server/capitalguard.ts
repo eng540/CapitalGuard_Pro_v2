@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getWebUserCount } from "./db";
 import { adminProcedure, analystProcedure, protectedProcedure, router, traderProcedure } from "./_core/trpc";
 import { analyzeForwardText, smartAnalysisInput } from "./smart-analysis";
-import {   coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreCreateHistoricalIntake, coreGetAnalystAssets, coreGetAnalystDashboard, coreGetSignalDiscovery, coreListHistoricalIntake, coreGetHistoricalIntakeReport, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetHistoricalIntake, coreGetHistoricalTrustQuality, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReplayHistoricalSignalFromBinance, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, probeCoreHealth } from "./core-adapter";
+import {   coreCancelPendingUserTrade, coreCloseUserTrade, coreConfirmAnalystRecommendation, coreCreateHistoricalIntake, coreCorrectHistoricalItem, coreGetAnalystAssets, coreGetAnalystDashboard, coreGetSignalDiscovery, coreListHistoricalIntake, coreGetHistoricalIntakeReport, coreGetAnalystPublicationChannels, coreGetAnalystRecommendationPublication, coreGetAnalysts, coreGetHistoricalIntake, coreGetHistoricalTrustQuality, coreGetHistoricalTrustReadiness, coreGetOperationsFeed, coreGetPrice, coreGetR5Readiness, coreGetSignal, coreGetTraderHistorical, coreGetTraderReadModel, coreGetTraderRecommendationDetail, coreGetTraderRecommendations, coreIngestHistoricalEvidence, coreListOwnerReviewBatches, coreMoveUserTradeStopToBreakeven, corePartialCloseUserTrade, corePreviewAnalystRecommendation, coreReplayHistoricalSignalFromBinance, coreReplayReviewedBatchFromBinance, coreReviewHistoricalBatch, coreUpdatePendingUserTradeEntry, probeCoreHealth } from "./core-adapter";
 import type { CoreAnalystReadModel } from "./core-adapter";
 
 const riskInput = z.object({
@@ -14,6 +14,17 @@ const riskInput = z.object({
   stop: z.number().positive(),
   side: z.enum(["long", "short"]),
   leverage: z.number().finite().positive().max(125).default(1),
+});
+
+const historicalCorrectionInput = z.object({
+  batchId: z.number().int().positive(),
+  itemId: z.number().int().positive(),
+  asset: z.string().trim().min(1).max(24).optional(),
+  side: z.enum(["LONG", "SHORT"]).optional(),
+  market: z.string().trim().min(2).max(32).optional(),
+  entry: z.number().finite().positive().optional(),
+  stopLoss: z.number().finite().positive().optional(),
+  targets: z.array(z.object({ price: z.number().finite().positive(), percentage: z.number().finite().min(0).max(100).optional() })).max(20).optional(),
 });
 
 const analystRecommendationInput = z.object({
@@ -138,6 +149,20 @@ export const capitalguardRouter = router({
   }),
   historicalBatches: protectedProcedure.query(({ ctx }) => coreGetTraderHistorical(telegramIdFromWebSession(ctx.user.openId))),
   historicalWallet: protectedProcedure.query(({ ctx }) => coreGetTraderHistorical(telegramIdFromWebSession(ctx.user.openId))),
+  historicalCorrectItem: protectedProcedure.input(historicalCorrectionInput).mutation(({ ctx, input }) => coreCorrectHistoricalItem({
+    actorTelegramId: telegramIdFromWebSession(ctx.user.openId),
+    batchId: input.batchId,
+    itemId: input.itemId,
+    fields: {
+      asset: input.asset,
+      side: input.side,
+      market: input.market,
+      entry: input.entry,
+      stop_loss: input.stopLoss,
+      targets: input.targets,
+    },
+    idempotencyKey: randomUUID(),
+  })),
   historicalIntake: protectedProcedure.input(z.object({
     sourceKind: z.enum(["TELEGRAM_EXPORT", "MANUAL_ADMIN_IMPORT"]),
     inputMode: z.enum(["PASTE", "UPLOAD", "TELEGRAM_EXPORT"]),

@@ -167,6 +167,13 @@ class HistoricalWebIntakeCommand(BaseModel):
     is_partial: bool = False
     batch_label: Optional[str] = None
 
+
+class HistoricalItemCorrectionCommand(BaseModel):
+    actor_telegram_id: int
+    item_id: int
+    fields: Dict[str, Any]
+    idempotency_key: str
+
 # --- Helpers ---
 def validate_telegram_data(init_data: str, bot_token: str) -> dict:
     if not bot_token:
@@ -945,6 +952,31 @@ async def get_historical_web_intake_report(batch_id: int, actor_telegram_id: int
             )
         except HistoricalWebIntakeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/historical/intake/{batch_id}/items/{item_id}/correction")
+async def correct_historical_web_intake_item(batch_id: int, item_id: int, command: HistoricalItemCorrectionCommand, request: Request):
+    """Save a user's explicit extraction correction through the historical Core chain."""
+    require_core_service_key(request.headers.get("authorization"))
+    if item_id != command.item_id or len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Invalid historical correction command")
+    with session_scope() as session:
+        user = UserRepository(session).find_by_telegram_id(command.actor_telegram_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Historical correction actor was not found")
+        try:
+            return HistoricalWebIntakeService().correct_item(
+                session,
+                batch_id=batch_id,
+                item_id=item_id,
+                requested_by_user_id=user.id,
+                fields=command.fields,
+                idempotency_key=command.idempotency_key,
+            )
+        except HistoricalWebIntakeError as exc:
+            detail = str(exc)
+            status_code = 404 if detail == "Historical batch not found" else 409
+            raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
 @router.get("/historical/intake/{batch_id}")

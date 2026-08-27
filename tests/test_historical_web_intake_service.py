@@ -3,8 +3,10 @@ from datetime import datetime, timezone
 from capitalguard.application.services.historical_web_intake_service import HistoricalWebIntakeService
 from capitalguard.application.services.historical_signal_service import HistoricalSignalService
 from capitalguard.domain.entities import UserType
+from sqlalchemy import select
+
 from capitalguard.infrastructure.db.repository import UserRepository
-from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch
+from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch, HistoricalRecommendationDraft
 
 
 def test_web_historical_intake_supports_single_multiple_partial_batch_and_dedup(db_session):
@@ -271,3 +273,62 @@ def test_web_historical_report_exposes_core_lifecycle_and_ordered_timeline(db_se
     assert [event["event_type"] for event in view["timeline"]] == ["ACTIVATED", "TP1"]
     assert view["timeline"][1]["replay_status"] == "AMBIGUOUS"
     assert view["timeline"][1]["price"] == "110.00000000"
+
+
+def test_web_historical_item_correction_is_user_scoped_idempotent_and_core_backed(db_session):
+    user = UserRepository(db_session).find_or_create(
+        telegram_id=940007,
+        user_type=UserType.ANALYST,
+        first_name="Correction Analyst",
+    )
+    result = HistoricalWebIntakeService().create_batch(
+        db_session,
+        requested_by_user_id=user.id,
+        source_kind="MANUAL_ADMIN_IMPORT",
+        input_mode="PASTE",
+        items=[{"item_key": "needs-correction", "raw_text": "BTCUSDT LONG Entry 100"}],
+    )
+    batch_id = result["batch"]["id"]
+    item_id = result["batch"]["items"][0]["id"]
+
+    corrected = HistoricalWebIntakeService().correct_item(
+        db_session,
+        batch_id=batch_id,
+        item_id=item_id,
+        requested_by_user_id=user.id,
+        fields={
+            "asset": "BTCUSDT",
+            "side": "LONG",
+            "entry": 100,
+            "stop_loss": 90,
+            "market": "FUTURES",
+            "targets": [{"price": 110, "percentage": 100}],
+        },
+        idempotency_key="correction-key-940007",
+    )
+    item = corrected["batch"]["items"][0]
+    assert item["semantic_status"] == "SUCCESS"
+    assert item["canonical"]["asset"] == "BTCUSDT"
+    assert item["canonical"]["stop_loss"] == "90"
+    assert item["canonical"]["targets"][0]["price"] == "110"
+
+    receipt = db_session.get(HistoricalForwardReceipt, item_id)
+    assert receipt is not None
+    draft = db_session.execute(
+        select(HistoricalRecommendationDraft).where(HistoricalRecommendationDraft.revision_id == receipt.id)
+    ).scalars().first()
+    assert (receipt.metadata_json or {}).get("last_correction", {}).get("actor_type") == "USER_CORRECTION"
+    assert draft is not None
+    assert draft.status == "ACCEPTED"
+    assert draft.reviewed_by_user_id is None
+    assert (draft.override_json or {}).get("actor_type") == "USER_CORRECTION"
+
+    repeated = HistoricalWebIntakeService().correct_item(
+        db_session,
+        batch_id=batch_id,
+        item_id=item_id,
+        requested_by_user_id=user.id,
+        fields={"entry": 101},
+        idempotency_key="correction-key-940007",
+    )
+    assert repeated["batch"]["items"][0]["canonical"]["entry"] == "100"

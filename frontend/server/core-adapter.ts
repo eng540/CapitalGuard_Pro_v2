@@ -125,6 +125,7 @@ export type CoreHistoricalIntakeBatch = {
 };
 export type CoreHistoricalIntakeResponse = { ok: true; batch: CoreHistoricalIntakeBatch };
 export type CoreHistoricalIntakeListResponse = { ok: true; batches: CoreHistoricalIntakeBatch[] };
+export type CoreHistoricalCorrectionFields = { asset?: string; side?: "LONG" | "SHORT"; market?: string; order_type?: string; entry?: string | number; stop_loss?: string | number; targets?: Array<{ price: string | number; percentage?: string | number }> };
 export type CoreHistoricalIntakeReportResponse = { ok: true; report: { batch_id: number; batch_ref: string; status: string; source_kind: string; counts: Record<string, number | string>; readiness: Record<string, boolean>; signals: Array<Record<string, unknown>>; next_action: string } };
 export type CoreAnalystRecommendationInput = { actorTelegramId: number; asset: string; side: "LONG" | "SHORT"; market: string; orderType: "LIMIT" | "MARKET" | "STOP_MARKET"; entry: number; stopLoss: number; targetsRaw: string; notes?: string; leverage?: string; channelIds: number[] };
 export type CoreAnalystRecommendationPreview = { schema_version: number; mode: "PREVIEW"; asset: string; side: "LONG" | "SHORT"; market: string; order_type: "LIMIT" | "MARKET" | "STOP_MARKET"; entry: string; stop_loss: string; targets: Array<{ price: string; close_percent: number }>; live_price: string | null; publication: { state: "NOT_QUEUED"; eligible_channel_count: number } };
@@ -458,6 +459,20 @@ export async function coreGetHistoricalIntakeReport(batchId: number, actorTelegr
   const result = await coreReadOnlyFetch(query(`/api/webapp/historical/intake/${batchId}/report`, { actor_telegram_id: String(actorTelegramId) }), {}, fetchImpl, env);
   if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !(result as { report?: unknown }).report) throw new Error("CAPITALGUARD_HISTORICAL_REPORT_INVALID");
   return result as CoreHistoricalIntakeReportResponse;
+}
+
+export async function coreCorrectHistoricalItem(input: { actorTelegramId: number; batchId: number; itemId: number; fields: CoreHistoricalCorrectionFields; idempotencyKey: string }, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreHistoricalIntakeResponse> {
+  if (!Number.isSafeInteger(input.actorTelegramId) || input.actorTelegramId <= 0 || !Number.isSafeInteger(input.batchId) || input.batchId <= 0 || !Number.isSafeInteger(input.itemId) || input.itemId <= 0) throw new Error("CAPITALGUARD_HISTORICAL_CORRECTION_INPUT_INVALID");
+  const key = input.idempotencyKey.trim();
+  if (key.length < 16 || key.length > 128) throw new Error("CAPITALGUARD_HISTORICAL_CORRECTION_IDEMPOTENCY_INVALID");
+  const result = await coreCommand(`/api/webapp/historical/intake/${input.batchId}/items/${input.itemId}/correction`, {
+    actor_telegram_id: input.actorTelegramId,
+    item_id: input.itemId,
+    fields: input.fields,
+    idempotency_key: key,
+  }, fetchImpl, env);
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true || !(result as { batch?: unknown }).batch) throw new Error("CAPITALGUARD_HISTORICAL_CORRECTION_INVALID");
+  return result as unknown as CoreHistoricalIntakeResponse;
 }
 
 export async function coreGetHistoricalIntake(batchId: number, actorTelegramId: number, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreHistoricalIntakeResponse> {
