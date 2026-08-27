@@ -302,7 +302,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 batch_id=batch_id,
             )
             progression_items = auto_progression.get("items") or []
-            log.info(
+            log.warning(
                 "Historical auto progression finalized batch=%s status=%s progressed=%s review_required=%s failed=%s items=%s replay_statuses=%s",
                 batch_id,
                 auto_progression.get("status"),
@@ -396,7 +396,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 except (TypeError, ValueError):
                     single_receipt_id = None
                 replay_result = auto_by_receipt.get(single_receipt_id)
-                log.info(
+                log.warning(
                     "Historical single card binding batch=%s receipt=%s matched=%s item_count=%s",
                     batch_id,
                     single_receipt_id,
