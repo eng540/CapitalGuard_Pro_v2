@@ -138,7 +138,7 @@ def _route_badge(route: Any) -> str:
         "QUARANTINE": "تم الاستخراج؛ التتبع ينتظر تحقق المصدر",
         "REVISION_REVIEW": "تم الاستخراج؛ يحتاج استكمالًا بسيطًا",
         "DUPLICATE": "مكررة",
-    }.get(normalized, "تحتاج مراجعة")
+    }.get(normalized, "الحالة محدثة")
 
 
 def _format_targets(targets: Any) -> str:
@@ -218,7 +218,7 @@ def build_card(
 
     status_title = {
         VisualCardState.COMPLETE: "تم استخراج التوصية",
-        VisualCardState.INCOMPLETE: "التوصية تحتاج مراجعة",
+        VisualCardState.INCOMPLETE: "تم الاستخراج ويحتاج استكمالًا بسيطًا",
         VisualCardState.UNAVAILABLE: "تعذر تجهيز التوصية مؤقتًا",
     }[state]
     route_label = _route_badge(temporal_route)
@@ -241,9 +241,9 @@ def build_card(
         f"وقف الخسارة: <code>{_text(stop_loss)}</code>",
     ]
     if conflict:
-        lines.extend(["", "يوجد تعارض بين مصادر البيانات. اختر المصدر المعتمد قبل المتابعة."])
+        lines.extend(["", "توجد قيم متعارضة. راجعها وعدّل القيمة الصحيحة إذا لزم."])
     elif state == VisualCardState.INCOMPLETE:
-        lines.extend(["", "يرجى إكمال البيانات الناقصة قبل المتابعة."])
+        lines.extend(["", "يمكنك إكمال أو تعديل القيم من زر التعديل في Web."])
     elif state == VisualCardState.UNAVAILABLE:
         lines.extend(["", "يمكنك إعادة المحاولة أو استخدام الإدخال اليدوي إذا كان متاحًا."])
 
@@ -300,11 +300,13 @@ def build_single_result_card(
             if value is not None:
                 lines.append(f"{label}: <code>{_text(value)}</code>")
     elif replay:
-        lines.append("المحاكاة التاريخية: لم تكتمل بعد أو تحتاج مراجعة.")
-        if replay_status:
-            lines.append(f"حالة المحاكاة: <code>{_text(replay_status)}</code>")
-        if replay.get("reason"):
-            lines.append(f"السبب: {_text(replay.get('reason'))}")
+        replay_message = {
+            "BLOCKED": "المحاكاة التاريخية مؤجلة؛ نتيجة الاستخراج جاهزة.",
+            "REVIEW_REQUIRED": "المحاكاة التاريخية تنتظر استكمال القيم.",
+            "FAILED": "تعذر تشغيل المحاكاة التاريخية الآن؛ تم حفظ الاستخراج.",
+            "PARTIAL": "المحاكاة التاريخية جزئية؛ تم حفظ ما توفر.",
+        }.get(replay_status, "المحاكاة التاريخية لم تكتمل بعد؛ تم حفظ الاستخراج.")
+        lines.append(replay_message)
     elif outcome.get("status") or outcome.get("reported_pnl_pct") is not None or outcome.get("derived_pnl_pct") is not None:
         lines.append("النتيجة الموجودة في الرسالة المصدر (لم تُعتبر Replay موثقًا):")
         if outcome.get("status") is not None:
@@ -358,7 +360,7 @@ def build_batch_summary(
     lines.extend(
         [
             f"مكتملة: {_text(complete)}",
-            f"تحتاج مراجعة: {_text(incomplete)}",
+            f"تحتاج استكمالًا: {_text(incomplete)}",
             f"تعذر تجهيزها: {_text(unavailable)}",
         ]
     )
@@ -383,7 +385,7 @@ def build_batch_summary(
                     detail += f" · آخر حدث {_text(replay.get('last_event'))}"
                 lines.append(f"   {detail}")
     if incomplete or unavailable:
-        lines.append("تظهر الحالات التي تحتاج تدخلك فقط، بينما تبقى التفاصيل الكاملة متاحة في مساحة المراجعة.")
+        lines.append("تظهر التفاصيل الكاملة لكل عنصر، ويمكنك تعديل القيم الناقصة بسرعة من Web.")
     else:
         lines.append("اكتملت المعالجة دون استثناءات ظاهرة.")
 
