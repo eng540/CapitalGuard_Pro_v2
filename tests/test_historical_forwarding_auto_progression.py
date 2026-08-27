@@ -111,6 +111,8 @@ def test_canonical_complete_auto_progression_materializes_and_replays_without_li
         raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures",
     )
     assert projection["status"] == "SUCCESS"
+    preview = HistoricalForwardingService().preview_batch(db_session, batch_id=batch.id)
+    assert preview.manifest["records"][0]["metadata"]["source_message_timestamp"] == SOURCE_TIME.isoformat()
     provider = FakeProvider(_candles(high=111))
     service = HistoricalForwardingService()
 
