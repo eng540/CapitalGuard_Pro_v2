@@ -301,6 +301,17 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 session,
                 batch_id=batch_id,
             )
+            progression_items = auto_progression.get("items") or []
+            log.info(
+                "Historical auto progression finalized batch=%s status=%s progressed=%s review_required=%s failed=%s items=%s replay_statuses=%s",
+                batch_id,
+                auto_progression.get("status"),
+                auto_progression.get("progressed"),
+                auto_progression.get("review_required"),
+                auto_progression.get("failed"),
+                len(progression_items),
+                [str(item.get("replay_status") or item.get("status") or "UNKNOWN") for item in progression_items],
+            )
             auto_by_receipt = {
                 int(item["receipt_id"]): item
                 for item in (auto_progression.get("items") or [])
@@ -350,7 +361,6 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             # leak into this card or block the user's result.
             allowed_actions = {"DISMISS"}
             source_label = metadata.get("source_title") or "المصدر"
-            progression_items = auto_progression.get("items") or []
             replay_completed = sum(
                 1 for item in progression_items
                 if str(item.get("replay_status") or "").upper()
@@ -386,6 +396,13 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 except (TypeError, ValueError):
                     single_receipt_id = None
                 replay_result = auto_by_receipt.get(single_receipt_id)
+                log.info(
+                    "Historical single card binding batch=%s receipt=%s matched=%s item_count=%s",
+                    batch_id,
+                    single_receipt_id,
+                    bool(replay_result),
+                    len(progression_items),
+                )
                 if replay_result is None:
                     progression_items = auto_progression.get("items") or []
                     if len(progression_items) == 1:
