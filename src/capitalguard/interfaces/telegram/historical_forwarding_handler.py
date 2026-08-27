@@ -370,8 +370,18 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 except (TypeError, ValueError):
                     single_receipt_id = None
                 replay_result = auto_by_receipt.get(single_receipt_id)
-                if replay_result is None and auto_progression.get("status") == "BLOCKED":
-                    replay_result = {"replay_status": "BLOCKED"}
+                if replay_result is None:
+                    progression_items = auto_progression.get("items") or []
+                    if len(progression_items) == 1:
+                        replay_result = progression_items[0]
+                    else:
+                        overall_replay_status = str(auto_progression.get("status") or "").upper()
+                        if overall_replay_status:
+                            replay_result = {
+                                "replay_status": overall_replay_status,
+                                "status": overall_replay_status,
+                                "reason": auto_progression.get("reason"),
+                            }
                 summary_view = build_single_result_card(
                     single_data,
                     temporal_route=temporal_decision.get("route"),
