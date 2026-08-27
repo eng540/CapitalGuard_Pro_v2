@@ -125,7 +125,7 @@ async def _materialize_historical_content(db_session, db_user, receipt: Historic
             image_result = await ImageParsingService().parse_image_from_file_id(db_user.id, str(file_id))
         forwarding = HistoricalForwardingService()
         revision = forwarding.message_foundation_service.record_receipt(db_session, receipt=receipt)
-        return HistoricalSemanticMaterializationService().materialize_revision(
+        projection = HistoricalSemanticMaterializationService().materialize_revision(
             db_session,
             revision_id=revision.id,
             image_result=image_result,
@@ -138,6 +138,18 @@ async def _materialize_historical_content(db_session, db_user, receipt: Historic
                 "parser_path": (image_result or {}).get("parser_path_used"),
             } if file_id else None,
         )
+        receipt_metadata = dict(receipt.metadata_json or {})
+        receipt_metadata["semantic_projection"] = projection
+        receipt_metadata["historical_preview"] = {
+            **projection,
+            "source_verification": "VERIFIED_PROVENANCE"
+            if receipt.source_chat_id is not None and receipt.source_message_id is not None
+            else "UNVERIFIED",
+            "extraction_source": "TELEGRAM_IMAGE_OR_TEXT_MATERIALIZATION",
+        }
+        receipt.metadata_json = receipt_metadata
+        db_session.flush()
+        return projection
     except Exception:
         log.exception("Historical semantic materialization failed for receipt %s", receipt.id)
         metadata = dict(receipt.metadata_json or {})
@@ -219,7 +231,8 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             replay_gate = HistoricalReplayGateService()
             live_review = LiveReviewService()
             for record in preview.manifest.get("records", []):
-                temporal_decision = (record.get("metadata") or {}).get("temporal_decision") or {}
+                record_metadata = record.get("metadata") or {}
+                temporal_decision = record_metadata.get("temporal_decision") or {}
                 if temporal_decision.get("mode"):
                     temporal_modes[temporal_decision["mode"]] += 1
                 if temporal_decision.get("route"):
@@ -232,28 +245,52 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 if temporal_decision.get("age_seconds") is not None:
                     temporal_ages.append(temporal_decision["age_seconds"])
                 parsed = parser.parse(record.get("raw_text"))
-                if parsed.parse_status == "PARSED":
+                parsed_data = dict(parsed.data or {}) if parsed.parse_status == "PARSED" else {}
+                semantic_projection = record_metadata.get("semantic_projection") or {}
+                projection_canonical = semantic_projection.get("canonical") or {}
+                semantic_status = str(semantic_projection.get("status") or "").upper()
+                materialized_data = {
+                    "asset": projection_canonical.get("asset"),
+                    "side": projection_canonical.get("direction", projection_canonical.get("side")),
+                    "entry": projection_canonical.get("entry"),
+                    "stop_loss": projection_canonical.get("stop_loss"),
+                    "targets": projection_canonical.get("targets") or [],
+                    "market": projection_canonical.get("market"),
+                }
+                if semantic_status == "SUCCESS":
+                    parsed_data = {**materialized_data, **parsed_data}
+                elif not parsed_data and projection_canonical:
+                    parsed_data = {**materialized_data, "semantic_status": semantic_status}
+                displayable = bool(parsed_data) and any(
+                    parsed_data.get(field) not in (None, "", [])
+                    for field in ("asset", "side", "entry", "stop_loss", "targets")
+                )
+                is_complete = parsed.parse_status == "PARSED" or semantic_status == "SUCCESS"
+                if is_complete:
                     parsed_count += 1
-                    outcome = (parsed.data or {}).get("financial_outcome") or {}
-                    if outcome.get("status"):
-                        financial_outcome_status[outcome["status"]] += 1
-                    financial_outcome_warnings.update(outcome.get("warnings") or [])
-                    gate = replay_gate.assess(
-                        parse_status=parsed.parse_status,
-                        financial_outcome=outcome,
-                        market_data_available=False,
-                    )
-                    replay_gate_status[gate.status] += 1
-                    replay_gate_reasons.update(gate.reason_codes)
-                    asset = (parsed.data or {}).get("asset")
-                    if asset:
-                        parsed_assets.append(str(asset))
-                        extracted_item = dict(parsed.data or {})
-                        extracted_item["_receipt_id"] = (record.get("metadata") or {}).get("forwarding_receipt_id")
-                        extracted_items.append(extracted_item)
-                        parsed_results.append((parsed, record))
                 else:
                     partial_count += 1
+                outcome = parsed_data.get("financial_outcome") or {}
+                if outcome.get("status"):
+                    financial_outcome_status[outcome["status"]] += 1
+                financial_outcome_warnings.update(outcome.get("warnings") or [])
+                gate = replay_gate.assess(
+                    parse_status=parsed.parse_status,
+                    financial_outcome=outcome,
+                    market_data_available=False,
+                )
+                replay_gate_status[gate.status] += 1
+                replay_gate_reasons.update(gate.reason_codes)
+                asset = parsed_data.get("asset")
+                display_result = (parsed_data, record, semantic_status or parsed.parse_status)
+                parsed_results.append(display_result)
+                if displayable:
+                    if asset:
+                        parsed_assets.append(str(asset))
+                    extracted_item = dict(parsed_data)
+                    extracted_item["_receipt_id"] = record_metadata.get("forwarding_receipt_id")
+                    extracted_item["_semantic_status"] = semantic_projection.get("status")
+                    extracted_items.append(extracted_item)
             forwarding_service = HistoricalForwardingService()
             auto_progression = forwarding_service.auto_progress_canonical_batch(
                 session,
@@ -276,7 +313,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 "assets": parsed_assets,
                 "replay_status": (
                     "REPLAYED" if auto_progression.get("progressed") and not auto_progression.get("failed") else
-                    "REVIEW_REQUIRED" if auto_progression.get("review_required") else
+                    "REPLAY_PENDING" if auto_progression.get("review_required") else
                     "REPLAY_FAILED" if auto_progression.get("failed") else
                     "REPLAY_PENDING" if parsed_count else "NOT_PARSED"
                 ),
@@ -298,8 +335,10 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             metadata["auto_batch_finalized"] = True
             if batch:
                 batch.metadata_json = metadata
-            allowed_action_sets = [set(str(item).upper() for item in actions) for actions in review_actions_by_mode.values()]
-            allowed_actions = set.intersection(*allowed_action_sets) if allowed_action_sets else {"DISMISS"}
+            # The user-facing historical result is informational and direct. Core
+            # progression already runs in the background; owner commands must not
+            # leak into this card or block the user's result.
+            allowed_actions = {"DISMISS"}
             source_label = metadata.get("source_title") or "المصدر"
             summary_data = {
                 "source_title": source_label,
@@ -312,18 +351,29 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             }
             callback_factory = lambda action: f"{PREVIEW_ACTION_PREFIX}:{batch_id}:{action}"
             if preview.total_records == 1 and len(parsed_results) == 1:
-                single_parse, single_record = parsed_results[0]
+                single_data, single_record, single_status = parsed_results[0]
                 single_metadata = single_record.get("metadata") or {}
                 temporal_decision = single_metadata.get("temporal_decision") or {}
                 replay_result = auto_by_receipt.get(single_metadata.get("forwarding_receipt_id"))
                 summary_view = build_single_result_card(
-                    single_parse.data or {},
+                    single_data,
                     temporal_route=temporal_decision.get("route"),
                     source_timestamp=single_metadata.get("source_message_timestamp") or single_metadata.get("source_timestamp"),
                     source_title=single_metadata.get("source_title") or source_label,
-                    internal_status=single_parse.parse_status,
-                    financial_outcome=(single_parse.data or {}).get("financial_outcome"),
+                    internal_status=single_status,
+                    substatus=single_data.get("semantic_status"),
+                    financial_outcome=single_data.get("financial_outcome"),
                     replay_result=replay_result,
+                    allowed_actions=allowed_actions,
+                    callback_data_factory=callback_factory,
+                )
+            elif preview.total_records == 1:
+                summary_view = build_single_result_card(
+                    {},
+                    temporal_route="QUARANTINE",
+                    source_timestamp=None,
+                    source_title=source_label,
+                    internal_status="FAILED",
                     allowed_actions=allowed_actions,
                     callback_data_factory=callback_factory,
                 )
@@ -351,7 +401,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
     except Exception:
         log.exception("Automatic historical batch finalization failed for batch %s", batch_id)
-        error_text = "⚠️ تعذر تجهيز ملخص التوصيات مؤقتًا. تم الاحتفاظ بالرسائل للمراجعة."
+        error_text = "⚠️ تعذر تجهيز النتيجة الآن. تم حفظ الرسالة ويمكن إعادة المحاولة لاحقًا."
         progress_message_id = context.user_data.get(AUTO_PROGRESS_MESSAGE_KEY)
         if progress_message_id:
             edited = await _safe_edit_historical_message(
@@ -436,7 +486,7 @@ async def direct_historical_forward_handler(
     context.user_data[AUTO_BATCH_KEY] = batch.id
 
     if not context.user_data.get(AUTO_PROGRESS_MESSAGE_KEY):
-        progress_message = await message.reply_text("📥 جارٍ تجهيز التوصية ومراجعة بيانات المصدر...")
+        progress_message = await message.reply_text("📥 جارٍ استخراج القيم وتجهيز النتيجة…")
         context.user_data[AUTO_PROGRESS_MESSAGE_KEY] = progress_message.message_id
 
     job_name = _auto_job_name(message.chat_id, batch.id)

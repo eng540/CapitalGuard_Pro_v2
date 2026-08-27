@@ -271,6 +271,8 @@ async def test_historical_handler_helper_runs_file_id_to_semantic_materializatio
     assert result["field_evidence"]["entry"][0]["modality"] == "IMAGE"
     assert result["field_evidence"]["entry"][0]["provenance"]["media_id"] == "telegram-photo-unique-2"
     assert revision.id == result["field_evidence"]["asset"][0]["provenance"]["revision_id"]
+    assert (receipt.metadata_json or {}).get("historical_preview", {}).get("canonical", {}).get("entry") == "77000"
+    assert (receipt.metadata_json or {}).get("semantic_projection", {}).get("status") == "SUCCESS"
 
 
 @pytest.mark.asyncio

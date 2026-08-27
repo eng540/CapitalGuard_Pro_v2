@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch, HistoricalMessageRevision, HistoricalRecommendationDraft, HistoricalSignal, HistoricalSignalEvent, HistoricalSignalEvidence
+from capitalguard.infrastructure.db.models import HistoricalContentInterpretation, HistoricalFinancialCandidate, HistoricalForwardReceipt, HistoricalImportBatch, HistoricalMessageRevision, HistoricalRecommendationDraft, HistoricalSignal, HistoricalSignalEvent, HistoricalSignalEvidence
 from capitalguard.application.services.historical_forwarding_service import HistoricalForwardingService
 from capitalguard.application.services.historical_message_foundation_service import HistoricalMessageFoundationService
 from capitalguard.application.services.historical_parser_service import HistoricalParserService
@@ -485,6 +485,194 @@ class HistoricalWebIntakeService:
                 ),
             },
         }
+
+    def correct_item(
+        self,
+        session: Session,
+        *,
+        batch_id: int,
+        item_id: int,
+        requested_by_user_id: int,
+        fields: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Persist a user's field correction through the existing G1-G5 chain.
+
+        The correction is an explicit user action, not an owner-review shortcut.
+        Original candidates remain immutable evidence; new candidates carry the
+        correction actor and policy provenance, and the draft points only to the
+        corrected candidate set for subsequent historical progression.
+        """
+        batch = session.get(HistoricalImportBatch, batch_id)
+        if batch is None or batch.requested_by_user_id != requested_by_user_id:
+            raise HistoricalWebIntakeError("Historical batch not found")
+        receipt = session.get(HistoricalForwardReceipt, item_id)
+        if receipt is None or receipt.batch_id != batch_id:
+            raise HistoricalWebIntakeError("Historical item not found")
+        key = (idempotency_key or "").strip()
+        if len(key) < 16 or len(key) > 128:
+            raise HistoricalWebIntakeError("A valid correction idempotency key is required")
+        metadata = dict(receipt.metadata_json or {})
+        applied_keys = list(metadata.get("correction_idempotency_keys") or [])
+        if key in applied_keys:
+            return self._batch_response(session, batch)
+        if receipt.validation_status in {"DUPLICATE", "REJECTED"}:
+            raise HistoricalWebIntakeError("Historical item cannot be corrected")
+
+        allowed = {"asset", "side", "market", "order_type", "entry", "stop_loss", "targets"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise HistoricalWebIntakeError("Unsupported historical correction field")
+        revision = session.execute(
+            select(HistoricalMessageRevision)
+            .where(HistoricalMessageRevision.receipt_id == receipt.id)
+            .order_by(HistoricalMessageRevision.id.desc())
+        ).scalars().first()
+        if revision is None:
+            raise HistoricalWebIntakeError("Historical item has no canonical revision")
+        interpretation = session.execute(
+            select(HistoricalContentInterpretation)
+            .where(HistoricalContentInterpretation.revision_id == revision.id)
+            .order_by(HistoricalContentInterpretation.id.desc())
+        ).scalars().first()
+        if interpretation is None:
+            raise HistoricalWebIntakeError("Historical item has no semantic interpretation")
+
+        current_preview = self._stored_semantic_preview(session, receipt) or {}
+        canonical = dict(current_preview.get("canonical") or {})
+        canonical.update({name: value for name, value in fields.items() if value is not None})
+        canonical["asset"] = str(canonical.get("asset") or "").strip().upper() or None
+        canonical["side"] = str(canonical.get("side") or canonical.get("direction") or "").strip().upper() or None
+        canonical["market"] = str(canonical.get("market") or "").strip().upper() or None
+        for name in ("entry", "stop_loss"):
+            if canonical.get(name) is not None:
+                try:
+                    canonical[name] = str(Decimal(str(canonical[name])))
+                    if Decimal(canonical[name]) <= 0:
+                        raise ValueError
+                except (ValueError, ArithmeticError):
+                    raise HistoricalWebIntakeError(f"Invalid correction value for {name}")
+        targets = canonical.get("targets") or []
+        normalized_targets: list[dict[str, Any]] = []
+        if not isinstance(targets, list):
+            raise HistoricalWebIntakeError("Targets correction must be a list")
+        for index, target in enumerate(targets, start=1):
+            raw_price = target.get("price") if isinstance(target, dict) else target
+            try:
+                price = Decimal(str(raw_price))
+                if price <= 0:
+                    raise ValueError
+            except (ValueError, ArithmeticError):
+                raise HistoricalWebIntakeError("Invalid correction value for targets")
+            row = {"price": str(price), "index": index}
+            if isinstance(target, dict) and target.get("percentage", target.get("close_percent")) is not None:
+                row["percentage"] = target.get("percentage", target.get("close_percent"))
+            normalized_targets.append(row)
+        canonical["targets"] = normalized_targets
+
+        required = ("asset", "side", "entry", "stop_loss", "targets", "market")
+        missing = [name for name in required if canonical.get(name) in (None, "", [])]
+        projection = {
+            "materialization_version": "g6-semantic-v1",
+            "status": "INCOMPLETE" if missing else "SUCCESS",
+            "canonical": canonical,
+            "field_evidence": {},
+            "missing_fields": missing,
+            "conflicting_fields": [],
+            "source_verification": self._source_verification(receipt, metadata),
+            "extraction_source": "USER_CORRECTION",
+            "correction_policy": "HISTORICAL_USER_CORRECTION_V1",
+        }
+        extractor_version = "user-correction-v1"
+        chain: dict[str, list[int]] = {}
+        values: list[tuple[str, Any, str, str]] = [
+            ("ASSET", canonical.get("asset"), canonical.get("asset"), "asset"),
+            ("DIRECTION", canonical.get("side"), canonical.get("side"), "side"),
+            ("MARKET", canonical.get("market"), canonical.get("market"), "market"),
+            ("ENTRY", canonical.get("entry"), canonical.get("entry"), "entry"),
+            ("STOP_LOSS", canonical.get("stop_loss"), canonical.get("stop_loss"), "stop_loss"),
+        ]
+        for field_type, raw_value, normalized, field_name in values:
+            if raw_value in (None, ""):
+                continue
+            span = f"user-correction:{receipt.id}:{field_name}"
+            candidate = session.execute(
+                select(HistoricalFinancialCandidate).where(
+                    HistoricalFinancialCandidate.interpretation_id == interpretation.id,
+                    HistoricalFinancialCandidate.extractor_version == extractor_version,
+                    HistoricalFinancialCandidate.span_text == span,
+                )
+            ).scalars().first()
+            if candidate is None:
+                candidate = HistoricalFinancialCandidate(
+                    interpretation_id=interpretation.id,
+                    field_type=field_type,
+                    value_json={"value": str(raw_value)},
+                    normalized_value=str(normalized),
+                    span_text=span,
+                    confidence_score=Decimal("1.0000"),
+                    status="CANDIDATE",
+                    extractor_version=extractor_version,
+                    provenance_json={"actor_type": "USER_CORRECTION", "actor_user_id": requested_by_user_id, "source_receipt_id": receipt.id, "policy": "HISTORICAL_USER_CORRECTION_V1"},
+                    review_status="ACCEPTED",
+                    review_note="Explicit user correction",
+                )
+                session.add(candidate)
+                session.flush()
+            chain.setdefault(field_type, []).append(candidate.id)
+        for index, target in enumerate(normalized_targets, start=1):
+            span = f"user-correction:{receipt.id}:target:{index}"
+            candidate = session.execute(
+                select(HistoricalFinancialCandidate).where(
+                    HistoricalFinancialCandidate.interpretation_id == interpretation.id,
+                    HistoricalFinancialCandidate.extractor_version == extractor_version,
+                    HistoricalFinancialCandidate.span_text == span,
+                )
+            ).scalars().first()
+            if candidate is None:
+                candidate = HistoricalFinancialCandidate(
+                    interpretation_id=interpretation.id,
+                    field_type="TARGET",
+                    value_json={"value": target["price"], "index": index, "percentage": target.get("percentage")},
+                    normalized_value=target["price"],
+                    span_text=span,
+                    confidence_score=Decimal("1.0000"),
+                    status="CANDIDATE",
+                    extractor_version=extractor_version,
+                    provenance_json={"actor_type": "USER_CORRECTION", "actor_user_id": requested_by_user_id, "source_receipt_id": receipt.id, "policy": "HISTORICAL_USER_CORRECTION_V1", "index": index},
+                    review_status="ACCEPTED",
+                    review_note="Explicit user correction",
+                )
+                session.add(candidate)
+                session.flush()
+            chain.setdefault("TARGET", []).append(candidate.id)
+
+        draft = session.execute(
+            select(HistoricalRecommendationDraft)
+            .where(HistoricalRecommendationDraft.revision_id == revision.id, HistoricalRecommendationDraft.draft_kind == "NEW_RECOMMENDATION")
+            .order_by(HistoricalRecommendationDraft.id.desc())
+        ).scalars().first()
+        if draft is None:
+            raise HistoricalWebIntakeError("Historical item has no recommendation draft")
+        draft.evidence_chain_json = {**chain, "correction_policy": "HISTORICAL_USER_CORRECTION_V1"}
+        draft.status = "ACCEPTED" if not missing else "REVIEW_REQUIRED"
+        draft.confidence_score = Decimal("1.0000") if not missing else Decimal("0")
+        draft.override_json = {"actor_type": "USER_CORRECTION", "actor_user_id": requested_by_user_id, "fields": canonical, "idempotency_key": key}
+        draft.review_note = "Explicit user correction; not owner review"
+        receipt_metadata = {
+            **metadata,
+            "historical_preview": self._json_safe(projection),
+            "semantic_projection": self._json_safe(projection),
+            "last_correction": {"actor_type": "USER_CORRECTION", "actor_user_id": requested_by_user_id, "at": datetime.now(timezone.utc).isoformat()},
+            "correction_idempotency_keys": [*applied_keys[-9:], key],
+        }
+        receipt.metadata_json = receipt_metadata
+        batch_metadata = dict(batch.metadata_json or {})
+        batch_metadata["last_user_correction_at"] = datetime.now(timezone.utc).isoformat()
+        batch_metadata["result_status"] = "PARTIAL_CHANGE"
+        batch.metadata_json = batch_metadata
+        session.flush()
+        return self._batch_response(session, batch)
 
     def list_batches(self, session: Session, *, requested_by_user_id: int, limit: int = 25) -> dict[str, Any]:
         if not requested_by_user_id:
