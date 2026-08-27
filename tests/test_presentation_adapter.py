@@ -137,6 +137,25 @@ def test_unknown_actions_are_not_rendered():
     assert "UNKNOWN_INTERNAL_ACTION" not in view.text
 
 
+def test_build_batch_summary_shows_historical_replay_outcome():
+    view = build_batch_summary(
+        {
+            "total_records": 2,
+            "processed_records": 2,
+            "complete_records": 2,
+            "replay_status": "COMPLETED_UNVERIFIABLE",
+            "replay_completed_records": 2,
+            "replay_failed_records": 0,
+            "replay_pending_records": 0,
+        }
+    )
+
+    assert "نتيجة المحاكاة التاريخية" in view.text
+    assert "مكتملة: 2" in view.text
+    assert "بيانات السوق غير قابلة للتحقق" in view.text
+    assert "اكتملت المعالجة والمحاكاة التاريخية" in view.text
+
+
 def test_build_batch_summary_shows_extracted_values_without_internal_metadata():
     view = build_batch_summary(
         {"total_records": 1, "processed_records": 1, "complete_records": 1},
