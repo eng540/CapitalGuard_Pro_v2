@@ -403,6 +403,37 @@ class HistoricalWebIntakeService:
         session.flush()
         return self._batch_response(session, batch)
 
+    def _signal_lifecycle_view(self, signal: HistoricalSignal, events: list[HistoricalSignalEvent]) -> dict[str, Any]:
+        ordered = sorted(events, key=lambda event: (event.event_timestamp, event.id))
+        lifecycle_status = self.forwarding_service._lifecycle_status(signal, ordered)
+        if any(str(event.replay_status).upper() == "AMBIGUOUS" for event in ordered):
+            lifecycle_status = "AMBIGUOUS"
+        timeline = [
+            {
+                "event_type": event.event_type,
+                "event_timestamp": event.event_timestamp.isoformat() if event.event_timestamp else None,
+                "market_as_of": event.market_as_of.isoformat() if event.market_as_of else None,
+                "replay_status": event.replay_status,
+                "price": str(event.price) if event.price is not None else None,
+                "data_source": event.data_source,
+            }
+            for event in ordered
+        ]
+        return {
+            "public_ref": signal.public_ref,
+            "asset": signal.asset,
+            "side": signal.side,
+            "status": signal.status,
+            "confidence_score": str(signal.confidence_score),
+            "trust_tier": signal.trust_tier,
+            "eligible_for_ranking": bool(signal.eligible_for_ranking),
+            "events": len(ordered),
+            "verified_events": sum(event.replay_status == "VERIFIED" for event in ordered),
+            "lifecycle_status": lifecycle_status,
+            "last_event": timeline[-1]["event_type"] if timeline else None,
+            "timeline": timeline,
+        }
+
     def batch_report(self, session: Session, *, batch_id: int, requested_by_user_id: int) -> dict[str, Any]:
         batch = session.get(HistoricalImportBatch, batch_id)
         if batch is None or batch.requested_by_user_id != requested_by_user_id:
@@ -439,17 +470,10 @@ class HistoricalWebIntakeService:
                     "commercial_enabled": False,
                 },
                 "signals": [
-                    {
-                        "public_ref": signal.public_ref,
-                        "asset": signal.asset,
-                        "side": signal.side,
-                        "status": signal.status,
-                        "confidence_score": str(signal.confidence_score),
-                        "trust_tier": signal.trust_tier,
-                        "eligible_for_ranking": bool(signal.eligible_for_ranking),
-                        "events": sum(event.signal_id == signal.id for event in events),
-                        "verified_events": sum(event.signal_id == signal.id and event.replay_status == "VERIFIED" for event in events),
-                    }
+                    self._signal_lifecycle_view(
+                        signal,
+                        [event for event in events if event.signal_id == signal.id],
+                    )
                     for signal in signals
                 ],
                 "next_action": (
