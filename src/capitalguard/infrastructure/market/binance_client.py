@@ -1,6 +1,8 @@
-import requests
+from __future__ import annotations
 
+import random
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -14,6 +16,7 @@ FUTURES_KLINES = "https://fapi.binance.com/fapi/v1/klines"
 SUPPORTED_INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"}
 MAX_KLINES_LIMIT = 1500
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{5,20}$")
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
 class HistoricalMarketProviderError(RuntimeError):
@@ -32,6 +35,7 @@ class BinanceHistoricalCandle:
     close: Decimal
     volume: Decimal
     provider_endpoint: str
+
 
 class BinanceClient:
     def get_price(self, symbol: str) -> float:
@@ -67,6 +71,15 @@ class BinanceClient:
             raise HistoricalMarketProviderError("Historical candle contains non-positive numeric value")
         return decimal
 
+    @staticmethod
+    def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
+        if retry_after:
+            try:
+                return min(30.0, max(0.0, float(retry_after)))
+            except ValueError:
+                pass
+        return min(30.0, (0.5 * (2**attempt)) + random.uniform(0.0, 0.25))
+
     def get_historical_ohlcv(
         self,
         *,
@@ -77,6 +90,7 @@ class BinanceClient:
         market: str = "SPOT",
         limit: int = MAX_KLINES_LIMIT,
         timeout_seconds: float = 10.0,
+        max_retries: int = 4,
     ) -> list[BinanceHistoricalCandle]:
         normalized_symbol, normalized_interval, start_utc, end_utc = self._validate_historical_request(symbol, interval, start, end, limit)
         normalized_market = market.strip().upper()
@@ -84,6 +98,9 @@ class BinanceClient:
             raise HistoricalMarketProviderError("Historical candle market is unsupported")
         if not 0.1 <= timeout_seconds <= 30:
             raise HistoricalMarketProviderError("Historical candle timeout is out of range")
+        if not 0 <= max_retries <= 8:
+            raise HistoricalMarketProviderError("Historical candle max_retries is out of range")
+
         endpoint = FUTURES_KLINES if normalized_market == "FUTURES" else SPOT_KLINES
         params = {
             "symbol": normalized_symbol,
@@ -92,14 +109,33 @@ class BinanceClient:
             "endTime": int(end_utc.timestamp() * 1000),
             "limit": limit,
         }
-        try:
-            response = requests.get(endpoint, params=params, timeout=timeout_seconds)
-            response.raise_for_status()
-            rows = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            raise HistoricalMarketProviderError("Historical candle provider is unavailable") from exc
+
+        response = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.get(endpoint, params=params, timeout=timeout_seconds)
+                if response.status_code in RETRYABLE_STATUS_CODES:
+                    if attempt >= max_retries:
+                        response.raise_for_status()
+                    time.sleep(self._retry_delay(attempt, response.headers.get("Retry-After")))
+                    continue
+                response.raise_for_status()
+                rows = response.json()
+                break
+            except requests.RequestException as exc:
+                if attempt >= max_retries:
+                    raise HistoricalMarketProviderError("Historical candle provider is unavailable") from exc
+                time.sleep(self._retry_delay(attempt))
+            except ValueError as exc:
+                raise HistoricalMarketProviderError("Historical candle provider returned invalid JSON") from exc
+        else:
+            raise HistoricalMarketProviderError("Historical candle provider is unavailable")
+
+        if response is None:
+            raise HistoricalMarketProviderError("Historical candle provider is unavailable")
         if not isinstance(rows, list) or len(rows) > limit:
             raise HistoricalMarketProviderError("Historical candle provider returned invalid payload")
+
         candles: list[BinanceHistoricalCandle] = []
         seen: set[datetime] = set()
         for row in rows:
@@ -112,16 +148,18 @@ class BinanceClient:
             if not start_utc <= open_time <= end_utc or open_time in seen:
                 raise HistoricalMarketProviderError("Historical candle range is inconsistent")
             seen.add(open_time)
-            candles.append(BinanceHistoricalCandle(
-                symbol=normalized_symbol,
-                market=normalized_market,
-                interval=normalized_interval,
-                open_time=open_time,
-                open=self._positive_decimal(row[1]),
-                high=self._positive_decimal(row[2]),
-                low=self._positive_decimal(row[3]),
-                close=self._positive_decimal(row[4]),
-                volume=self._positive_decimal(row[5]),
-                provider_endpoint=endpoint,
-            ))
+            candles.append(
+                BinanceHistoricalCandle(
+                    symbol=normalized_symbol,
+                    market=normalized_market,
+                    interval=normalized_interval,
+                    open_time=open_time,
+                    open=self._positive_decimal(row[1]),
+                    high=self._positive_decimal(row[2]),
+                    low=self._positive_decimal(row[3]),
+                    close=self._positive_decimal(row[4]),
+                    volume=self._positive_decimal(row[5]),
+                    provider_endpoint=endpoint,
+                )
+            )
         return sorted(candles, key=lambda candle: candle.open_time)
