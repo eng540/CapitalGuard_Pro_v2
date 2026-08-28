@@ -1,27 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from capitalguard.application.services.historical_market_replay_service import MarketCandle
-from capitalguard.domain.coverage import HistoricalCoverage, calculate_historical_coverage
+from capitalguard.domain.coverage import HistoricalCoverage, calculate_historical_coverage, interval_delta
 
 from .binance_client import BinanceClient, MAX_KLINES_LIMIT
 
 
-_INTERVAL_DELTAS = {
-    "1m": timedelta(minutes=1),
-    "3m": timedelta(minutes=3),
-    "5m": timedelta(minutes=5),
-    "15m": timedelta(minutes=15),
-    "30m": timedelta(minutes=30),
-    "1h": timedelta(hours=1),
-    "2h": timedelta(hours=2),
-    "4h": timedelta(hours=4),
-    "6h": timedelta(hours=6),
-    "8h": timedelta(hours=8),
-    "12h": timedelta(hours=12),
-    "1d": timedelta(days=1),
-}
 PROVIDER_PAGE_LIMIT = 1000
 DEFAULT_MAX_PAGES = 1000
 
@@ -34,13 +20,6 @@ class BinanceHistoricalOhlcvProvider:
             raise ValueError("max_pages must be positive")
         self.client = client or BinanceClient()
         self.max_pages = max_pages
-
-    @staticmethod
-    def _interval_delta(interval: str) -> timedelta:
-        try:
-            return _INTERVAL_DELTAS[interval.strip()]
-        except KeyError as exc:
-            raise ValueError(f"Unsupported historical interval: {interval}") from exc
 
     @staticmethod
     def _normalize_bounds(start: datetime, end: datetime) -> tuple[datetime, datetime]:
@@ -63,7 +42,7 @@ class BinanceHistoricalOhlcvProvider:
         limit: int = MAX_KLINES_LIMIT,
     ) -> tuple[list[MarketCandle], str, HistoricalCoverage]:
         start_utc, end_utc = self._normalize_bounds(start, end)
-        interval_delta = self._interval_delta(interval)
+        interval_duration = interval_delta(interval)
         request_limit = min(max(1, int(limit)), PROVIDER_PAGE_LIMIT)
         market_kind = "FUTURES" if str(market or "").upper().startswith("FUTURES") else "SPOT"
 
@@ -101,13 +80,12 @@ class BinanceHistoricalOhlcvProvider:
                 endpoint = record.provider_endpoint
 
             last_open = records[-1].open_time
-            next_cursor = last_open + interval_delta
+            next_cursor = last_open + interval_duration
             if next_cursor <= cursor:
                 break
             cursor = next_cursor
 
-            # Do not infer completion from a short page. Completion is based on
-            # reaching the requested time boundary, not the provider page size.
+            # A short page is not proof that the requested window is complete.
             if last_open >= end_utc:
                 break
 
@@ -116,7 +94,7 @@ class BinanceHistoricalOhlcvProvider:
             requested_start=start_utc,
             requested_end=end_utc,
             candle_times=(candle.open_time for candle in candles),
-            interval=interval_delta,
+            interval=interval_duration,
         )
         return candles, endpoint, coverage
 
