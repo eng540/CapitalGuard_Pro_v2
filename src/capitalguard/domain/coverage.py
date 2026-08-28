@@ -13,6 +13,22 @@ class CoverageStatus(str, Enum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
+INTERVAL_DELTAS = {
+    "1m": timedelta(minutes=1),
+    "3m": timedelta(minutes=3),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "30m": timedelta(minutes=30),
+    "1h": timedelta(hours=1),
+    "2h": timedelta(hours=2),
+    "4h": timedelta(hours=4),
+    "6h": timedelta(hours=6),
+    "8h": timedelta(hours=8),
+    "12h": timedelta(hours=12),
+    "1d": timedelta(days=1),
+}
+
+
 @dataclass(frozen=True)
 class HistoricalCoverage:
     requested_start: datetime
@@ -32,6 +48,13 @@ class HistoricalCoverage:
     @property
     def missing_candles(self) -> int:
         return max(0, self.expected_candles - self.actual_candles)
+
+
+def interval_delta(interval: str) -> timedelta:
+    try:
+        return INTERVAL_DELTAS[interval.strip()]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported historical interval: {interval}") from exc
 
 
 def calculate_historical_coverage(
