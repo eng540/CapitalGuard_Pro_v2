@@ -91,7 +91,10 @@ class HistoricalSignalMaterializationService:
             and len({str(self._candidate_value(item)) for item in items}) > 1
         }
         if conflicting_fields:
-            raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:CANDIDATE_CONFLICT")
+            fields = ",".join(sorted(conflicting_fields))
+            raise HistoricalSignalMaterializationBlocked(
+                f"MATERIALIZATION_BLOCKED:CANDIDATE_CONFLICT:{fields}"
+            )
         if draft.draft_kind == "NEW_RECOMMENDATION" and not self.REQUIRED_NEW.issubset(by_field):
             raise HistoricalSignalMaterializationBlocked("MATERIALIZATION_BLOCKED:REQUIRED_CANDIDATE_MISSING")
 
