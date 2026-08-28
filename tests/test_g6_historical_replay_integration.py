@@ -23,13 +23,13 @@ class FakeProvider:
         return self.candles, "https://provider.test/klines"
 
 
-def _candles(signal):
-    start = signal.decision_timestamp + timedelta(minutes=1)
+def _candles(signal, count=61):
+    start = signal.decision_timestamp
     return [
         MarketCandle(
             asset="BTCUSDT",
             market="Futures",
-            open_time=start,
+            open_time=start + timedelta(minutes=index),
             open=Decimal("69000"),
             high=Decimal("70000"),
             low=Decimal("68500"),
@@ -37,6 +37,7 @@ def _candles(signal):
             volume=Decimal("1"),
             data_source="BINANCE_FUTURES",
         )
+        for index in range(count)
     ]
 
 
@@ -60,15 +61,19 @@ def test_g6_materialized_signal_replay_links_run_evidence_and_isolation(db_sessi
     )
 
     assert result["status"] == "COMPLETED_UNVERIFIABLE"
+    assert result["coverage"].status.value == "FULL"
     run = result["run"]
     assert run.replay_version == REPLAY_VERSION
     assert run.status == "COMPLETED_UNVERIFIABLE"
+    assert run.coverage_status == "FULL"
+    assert run.coverage_ratio == 1.0
     assert run.data_as_of_status == "UNVERIFIABLE"
     assert provider.calls == 1
     events = db_session.execute(select(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_run_id == run.id)).scalars().all()
     evidence = db_session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.replay_run_id == run.id)).scalar_one()
     assert events
     assert evidence.artifact_hash
+    assert run.dataset_hash == evidence.artifact_hash
     assert all(event.replay_run_id == run.id for event in events)
     assert signal.eligible_for_ranking == original_eligibility
 
@@ -82,6 +87,30 @@ def test_g6_materialized_signal_replay_links_run_evidence_and_isolation(db_sessi
     )
     assert second["run"].id == run.id
     assert provider.calls == 1
+
+
+def test_g6_partial_window_is_persisted_without_fabricating_a_complete_result(db_session):
+    draft, _revision = accepted_g5_draft(db_session)
+    signal = HistoricalSignalMaterializationService().materialize(db_session, draft_id=draft.id)
+    from capitalguard.infrastructure.db.models import HistoricalSignalMaterialization
+    bridge = db_session.execute(
+        select(HistoricalSignalMaterialization).where(HistoricalSignalMaterialization.signal_id == signal.id)
+    ).scalar_one()
+
+    result = HistoricalMarketReplayService().replay_g6(
+        db_session,
+        signal_id=signal.id,
+        materialization_id=bridge.id,
+        start=signal.decision_timestamp,
+        replay_end=signal.decision_timestamp + timedelta(hours=1),
+        provider=FakeProvider(_candles(signal, count=1)),
+    )
+
+    assert result["status"] == "REPLAY_PARTIAL"
+    assert result["coverage"].status.value == "PARTIAL_WINDOW"
+    assert result["run"].coverage_status == "PARTIAL_WINDOW"
+    assert result["run"].coverage_ratio < 1.0
+    assert result["run"].actual_end == signal.decision_timestamp
 
 
 def test_g6_marks_ohlcv_tp_sl_conflict_ambiguous(db_session):
@@ -115,6 +144,7 @@ def test_g6_marks_ohlcv_tp_sl_conflict_ambiguous(db_session):
         provider=provider,
     )
     assert result["status"] == "COMPLETED_UNVERIFIABLE"
+    assert result["coverage"].status.value == "FULL"
     assert result["run"].ambiguity_status == "AMBIGUOUS"
     assert any(event.replay_status == "AMBIGUOUS" for event in result["events"])
     assert not any(event.event_type in {"SL", "TP1"} for event in result["events"])
