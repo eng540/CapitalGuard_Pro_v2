@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from capitalguard.application.services.historical_market_replay_service import MarketCandle
 from capitalguard.domain.coverage import HistoricalCoverage, calculate_historical_coverage
@@ -46,8 +46,8 @@ class BinanceHistoricalOhlcvProvider:
     def _normalize_bounds(start: datetime, end: datetime) -> tuple[datetime, datetime]:
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("Historical bounds must be timezone-aware")
-        start_utc = start.astimezone(start.tzinfo).astimezone(__import__("datetime").timezone.utc)
-        end_utc = end.astimezone(end.tzinfo).astimezone(__import__("datetime").timezone.utc)
+        start_utc = start.astimezone(timezone.utc)
+        end_utc = end.astimezone(timezone.utc)
         if start_utc >= end_utc:
             raise ValueError("Historical bounds are invalid")
         return start_utc, end_utc
