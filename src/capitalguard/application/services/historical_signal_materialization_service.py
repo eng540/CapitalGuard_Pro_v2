@@ -25,6 +25,7 @@ class HistoricalSignalMaterializationService:
     """G5-only writer: materializes accepted drafts, never market outcomes or live entities."""
 
     REQUIRED_NEW = {"ASSET", "DIRECTION", "ENTRY"}
+    UNIQUE_FIELDS = {"ASSET", "DIRECTION", "ENTRY", "STOP_LOSS", "LEVERAGE", "RISK_PERCENT", "MARKET"}
 
     @staticmethod
     def _utc(value: datetime | None) -> datetime:
@@ -87,7 +88,7 @@ class HistoricalSignalMaterializationService:
         conflicting_fields = {
             field
             for field, items in by_field.items()
-            if field != "TARGET"
+            if field in self.UNIQUE_FIELDS
             and len({str(self._candidate_value(item)) for item in items}) > 1
         }
         if conflicting_fields:
