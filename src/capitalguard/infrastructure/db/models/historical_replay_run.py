@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.orm import relationship
 
 from .base import Base, JSON_TYPE
@@ -21,6 +21,13 @@ class HistoricalReplayRun(Base):
     window_end = Column(DateTime(timezone=True), nullable=False)
     interval = Column(String(16), nullable=False, server_default="1m")
     limit_count = Column(Integer, nullable=False, server_default="1500")
+
+    coverage_status = Column(String(24), nullable=True, index=True)
+    coverage_ratio = Column(Float, nullable=True)
+    actual_start = Column(DateTime(timezone=True), nullable=True)
+    actual_end = Column(DateTime(timezone=True), nullable=True)
+    dataset_hash = Column(String(64), nullable=True, index=True)
+
     provider = Column(String(80), nullable=True, index=True)
     provider_endpoint = Column(String(255), nullable=True)
     data_source = Column(String(80), nullable=True)
