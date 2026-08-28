@@ -111,13 +111,16 @@ class BinanceClient:
         }
 
         response = None
+        rows = None
         for attempt in range(max_retries + 1):
             try:
                 response = requests.get(endpoint, params=params, timeout=timeout_seconds)
-                if response.status_code in RETRYABLE_STATUS_CODES:
+                status_code = getattr(response, "status_code", 200)
+                if status_code in RETRYABLE_STATUS_CODES:
                     if attempt >= max_retries:
                         response.raise_for_status()
-                    time.sleep(self._retry_delay(attempt, response.headers.get("Retry-After")))
+                    headers = getattr(response, "headers", {}) or {}
+                    time.sleep(self._retry_delay(attempt, headers.get("Retry-After")))
                     continue
                 response.raise_for_status()
                 rows = response.json()
@@ -131,7 +134,7 @@ class BinanceClient:
         else:
             raise HistoricalMarketProviderError("Historical candle provider is unavailable")
 
-        if response is None:
+        if response is None or rows is None:
             raise HistoricalMarketProviderError("Historical candle provider is unavailable")
         if not isinstance(rows, list) or len(rows) > limit:
             raise HistoricalMarketProviderError("Historical candle provider returned invalid payload")
