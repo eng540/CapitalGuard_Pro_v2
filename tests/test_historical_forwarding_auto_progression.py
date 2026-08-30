@@ -348,7 +348,8 @@ def test_replay_window_shortfall_is_explicit_and_reaches_canonical_g6(db_session
     item = result["items"][0]
     assert result["progressed"] == 1
     assert item["status"] == "REPLAY_PARTIAL"
-    assert item["replay_status"] == "PARTIAL_WINDOW"
+    assert item["coverage_status"] == "PARTIAL_WINDOW"
+    assert item["replay_status"] == "REPLAY_PARTIAL"
     assert provider.calls == 1
     runs = db_session.execute(select(HistoricalReplayRun)).scalars().all()
     assert len(runs) == 1
