@@ -21,6 +21,7 @@ vi.mock("@/lib/trpc", () => ({ trpc: { capitalguard: {
   historicalCorrectItem: { useMutation: () => ({ isPending: false, mutate: vi.fn() }) },
   historicalIntakeDetail: { useQuery: () => intakeDetailState },
   historicalIntakeReport: { useQuery: () => intakeReportState },
+  retryHistoricalReplay: { useMutation: () => ({ isPending: false, mutate: vi.fn() }) },
 } } }));
 
 import Historical, { parseIntakeText } from "./Historical";
