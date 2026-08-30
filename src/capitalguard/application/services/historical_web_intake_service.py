@@ -403,7 +403,7 @@ class HistoricalWebIntakeService:
         session.flush()
         return self._batch_response(session, batch)
 
-    def _signal_lifecycle_view(self, signal: HistoricalSignal, events: list[HistoricalSignalEvent]) -> dict[str, Any]:
+    def _signal_lifecycle_view(self, session: Session, signal: HistoricalSignal, events: list[HistoricalSignalEvent]) -> dict[str, Any]:
         ordered = sorted(events, key=lambda event: (event.event_timestamp, event.id))
         lifecycle_status = self.forwarding_service._lifecycle_status(signal, ordered)
         if any(str(event.replay_status).upper() == "AMBIGUOUS" for event in ordered):
@@ -479,6 +479,7 @@ class HistoricalWebIntakeService:
                 },
                 "signals": [
                     self._signal_lifecycle_view(
+                        session,
                         signal,
                         [event for event in events if event.signal_id == signal.id],
                     )

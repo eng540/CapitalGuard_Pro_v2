@@ -37,7 +37,7 @@ type IntakeReport = {
 type IntakeBatch = { id: number; ref: string; status: string; source_kind: string; total_records: number; accepted_records: number; rejected_records: number; processed_count: number; changed_count: number; result_status: string; created_at: string | null; items: ExtractedItem[] };
 
 export function IntakeBatchView({ batch, report, onRefresh }: { batch: IntakeBatch; report?: IntakeReport; onRefresh: () => void }) {
-  const retryReplay = trpc.capitalguard.retryHistoricalReplay.useMutation({ onSuccess: () => { toastSuccess("تمت إعادة المحاكاة؛ يتم تحديث النتيجة الآن."); onRefresh(); }, onError: () => toastError("تعذرت إعادة المحاكاة من Core؛ لم تتغير النتيجة السابقة.") });
+  const retryReplay = trpc.capitalguard.admin.retryHistoricalReplay.useMutation({ onSuccess: () => { toastSuccess("تمت إعادة المحاكاة؛ يتم تحديث النتيجة الآن."); onRefresh(); }, onError: () => toastError("تعذرت إعادة المحاكاة من Core؛ لم تتغير النتيجة السابقة.") });
   const single = batch.items.length === 1;
   const processed = batch.processed_count;
   const changed = batch.changed_count;
