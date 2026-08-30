@@ -1,0 +1,61 @@
+name: G6 Targeted Fix
+
+on:
+  push:
+    branches:
+      - feature/g6-historical-replay-upgrade
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: ${{ !contains(github.event.head_commit.message, '[g6-fix-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply targeted fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/capitalguard/application/services/historical_web_intake_service.py')
+          text = p.read_text(encoding='utf-8')
+          old_sig = 'def _signal_lifecycle_view(self, signal: HistoricalSignal, events: list[HistoricalSignalEvent]) -> dict[str, Any]:'
+          new_sig = 'def _signal_lifecycle_view(self, session: Session, signal: HistoricalSignal, events: list[HistoricalSignalEvent]) -> dict[str, Any]:'
+          if old_sig in text:
+              text = text.replace(old_sig, new_sig, 1)
+          old_call = 'self._signal_lifecycle_view(\n                        signal,'
+          new_call = 'self._signal_lifecycle_view(\n                        session,\n                        signal,'
+          if old_call in text:
+              text = text.replace(old_call, new_call, 1)
+          p.write_text(text, encoding='utf-8')
+
+          p = Path('frontend/client/src/components/ForwardResultsInspector.tsx')
+          text = p.read_text(encoding='utf-8')
+          old = 'trpc.capitalguard.retryHistoricalReplay.useMutation'
+          new = 'trpc.capitalguard.admin.retryHistoricalReplay.useMutation'
+          if old in text:
+              text = text.replace(old, new, 1)
+          p.write_text(text, encoding='utf-8')
+          PY
+
+          git diff --check
+          git diff -- src/capitalguard/application/services/historical_web_intake_service.py frontend/client/src/components/ForwardResultsInspector.tsx
+
+      - name: Commit fixes
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/capitalguard/application/services/historical_web_intake_service.py frontend/client/src/components/ForwardResultsInspector.tsx
+          if git diff --cached --quiet; then
+            echo 'No targeted changes required.'
+            exit 0
+          fi
+          git commit -m 'fix: unblock G6 CI checks [g6-fix-applied]'
+          git push origin HEAD:feature/g6-historical-replay-upgrade
