@@ -21,6 +21,8 @@ from capitalguard.infrastructure.db.models import (
     HistoricalSignal,
     HistoricalSignalEvent,
     HistoricalSignalMaterialization,
+    HistoricalForwardReceipt,
+    HistoricalSignalEvidence,
 )
 
 from .historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
@@ -117,7 +119,7 @@ class HistoricalMarketReplayService:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _request_fingerprint(*, signal_id: int, materialization_id: int, start: datetime, replay_end: datetime, interval: str, limit: int) -> str:
+    def _request_fingerprint(*, signal_id: int, materialization_id: int, start: datetime, replay_end: datetime, interval: str, limit: int, retry_of_fingerprint: str | None = None) -> str:
         payload = {
             "signal_id": signal_id,
             "materialization_id": materialization_id,
@@ -125,6 +127,7 @@ class HistoricalMarketReplayService:
             "replay_end": replay_end.isoformat(),
             "interval": interval,
             "limit": limit,
+            "retry_of_fingerprint": retry_of_fingerprint,
             "replay_version": REPLAY_VERSION,
             "policy_version": REPLAY_POLICY_VERSION,
         }
@@ -301,6 +304,7 @@ class HistoricalMarketReplayService:
         replay_end: datetime,
         interval: str,
         limit: int,
+        retry_of_fingerprint: str | None = None,
     ) -> tuple[HistoricalReplayRun, bool]:
         fingerprint = self._request_fingerprint(
             signal_id=signal_id,
@@ -309,6 +313,7 @@ class HistoricalMarketReplayService:
             replay_end=replay_end,
             interval=interval,
             limit=limit,
+            retry_of_fingerprint=retry_of_fingerprint,
         )
         existing = session.execute(select(HistoricalReplayRun).where(HistoricalReplayRun.request_fingerprint == fingerprint)).scalar_one_or_none()
         if existing is not None:
@@ -346,6 +351,24 @@ class HistoricalMarketReplayService:
             interval=interval_delta(interval),
         )
 
+    def retry_g6(self, session: Session, *, receipt_id: int, provider=None) -> dict:
+        receipt = session.get(HistoricalForwardReceipt, receipt_id)
+        if receipt is None or receipt.evidence_id is None:
+            raise HistoricalSignalValidationError("Historical receipt does not have replayable evidence")
+        evidence = session.get(HistoricalSignalEvidence, receipt.evidence_id)
+        if evidence is None or not evidence.signals:
+            raise HistoricalSignalValidationError("Historical receipt does not have a materialized signal")
+        signal = sorted(evidence.signals, key=lambda item: item.id)[0]
+        materialization = session.execute(select(HistoricalSignalMaterialization).where(HistoricalSignalMaterialization.signal_id == signal.id).order_by(HistoricalSignalMaterialization.id.desc())).scalars().first()
+        if materialization is None:
+            raise HistoricalSignalValidationError("Historical signal has no G5 materialization")
+        previous = session.execute(select(HistoricalReplayRun).where(HistoricalReplayRun.signal_id == signal.id, HistoricalReplayRun.materialization_id == materialization.id).order_by(HistoricalReplayRun.started_at.desc(), HistoricalReplayRun.id.desc())).scalars().first()
+        if previous is None:
+            raise HistoricalSignalValidationError("Historical receipt has no previous G6 replay")
+        if previous.status not in {"REPLAY_PARTIAL", "FAILED"}:
+            return {"run": previous, "events": list(previous.events or []), "status": previous.status, "replayed": True, "retry_skipped": True}
+        return self.replay_g6(session, signal_id=signal.id, materialization_id=materialization.id, start=previous.window_start, replay_end=previous.window_end, interval=previous.interval, limit=previous.limit_count, provider=provider, retry_of_fingerprint=previous.request_fingerprint)
+
     def replay_g6(
         self,
         session: Session,
@@ -357,6 +380,7 @@ class HistoricalMarketReplayService:
         interval: str = "1m",
         limit: int = 1500,
         provider=None,
+        retry_of_fingerprint: str | None = None,
     ) -> dict:
         """Run G6 from an existing G5 materialization; caller owns commit/rollback."""
         self._g5_materialization(session, signal_id=signal_id, materialization_id=materialization_id)
@@ -373,6 +397,7 @@ class HistoricalMarketReplayService:
             replay_end=end_utc,
             interval=interval,
             limit=limit,
+            retry_of_fingerprint=retry_of_fingerprint,
         )
         if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "REPLAY_PARTIAL"}:
             events = session.execute(select(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_run_id == run.id).order_by(HistoricalSignalEvent.event_timestamp, HistoricalSignalEvent.id)).scalars().all()
