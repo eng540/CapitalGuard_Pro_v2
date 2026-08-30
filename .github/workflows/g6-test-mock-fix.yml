@@ -1,0 +1,42 @@
+name: G6 Test Mock Fix
+
+on:
+  push:
+    branches:
+      - feature/g6-historical-replay-upgrade
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: ${{ !contains(github.event.head_commit.message, '[g6-mock-fix-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Add retry mutation mock
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('frontend/client/src/pages/Historical.test.tsx')
+          text = p.read_text(encoding='utf-8')
+          anchor = '  historicalIntakeReport: { useQuery: () => intakeReportState },\n'
+          addition = '  historicalIntakeReport: { useQuery: () => intakeReportState },\n  retryHistoricalReplay: { useMutation: () => ({ isPending: false, mutate: vi.fn() }) },\n'
+          if text.count(anchor) != 1:
+              raise SystemExit(f'Expected one historicalIntakeReport mock, found {text.count(anchor)}')
+          if '  retryHistoricalReplay: { useMutation:' not in text:
+              text = text.replace(anchor, addition, 1)
+          p.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+      - name: Commit
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add frontend/client/src/pages/Historical.test.tsx
+          git commit -m 'test: mock historical retry mutation [g6-mock-fix-applied]'
+          git push origin HEAD:feature/g6-historical-replay-upgrade
