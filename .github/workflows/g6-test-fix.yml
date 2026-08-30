@@ -1,0 +1,45 @@
+name: G6 Test Fix
+
+on:
+  push:
+    branches:
+      - feature/g6-historical-replay-upgrade
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: ${{ !contains(github.event.head_commit.message, '[g6-router-fix-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Align retry router
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('frontend/server/capitalguard.ts')
+          text = p.read_text(encoding='utf-8')
+          line = '    retryHistoricalReplay: protectedProcedure.input(z.object({ receiptId: z.number().int().positive() })).mutation(({ ctx, input }) => coreRetryHistoricalReplay({ actorTelegramId: telegramIdFromWebSession(ctx.user.openId), receiptId: input.receiptId, idempotencyKey: randomUUID() })),\n'
+          if text.count(line) != 1:
+              raise SystemExit(f'Expected exactly one retry route, found {text.count(line)}')
+          text = text.replace(line, '', 1)
+          anchor = '  historicalIntakeDetail: protectedProcedure.input(z.object({ batchId: z.number().int().positive() })).query(({ ctx, input }) => coreGetHistoricalIntake(input.batchId, telegramIdFromWebSession(ctx.user.openId))),\n'
+          if text.count(anchor) != 1:
+              raise SystemExit(f'Expected one historicalIntakeDetail anchor, found {text.count(anchor)}')
+          replacement = anchor + line
+          text = text.replace(anchor, replacement, 1)
+          p.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+      - name: Commit
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add frontend/server/capitalguard.ts
+          git commit -m 'fix: expose historical replay retry at user router level [g6-router-fix-applied]'
+          git push origin HEAD:feature/g6-historical-replay-upgrade
