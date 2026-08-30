@@ -319,7 +319,7 @@ def test_ambiguous_candle_is_unverifiable_and_not_final(db_session):
     assert result["status"] == "COMPLETED_UNVERIFIABLE"
 
 
-def test_replay_window_shortfall_is_explicit_and_does_not_run_g6(db_session):
+def test_replay_window_shortfall_is_explicit_and_reaches_canonical_g6(db_session):
     old_time = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
     batch, _, _, _ = _auto_batch(
         db_session,
@@ -349,7 +349,11 @@ def test_replay_window_shortfall_is_explicit_and_does_not_run_g6(db_session):
     assert result["progressed"] == 1
     assert item["status"] == "REPLAY_PARTIAL"
     assert item["replay_status"] == "PARTIAL_WINDOW"
-    assert db_session.execute(select(HistoricalReplayRun)).scalars().all() == []
+    assert provider.calls == 1
+    runs = db_session.execute(select(HistoricalReplayRun)).scalars().all()
+    assert len(runs) == 1
+    assert runs[0].status == "REPLAY_PARTIAL"
+    assert runs[0].coverage_status == "PARTIAL_WINDOW"
     assert len(db_session.execute(select(HistoricalSignal)).scalars().all()) == 1
 
 
