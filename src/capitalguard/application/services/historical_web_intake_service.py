@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from capitalguard.infrastructure.db.models import HistoricalContentInterpretation, HistoricalFinancialCandidate, HistoricalForwardReceipt, HistoricalImportBatch, HistoricalMessageRevision, HistoricalRecommendationDraft, HistoricalSignal, HistoricalSignalEvent, HistoricalSignalEvidence
+from capitalguard.infrastructure.db.models import HistoricalContentInterpretation, HistoricalFinancialCandidate, HistoricalForwardReceipt, HistoricalImportBatch, HistoricalMessageRevision, HistoricalRecommendationDraft, HistoricalSignal, HistoricalSignalEvent, HistoricalReplayRun, HistoricalSignalEvidence
 from capitalguard.application.services.historical_forwarding_service import HistoricalForwardingService
 from capitalguard.application.services.historical_message_foundation_service import HistoricalMessageFoundationService
 from capitalguard.application.services.historical_parser_service import HistoricalParserService
@@ -419,7 +419,15 @@ class HistoricalWebIntakeService:
             }
             for event in ordered
         ]
+        receipt = session.execute(select(HistoricalForwardReceipt).where(HistoricalForwardReceipt.evidence_id == signal.evidence_id).order_by(HistoricalForwardReceipt.id.desc())).scalars().first()
+        latest_run = session.execute(select(HistoricalReplayRun).where(HistoricalReplayRun.signal_id == signal.id).order_by(HistoricalReplayRun.started_at.desc(), HistoricalReplayRun.id.desc())).scalars().first()
         return {
+            "receipt_id": receipt.id if receipt else None,
+            "replay_status": latest_run.status if latest_run else None,
+            "coverage_status": latest_run.coverage_status if latest_run else None,
+            "coverage_ratio": latest_run.coverage_ratio if latest_run else None,
+            "actual_start": latest_run.actual_start.isoformat() if latest_run and latest_run.actual_start else None,
+            "actual_end": latest_run.actual_end.isoformat() if latest_run and latest_run.actual_end else None,
             "public_ref": signal.public_ref,
             "asset": signal.asset,
             "side": signal.side,
