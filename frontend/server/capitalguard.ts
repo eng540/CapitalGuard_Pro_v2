@@ -188,6 +188,7 @@ export const capitalguardRouter = router({
   historicalIntakeList: protectedProcedure.query(({ ctx }) => coreListHistoricalIntake(telegramIdFromWebSession(ctx.user.openId))),
   historicalIntakeReport: protectedProcedure.input(z.object({ batchId: z.number().int().positive() })).query(({ ctx, input }) => coreGetHistoricalIntakeReport(input.batchId, telegramIdFromWebSession(ctx.user.openId))),
   historicalIntakeDetail: protectedProcedure.input(z.object({ batchId: z.number().int().positive() })).query(({ ctx, input }) => coreGetHistoricalIntake(input.batchId, telegramIdFromWebSession(ctx.user.openId))),
+    retryHistoricalReplay: protectedProcedure.input(z.object({ receiptId: z.number().int().positive() })).mutation(({ ctx, input }) => coreRetryHistoricalReplay({ actorTelegramId: telegramIdFromWebSession(ctx.user.openId), receiptId: input.receiptId, idempotencyKey: randomUUID() })),
   smartAnalyze: protectedProcedure.input(smartAnalysisInput).mutation(async ({ input }) => analyzeForwardText(input.text)),
   core: router({
     health: protectedProcedure.query(() => probeCoreHealth()),
@@ -287,6 +288,5 @@ export const capitalguardRouter = router({
     })),
     replayHistoricalSignalFromBinance: adminProcedure.input(z.object({ signalId: z.number().int().positive(), start: z.string().datetime(), end: z.string().datetime(), interval: z.enum(["1m", "5m", "15m", "1h"]).default("1m"), limit: z.number().int().min(1).max(1500).default(1500) })).mutation(({ ctx, input }) => coreReplayHistoricalSignalFromBinance({ ...input, actorTelegramId: telegramIdFromWebSession(ctx.user.openId), idempotencyKey: randomUUID() })),
     replayReviewedBatchFromBinance: adminProcedure.input(z.object({ batchId: z.number().int().positive() })).mutation(({ ctx, input }) => coreReplayReviewedBatchFromBinance({ actorTelegramId: telegramIdFromWebSession(ctx.user.openId), batchId: input.batchId, idempotencyKey: randomUUID() })),
-    retryHistoricalReplay: protectedProcedure.input(z.object({ receiptId: z.number().int().positive() })).mutation(({ ctx, input }) => coreRetryHistoricalReplay({ actorTelegramId: telegramIdFromWebSession(ctx.user.openId), receiptId: input.receiptId, idempotencyKey: randomUUID() })),
   }),
 });
