@@ -338,10 +338,20 @@ def build_single_result_card(
             "REPLAY_FAILED": "تعذر إكمال المحاكاة التاريخية؛ تم حفظ الاستخراج.",
             "PROGRESSION_FAILED": "تعذر تجهيز المحاكاة التاريخية؛ تم حفظ الاستخراج.",
             "PROVIDER_UNAVAILABLE": "تعذر جلب بيانات السوق الآن؛ تم حفظ الاستخراج ويمكن إعادة المحاولة لاحقًا.",
-            "PARTIAL_WINDOW": "بيانات السوق المتاحة لا تغطي كامل الفترة من وقت المصدر؛ تم حفظ الاستخراج دون ادعاء نتيجة كاملة.",
+            "PARTIAL_WINDOW": "⚠️ وصلت المحاكاة إلى G6، لكن التغطية التاريخية جزئية؛ لن يتم احتساب إغلاق أو ربح كامل دون تغطية زمنية كافية.",
             "PARTIAL": "المحاكاة التاريخية جزئية؛ تم حفظ ما توفر.",
         }.get(replay_status, "المحاكاة التاريخية لم تكتمل بعد؛ تم حفظ الاستخراج.")
         lines.append(replay_message)
+        if replay_status == "PARTIAL_WINDOW":
+            coverage_status = replay.get("coverage_status") or "PARTIAL_WINDOW"
+            coverage_ratio = replay.get("coverage_ratio")
+            if coverage_ratio is not None:
+                lines.append(f"التغطية: <code>{_text(coverage_status)}</code> · {float(coverage_ratio) * 100:.2f}%")
+            else:
+                lines.append(f"التغطية: <code>{_text(coverage_status)}</code>")
+            if replay.get("coverage_start") or replay.get("coverage_end"):
+                lines.append(f"النطاق المتاح: <code>{_text(replay.get('coverage_start'))} → {_text(replay.get('coverage_end'))}</code>")
+            lines.append("تم حفظ الاستخراج وبيانات G5؛ لا توجد نتيجة تداول كاملة ما لم تصبح التغطية FULL.")
     elif outcome.get("status") or outcome.get("reported_pnl_pct") is not None or outcome.get("derived_pnl_pct") is not None:
         lines.append("النتيجة الموجودة في الرسالة المصدر (لم تُعتبر Replay موثقًا):")
         if outcome.get("status") is not None:

@@ -675,74 +675,6 @@ class HistoricalForwardingService:
             # Network/provider work happens after the G5 savepoint has released.
             interval = self._auto_replay_interval(start, end)
             try:
-                if provider is None:
-                    from capitalguard.infrastructure.market.historical_ohlcv_provider import BinanceHistoricalOhlcvProvider
-                    provider = BinanceHistoricalOhlcvProvider()
-                candles, endpoint = provider.fetch(
-                    asset=str(signal.asset or ""),
-                    market=signal.market,
-                    interval=interval,
-                    start=start,
-                    end=end,
-                    limit=limit,
-                )
-            except Exception as exc:
-                item.update({
-                    "status": "REPLAY_FAILED",
-                    "replay_status": "PROVIDER_UNAVAILABLE",
-                    "reason": "Historical market data could not be fetched; G5 evidence was preserved.",
-                    "error_type": type(exc).__name__,
-                    "interval": interval,
-                })
-                failed += 1
-                items.append(item)
-                continue
-
-            coverage_seconds = self._interval_seconds(interval) * max(0, limit - 1)
-            first_candle_time = min((candle.open_time for candle in candles), default=None)
-            coverage_complete = bool(
-                first_candle_time is not None
-                and first_candle_time <= start
-                and end <= start + timedelta(seconds=coverage_seconds)
-            )
-            if not coverage_complete:
-                item.update({
-                    "status": "REPLAY_PARTIAL",
-                    "replay_status": "PARTIAL_WINDOW",
-                    "reason": "Historical provider returned a bounded window that does not cover the requested T0-to-end range.",
-                    "interval": interval,
-                    "coverage_start": first_candle_time.isoformat() if first_candle_time else None,
-                    "coverage_end": max((candle.open_time for candle in candles), default=None).isoformat() if candles else None,
-                })
-                failed += 1
-                items.append(item)
-                continue
-
-            gate = self.replay_gate_service.assess(
-                parse_status="PARSED",
-                financial_outcome=None,
-                timeline_events=[TimelineEventInput(
-                    event_type=str((receipt.metadata_json or {}).get("event_kind") or "INITIAL_SIGNAL"),
-                    event_time=receipt.source_message_timestamp,
-                    source_message_id=receipt.source_message_id,
-                    reply_to_message_id=receipt.source_reply_to_message_id,
-                    edit_time=receipt.source_edit_date,
-                )],
-                market_data_available=bool(candles),
-            )
-            item["replay_gate"] = gate.status
-            if not gate.replay_allowed:
-                item.update({
-                    "status": "REPLAY_PENDING" if gate.status == "REPLAY_PENDING" else "REVIEW_REQUIRED",
-                    "replay_status": gate.status,
-                    "reason_codes": list(gate.reason_codes),
-                    "interval": interval,
-                })
-                review_required += 1
-                items.append(item)
-                continue
-
-            try:
                 with session.begin_nested():
                     replay = self.replay_service.replay_g6(
                         session,
@@ -752,17 +684,29 @@ class HistoricalForwardingService:
                         replay_end=end,
                         interval=interval,
                         limit=limit,
-                        provider=_StaticCandleProvider(candles, endpoint),
+                        provider=provider,
                     )
                     events = replay.get("events") or []
                     result_status = str(replay.get("status") or "FAILED")
+                    run = replay.get("run")
+                    coverage = replay.get("coverage")
+                    coverage_status = getattr(run, "coverage_status", None) or (coverage.status.value if coverage else None)
+                    coverage_ratio = getattr(run, "coverage_ratio", None)
+                    if coverage_ratio is None and coverage is not None:
+                        coverage_ratio = coverage.coverage_ratio
+                    actual_start = getattr(run, "actual_start", None) or (coverage.actual_start if coverage else None)
+                    actual_end = getattr(run, "actual_end", None) or (coverage.actual_end if coverage else None)
                     item.update({
-                        "status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"} else "REPLAY_FAILED",
+                        "status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"} else "REPLAY_PARTIAL" if result_status == "REPLAY_PARTIAL" else "REPLAY_FAILED",
                         "replay_status": result_status,
                         "event_count": len(events),
                         "last_event": getattr(events[-1], "event_type", None) if events else None,
                         "lifecycle_status": self._lifecycle_status(signal, events),
                         "interval": interval,
+                        "coverage_status": coverage_status,
+                        "coverage_ratio": coverage_ratio,
+                        "coverage_start": actual_start.isoformat() if actual_start else None,
+                        "coverage_end": actual_end.isoformat() if actual_end else None,
                     })
                     replay_statuses.append(result_status)
                     if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
@@ -776,6 +720,7 @@ class HistoricalForwardingService:
                     "interval": interval,
                 })
                 failed += 1
+
             items.append(item)
 
         remaining_staged = sum(1 for receipt in receipts if receipt.validation_status == "STAGED")
