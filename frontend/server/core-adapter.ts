@@ -568,6 +568,15 @@ export async function coreReplayHistoricalSignalFromBinance(input: CoreHistorica
   return result as CoreHistoricalBinanceReplayConfirmation;
 }
 
+export type CoreHistoricalReplayRetryConfirmation = { ok: boolean; receipt_id: number; signal_id: number; materialization_id: number; replay_run_id: number; replay_run_ref: string; status: string; event_count: number; coverage_status: string | null; coverage_ratio: number | null; actual_start: string | null; actual_end: string | null; quality_status: string; ambiguity_status: string; commercial_enabled: false };
+
+export async function coreRetryHistoricalReplay(input: { actorTelegramId: number; receiptId: number; idempotencyKey: string }, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreHistoricalReplayRetryConfirmation> {
+  if (!Number.isSafeInteger(input.actorTelegramId) || input.actorTelegramId <= 0 || !Number.isSafeInteger(input.receiptId) || input.receiptId <= 0 || input.idempotencyKey.trim().length < 16) throw new Error("CAPITALGUARD_HISTORICAL_REPLAY_RETRY_INPUT_INVALID");
+  const result = await coreCommand(`/api/webapp/owner/historical-receipts/${input.receiptId}/replay-retry`, { actor_telegram_id: input.actorTelegramId, receipt_id: input.receiptId, idempotency_key: input.idempotencyKey }, fetchImpl, env);
+  if (typeof result !== "object" || result === null || result.ok !== true || result.receipt_id !== input.receiptId || result.commercial_enabled !== false || typeof result.event_count !== "number") throw new Error("CAPITALGUARD_HISTORICAL_REPLAY_RETRY_INVALID");
+  return result as CoreHistoricalReplayRetryConfirmation;
+}
+
 export async function coreReplayReviewedBatchFromBinance(input: CoreHistoricalBatchBinanceReplayInput, fetchImpl: typeof fetch = fetch, env = process.env): Promise<CoreHistoricalBatchBinanceReplayConfirmation> {
   if (!Number.isSafeInteger(input.actorTelegramId) || input.actorTelegramId <= 0 || !Number.isSafeInteger(input.batchId) || input.batchId <= 0 || input.idempotencyKey.trim().length < 16) throw new Error("CAPITALGUARD_OWNER_BATCH_REPLAY_INPUT_INVALID");
   const result = await coreCommand(`/api/webapp/owner/review-batches/${input.batchId}/replay-binance`, { actor_telegram_id: input.actorTelegramId, batch_id: input.batchId, idempotency_key: input.idempotencyKey }, fetchImpl, env);
