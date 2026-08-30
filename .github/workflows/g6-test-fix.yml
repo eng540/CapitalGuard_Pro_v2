@@ -4,42 +4,163 @@ on:
   push:
     branches:
       - feature/g6-historical-replay-upgrade
+      - fix/g6-runtime-coverage
 
 permissions:
   contents: write
 
 jobs:
   apply-fix:
-    if: ${{ !contains(github.event.head_commit.message, '[g6-router-fix-applied]') }}
+    if: ${{ !contains(github.event.head_commit.message, '[g6-runtime-fix-applied]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Align retry router
+      - name: Apply canonical G6 runtime fix
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
-          p = Path('frontend/server/capitalguard.ts')
+
+          p = Path('src/capitalguard/application/services/historical_forwarding_service.py')
           text = p.read_text(encoding='utf-8')
-          line = '    retryHistoricalReplay: protectedProcedure.input(z.object({ receiptId: z.number().int().positive() })).mutation(({ ctx, input }) => coreRetryHistoricalReplay({ actorTelegramId: telegramIdFromWebSession(ctx.user.openId), receiptId: input.receiptId, idempotencyKey: randomUUID() })),\n'
-          if text.count(line) != 1:
-              raise SystemExit(f'Expected exactly one retry route, found {text.count(line)}')
-          text = text.replace(line, '', 1)
-          anchor = '  historicalIntakeDetail: protectedProcedure.input(z.object({ batchId: z.number().int().positive() })).query(({ ctx, input }) => coreGetHistoricalIntake(input.batchId, telegramIdFromWebSession(ctx.user.openId))),\n'
-          if text.count(anchor) != 1:
-              raise SystemExit(f'Expected one historicalIntakeDetail anchor, found {text.count(anchor)}')
-          replacement = anchor + line
-          text = text.replace(anchor, replacement, 1)
+          start = text.index('            # Network/provider work happens after the G5 savepoint has released.')
+          end = text.index('            items.append(item)', start)
+          replacement = '''            # G6 owns historical market acquisition and coverage classification.
+            # Do not prefetch here: that would duplicate provider logic and can
+            # disagree with HistoricalMarketReplayService coverage semantics.
+            interval = self._auto_replay_interval(start, end)
+            try:
+                with session.begin_nested():
+                    replay = self.replay_service.replay_g6(
+                        session,
+                        signal_id=signal.id,
+                        materialization_id=materialization.id,
+                        start=start,
+                        replay_end=end,
+                        interval=interval,
+                        limit=limit,
+                        provider=provider,
+                    )
+                    events = replay.get("events") or []
+                    result_status = str(replay.get("status") or "FAILED")
+                    run = replay.get("run")
+                    coverage = (replay.get("coverage") or getattr(run, "result_json", {}).get("coverage", {})) if run else {}
+                    item.update({
+                        "status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"} else "REPLAY_FAILED",
+                        "replay_status": result_status,
+                        "event_count": len(events),
+                        "last_event": getattr(events[-1], "event_type", None) if events else None,
+                        "lifecycle_status": self._lifecycle_status(signal, events),
+                        "interval": interval,
+                        "coverage_status": getattr(run, "coverage_status", None) if run else coverage.get("status"),
+                        "coverage_ratio": getattr(run, "coverage_ratio", None) if run else coverage.get("ratio"),
+                        "coverage_start": getattr(run, "actual_start", None).isoformat() if run and getattr(run, "actual_start", None) else coverage.get("actual_start"),
+                        "coverage_end": getattr(run, "actual_end", None).isoformat() if run and getattr(run, "actual_end", None) else coverage.get("actual_end"),
+                    })
+                    replay_statuses.append(result_status)
+                    if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
+                        failed += 1
+            except Exception as exc:
+                item.update({
+                    "status": "REPLAY_FAILED",
+                    "replay_status": "FAILED",
+                    "reason": "Historical replay failed; prior G5 evidence was preserved.",
+                    "error_type": type(exc).__name__,
+                    "interval": interval,
+                })
+                failed += 1
+'''
+          text = text[:start] + replacement + text[end:]
+          p.write_text(text, encoding='utf-8')
+
+          p = Path('src/capitalguard/interfaces/telegram/presentation_adapter.py')
+          text = p.read_text(encoding='utf-8')
+          old = '            "PARTIAL_WINDOW": "بيانات السوق المتاحة لا تغطي كامل الفترة من وقت المصدر؛ تم حفظ الاستخراج دون ادعاء نتيجة كاملة.",'
+          new = '''            "PARTIAL_WINDOW": (
+                "⚠️ وصلت المحاكاة إلى G6، لكن التغطية التاريخية جزئية؛ "
+                "لن يتم احتساب إغلاق أو ربح كامل دون تغطية زمنية كافية."
+            ),'''
+          if old not in text:
+              raise SystemExit('PARTIAL_WINDOW presentation string not found')
+          text = text.replace(old, new, 1)
+          old_block = '''        lines.append(replay_message)\n    elif outcome.get("status")'''
+          new_block = '''        lines.append(replay_message)
+        if replay_status == "PARTIAL_WINDOW":
+            coverage_status = replay.get("coverage_status") or "PARTIAL_WINDOW"
+            coverage_ratio = replay.get("coverage_ratio")
+            coverage_start = replay.get("coverage_start")
+            coverage_end = replay.get("coverage_end")
+            coverage_line = f"التغطية: <code>{_text(coverage_status)}</code>"
+            if coverage_ratio is not None:
+                coverage_line += f" · {float(coverage_ratio) * 100:.2f}%"
+            lines.append(coverage_line)
+            if coverage_start or coverage_end:
+                lines.append(
+                    f"النطاق المتاح: <code>{_text(coverage_start)} → {_text(coverage_end)}</code>"
+                )
+            lines.append("تم حفظ الاستخراج وبيانات G5؛ لا توجد نتيجة تداول كاملة ما لم تصبح التغطية FULL.")
+    elif outcome.get("status")'''
+          if old_block not in text:
+              raise SystemExit('presentation insertion anchor not found')
+          text = text.replace(old_block, new_block, 1)
+          p.write_text(text, encoding='utf-8')
+
+          p = Path('src/capitalguard/interfaces/telegram/historical_forwarding_handler.py')
+          text = p.read_text(encoding='utf-8')
+          old = '                replay_result = auto_by_receipt.get(single_receipt_id)\n'
+          new = '''                replay_result = auto_by_receipt.get(single_receipt_id)
+                if str((replay_result or {}).get("replay_status") or "").upper() == "PARTIAL_WINDOW" and single_receipt_id:
+                    allowed_actions.add("RETRY")
+'''
+          if old not in text:
+              raise SystemExit('single replay binding anchor not found')
+          text = text.replace(old, new, 1)
+          old = '''        _, batch_text, action = query.data.split(":", 2)
+        batch_id = int(batch_text)
+        batch = HistoricalForwardingService().apply_preview_decision(
+'''
+          new = '''        _, batch_text, action = query.data.split(":", 2)
+        batch_id = int(batch_text)
+        if action == "RETRY":
+            batch = db_session.get(HistoricalImportBatch, batch_id)
+            if batch is None:
+                raise HistoricalSignalValidationError("Historical batch does not exist")
+            receipt = db_session.execute(
+                select(HistoricalForwardReceipt)
+                .where(HistoricalForwardReceipt.batch_id == batch_id)
+                .order_by(HistoricalForwardReceipt.id.desc())
+            ).scalars().first()
+            if receipt is None:
+                raise HistoricalSignalValidationError("Historical receipt does not exist")
+            replay = HistoricalMarketReplayService().retry_g6(db_session, receipt_id=receipt.id)
+            run = replay.get("run")
+            status = str(replay.get("status") or getattr(run, "status", "FAILED"))
+            coverage_status = getattr(run, "coverage_status", None)
+            coverage_ratio = getattr(run, "coverage_ratio", None)
+            await query.answer("تمت إعادة فحص Replay", show_alert=False)
+            await query.message.reply_text(
+                "🔄 إعادة فحص المحاكاة التاريخية\n"
+                f"الحالة: {status}\n"
+                f"التغطية: {coverage_status or '—'}"
+                + (f" · {float(coverage_ratio) * 100:.2f}%" if coverage_ratio is not None else "")
+            )
+            return
+        batch = HistoricalForwardingService().apply_preview_decision(
+'''
+          if old not in text:
+              raise SystemExit('callback anchor not found')
+          text = text.replace(old, new, 1)
           p.write_text(text, encoding='utf-8')
           PY
+          python -m compileall -q src/capitalguard/application/services/historical_forwarding_service.py src/capitalguard/interfaces/telegram/presentation_adapter.py src/capitalguard/interfaces/telegram/historical_forwarding_handler.py
           git diff --check
-      - name: Commit
+      - name: Commit and push
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add frontend/server/capitalguard.ts
-          git commit -m 'fix: expose historical replay retry at user router level [g6-router-fix-applied]'
-          git push origin HEAD:feature/g6-historical-replay-upgrade
+          git add src/capitalguard/application/services/historical_forwarding_service.py src/capitalguard/interfaces/telegram/presentation_adapter.py src/capitalguard/interfaces/telegram/historical_forwarding_handler.py
+          git commit -m 'fix: route historical coverage through canonical G6 replay [g6-runtime-fix-applied]'
+          git push origin HEAD:${{ github.ref_name }}
