@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/g6-runtime-coverage
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
