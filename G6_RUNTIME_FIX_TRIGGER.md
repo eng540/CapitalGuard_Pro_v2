@@ -1,0 +1,1 @@
+Temporary trigger for the canonical G6 runtime coverage repair. This file is removed after the automated patch commit.
