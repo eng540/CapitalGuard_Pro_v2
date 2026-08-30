@@ -122,6 +122,11 @@ class HistoricalG6ReplayCommand(BaseModel):
     signal_id: int
     idempotency_key: str
 
+class HistoricalReplayRetryCommand(BaseModel):
+    actor_telegram_id: int
+    receipt_id: int
+    idempotency_key: str
+
 
 class ContinuumHandoffDecisionCommand(BaseModel):
     actor_telegram_id: int
@@ -1188,6 +1193,20 @@ async def execute_g6_historical_replay(signal_id: int, command: HistoricalG6Repl
     except WebCommandError as exc:
         detail = str(exc)
         status_code = 409 if detail.startswith("G6 replay") else 403
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
+@router.post("/owner/historical-receipts/{receipt_id}/replay-retry")
+async def execute_historical_replay_retry(receipt_id: int, command: HistoricalReplayRetryCommand, request: Request):
+    require_core_service_key(request.headers.get("authorization"))
+    if receipt_id != command.receipt_id or len(command.idempotency_key.strip()) < 16:
+        raise HTTPException(status_code=422, detail="Invalid historical replay retry command")
+    try:
+        with session_scope() as session:
+            return WebCommandService().retry_g6_historical_receipt(session, actor_telegram_id=command.actor_telegram_id, receipt_id=receipt_id, idempotency_key=command.idempotency_key)
+    except WebCommandError as exc:
+        detail = str(exc)
+        status_code = 409 if "does not exist" in detail.lower() else 403
         raise HTTPException(status_code=status_code, detail=detail) from exc
 
 

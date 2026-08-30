@@ -15,7 +15,7 @@ from capitalguard.application.services.historical_owner_review_service import Hi
 from capitalguard.application.services.operational_admission_service import OperationalAdmissionService
 from capitalguard.application.services.operational_decision_service import OperationalDecisionService
 from capitalguard.config import settings
-from capitalguard.infrastructure.db.models import HistoricalImportBatch, HistoricalSignal, HistoricalSignalEvidence, HistoricalSignalMaterialization, UserTrade, UserTradeStatusEnum, WebCommandAudit
+from capitalguard.infrastructure.db.models import HistoricalForwardReceipt, HistoricalImportBatch, HistoricalSignal, HistoricalSignalEvidence, HistoricalSignalMaterialization, UserTrade, UserTradeStatusEnum, WebCommandAudit
 from capitalguard.infrastructure.db.repository import UserRepository
 
 
@@ -286,6 +286,25 @@ class WebCommandService:
                 raise WebCommandError("Historical Binance source unavailable; replay made no changes") from exc
         response = {"ok": True, "batch_id": batch_id, "signal_ids": [signal.id for signal in signals], "event_count": total_events, "window": "SOURCE_TIMESTAMP_MINUS_24H", "commercial_enabled": False, "replayed": True}
         self._record(session, idempotency_key=idempotency_key, command_type=self.REPLAY_BINANCE, actor_user_id=owner.id, target_type="HISTORICAL_IMPORT_BATCH", target_id=batch_id, request_hash=request_hash, response=response)
+        return response
+
+    def retry_g6_historical_receipt(self, session: Session, *, actor_telegram_id: int, receipt_id: int, idempotency_key: str) -> dict:
+        owner = self._require_owner(session, actor_telegram_id)
+        receipt = session.get(HistoricalForwardReceipt, receipt_id)
+        if receipt is None:
+            raise WebCommandError("Historical receipt does not exist")
+        request_hash = self._fingerprint("G6_HISTORICAL_REPLAY_RETRY", actor_telegram_id, "HISTORICAL_FORWARD_RECEIPT", receipt_id, {})
+        existing = self._replay_or_reject(session, idempotency_key=idempotency_key, request_hash=request_hash)
+        if existing is not None:
+            return existing
+        from capitalguard.application.services.historical_market_replay_service import HistoricalMarketReplayService
+        try:
+            result = HistoricalMarketReplayService().retry_g6(session, receipt_id=receipt_id)
+        except ValueError as exc:
+            raise WebCommandError(str(exc)) from exc
+        run = result["run"]
+        response = {"ok": result["status"] != "FAILED", "receipt_id": receipt_id, "signal_id": run.signal_id, "materialization_id": run.materialization_id, "replay_run_id": run.id, "replay_run_ref": run.run_ref, "status": result["status"], "event_count": len(result.get("events") or []), "coverage_status": run.coverage_status, "coverage_ratio": run.coverage_ratio, "actual_start": run.actual_start.isoformat() if run.actual_start else None, "actual_end": run.actual_end.isoformat() if run.actual_end else None, "quality_status": run.quality_status, "ambiguity_status": run.ambiguity_status, "commercial_enabled": False}
+        self._record(session, idempotency_key=idempotency_key, command_type="G6_HISTORICAL_REPLAY_RETRY", actor_user_id=owner.id, target_type="HISTORICAL_FORWARD_RECEIPT", target_id=receipt_id, request_hash=request_hash, response=response, status="FAILED" if result["status"] == "FAILED" else "COMPLETED")
         return response
 
     def replay_g6_historical_signal(self, session: Session, *, actor_telegram_id: int, signal_id: int, idempotency_key: str) -> dict:
