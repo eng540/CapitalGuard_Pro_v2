@@ -113,6 +113,53 @@ def test_g6_partial_window_is_persisted_without_fabricating_a_complete_result(db
     assert result["run"].actual_end == signal.decision_timestamp
 
 
+def test_g6_off_grid_source_timestamp_uses_market_grid_and_completes(db_session):
+    draft, _revision = accepted_g5_draft(db_session)
+    signal = HistoricalSignalMaterializationService().materialize(db_session, draft_id=draft.id)
+    from capitalguard.infrastructure.db.models import HistoricalSignalMaterialization
+    bridge = db_session.execute(
+        select(HistoricalSignalMaterialization).where(HistoricalSignalMaterialization.signal_id == signal.id)
+    ).scalar_one()
+
+    source_time = datetime(2025, 12, 4, 20, 38, 30, tzinfo=timezone.utc)
+    signal.decision_timestamp = source_time
+    market_times = [
+        datetime(2025, 12, 4, 20, 39, tzinfo=timezone.utc) + timedelta(minutes=index)
+        for index in range(1440)
+    ]
+    candles = [
+        MarketCandle(
+            asset="BTCUSDT",
+            market="Futures",
+            open_time=open_time,
+            open=Decimal("93000"),
+            high=Decimal("93500"),
+            low=Decimal("92500"),
+            close=Decimal("93000"),
+            volume=Decimal("1"),
+            data_source="BINANCE_FUTURES",
+        )
+        for open_time in market_times
+    ]
+
+    result = HistoricalMarketReplayService().replay_g6(
+        db_session,
+        signal_id=signal.id,
+        materialization_id=bridge.id,
+        start=source_time,
+        replay_end=source_time + timedelta(hours=24),
+        provider=FakeProvider(candles),
+    )
+
+    assert result["coverage"].status.value == "FULL"
+    assert result["coverage"].expected_candles == 1440
+    assert result["coverage"].actual_candles == 1440
+    assert result["coverage"].coverage_ratio == 1.0
+    assert result["status"] in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}
+    assert result["run"].coverage_status == "FULL"
+    assert result["run"].status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}
+
+
 def test_g6_marks_ohlcv_tp_sl_conflict_ambiguous(db_session):
     draft, _revision = accepted_g5_draft(db_session)
     signal = HistoricalSignalMaterializationService().materialize(db_session, draft_id=draft.id)
