@@ -39,6 +39,51 @@ def test_partial_window_when_provider_does_not_reach_requested_end():
     assert coverage.coverage_ratio == pytest.approx(3 / 5)
 
 
+@pytest.mark.parametrize("second", [15, 30, 45])
+def test_off_grid_source_seconds_do_not_create_false_partial_window(second):
+    requested_start = datetime(2025, 12, 4, 20, 38, second, tzinfo=timezone.utc)
+    requested_end = requested_start + timedelta(hours=24)
+    expected_times = [
+        datetime(2025, 12, 4, 20, 39, tzinfo=timezone.utc) + timedelta(minutes=index)
+        for index in range(1440)
+    ]
+
+    coverage = calculate_historical_coverage(
+        requested_start=requested_start,
+        requested_end=requested_end,
+        candle_times=expected_times,
+        interval=timedelta(minutes=1),
+    )
+
+    assert coverage.status is CoverageStatus.FULL
+    assert coverage.expected_candles == 1440
+    assert coverage.actual_candles == 1440
+    assert coverage.coverage_ratio == 1.0
+    assert coverage.actual_start == expected_times[0]
+    assert coverage.actual_end == expected_times[-1]
+
+
+def test_exact_btcusdt_reproduction_is_full_1440_of_1440():
+    requested_start = datetime(2025, 12, 4, 20, 38, 30, tzinfo=timezone.utc)
+    requested_end = datetime(2025, 12, 5, 20, 38, 30, tzinfo=timezone.utc)
+    times = [
+        datetime(2025, 12, 4, 20, 39, tzinfo=timezone.utc) + timedelta(minutes=index)
+        for index in range(1440)
+    ]
+
+    coverage = calculate_historical_coverage(
+        requested_start=requested_start,
+        requested_end=requested_end,
+        candle_times=times,
+        interval=timedelta(minutes=1),
+    )
+
+    assert coverage.status is CoverageStatus.FULL
+    assert coverage.expected_candles == 1440
+    assert coverage.actual_candles == 1440
+    assert coverage.coverage_ratio == 1.0
+
+
 def test_gapped_window_when_boundaries_are_present_but_internal_candle_is_missing():
     times = [START, START + timedelta(minutes=1), START + timedelta(minutes=3), END]
     coverage = calculate_historical_coverage(
@@ -50,6 +95,26 @@ def test_gapped_window_when_boundaries_are_present_but_internal_candle_is_missin
 
     assert coverage.status is CoverageStatus.GAPPED
     assert coverage.gaps == ((START + timedelta(minutes=2), START + timedelta(minutes=3)),)
+
+
+def test_partial_window_when_off_grid_beginning_is_missing():
+    requested_start = datetime(2025, 12, 4, 20, 38, 30, tzinfo=timezone.utc)
+    requested_end = datetime(2025, 12, 4, 21, 38, 30, tzinfo=timezone.utc)
+    times = [
+        datetime(2025, 12, 4, 20, 40, tzinfo=timezone.utc) + timedelta(minutes=index)
+        for index in range(59)
+    ]
+
+    coverage = calculate_historical_coverage(
+        requested_start=requested_start,
+        requested_end=requested_end,
+        candle_times=times,
+        interval=timedelta(minutes=1),
+    )
+
+    assert coverage.status is CoverageStatus.PARTIAL_WINDOW
+    assert coverage.expected_candles == 60
+    assert coverage.actual_candles == 59
 
 
 def test_unavailable_window_has_zero_observations():
