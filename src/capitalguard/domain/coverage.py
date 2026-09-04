@@ -40,6 +40,7 @@ class HistoricalCoverage:
     coverage_ratio: float
     status: CoverageStatus
     gaps: tuple[tuple[datetime, datetime], ...] = ()
+    interval: timedelta = timedelta(minutes=1)
 
     @property
     def is_complete(self) -> bool:
@@ -47,7 +48,7 @@ class HistoricalCoverage:
 
     @property
     def missing_candles(self) -> int:
-        return max(0, self.expected_candles - self.actual_candles)
+        return sum(int((gap_end - gap_start) / self.interval) for gap_start, gap_end in self.gaps)
 
 
 def interval_delta(interval: str) -> timedelta:
@@ -69,22 +70,10 @@ def _floor_to_grid(value: datetime, interval: timedelta) -> datetime:
     return epoch + ((normalized - epoch) // interval) * interval
 
 
-def _ceil_to_grid(value: datetime, interval: timedelta) -> datetime:
-    normalized = _utc(value)
-    floor = _floor_to_grid(normalized, interval)
-    return floor if floor == normalized else floor + interval
-
-
 def _expected_market_grid(*, requested_start: datetime, requested_end: datetime, interval: timedelta) -> tuple[datetime, datetime, list[datetime]]:
     start = _utc(requested_start)
     end = _utc(requested_end)
-
-    # The raw source timestamp is retained for auditability. Replay coverage is
-    # measured using exchange-aligned candle OPEN times. For an off-grid source
-    # timestamp (20:38:30), the first complete candle is 20:39:00. The requested
-    # elapsed duration determines the number of expected candles, so a 24-hour
-    # window contains exactly 1440 one-minute candles.
-    market_grid_start = _ceil_to_grid(start, interval)
+    market_grid_start = _floor_to_grid(start, interval) + interval
     duration = end - start
     expected_count = int((duration + interval - timedelta(microseconds=1)) // interval)
     expected_count = max(0, expected_count)
@@ -105,20 +94,19 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
     if interval.total_seconds() <= 0:
         raise ValueError("Historical coverage interval must be positive")
 
-    _market_grid_start, _market_grid_end, expected_times = _expected_market_grid(
+    market_grid_start, market_grid_end, expected_times = _expected_market_grid(
         requested_start=start, requested_end=end, interval=interval
     )
     expected_set = set(expected_times)
     expected = len(expected_times)
-    normalized_times = {_utc(item) for item in candle_times}
-    times = sorted(normalized_times & expected_set)
-    actual = len(times)
+    normalized_times = {_utc(item) for item in candle_times if start <= _utc(item) <= end}
+    observed = sorted(normalized_times)
+    if not observed:
+        return HistoricalCoverage(start, end, None, None, expected, 0, 0.0, CoverageStatus.UNAVAILABLE, interval=interval)
 
-    if not times:
-        return HistoricalCoverage(start, end, None, None, expected, 0, 0.0, CoverageStatus.UNAVAILABLE)
-
-    actual_start, actual_end = times[0], times[-1]
-    missing = sorted(expected_set - set(times))
+    actual_start, actual_end = observed[0], observed[-1]
+    actual = min(len(observed), expected)
+    missing = sorted(expected_set - normalized_times)
     gaps: list[tuple[datetime, datetime]] = []
     if missing:
         gap_start = previous = missing[0]
@@ -129,10 +117,14 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
             previous = timestamp
         gaps.append((gap_start, previous + interval))
 
-    boundaries_complete = bool(expected_times) and actual_start == expected_times[0] and actual_end == expected_times[-1]
-    if boundaries_complete and gaps:
+    boundaries_complete = (
+        bool(expected_times)
+        and actual_start <= market_grid_start
+        and actual_end >= market_grid_end
+    )
+    if boundaries_complete and missing:
         status = CoverageStatus.GAPPED
-    elif actual == expected and boundaries_complete:
+    elif boundaries_complete:
         status = CoverageStatus.FULL
     else:
         status = CoverageStatus.PARTIAL_WINDOW
@@ -148,4 +140,5 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
         coverage_ratio=ratio,
         status=status,
         gaps=tuple(gaps),
+        interval=interval,
     )

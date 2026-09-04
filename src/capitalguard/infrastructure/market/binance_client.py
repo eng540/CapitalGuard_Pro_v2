@@ -85,8 +85,8 @@ class BinanceClient:
                 pass
         return min(30.0, (0.5 * (2**attempt)) + random.uniform(0.0, 0.25))
 
-    def _fetch_vision_agg_trades(self, *, symbol: str, start: datetime, market: str) -> list[dict]:
-        """Read Binance Public Data daily aggTrades when REST history is unavailable."""
+    def _fetch_vision_agg_trades(self, *, symbol: str, start: datetime, end: datetime, market: str) -> list[dict]:
+        """Stream one archive day and retain only the disputed minute."""
         normalized_market = market.upper()
         if normalized_market not in {"SPOT", "FUTURES"}:
             return []
@@ -106,19 +106,27 @@ class BinanceClient:
                     return []
                 raw = archive.open(members[0])
                 stream = gzip.open(raw, mode="rt", newline="") if members[0].lower().endswith(".gz") else io.TextIOWrapper(raw)
+                rows: list[dict] = []
                 try:
                     reader = csv.reader(stream)
-                    rows = []
                     for row in reader:
                         if len(row) < 6 or not row[0] or row[0].lower().startswith("agg"):
                             continue
                         try:
-                            rows.append({"timestamp": datetime.fromtimestamp(int(row[5]) / 1000, tz=timezone.utc), "price": self._positive_decimal(row[1]), "trade_id": int(row[0])})
+                            timestamp = datetime.fromtimestamp(int(row[5]) / 1000, tz=timezone.utc)
                         except (ValueError, TypeError, OverflowError):
                             continue
-                    return rows
+                        if timestamp < start:
+                            continue
+                        if timestamp > end:
+                            break
+                        try:
+                            rows.append({"timestamp": timestamp, "price": self._positive_decimal(row[1]), "trade_id": int(row[0])})
+                        except (ValueError, TypeError, OverflowError):
+                            continue
                 finally:
                     stream.close()
+                return rows
         except (requests.RequestException, zipfile.BadZipFile, OSError):
             return []
 
@@ -143,6 +151,8 @@ class BinanceClient:
         for attempt in range(max_retries + 1):
             try:
                 response = requests.get(endpoint, params=params, timeout=timeout_seconds)
+                if response.status_code == 404:
+                    return sorted(self._fetch_vision_agg_trades(symbol=normalized_symbol, start=start_utc, end=end_utc, market=normalized_market), key=lambda x: (x["timestamp"], x.get("trade_id") or 0))
                 if response.status_code in RETRYABLE_STATUS_CODES:
                     if attempt >= max_retries:
                         response.raise_for_status()
@@ -151,7 +161,7 @@ class BinanceClient:
                 response.raise_for_status()
                 rows = response.json()
                 break
-            except requests.RequestException as exc:
+            except requests.RequestException:
                 if attempt >= max_retries:
                     break
                 time.sleep(self._retry_delay(attempt))
@@ -171,7 +181,7 @@ class BinanceClient:
                     trades.append({"timestamp": timestamp, "price": price, "trade_id": row.get("a")})
             if trades:
                 return sorted(trades, key=lambda x: (x["timestamp"], x.get("trade_id") or 0))
-        return sorted([t for t in self._fetch_vision_agg_trades(symbol=normalized_symbol, start=start_utc, market=normalized_market) if start_utc <= t["timestamp"] <= end_utc], key=lambda x: (x["timestamp"], x.get("trade_id") or 0))
+        return sorted([t for t in self._fetch_vision_agg_trades(symbol=normalized_symbol, start=start_utc, end=end_utc, market=normalized_market)], key=lambda x: (x["timestamp"], x.get("trade_id") or 0))
 
     def get_historical_ohlcv(self, *, symbol: str, interval: str, start: datetime, end: datetime, market: str = "SPOT", limit: int = MAX_KLINES_LIMIT, timeout_seconds: float = 10.0, max_retries: int = 4) -> list[BinanceHistoricalCandle]:
         normalized_symbol, normalized_interval, start_utc, end_utc = self._validate_historical_request(symbol, interval, start, end, limit)

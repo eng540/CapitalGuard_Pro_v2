@@ -30,9 +30,6 @@ from .historical_signal_service import HistoricalSignalService, HistoricalSignal
 
 
 REPLAY_VERSION = "G6-R1"
-# Bump the policy fingerprint when the historical candle-grid semantics change.
-# This prevents a previously persisted PARTIAL run from being reused after the
-# temporal-alignment fix.
 REPLAY_POLICY_VERSION = "G6-OHLCV-MARKET-GRID-2"
 
 
@@ -400,16 +397,7 @@ class HistoricalMarketReplayService:
         start_utc, end_utc = self._utc(start), self._utc(replay_end)
         if start_utc >= end_utc:
             raise HistoricalSignalValidationError("Replay window is invalid")
-        run, created = self._get_or_create_run(
-            session,
-            signal_id=signal_id,
-            materialization_id=materialization_id,
-            start=start_utc,
-            replay_end=end_utc,
-            interval=interval,
-            limit=limit,
-            retry_of_fingerprint=retry_of_fingerprint,
-        )
+        run, created = self._get_or_create_run(session, signal_id=signal_id, materialization_id=materialization_id, start=start_utc, replay_end=end_utc, interval=interval, limit=limit, retry_of_fingerprint=retry_of_fingerprint)
         if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "REPLAY_PARTIAL"}:
             events = session.execute(select(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_run_id == run.id).order_by(HistoricalSignalEvent.event_timestamp, HistoricalSignalEvent.id)).scalars().all()
             return {"run": run, "events": events, "status": run.status, "replayed": True}
@@ -419,346 +407,159 @@ class HistoricalMarketReplayService:
         coverage: HistoricalCoverage
         try:
             if hasattr(provider, "fetch_with_coverage"):
-                candles, endpoint, coverage = provider.fetch_with_coverage(
-                    asset=str(signal.asset or ""),
-                    market=signal.market,
-                    interval=interval,
-                    start=start_utc,
-                    end=end_utc,
-                    limit=limit,
-                )
+                candles, endpoint, coverage = provider.fetch_with_coverage(asset=str(signal.asset or ""), market=signal.market, interval=interval, start=start_utc, end=end_utc, limit=limit)
             else:
-                candles, endpoint = provider.fetch(
-                    asset=str(signal.asset or ""),
-                    market=signal.market,
-                    interval=interval,
-                    start=start_utc,
-                    end=end_utc,
-                    limit=limit,
-                )
+                candles, endpoint = provider.fetch(asset=str(signal.asset or ""), market=signal.market, interval=interval, start=start_utc, end=end_utc, limit=limit)
                 coverage = self._coverage_from_candles(start=start_utc, end=end_utc, interval=interval, candles=candles)
         except Exception as exc:
             from capitalguard.infrastructure.market.binance_client import HistoricalMarketProviderError
-            if not isinstance(exc, HistoricalMarketProviderError):
-                raise
-            run.status = "FAILED"
-            run.failure_reason = str(exc)[:500]
-            run.failed_at = datetime.now(timezone.utc)
-            run.quality_status = "UNVERIFIED"
-            session.flush()
+            if not isinstance(exc, HistoricalMarketProviderError): raise
+            run.status = "FAILED"; run.failure_reason = str(exc)[:500]; run.failed_at = datetime.now(timezone.utc); run.quality_status = "UNVERIFIED"; session.flush()
             return {"run": run, "events": [], "status": "FAILED", "failure_reason": str(exc)}
         if not candles:
-            run.coverage_status = CoverageStatus.UNAVAILABLE.value
-            run.coverage_ratio = 0.0
-            run.status = "REPLAY_PARTIAL"
-            run.failure_reason = "Historical candle provider returned no evidence"
-            run.failed_at = datetime.now(timezone.utc)
-            run.quality_status = "UNVERIFIED"
-            session.flush()
+            run.coverage_status = CoverageStatus.UNAVAILABLE.value; run.coverage_ratio = 0.0; run.status = "REPLAY_PARTIAL"; run.failure_reason = "Historical candle provider returned no evidence"; run.failed_at = datetime.now(timezone.utc); run.quality_status = "UNVERIFIED"; session.flush()
             return {"run": run, "events": [], "status": run.status, "failure_reason": run.failure_reason}
-
         fetched_at = datetime.now(timezone.utc)
-        run.coverage_status = coverage.status.value
-        run.coverage_ratio = coverage.coverage_ratio
-        run.actual_start = coverage.actual_start
-        run.actual_end = coverage.actual_end
-        run.provider = sorted({candle.data_source for candle in candles if candle.data_source})[0] if candles else None
-        run.provider_endpoint = endpoint
-        run.data_source = run.provider
-        run.provider_metadata = {
-            "provider": run.provider,
-            "provider_version": "UNVERIFIED",
-            "endpoint": endpoint,
-            "interval": interval,
-            "limit": limit,
-            "data_as_of_status": "UNVERIFIABLE",
-            "coverage_status": coverage.status.value,
-            "coverage_ratio": coverage.coverage_ratio,
-            "requested_start": start_utc.isoformat(),
-            "requested_end": end_utc.isoformat(),
-            "actual_start": coverage.actual_start.isoformat() if coverage.actual_start else None,
-            "actual_end": coverage.actual_end.isoformat() if coverage.actual_end else None,
-            "expected_candles": coverage.expected_candles,
-            "actual_candles": coverage.actual_candles,
-            "gaps": [[gap_start.isoformat(), gap_end.isoformat()] for gap_start, gap_end in coverage.gaps],
-        }
-        run.fetched_at = fetched_at
-        run.data_as_of_status = "UNVERIFIABLE"
-        events = self.replay_candles(
-            session,
-            signal_id=signal_id,
-            candles=candles,
-            replay_end=end_utc,
-            interval=interval,
-            provider_endpoint=endpoint,
-            replay_run_id=run.id,
-            fetched_at=fetched_at,
-            data_as_of_status=run.data_as_of_status,
-            refresh_ranking=False,
-            resolver_client=getattr(provider, "client", None),
-        )
+        run.coverage_status = coverage.status.value; run.coverage_ratio = coverage.coverage_ratio; run.actual_start = coverage.actual_start; run.actual_end = coverage.actual_end
+        run.provider = sorted({candle.data_source for candle in candles if candle.data_source})[0] if candles else None; run.provider_endpoint = endpoint; run.data_source = run.provider
+        run.provider_metadata = {"provider": run.provider, "provider_version": "UNVERIFIED", "endpoint": endpoint, "interval": interval, "limit": limit, "data_as_of_status": "UNVERIFIABLE", "coverage_status": coverage.status.value, "coverage_ratio": coverage.coverage_ratio, "requested_start": start_utc.isoformat(), "requested_end": end_utc.isoformat(), "actual_start": coverage.actual_start.isoformat() if coverage.actual_start else None, "actual_end": coverage.actual_end.isoformat() if coverage.actual_end else None, "expected_candles": coverage.expected_candles, "actual_candles": coverage.actual_candles, "gaps": [[gap_start.isoformat(), gap_end.isoformat()] for gap_start, gap_end in coverage.gaps]}
+        run.fetched_at = fetched_at; run.data_as_of_status = "UNVERIFIABLE"
+        events = self.replay_candles(session, signal_id=signal_id, candles=candles, replay_end=end_utc, interval=interval, provider_endpoint=endpoint, replay_run_id=run.id, fetched_at=fetched_at, data_as_of_status=run.data_as_of_status, refresh_ranking=False, resolver_client=getattr(provider, "client", None))
         evidence = session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.replay_run_id == run.id)).scalars().first()
-        run.dataset_hash = evidence.artifact_hash if evidence else self._artifact_hash(self._artifact_payload(
-            signal_id=signal_id,
-            asset=signal.asset,
-            market=signal.market,
-            interval=interval,
-            candles=candles,
-            replay_end=end_utc,
-            provider_endpoint=endpoint,
-        ))
-        run.ambiguity_status = "AMBIGUOUS" if any(event.replay_status == "AMBIGUOUS" for event in events) else "NONE"
-        run.quality_status = "UNVERIFIABLE" if run.ambiguity_status in {"AMBIGUOUS", "INFERRED"} or run.data_as_of_status != "VERIFIED" else "UNASSESSED"
-        if coverage.status in {CoverageStatus.PARTIAL_WINDOW, CoverageStatus.GAPPED}:
-            run.status = "REPLAY_PARTIAL"
-        else:
-            run.status = "COMPLETED_UNVERIFIABLE" if run.ambiguity_status in {"AMBIGUOUS", "INFERRED"} or run.data_as_of_status != "VERIFIED" else "COMPLETED"
-        run.result_json = {
-            "event_ids": [event.id for event in events],
-            "event_count": len(events),
-            "events": [{"id": event.id, "type": event.event_type, "timestamp": event.event_timestamp.isoformat(), "price": str(event.price) if event.price is not None else None, "replay_status": event.replay_status, "confidence": str(event.event_confidence), "data": event.event_data} for event in events],
-            "evidence_id": evidence.id if evidence else None,
-            "ambiguity_status": run.ambiguity_status,
-            "coverage": {
-                "status": coverage.status.value,
-                "ratio": coverage.coverage_ratio,
-                "requested_start": start_utc.isoformat(),
-                "requested_end": end_utc.isoformat(),
-                "actual_start": coverage.actual_start.isoformat() if coverage.actual_start else None,
-                "actual_end": coverage.actual_end.isoformat() if coverage.actual_end else None,
-                "expected_candles": coverage.expected_candles,
-                "actual_candles": coverage.actual_candles,
-                "gaps": [[gap_start.isoformat(), gap_end.isoformat()] for gap_start, gap_end in coverage.gaps],
-            },
-            "source_lifecycle": source_lifecycle,
-        }
-        run.completed_at = datetime.now(timezone.utc)
-        session.flush()
+        run.dataset_hash = evidence.artifact_hash if evidence else self._artifact_hash(self._artifact_payload(signal_id=signal_id, asset=signal.asset, market=signal.market, interval=interval, candles=candles, replay_end=end_utc, provider_endpoint=endpoint))
+        run.ambiguity_status = "AMBIGUOUS" if any(event.replay_status == "AMBIGUOUS" for event in events) else "NONE"; run.quality_status = "UNVERIFIABLE" if run.ambiguity_status in {"AMBIGUOUS", "INFERRED"} or run.data_as_of_status != "VERIFIED" else "UNASSESSED"
+        if coverage.status in {CoverageStatus.PARTIAL_WINDOW, CoverageStatus.GAPPED}: run.status = "REPLAY_PARTIAL"
+        else: run.status = "COMPLETED_UNVERIFIABLE" if run.ambiguity_status in {"AMBIGUOUS", "INFERRED"} or run.data_as_of_status != "VERIFIED" else "COMPLETED"
+        run.result_json = {"event_ids": [event.id for event in events], "event_count": len(events), "events": [{"id": event.id, "type": event.event_type, "timestamp": event.event_timestamp.isoformat(), "price": str(event.price) if event.price is not None else None, "replay_status": event.replay_status, "confidence": str(event.event_confidence), "data": event.event_data} for event in events], "evidence_id": evidence.id if evidence else None, "ambiguity_status": run.ambiguity_status, "coverage": {"status": coverage.status.value, "ratio": coverage.coverage_ratio, "requested_start": start_utc.isoformat(), "requested_end": end_utc.isoformat(), "actual_start": coverage.actual_start.isoformat() if coverage.actual_start else None, "actual_end": coverage.actual_end.isoformat() if coverage.actual_end else None, "expected_candles": coverage.expected_candles, "actual_candles": coverage.actual_candles, "gaps": [[gap_start.isoformat(), gap_end.isoformat()] for gap_start, gap_end in coverage.gaps]}, "source_lifecycle": source_lifecycle}
+        run.completed_at = datetime.now(timezone.utc); session.flush()
         return {"run": run, "events": events, "status": run.status, "replayed": not created, "coverage": coverage}
 
-    def replay(
-        self,
-        session: Session,
-        *,
-        signal_id: int,
-        observations: Iterable[MarketObservation],
-        replay_end: datetime,
-        replay_run_id: int | None = None,
-        refresh_ranking: bool = True,
-    ) -> list[HistoricalSignalEvent]:
-        signal, entry, stop, target_levels = self._signal_levels(session, signal_id)
-        end_time = self._utc(replay_end)
-        normalized: list[MarketObservation] = []
+    def replay(self, session: Session, *, signal_id: int, observations: Iterable[MarketObservation], replay_end: datetime, replay_run_id: int | None = None, refresh_ranking: bool = True) -> list[HistoricalSignalEvent]:
+        signal, entry, stop, target_levels = self._signal_levels(session, signal_id); end_time = self._utc(replay_end); normalized=[]
         for observation in observations:
-            timestamp = self._utc(observation.as_of)
-            price = self._decimal(observation.price)
-            if price is None or price <= 0:
-                raise HistoricalSignalValidationError("Market observation price must be positive")
-            if timestamp > end_time:
-                raise HistoricalSignalValidationError("Market observation is after replay_end")
-            if observation.asset.upper() != str(signal.asset or "").upper():
-                continue
-            if signal.market and observation.market and observation.market.upper() != signal.market.upper():
-                continue
+            timestamp=self._utc(observation.as_of); price=self._decimal(observation.price)
+            if price is None or price <= 0: raise HistoricalSignalValidationError("Market observation price must be positive")
+            if timestamp > end_time: raise HistoricalSignalValidationError("Market observation is after replay_end")
+            if observation.asset.upper() != str(signal.asset or "").upper(): continue
+            if signal.market and observation.market and observation.market.upper() != signal.market.upper(): continue
             normalized.append(MarketObservation(observation.asset.upper(), observation.market, timestamp, price, observation.data_source))
-        normalized.sort(key=lambda item: item.as_of)
-        events: list[HistoricalSignalEvent] = []
-        activated = False
-        closed = False
-        hit_targets: set[int] = set()
-        dedup_prefix = f"g6:{replay_run_id}" if replay_run_id is not None else f"replay:{signal.id}"
-        clock = SimulationClock(self._utc(signal.decision_timestamp))
+        normalized.sort(key=lambda item: item.as_of); events=[]; activated=False; closed=False; hit_targets=set(); dedup_prefix=f"g6:{replay_run_id}" if replay_run_id is not None else f"replay:{signal.id}"; clock=SimulationClock(self._utc(signal.decision_timestamp))
         for observation in normalized:
             clock.advance_to(observation.as_of)
-            if observation.as_of < self._utc(signal.decision_timestamp) or closed:
-                continue
+            if observation.as_of < self._utc(signal.decision_timestamp) or closed: continue
             if not activated and entry is not None and self._hit(signal.side, observation.price, entry):
-                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="ACTIVATED", event_timestamp=clock.current_time, market_as_of=clock.current_time, data_source=observation.data_source, price=observation.price, replay_status="VERIFIED", event_confidence="1.0000", event_data={"replay_end": end_time.isoformat(), "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:ACTIVATED", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
-                activated = True
-            if not activated:
-                continue
+                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="ACTIVATED", event_timestamp=clock.current_time, market_as_of=clock.current_time, data_source=observation.data_source, price=observation.price, replay_status="VERIFIED", event_confidence="1.0000", event_data={"replay_end": end_time.isoformat(), "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:ACTIVATED", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking)); activated=True
+            if not activated: continue
             if stop is not None and self._stop_hit(signal.side, observation.price, stop):
-                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="SL", event_timestamp=clock.current_time, market_as_of=clock.current_time, data_source=observation.data_source, price=observation.price, replay_status="VERIFIED", event_confidence="1.0000", event_data={"replay_end": end_time.isoformat(), "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:SL", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
-                closed = True
-                continue
+                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="SL", event_timestamp=clock.current_time, market_as_of=clock.current_time, data_source=observation.data_source, price=stop, replay_status="VERIFIED", event_confidence="1.0000", event_data={"replay_end": end_time.isoformat(), "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:SL", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking)); closed=True; continue
             for index, level in enumerate(target_levels, start=1):
-                if index in hit_targets or not self._hit(signal.side, observation.price, level):
-                    continue
-                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type=f"TP{index}", event_timestamp=clock.current_time, market_as_of=clock.current_time, data_source=observation.data_source, price=level, replay_status="VERIFIED", event_confidence="1.0000", event_data={"target_index": index, "replay_end": end_time.isoformat(), "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:TP{index}", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
-                hit_targets.add(index)
-            if target_levels and len(hit_targets) == len(target_levels):
-                closed = True
+                if index in hit_targets or not self._hit(signal.side, observation.price, level): continue
+                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type=f"TP{index}", event_timestamp=clock.current_time, market_as_of=clock.current_time, data_source=observation.data_source, price=level, replay_status="VERIFIED", event_confidence="1.0000", event_data={"target_index": index, "replay_end": end_time.isoformat(), "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:TP{index}", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking)); hit_targets.add(index)
+            if target_levels and len(hit_targets)==len(target_levels): closed=True
         return events
 
     @staticmethod
     def _coarse_to_fine_candles(candles: list[MarketCandle], *, side: str | None, entry: Decimal | None, stop: Decimal | None, target_levels: list[Decimal]) -> list[MarketCandle]:
-        """Hierarchical traversal over already-fetched OHLCV; never issues a second candle provider call."""
-        if not candles: return []
-        groups = {}
-        for candle in candles:
-            key = (candle.open_time.astimezone(timezone.utc).date(), candle.open_time.astimezone(timezone.utc).hour)
-            groups.setdefault(key, []).append(candle)
-        selected=[]
-        activated=False
-        for key in sorted(groups):
-            cluster=groups[key]
-            high=max(c.high for c in cluster); low=min(c.low for c in cluster)
-            levels=[]
-            if not activated and entry is not None: levels.append(entry)
-            if activated:
-                if stop is not None: levels.append(stop)
-                levels.extend(level for i,level in enumerate(target_levels) if i < len(target_levels))
-            touches=any((high >= level if str(side or '').upper() == 'LONG' else low <= level) for level in levels)
-            if touches:
-                selected.extend(cluster)
-                if not activated and entry is not None and (high >= entry if str(side or '').upper() == 'LONG' else low <= entry): activated=True
-        return selected
+        """1D -> 1H -> 1m traversal over already-fetched OHLCV with directional level semantics."""
+        if not candles:
+            return []
+        direction = str(side or "").upper()
+        if direction not in {"LONG", "SHORT"}:
+            return []
 
-    def replay_candles(
-        self,
-        session: Session,
-        *,
-        signal_id: int,
-        candles: Iterable[MarketCandle],
-        replay_end: datetime,
-        interval: str = "1m",
-        provider_endpoint: str | None = None,
-        replay_run_id: int | None = None,
-        fetched_at: datetime | None = None,
-        data_as_of_status: str = "UNVERIFIABLE",
-        refresh_ranking: bool = True,
-        resolver_client=None,
-    ) -> list[HistoricalSignalEvent]:
-        signal, entry, stop, target_levels = self._signal_levels(session, signal_id)
-        end_time = self._utc(replay_end)
-        normalized: list[MarketCandle] = []
+        days: dict[object, list[MarketCandle]] = {}
         for candle in candles:
-            timestamp = self._utc(candle.open_time)
-            if timestamp > end_time:
-                raise HistoricalSignalValidationError("Market candle is after replay_end")
-            if candle.asset.upper() != str(signal.asset or "").upper():
-                continue
-            if signal.market and candle.market and candle.market.upper() != signal.market.upper():
-                continue
-            values = [self._decimal(value) for value in (candle.open, candle.high, candle.low, candle.close, candle.volume)]
-            if any(value is None or value <= 0 for value in values):
-                raise HistoricalSignalValidationError("OHLCV candle values must be positive")
-            normalized.append(candle)
-        normalized.sort(key=lambda item: self._utc(item.open_time))
-        events: list[HistoricalSignalEvent] = []
+            timestamp = candle.open_time.astimezone(timezone.utc)
+            days.setdefault(timestamp.date(), []).append(candle)
+
+        def range_touches(high: Decimal, low: Decimal, level: Decimal, *, is_stop: bool = False) -> bool:
+            if direction == "LONG":
+                return low <= level if is_stop else high >= level
+            return high >= level if is_stop else low <= level
+
+        selected: list[MarketCandle] = []
         activated = False
-        closed = False
-        hit_targets: set[int] = set()
-        dedup_prefix = f"g6:{replay_run_id}" if replay_run_id is not None else f"replay:{signal.id}"
-        decision_time = self._utc(signal.decision_timestamp)
-        clock = SimulationClock(decision_time)
-        eligible_candles = self._coarse_to_fine_candles([candle for candle in normalized if self._utc(candle.open_time) >= decision_time], side=signal.side, entry=entry, stop=stop, target_levels=target_levels)
-        ambiguity_status = "NONE"
-        market_evidence = self._record_market_evidence(
-            session,
-            signal_id=signal.id,
-            asset=signal.asset,
-            market=signal.market,
-            interval=interval,
-            candles=normalized,
-            replay_end=end_time,
-            provider_endpoint=provider_endpoint,
-            replay_run_id=replay_run_id,
-            fetched_at=fetched_at,
-            data_as_of_status=data_as_of_status,
-            ambiguity_status=ambiguity_status,
-            quality_status="UNASSESSED",
-        )
-        for candle in eligible_candles:
-            clock.advance_to(self._utc(candle.open_time))
-            candle_time = clock.current_time
-            if closed:
-                continue
-            activation_hit = entry is not None and (candle.high >= entry if str(signal.side or "").upper() == "LONG" else candle.low <= entry)
-            if not activated and activation_hit:
-                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="ACTIVATED", event_timestamp=candle_time, market_as_of=candle_time, data_source=candle.data_source, price=entry, replay_status="VERIFIED", event_confidence="1.0000", event_data={"replay_end": end_time.isoformat(), "candle_rule": "OHLCV", "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None, "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:ACTIVATED", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
-                activated = True
+        for day in sorted(days):
+            day_candles = sorted(days[day], key=lambda item: item.open_time)
+            day_high = max(c.high for c in day_candles)
+            day_low = min(c.low for c in day_candles)
             if not activated:
-                continue
-            stop_hit = stop is not None and self._candle_stop_hit(signal.side, candle, stop)
-            target_hits = [index for index, level in enumerate(target_levels, start=1) if index not in hit_targets and self._candle_target_hit(signal.side, candle, level)]
-            if stop_hit and target_hits and replay_run_id is None:
-                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="SL", event_timestamp=candle_time, market_as_of=candle_time, data_source=candle.data_source, price=stop, replay_status="VERIFIED", event_confidence="1.0000", event_data={"replay_end": end_time.isoformat(), "candle_rule": "PESSIMISTIC_SL_FIRST", "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None, "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:SL", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
-                closed = True
-                continue
-            if stop_hit and target_hits and replay_run_id is not None:
-                if self.intra_candle_resolver is None and resolver_client is not None and hasattr(resolver_client, "fetch_agg_trades"):
-                    self.intra_candle_resolver = IntraCandleResolver(resolver_client)
-                if self.intra_candle_resolver is None:
-                    ambiguity_status = "AMBIGUOUS"
-                    events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="AMBIGUOUS", event_timestamp=candle_time, market_as_of=candle_time, data_source=candle.data_source, price=None, replay_status="AMBIGUOUS", event_confidence="0.0000", event_data={"replay_end": end_time.isoformat(), "candle_rule": "NO_FINE_GRAIN_PROVIDER", "possible_events": ["SL", *[f"TP{index}" for index in target_hits]], "high": str(candle.high), "low": str(candle.low), "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None, "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:AMBIGUOUS:{candle_time.isoformat()}", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
-                    closed = True
+                if entry is None or not range_touches(day_high, day_low, entry):
                     continue
-                resolution = self.intra_candle_resolver.resolve(symbol=str(signal.asset or ""), market=signal.market, side=str(signal.side or ""), candle_open=candle_time, candle_close=candle_time + interval_delta(interval), stop=stop, target_levels=list(enumerate(target_levels, start=1)), candle_high=candle.high, candle_low=candle.low)
-                event_type = resolution.event
-                event_price = stop if event_type == "SL" else target_levels[int(event_type[2:]) - 1]
-                replay_status = "VERIFIED" if resolution.resolution == "VERIFIED_EVENT" else "INFERRED"
-                ambiguity_status = "NONE" if resolution.resolution == "VERIFIED_EVENT" else "INFERRED"
-                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type=event_type, event_timestamp=candle_time, market_as_of=candle_time, data_source=candle.data_source, price=event_price, replay_status=replay_status, event_confidence=str(resolution.confidence), event_data={"replay_end": end_time.isoformat(), "candle_rule": resolution.resolution, "resolution": resolution.resolution, "reason": resolution.reason, "resolution_details": resolution.details, "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None, "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:{event_type}:{candle_time.isoformat()}", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
-                closed = True
-                continue
+            else:
+                relevant = False
+                if stop is not None and range_touches(day_high, day_low, stop, is_stop=True):
+                    relevant = True
+                if any(range_touches(day_high, day_low, level) for level in target_levels):
+                    relevant = True
+                if not relevant:
+                    continue
+
+            hours: dict[int, list[MarketCandle]] = {}
+            for candle in day_candles:
+                hours.setdefault(candle.open_time.astimezone(timezone.utc).hour, []).append(candle)
+            for hour in sorted(hours):
+                hour_candles = sorted(hours[hour], key=lambda item: item.open_time)
+                high = max(c.high for c in hour_candles)
+                low = min(c.low for c in hour_candles)
+                if not activated:
+                    if entry is None or not range_touches(high, low, entry):
+                        continue
+                    selected.extend(hour_candles)
+                    activated = True
+                    continue
+
+                stop_touch = stop is not None and range_touches(high, low, stop, is_stop=True)
+                target_touch = any(range_touches(high, low, level) for level in target_levels)
+                if stop_touch or target_touch:
+                    selected.extend(hour_candles)
+        return sorted(selected, key=lambda item: item.open_time)
+
+    def replay_candles(self, session: Session, *, signal_id: int, candles: Iterable[MarketCandle], replay_end: datetime, interval: str = "1m", provider_endpoint: str | None = None, replay_run_id: int | None = None, fetched_at: datetime | None = None, data_as_of_status: str = "UNVERIFIABLE", refresh_ranking: bool = True, resolver_client=None) -> list[HistoricalSignalEvent]:
+        signal, entry, stop, target_levels = self._signal_levels(session, signal_id); end_time=self._utc(replay_end); normalized=[]
+        for candle in candles:
+            timestamp=self._utc(candle.open_time)
+            if timestamp > end_time: raise HistoricalSignalValidationError("Market candle is after replay_end")
+            if candle.asset.upper() != str(signal.asset or "").upper(): continue
+            if signal.market and candle.market and candle.market.upper() != signal.market.upper(): continue
+            values=[self._decimal(value) for value in (candle.open,candle.high,candle.low,candle.close,candle.volume)]
+            if any(value is None or value <= 0 for value in values): raise HistoricalSignalValidationError("OHLCV candle values must be positive")
+            normalized.append(candle)
+        normalized.sort(key=lambda item:self._utc(item.open_time)); events=[]; activated=False; closed=False; hit_targets=set(); dedup_prefix=f"g6:{replay_run_id}" if replay_run_id is not None else f"replay:{signal.id}"; decision_time=self._utc(signal.decision_timestamp); clock=SimulationClock(decision_time)
+        eligible_candles=self._coarse_to_fine_candles([candle for candle in normalized if self._utc(candle.open_time)>=decision_time], side=signal.side, entry=entry, stop=stop, target_levels=target_levels); ambiguity_status="NONE"
+        market_evidence=self._record_market_evidence(session, signal_id=signal.id, asset=signal.asset, market=signal.market, interval=interval, candles=normalized, replay_end=end_time, provider_endpoint=provider_endpoint, replay_run_id=replay_run_id, fetched_at=fetched_at, data_as_of_status=data_as_of_status, ambiguity_status=ambiguity_status, quality_status="UNASSESSED")
+        for candle in eligible_candles:
+            clock.advance_to(self._utc(candle.open_time)); candle_time=clock.current_time
+            if closed: continue
+            activation_hit=entry is not None and (candle.high>=entry if str(signal.side or "").upper()=="LONG" else candle.low<=entry)
+            if not activated and activation_hit:
+                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="ACTIVATED", event_timestamp=candle_time, market_as_of=candle_time, data_source=candle.data_source, price=entry, replay_status="VERIFIED", event_confidence="1.0000", event_data={"replay_end":end_time.isoformat(),"candle_rule":"OHLCV","market_evidence_ref":market_evidence.replay_run_ref if market_evidence else None,"replay_run_id":replay_run_id}, dedup_key=f"{dedup_prefix}:ACTIVATED", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking)); activated=True
+            if not activated: continue
+            stop_hit=stop is not None and self._candle_stop_hit(signal.side,candle,stop); target_hits=[index for index,level in enumerate(target_levels,start=1) if index not in hit_targets and self._candle_target_hit(signal.side,candle,level)]
+            if stop_hit and target_hits and replay_run_id is None:
+                events.append(self.signal_service.record_event(session,signal_id=signal.id,event_type="SL",event_timestamp=candle_time,market_as_of=candle_time,data_source=candle.data_source,price=stop,replay_status="VERIFIED",event_confidence="1.0000",event_data={"replay_end":end_time.isoformat(),"candle_rule":"PESSIMISTIC_SL_FIRST","market_evidence_ref":market_evidence.replay_run_ref if market_evidence else None,"replay_run_id":replay_run_id},dedup_key=f"{dedup_prefix}:SL",replay_run_id=replay_run_id,refresh_ranking=refresh_ranking)); closed=True; continue
+            if stop_hit and target_hits and replay_run_id is not None:
+                if self.intra_candle_resolver is None and resolver_client is not None and hasattr(resolver_client,"fetch_agg_trades"): self.intra_candle_resolver=IntraCandleResolver(resolver_client)
+                if self.intra_candle_resolver is None:
+                    ambiguity_status="AMBIGUOUS"
+                    events.append(self.signal_service.record_event(session,signal_id=signal.id,event_type="AMBIGUOUS",event_timestamp=candle_time,market_as_of=candle_time,data_source=candle.data_source,price=None,replay_status="AMBIGUOUS",event_confidence="0.0000",event_data={"replay_end":end_time.isoformat(),"candle_rule":"NO_FINE_GRAIN_PROVIDER","possible_events":["SL",*[f"TP{index}" for index in target_hits]],"high":str(candle.high),"low":str(candle.low),"market_evidence_ref":market_evidence.replay_run_ref if market_evidence else None,"replay_run_id":replay_run_id},dedup_key=f"{dedup_prefix}:AMBIGUOUS:{candle_time.isoformat()}",replay_run_id=replay_run_id,refresh_ranking=refresh_ranking)); closed=True; continue
+                resolution=self.intra_candle_resolver.resolve(symbol=str(signal.asset or ""),market=signal.market,side=str(signal.side or ""),candle_open=candle_time,candle_close=candle_time+interval_delta(interval),stop=stop,target_levels=list(enumerate(target_levels,start=1)),candle_high=candle.high,candle_low=candle.low); event_type=resolution.event; event_price=stop if event_type=="SL" else target_levels[int(event_type[2:])-1]; replay_status="VERIFIED" if resolution.resolution=="VERIFIED_EVENT" else "INFERRED"; ambiguity_status="NONE" if resolution.resolution=="VERIFIED_EVENT" else "INFERRED"
+                events.append(self.signal_service.record_event(session,signal_id=signal.id,event_type=event_type,event_timestamp=candle_time,market_as_of=candle_time,data_source=candle.data_source,price=event_price,replay_status=replay_status,event_confidence=str(resolution.confidence),event_data={"replay_end":end_time.isoformat(),"candle_rule":resolution.resolution,"resolution":resolution.resolution,"reason":resolution.reason,"resolution_details":resolution.details,"market_evidence_ref":market_evidence.replay_run_ref if market_evidence else None,"replay_run_id":replay_run_id},dedup_key=f"{dedup_prefix}:{event_type}:{candle_time.isoformat()}",replay_run_id=replay_run_id,refresh_ranking=refresh_ranking)); closed=True; continue
             if stop_hit:
-                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="SL", event_timestamp=candle_time, market_as_of=candle_time, data_source=candle.data_source, price=stop, replay_status="VERIFIED", event_confidence="1.0000", event_data={"replay_end": end_time.isoformat(), "candle_rule": "OHLCV", "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None, "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:SL", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
-                closed = True
-                continue
+                events.append(self.signal_service.record_event(session,signal_id=signal.id,event_type="SL",event_timestamp=candle_time,market_as_of=candle_time,data_source=candle.data_source,price=stop,replay_status="VERIFIED",event_confidence="1.0000",event_data={"replay_end":end_time.isoformat(),"candle_rule":"OHLCV","market_evidence_ref":market_evidence.replay_run_ref if market_evidence else None,"replay_run_id":replay_run_id},dedup_key=f"{dedup_prefix}:SL",replay_run_id=replay_run_id,refresh_ranking=refresh_ranking)); closed=True; continue
             for index in target_hits:
-                level = target_levels[index - 1]
-                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type=f"TP{index}", event_timestamp=candle_time, market_as_of=candle_time, data_source=candle.data_source, price=level, replay_status="VERIFIED", event_confidence="1.0000", event_data={"target_index": index, "replay_end": end_time.isoformat(), "candle_rule": "OHLCV", "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None, "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:TP{index}", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
-                hit_targets.add(index)
-            if target_levels and len(hit_targets) == len(target_levels):
-                closed = True
+                level=target_levels[index-1]
+                events.append(self.signal_service.record_event(session,signal_id=signal.id,event_type=f"TP{index}",event_timestamp=candle_time,market_as_of=candle_time,data_source=candle.data_source,price=level,replay_status="VERIFIED",event_confidence="1.0000",event_data={"target_index":index,"replay_end":end_time.isoformat(),"candle_rule":"OHLCV","market_evidence_ref":market_evidence.replay_run_ref if market_evidence else None,"replay_run_id":replay_run_id},dedup_key=f"{dedup_prefix}:TP{index}",replay_run_id=replay_run_id,refresh_ranking=refresh_ranking)); hit_targets.add(index)
+            if target_levels and len(hit_targets)==len(target_levels): closed=True
         if market_evidence is not None:
-            metadata = dict(market_evidence.metadata_json or {})
-            metadata["ambiguity_status"] = ambiguity_status
-            metadata["quality_status"] = "UNVERIFIABLE" if ambiguity_status == "AMBIGUOUS" else "UNASSESSED"
-            market_evidence.metadata_json = metadata
-            session.flush()
+            metadata=dict(market_evidence.metadata_json or {}); metadata["ambiguity_status"]=ambiguity_status; metadata["quality_status"]="UNVERIFIABLE" if ambiguity_status=="AMBIGUOUS" else "UNASSESSED"; market_evidence.metadata_json=metadata; session.flush()
         return events
 
-    def replay_from_binance(
-        self,
-        session: Session,
-        *,
-        signal_id: int,
-        start: datetime,
-        replay_end: datetime,
-        interval: str = "1m",
-        limit: int = 1500,
-        provider=None,
-        replay_run_id: int | None = None,
-        refresh_ranking: bool = True,
-        fetched_at: datetime | None = None,
-        data_as_of_status: str = "UNVERIFIABLE",
-    ) -> list[HistoricalSignalEvent]:
-        """Fetch bounded historical OHLCV; caller owns transaction disposition."""
+    def replay_from_binance(self, session: Session, *, signal_id: int, start: datetime, replay_end: datetime, interval: str = "1m", limit: int = 1500, provider=None, replay_run_id: int | None = None, refresh_ranking: bool = True, fetched_at: datetime | None = None, data_as_of_status: str = "UNVERIFIABLE") -> list[HistoricalSignalEvent]:
         signal, _, _, _ = self._signal_levels(session, signal_id)
         if provider is None:
             from capitalguard.infrastructure.market.historical_ohlcv_provider import BinanceHistoricalOhlcvProvider
-            provider = BinanceHistoricalOhlcvProvider()
-        candles, endpoint = provider.fetch(
-            asset=str(signal.asset or ""),
-            market=signal.market,
-            interval=interval,
-            start=self._utc(start),
-            end=self._utc(replay_end),
-            limit=limit,
-        )
-        if not candles:
-            raise HistoricalSignalValidationError("Historical candle provider returned no evidence")
-        return self.replay_candles(
-            session,
-            signal_id=signal_id,
-            candles=candles,
-            replay_end=replay_end,
-            interval=interval,
-            provider_endpoint=endpoint,
-            replay_run_id=replay_run_id,
-            fetched_at=fetched_at,
-            data_as_of_status=data_as_of_status,
-            refresh_ranking=refresh_ranking,
-        )
+            provider=BinanceHistoricalOhlcvProvider()
+        candles, endpoint=provider.fetch(asset=str(signal.asset or ""),market=signal.market,interval=interval,start=self._utc(start),end=self._utc(replay_end),limit=limit)
+        if not candles: raise HistoricalSignalValidationError("Historical candle provider returned no evidence")
+        return self.replay_candles(session,signal_id=signal_id,candles=candles,replay_end=replay_end,interval=interval,provider_endpoint=endpoint,replay_run_id=replay_run_id,fetched_at=fetched_at,data_as_of_status=data_as_of_status,refresh_ranking=refresh_ranking)
