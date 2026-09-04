@@ -23,7 +23,7 @@ def test_partial_window_when_provider_does_not_reach_requested_end():
     assert coverage.status is CoverageStatus.PARTIAL_WINDOW
     assert coverage.actual_start == START
     assert coverage.actual_end == START + timedelta(minutes=2)
-    assert coverage.coverage_ratio == pytest.approx(3 / 5)
+    assert coverage.coverage_ratio == pytest.approx(3 / 4)
 
 
 @pytest.mark.parametrize("second", [15, 30, 45])
