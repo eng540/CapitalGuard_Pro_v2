@@ -40,6 +40,7 @@ class HistoricalCoverage:
     coverage_ratio: float
     status: CoverageStatus
     gaps: tuple[tuple[datetime, datetime], ...] = ()
+    interval: timedelta = timedelta(minutes=1)
 
     @property
     def is_complete(self) -> bool:
@@ -47,17 +48,7 @@ class HistoricalCoverage:
 
     @property
     def missing_candles(self) -> int:
-        return sum(max(0, int((gap_end - gap_start) / self._interval_from_gap(gap_start, gap_end))) for gap_start, gap_end in self.gaps)
-
-    @staticmethod
-    def _interval_from_gap(gap_start: datetime, gap_end: datetime) -> timedelta:
-        # Gap endpoints are generated on the requested market grid. The minimum
-        # positive grid spacing is not stored on the value object, so a one-step
-        # gap is the canonical unit; multi-step gaps are represented as a span.
-        # This helper exists only to keep the public value object backward
-        # compatible while preserving exact one-minute gap accounting.
-        span = gap_end - gap_start
-        return timedelta(minutes=1) if span.total_seconds() % 60 == 0 else span
+        return sum(int((gap_end - gap_start) / self.interval) for gap_start, gap_end in self.gaps)
 
 
 def interval_delta(interval: str) -> timedelta:
@@ -111,7 +102,7 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
     normalized_times = {_utc(item) for item in candle_times if start <= _utc(item) <= end}
     observed = sorted(normalized_times)
     if not observed:
-        return HistoricalCoverage(start, end, None, None, expected, 0, 0.0, CoverageStatus.UNAVAILABLE)
+        return HistoricalCoverage(start, end, None, None, expected, 0, 0.0, CoverageStatus.UNAVAILABLE, interval=interval)
 
     actual_start, actual_end = observed[0], observed[-1]
     actual = min(len(observed), expected)
@@ -149,4 +140,5 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
         coverage_ratio=ratio,
         status=status,
         gaps=tuple(gaps),
+        interval=interval,
     )
