@@ -1,4 +1,4 @@
-# -src/capitalguard/domain/entities.py (v25.0 - FINAL & UNIFIED)
+# src/capitalguard/domain/entities.py (v25.0 - FINAL & UNIFIED)
 """
 Defines the core business entities of the system. This is the heart of the domain layer.
 ✅ THE FIX (R1-S1): Expanded UserTradeStatus to include WATCHLIST and PENDING_ACTIVATION
