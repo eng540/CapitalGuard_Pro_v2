@@ -31,10 +31,7 @@ def test_real_missing_minute_is_gapped():
 def test_agg_trades_resolve_stop_before_target():
     class Client:
         def fetch_agg_trades(self, **kwargs):
-            return [
-                {"timestamp": u("2025-12-04T20:38:10Z"), "price": Decimal("92000"), "trade_id": 1},
-                {"timestamp": u("2025-12-04T20:38:40Z"), "price": Decimal("93400"), "trade_id": 2},
-            ]
+            return [{"timestamp": u("2025-12-04T20:38:10Z"), "price": Decimal("92000"), "trade_id": 1}, {"timestamp": u("2025-12-04T20:38:40Z"), "price": Decimal("93400"), "trade_id": 2}]
 
     result = IntraCandleResolver(Client()).resolve(symbol="BTCUSDT", market="FUTURES", side="LONG", candle_open=u("2025-12-04T20:38:00Z"), candle_close=u("2025-12-04T20:39:00Z"), stop=Decimal("92000"), target_levels=[(1, Decimal("93400"))], candle_high=Decimal("93450"), candle_low=Decimal("91980"))
     assert result.event == "SL"
@@ -50,4 +47,4 @@ def test_agg_trades_unavailable_uses_conservative_fallback():
     assert result.event == "SL"
     assert result.resolution == "PESSIMISTIC_FALLBACK"
 
-# Synchronize the PR after the resolver-isolation patch.
+# Trigger synchronization for the integrated G6 archive/traversal patch.
