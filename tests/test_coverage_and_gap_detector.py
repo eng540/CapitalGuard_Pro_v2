@@ -62,7 +62,7 @@ def test_partial_window_when_off_grid_beginning_is_missing():
     requested_start = datetime(2025, 12, 4, 20, 38, 30, tzinfo=timezone.utc)
     requested_end = datetime(2025, 12, 4, 21, 38, 30, tzinfo=timezone.utc)
     times = [datetime(2025, 12, 4, 20, 40, tzinfo=timezone.utc) + timedelta(minutes=index) for index in range(59)]
-    coverage = calculate_historical_coverage(requested_start=request_start, requested_end=requested_end, candle_times=times, interval=timedelta(minutes=1))
+    coverage = calculate_historical_coverage(requested_start=requested_start, requested_end=requested_end, candle_times=times, interval=timedelta(minutes=1))
     assert coverage.status is CoverageStatus.PARTIAL_WINDOW
     assert coverage.expected_candles == 60
     assert coverage.actual_candles == 59
