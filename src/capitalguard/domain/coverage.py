@@ -79,20 +79,21 @@ def _expected_market_grid(*, requested_start: datetime, requested_end: datetime,
     start = _utc(requested_start)
     end = _utc(requested_end)
 
-    # Keep the raw request boundaries for auditability, but compare observations
-    # on the exchange candle grid.  A source timestamp such as 20:38:30 means
-    # the first complete market candle is 20:39:00.  The terminal candle is the
-    # grid candle containing the requested end boundary.  This yields 1440
-    # one-minute observations for [20:38:30, 20:38:30 + 24h].
+    # The raw source timestamp is retained for auditability. Replay coverage is
+    # measured using exchange-aligned candle OPEN times. For an off-grid source
+    # timestamp (20:38:30), the first complete candle is 20:39:00. The requested
+    # elapsed duration determines the number of expected candles, so a 24-hour
+    # window contains exactly 1440 one-minute candles.
     market_grid_start = _ceil_to_grid(start, interval)
-    market_grid_end = _floor_to_grid(end, interval)
-
-    if market_grid_start > market_grid_end:
-        expected: list[datetime] = []
-    else:
-        expected_count = int((market_grid_end - market_grid_start) // interval) + 1
-        expected = [market_grid_start + interval * index for index in range(expected_count)]
-
+    duration = end - start
+    expected_count = int((duration + interval - timedelta(microseconds=1)) // interval)
+    expected_count = max(0, expected_count)
+    market_grid_end = (
+        market_grid_start + interval * (expected_count - 1)
+        if expected_count
+        else market_grid_start - interval
+    )
+    expected = [market_grid_start + interval * index for index in range(expected_count)]
     return market_grid_start, market_grid_end, expected
 
 
@@ -128,7 +129,7 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
             previous = timestamp
         gaps.append((gap_start, previous + interval))
 
-    boundaries_complete = actual_start == expected_times[0] and actual_end == expected_times[-1]
+    boundaries_complete = bool(expected_times) and actual_start == expected_times[0] and actual_end == expected_times[-1]
     if boundaries_complete and gaps:
         status = CoverageStatus.GAPPED
     elif actual == expected and boundaries_complete:
