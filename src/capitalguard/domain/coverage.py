@@ -47,7 +47,17 @@ class HistoricalCoverage:
 
     @property
     def missing_candles(self) -> int:
-        return max(0, self.expected_candles - self.actual_candles)
+        return sum(max(0, int((gap_end - gap_start) / self._interval_from_gap(gap_start, gap_end))) for gap_start, gap_end in self.gaps)
+
+    @staticmethod
+    def _interval_from_gap(gap_start: datetime, gap_end: datetime) -> timedelta:
+        # Gap endpoints are generated on the requested market grid. The minimum
+        # positive grid spacing is not stored on the value object, so a one-step
+        # gap is the canonical unit; multi-step gaps are represented as a span.
+        # This helper exists only to keep the public value object backward
+        # compatible while preserving exact one-minute gap accounting.
+        span = gap_end - gap_start
+        return timedelta(minutes=1) if span.total_seconds() % 60 == 0 else span
 
 
 def interval_delta(interval: str) -> timedelta:
