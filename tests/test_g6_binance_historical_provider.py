@@ -17,9 +17,11 @@ def _archive_bytes(rows):
 
 
 class FakeResponse:
-    status_code = 404
-    content = b""
     headers = {}
+
+    def __init__(self, status_code=404, content=b""):
+        self.status_code = status_code
+        self.content = content
 
     def raise_for_status(self):
         return None
@@ -35,12 +37,9 @@ def test_archive_fallback_reads_only_requested_minute(monkeypatch):
     ]
 
     def fake_get(url, **kwargs):
-        return FakeArchiveResponse(_archive_bytes(rows))
-
-    class FakeArchiveResponse(FakeResponse):
-        def __init__(self, content):
-            self.content = content
-            self.status_code = 200
+        if "data.binance.vision" in url:
+            return FakeResponse(200, _archive_bytes(rows))
+        return FakeResponse(404)
 
     monkeypatch.setattr("capitalguard.infrastructure.market.binance_client.requests.get", fake_get)
     client = BinanceClient()
