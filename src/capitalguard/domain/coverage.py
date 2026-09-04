@@ -72,8 +72,6 @@ def _floor_to_grid(value: datetime, interval: timedelta) -> datetime:
 def _expected_market_grid(*, requested_start: datetime, requested_end: datetime, interval: timedelta) -> tuple[datetime, datetime, list[datetime]]:
     start = _utc(requested_start)
     end = _utc(requested_end)
-    # Strictly post-publication: never count the source candle itself as the
-    # first replay candle, even when the source timestamp is on the grid.
     market_grid_start = _floor_to_grid(start, interval) + interval
     duration = end - start
     expected_count = int((duration + interval - timedelta(microseconds=1)) // interval)
@@ -95,7 +93,7 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
     if interval.total_seconds() <= 0:
         raise ValueError("Historical coverage interval must be positive")
 
-    _market_grid_start, _market_grid_end, expected_times = _expected_market_grid(
+    market_grid_start, market_grid_end, expected_times = _expected_market_grid(
         requested_start=start, requested_end=end, interval=interval
     )
     expected_set = set(expected_times)
@@ -106,9 +104,6 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
         return HistoricalCoverage(start, end, None, None, expected, 0, 0.0, CoverageStatus.UNAVAILABLE)
 
     actual_start, actual_end = observed[0], observed[-1]
-    # Coverage ratio measures observations against the requested elapsed
-    # interval. Grid membership is used only for completeness/gap detection;
-    # this preserves a provider candle exactly at requested_start for audit data.
     actual = len(observed)
     missing = sorted(expected_set - normalized_times)
     gaps: list[tuple[datetime, datetime]] = []
@@ -121,10 +116,16 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
             previous = timestamp
         gaps.append((gap_start, previous + interval))
 
-    boundaries_complete = bool(expected_times) and expected_set.issubset(normalized_times)
-    if boundaries_complete and gaps:
+    # A provider may also return the source candle itself. That candle is kept
+    # as evidence, but completeness is judged on the strict post-source grid.
+    boundaries_complete = (
+        bool(expected_times)
+        and actual_start <= market_grid_start
+        and actual_end >= market_grid_end
+    )
+    if boundaries_complete and missing:
         status = CoverageStatus.GAPPED
-    elif actual == expected and boundaries_complete:
+    elif boundaries_complete:
         status = CoverageStatus.FULL
     else:
         status = CoverageStatus.PARTIAL_WINDOW
