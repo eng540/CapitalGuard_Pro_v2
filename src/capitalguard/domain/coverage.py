@@ -64,66 +64,38 @@ def _utc(value: datetime) -> datetime:
 
 
 def _floor_to_grid(value: datetime, interval: timedelta) -> datetime:
-    """Return the market-candle boundary at or immediately before value."""
     epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
     normalized = _utc(value)
     return epoch + ((normalized - epoch) // interval) * interval
 
 
 def _ceil_to_grid(value: datetime, interval: timedelta) -> datetime:
-    """Return the market-candle boundary at or immediately after value."""
     normalized = _utc(value)
     floor = _floor_to_grid(normalized, interval)
     return floor if floor == normalized else floor + interval
 
 
-def _expected_market_grid(
-    *,
-    requested_start: datetime,
-    requested_end: datetime,
-    interval: timedelta,
-) -> tuple[datetime, datetime, list[datetime]]:
-    """Build expected candle opens on the real market grid.
+def _expected_market_grid(*, requested_start: datetime, requested_end: datetime, interval: timedelta) -> tuple[datetime, datetime, list[datetime]]:
+    """Build the expected exchange candle grid from the floored start.
 
-    The source/replay timestamps may contain arbitrary seconds (for example
-    20:38:30), while exchange candles open on interval boundaries. The raw
-    request bounds are retained by HistoricalCoverage; only the expected
-    candle grid is normalized.
-
-    A candle is expected when its open time is the first grid boundary at or
-    after the requested start and at or before the requested end. The floor
-    and ceil bounds are retained here to make the normalization explicit and
-    to avoid anchoring the expected grid to an arbitrary source timestamp.
+    Source timestamps may contain arbitrary seconds. Replay coverage is about
+    exchange candles, so the grid is anchored at floor(T_start). The number
+    of expected candles is the ceiling of the requested duration, which keeps
+    a 24h window at 1440 one-minute candles even when T_start has seconds.
     """
     start = _utc(requested_start)
     end = _utc(requested_end)
     market_grid_start = _floor_to_grid(start, interval)
     market_grid_end = _ceil_to_grid(end, interval)
-
-    first_expected = market_grid_start if market_grid_start == start else market_grid_start + interval
-    last_expected = market_grid_end if market_grid_end == end else market_grid_end - interval
-    if first_expected > last_expected:
+    duration = end - start
+    expected_count = int((duration + interval - timedelta(microseconds=1)) // interval)
+    if expected_count <= 0:
         return market_grid_start, market_grid_end, []
-
-    expected_count = int((last_expected - first_expected) // interval) + 1
-    expected = [first_expected + interval * index for index in range(expected_count)]
+    expected = [market_grid_start + interval * index for index in range(expected_count)]
     return market_grid_start, market_grid_end, expected
 
 
-def calculate_historical_coverage(
-    *,
-    requested_start: datetime,
-    requested_end: datetime,
-    candle_times: Iterable[datetime],
-    interval: timedelta,
-) -> HistoricalCoverage:
-    """Classify official candle coverage without fabricating missing data.
-
-    Coverage is evaluated on the exchange candle-open grid rather than on the
-    source message's arbitrary second offset. This prevents a valid Binance
-    window such as 20:39:00..20:38:00 from being compared against an invalid
-    20:38:30..20:38:30 grid.
-    """
+def calculate_historical_coverage(*, requested_start: datetime, requested_end: datetime, candle_times: Iterable[datetime], interval: timedelta) -> HistoricalCoverage:
     start = _utc(requested_start)
     end = _utc(requested_end)
     if start >= end:
@@ -132,17 +104,11 @@ def calculate_historical_coverage(
         raise ValueError("Historical coverage interval must be positive")
 
     _market_grid_start, _market_grid_end, expected_times = _expected_market_grid(
-        requested_start=start,
-        requested_end=end,
-        interval=interval,
+        requested_start=start, requested_end=end, interval=interval
     )
     expected_set = set(expected_times)
     expected = len(expected_times)
-
-    normalized_times = {
-        _utc(item)
-        for item in candle_times
-    }
+    normalized_times = {_utc(item) for item in candle_times}
     times = sorted(normalized_times & expected_set)
     actual = len(times)
 
@@ -151,7 +117,6 @@ def calculate_historical_coverage(
 
     actual_start, actual_end = times[0], times[-1]
     missing = sorted(expected_set - set(times))
-
     gaps: list[tuple[datetime, datetime]] = []
     if missing:
         gap_start = previous = missing[0]
@@ -162,10 +127,10 @@ def calculate_historical_coverage(
             previous = timestamp
         gaps.append((gap_start, previous + interval))
 
-    boundaries_complete = bool(expected_times) and actual_start == expected_times[0] and actual_end == expected_times[-1]
+    boundaries_complete = actual_start == expected_times[0] and actual_end == expected_times[-1]
     if boundaries_complete and gaps:
         status = CoverageStatus.GAPPED
-    elif boundaries_complete and actual == expected and not missing:
+    elif actual == expected and boundaries_complete:
         status = CoverageStatus.FULL
     else:
         status = CoverageStatus.PARTIAL_WINDOW
