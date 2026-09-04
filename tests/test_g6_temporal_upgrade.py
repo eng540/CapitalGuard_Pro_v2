@@ -12,7 +12,9 @@ def u(value: str) -> datetime:
 def test_source_seconds_do_not_break_market_grid():
     start = u("2025-12-04T20:38:30Z")
     end = start + timedelta(minutes=1440)
-    times = [start.replace(second=0) + timedelta(minutes=i) for i in range(1440)]
+    # The source timestamp is off-grid; exchange candles remain minute-aligned.
+    # The first complete candle after the source timestamp is 20:39:00.
+    times = [u("2025-12-04T20:39:00Z") + timedelta(minutes=i) for i in range(1440)]
     coverage = calculate_historical_coverage(requested_start=start, requested_end=end, candle_times=times, interval=interval_delta("1m"))
     assert coverage.status is CoverageStatus.FULL
     assert coverage.actual_candles == 1440
@@ -21,7 +23,7 @@ def test_source_seconds_do_not_break_market_grid():
 
 def test_real_missing_minute_is_gapped():
     start = u("2025-12-04T20:38:00Z")
-    end = start + timedelta(minutes=10)
+    end = start + timedelta(minutes=9)
     times = [start + timedelta(minutes=i) for i in range(10) if i != 5]
     coverage = calculate_historical_coverage(requested_start=start, requested_end=end, candle_times=times, interval=interval_delta("1m"))
     assert coverage.status is CoverageStatus.GAPPED
@@ -46,5 +48,3 @@ def test_agg_trades_unavailable_uses_conservative_fallback():
     result = IntraCandleResolver(Client()).resolve(symbol="BTCUSDT", market="FUTURES", side="LONG", candle_open=u("2025-12-04T20:38:00Z"), candle_close=u("2025-12-04T20:39:00Z"), stop=Decimal("92000"), target_levels=[(1, Decimal("93400"))], candle_high=Decimal("93450"), candle_low=Decimal("91980"))
     assert result.event == "SL"
     assert result.resolution == "PESSIMISTIC_FALLBACK"
-
-# Trigger synchronization for the integrated G6 archive/traversal patch.
