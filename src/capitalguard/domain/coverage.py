@@ -69,22 +69,13 @@ def _floor_to_grid(value: datetime, interval: timedelta) -> datetime:
     return epoch + ((normalized - epoch) // interval) * interval
 
 
-def _ceil_to_grid(value: datetime, interval: timedelta) -> datetime:
-    normalized = _utc(value)
-    floor = _floor_to_grid(normalized, interval)
-    return floor if floor == normalized else floor + interval
-
-
 def _expected_market_grid(*, requested_start: datetime, requested_end: datetime, interval: timedelta) -> tuple[datetime, datetime, list[datetime]]:
     start = _utc(requested_start)
     end = _utc(requested_end)
-
-    # The raw source timestamp is retained for auditability. Replay coverage is
-    # measured using exchange-aligned candle OPEN times. For an off-grid source
-    # timestamp (20:38:30), the first complete candle is 20:39:00. The requested
-    # elapsed duration determines the number of expected candles, so a 24-hour
-    # window contains exactly 1440 one-minute candles.
-    market_grid_start = _ceil_to_grid(start, interval)
+    # Replay never includes the source minute itself. The first candle is the
+    # next complete exchange-aligned interval, even when the source is already
+    # exactly on a candle boundary. This gives a strict post-publication grid.
+    market_grid_start = _floor_to_grid(start, interval) + interval
     duration = end - start
     expected_count = int((duration + interval - timedelta(microseconds=1)) // interval)
     expected_count = max(0, expected_count)
