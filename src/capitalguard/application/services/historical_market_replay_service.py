@@ -495,6 +495,7 @@ class HistoricalMarketReplayService:
             fetched_at=fetched_at,
             data_as_of_status=run.data_as_of_status,
             refresh_ranking=False,
+            resolver_client=getattr(provider, "client", None),
         )
         evidence = session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.replay_run_id == run.id)).scalars().first()
         run.dataset_hash = evidence.artifact_hash if evidence else self._artifact_hash(self._artifact_payload(
@@ -602,6 +603,7 @@ class HistoricalMarketReplayService:
         fetched_at: datetime | None = None,
         data_as_of_status: str = "UNVERIFIABLE",
         refresh_ranking: bool = True,
+        resolver_client=None,
     ) -> list[HistoricalSignalEvent]:
         signal, entry, stop, target_levels = self._signal_levels(session, signal_id)
         end_time = self._utc(replay_end)
@@ -661,9 +663,13 @@ class HistoricalMarketReplayService:
                 closed = True
                 continue
             if stop_hit and target_hits and replay_run_id is not None:
+                if self.intra_candle_resolver is None and resolver_client is not None and hasattr(resolver_client, "fetch_agg_trades"):
+                    self.intra_candle_resolver = IntraCandleResolver(resolver_client)
                 if self.intra_candle_resolver is None:
-                    from capitalguard.infrastructure.market.binance_client import BinanceClient
-                    self.intra_candle_resolver = IntraCandleResolver(BinanceClient())
+                    ambiguity_status = "AMBIGUOUS"
+                    events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="AMBIGUOUS", event_timestamp=candle_time, market_as_of=candle_time, data_source=candle.data_source, price=None, replay_status="AMBIGUOUS", event_confidence="0.0000", event_data={"replay_end": end_time.isoformat(), "candle_rule": "NO_FINE_GRAIN_PROVIDER", "possible_events": ["SL", *[f"TP{index}" for index in target_hits]], "high": str(candle.high), "low": str(candle.low), "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None, "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:AMBIGUOUS:{candle_time.isoformat()}", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
+                    closed = True
+                    continue
                 resolution = self.intra_candle_resolver.resolve(symbol=str(signal.asset or ""), market=signal.market, side=str(signal.side or ""), candle_open=candle_time, candle_close=candle_time + interval_delta(interval), stop=stop, target_levels=list(enumerate(target_levels, start=1)), candle_high=candle.high, candle_low=candle.low)
                 event_type = resolution.event
                 event_price = stop if event_type == "SL" else target_levels[int(event_type[2:]) - 1]
