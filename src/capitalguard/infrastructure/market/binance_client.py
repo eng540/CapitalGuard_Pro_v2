@@ -82,6 +82,36 @@ class BinanceClient:
                 pass
         return min(30.0, (0.5 * (2**attempt)) + random.uniform(0.0, 0.25))
 
+    def _fetch_vision_agg_trades(self, *, symbol: str, start: datetime, market: str) -> list[dict]:
+        """Read Binance Public Data daily aggTrades when REST history is unavailable."""
+        normalized_market = market.upper()
+        market_path = "um" if normalized_market == "FUTURES" else "spot"
+        day = start.astimezone(timezone.utc).date().isoformat()
+        url = f"https://data.binance.vision/data/futures/{market_path}/daily/aggTrades/{symbol}/{symbol}-aggTrades-{day}.zip" if normalized_market == "FUTURES" else f"https://data.binance.vision/data/spot/daily/aggTrades/{symbol}/{symbol}-aggTrades-{day}.zip"
+        try:
+            response = requests.get(url, timeout=30)
+            if response.status_code != 200:
+                return []
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                members = [name for name in archive.namelist() if name.lower().endswith(('.csv','.csv.gz'))]
+                if not members:
+                    return []
+                import csv, gzip
+                raw = archive.open(members[0])
+                stream = gzip.open(raw, mode='rt', newline='') if members[0].lower().endswith('.gz') else io.TextIOWrapper(raw)
+                try:
+                    reader = csv.reader(stream)
+                    rows=[]
+                    for row in reader:
+                        if len(row) < 6 or not row[0] or row[0].lower().startswith('agg'): continue
+                        try: rows.append({"timestamp": datetime.fromtimestamp(int(row[5]) / 1000, tz=timezone.utc), "price": self._positive_decimal(row[1]), "trade_id": int(row[0])})
+                        except (ValueError, TypeError, OverflowError): continue
+                    return rows
+                finally:
+                    stream.close()
+        except (requests.RequestException, zipfile.BadZipFile, OSError):
+            return []
+
     def fetch_agg_trades(self, *, symbol: str, start: datetime, end: datetime, market: str = "SPOT", limit: int = 1000, timeout_seconds: float = 10.0, max_retries: int = 3) -> list[dict]:
         """Fetch aggregate trades for one disputed candle; replay policy remains outside the client."""
         normalized_symbol = symbol.strip().upper()
@@ -114,6 +144,9 @@ class BinanceClient:
             try: timestamp = datetime.fromtimestamp(int(row["T"])/1000, tz=timezone.utc); price = self._positive_decimal(row["p"])
             except (TypeError, ValueError, OverflowError) as exc: raise HistoricalMarketProviderError("Aggregate trade payload contains invalid values") from exc
             if start_utc <= timestamp <= end_utc: trades.append({"timestamp": timestamp, "price": price, "trade_id": row.get("a")})
+        if not trades:
+            # REST aggTrades is a recent-data endpoint; use the official public archive for old replay windows.
+            trades = [t for t in self._fetch_vision_agg_trades(symbol=normalized_symbol, start=start_utc, market=normalized_market) if start_utc <= t["timestamp"] <= end_utc]
         return sorted(trades, key=lambda x: (x["timestamp"], x.get("trade_id") or 0))
 
     def get_historical_ohlcv(

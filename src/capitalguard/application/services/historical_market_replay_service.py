@@ -590,6 +590,30 @@ class HistoricalMarketReplayService:
                 closed = True
         return events
 
+    @staticmethod
+    def _coarse_to_fine_candles(candles: list[MarketCandle], *, side: str | None, entry: Decimal | None, stop: Decimal | None, target_levels: list[Decimal]) -> list[MarketCandle]:
+        """Hierarchical traversal over already-fetched OHLCV; never issues a second candle provider call."""
+        if not candles: return []
+        groups = {}
+        for candle in candles:
+            key = (candle.open_time.astimezone(timezone.utc).date(), candle.open_time.astimezone(timezone.utc).hour)
+            groups.setdefault(key, []).append(candle)
+        selected=[]
+        activated=False
+        for key in sorted(groups):
+            cluster=groups[key]
+            high=max(c.high for c in cluster); low=min(c.low for c in cluster)
+            levels=[]
+            if not activated and entry is not None: levels.append(entry)
+            if activated:
+                if stop is not None: levels.append(stop)
+                levels.extend(level for i,level in enumerate(target_levels) if i < len(target_levels))
+            touches=any((high >= level if str(side or '').upper() == 'LONG' else low <= level) for level in levels)
+            if touches:
+                selected.extend(cluster)
+                if not activated and entry is not None and (high >= entry if str(side or '').upper() == 'LONG' else low <= entry): activated=True
+        return selected
+
     def replay_candles(
         self,
         session: Session,
@@ -628,7 +652,7 @@ class HistoricalMarketReplayService:
         dedup_prefix = f"g6:{replay_run_id}" if replay_run_id is not None else f"replay:{signal.id}"
         decision_time = self._utc(signal.decision_timestamp)
         clock = SimulationClock(decision_time)
-        eligible_candles = [candle for candle in normalized if self._utc(candle.open_time) >= decision_time]
+        eligible_candles = self._coarse_to_fine_candles([candle for candle in normalized if self._utc(candle.open_time) >= decision_time], side=signal.side, entry=entry, stop=stop, target_levels=target_levels)
         ambiguity_status = "NONE"
         market_evidence = self._record_market_evidence(
             session,
