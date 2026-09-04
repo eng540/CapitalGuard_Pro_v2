@@ -78,16 +78,21 @@ def _ceil_to_grid(value: datetime, interval: timedelta) -> datetime:
 def _expected_market_grid(*, requested_start: datetime, requested_end: datetime, interval: timedelta) -> tuple[datetime, datetime, list[datetime]]:
     start = _utc(requested_start)
     end = _utc(requested_end)
-    market_grid_start = _floor_to_grid(start, interval)
-    market_grid_end = _ceil_to_grid(end, interval)
 
-    # Candle windows are half-open: [T0, Tend).  Source timestamps are
-    # documentation timestamps and may contain arbitrary seconds.  Replay
-    # aligns them to the exchange candle grid without adding a phantom candle.
-    # Thus 20:38:30 -> grid 20:38:00 for a 24h request yields 1440 1m candles.
-    duration = end - start
-    expected_count = int((duration + interval - timedelta(microseconds=1)) // interval)
-    expected = [market_grid_start + interval * index for index in range(max(0, expected_count))]
+    # Keep the raw request boundaries for auditability, but compare observations
+    # on the exchange candle grid.  A source timestamp such as 20:38:30 means
+    # the first complete market candle is 20:39:00.  The terminal candle is the
+    # grid candle containing the requested end boundary.  This yields 1440
+    # one-minute observations for [20:38:30, 20:38:30 + 24h].
+    market_grid_start = _ceil_to_grid(start, interval)
+    market_grid_end = _floor_to_grid(end, interval)
+
+    if market_grid_start > market_grid_end:
+        expected: list[datetime] = []
+    else:
+        expected_count = int((market_grid_end - market_grid_start) // interval) + 1
+        expected = [market_grid_start + interval * index for index in range(expected_count)]
+
     return market_grid_start, market_grid_end, expected
 
 
