@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from capitalguard.domain.coverage import CoverageStatus, HistoricalCoverage, calculate_historical_coverage, interval_delta
 from capitalguard.domain.simulation_clock import SimulationClock
+from capitalguard.infrastructure.market.intra_candle_resolver import IntraCandleResolver
 from capitalguard.infrastructure.db.models import (
     HistoricalMarketEvidence,
     HistoricalReplayRun,
@@ -91,6 +92,7 @@ class HistoricalMarketReplayService:
     ):
         self.signal_service = signal_service or HistoricalSignalService()
         self.candle_cache = candle_cache or CandleCache()
+        self.intra_candle_resolver = None
 
     @staticmethod
     def _artifact_payload(*, signal_id: int, asset: str | None, market: str | None, interval: str, candles: list[MarketCandle], replay_end: datetime, provider_endpoint: str | None, replay_version: str = REPLAY_VERSION) -> dict:
@@ -267,8 +269,14 @@ class HistoricalMarketReplayService:
         entry = self._decimal(signal.entry)
         stop = self._decimal(signal.stop_loss)
         targets = signal.targets if isinstance(signal.targets, list) else []
-        target_levels = [self._decimal(target.get("price")) for target in targets if isinstance(target, dict)]
-        return signal, entry, stop, [level for level in target_levels if level is not None]
+        target_levels = []
+        seen_prices = set()
+        for target in targets:
+            if not isinstance(target, dict): continue
+            level = self._decimal(target.get("price"))
+            if level is None or level in seen_prices: continue
+            seen_prices.add(level); target_levels.append(level)
+        return signal, entry, stop, target_levels
 
     def _g5_materialization(self, session: Session, *, signal_id: int, materialization_id: int) -> HistoricalSignalMaterialization:
         materialization = session.get(HistoricalSignalMaterialization, materialization_id)
@@ -499,14 +507,15 @@ class HistoricalMarketReplayService:
             provider_endpoint=endpoint,
         ))
         run.ambiguity_status = "AMBIGUOUS" if any(event.replay_status == "AMBIGUOUS" for event in events) else "NONE"
-        run.quality_status = "UNVERIFIABLE" if run.ambiguity_status == "AMBIGUOUS" or run.data_as_of_status != "VERIFIED" else "UNASSESSED"
+        run.quality_status = "UNVERIFIABLE" if run.ambiguity_status in {"AMBIGUOUS", "INFERRED"} or run.data_as_of_status != "VERIFIED" else "UNASSESSED"
         if coverage.status in {CoverageStatus.PARTIAL_WINDOW, CoverageStatus.GAPPED}:
             run.status = "REPLAY_PARTIAL"
         else:
-            run.status = "COMPLETED_UNVERIFIABLE" if run.ambiguity_status == "AMBIGUOUS" or run.data_as_of_status != "VERIFIED" else "COMPLETED"
+            run.status = "COMPLETED_UNVERIFIABLE" if run.ambiguity_status in {"AMBIGUOUS", "INFERRED"} or run.data_as_of_status != "VERIFIED" else "COMPLETED"
         run.result_json = {
             "event_ids": [event.id for event in events],
             "event_count": len(events),
+            "events": [{"id": event.id, "type": event.event_type, "timestamp": event.event_timestamp.isoformat(), "price": str(event.price) if event.price is not None else None, "replay_status": event.replay_status, "confidence": str(event.event_confidence), "data": event.event_data} for event in events],
             "evidence_id": evidence.id if evidence else None,
             "ambiguity_status": run.ambiguity_status,
             "coverage": {
@@ -652,8 +661,15 @@ class HistoricalMarketReplayService:
                 closed = True
                 continue
             if stop_hit and target_hits and replay_run_id is not None:
-                ambiguity_status = "AMBIGUOUS"
-                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type="AMBIGUOUS", event_timestamp=candle_time, market_as_of=candle_time, data_source=candle.data_source, price=None, replay_status="AMBIGUOUS", event_confidence="0.0000", event_data={"replay_end": end_time.isoformat(), "candle_rule": "PESSIMISTIC_SL_FIRST_INFERRED", "possible_events": ["SL", *[f"TP{index}" for index in target_hits]], "high": str(candle.high), "low": str(candle.low), "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None, "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:AMBIGUOUS:{candle_time.isoformat()}", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
+                if self.intra_candle_resolver is None:
+                    from capitalguard.infrastructure.market.binance_client import BinanceClient
+                    self.intra_candle_resolver = IntraCandleResolver(BinanceClient())
+                resolution = self.intra_candle_resolver.resolve(symbol=str(signal.asset or ""), market=signal.market, side=str(signal.side or ""), candle_open=candle_time, candle_close=candle_time + interval_delta(interval), stop=stop, target_levels=list(enumerate(target_levels, start=1)), candle_high=candle.high, candle_low=candle.low)
+                event_type = resolution.event
+                event_price = stop if event_type == "SL" else target_levels[int(event_type[2:]) - 1]
+                replay_status = "VERIFIED" if resolution.resolution == "VERIFIED_EVENT" else "INFERRED"
+                ambiguity_status = "NONE" if resolution.resolution == "VERIFIED_EVENT" else "INFERRED"
+                events.append(self.signal_service.record_event(session, signal_id=signal.id, event_type=event_type, event_timestamp=candle_time, market_as_of=candle_time, data_source=candle.data_source, price=event_price, replay_status=replay_status, event_confidence=str(resolution.confidence), event_data={"replay_end": end_time.isoformat(), "candle_rule": resolution.resolution, "resolution": resolution.resolution, "reason": resolution.reason, "resolution_details": resolution.details, "market_evidence_ref": market_evidence.replay_run_ref if market_evidence else None, "replay_run_id": replay_run_id}, dedup_key=f"{dedup_prefix}:{event_type}:{candle_time.isoformat()}", replay_run_id=replay_run_id, refresh_ranking=refresh_ranking))
                 closed = True
                 continue
             if stop_hit:

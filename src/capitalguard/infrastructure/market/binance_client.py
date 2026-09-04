@@ -13,6 +13,8 @@ import requests
 BASE = "https://api.binance.com/api/v3"
 SPOT_KLINES = f"{BASE}/klines"
 FUTURES_KLINES = "https://fapi.binance.com/fapi/v1/klines"
+SPOT_AGG_TRADES = f"{BASE}/aggTrades"
+FUTURES_AGG_TRADES = "https://fapi.binance.com/fapi/v1/aggTrades"
 SUPPORTED_INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"}
 MAX_KLINES_LIMIT = 1500
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{5,20}$")
@@ -79,6 +81,40 @@ class BinanceClient:
             except ValueError:
                 pass
         return min(30.0, (0.5 * (2**attempt)) + random.uniform(0.0, 0.25))
+
+    def fetch_agg_trades(self, *, symbol: str, start: datetime, end: datetime, market: str = "SPOT", limit: int = 1000, timeout_seconds: float = 10.0, max_retries: int = 3) -> list[dict]:
+        """Fetch aggregate trades for one disputed candle; replay policy remains outside the client."""
+        normalized_symbol = symbol.strip().upper()
+        if not SYMBOL_PATTERN.fullmatch(normalized_symbol): raise HistoricalMarketProviderError("Aggregate trade symbol is invalid")
+        if start.tzinfo is None or end.tzinfo is None: raise HistoricalMarketProviderError("Aggregate trade bounds must be timezone-aware")
+        start_utc, end_utc = start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+        if start_utc >= end_utc or (end_utc - start_utc).total_seconds() > 60.001: raise HistoricalMarketProviderError("Aggregate trade window must be within one minute")
+        if not 1 <= limit <= 1000: raise HistoricalMarketProviderError("Aggregate trade limit is out of range")
+        normalized_market = market.strip().upper()
+        if normalized_market not in {"SPOT", "FUTURES"}: raise HistoricalMarketProviderError("Aggregate trade market is unsupported")
+        endpoint = FUTURES_AGG_TRADES if normalized_market == "FUTURES" else SPOT_AGG_TRADES
+        params = {"symbol": normalized_symbol, "startTime": int(start_utc.timestamp()*1000), "endTime": int(end_utc.timestamp()*1000), "limit": limit}
+        rows = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.get(endpoint, params=params, timeout=timeout_seconds)
+                if response.status_code in RETRYABLE_STATUS_CODES:
+                    if attempt >= max_retries: response.raise_for_status()
+                    time.sleep(self._retry_delay(attempt, (response.headers or {}).get("Retry-After"))); continue
+                response.raise_for_status(); rows = response.json(); break
+            except requests.RequestException as exc:
+                if attempt >= max_retries: raise HistoricalMarketProviderError("Aggregate trade provider is unavailable") from exc
+                time.sleep(self._retry_delay(attempt))
+            except ValueError as exc: raise HistoricalMarketProviderError("Aggregate trade provider returned invalid JSON") from exc
+        if rows is None: raise HistoricalMarketProviderError("Aggregate trade provider is unavailable")
+        if not isinstance(rows, list) or len(rows) > limit: raise HistoricalMarketProviderError("Aggregate trade provider returned invalid payload")
+        trades = []
+        for row in rows:
+            if not isinstance(row, dict) or "p" not in row or "T" not in row: raise HistoricalMarketProviderError("Aggregate trade payload is malformed")
+            try: timestamp = datetime.fromtimestamp(int(row["T"])/1000, tz=timezone.utc); price = self._positive_decimal(row["p"])
+            except (TypeError, ValueError, OverflowError) as exc: raise HistoricalMarketProviderError("Aggregate trade payload contains invalid values") from exc
+            if start_utc <= timestamp <= end_utc: trades.append({"timestamp": timestamp, "price": price, "trade_id": row.get("a")})
+        return sorted(trades, key=lambda x: (x["timestamp"], x.get("trade_id") or 0))
 
     def get_historical_ohlcv(
         self,
