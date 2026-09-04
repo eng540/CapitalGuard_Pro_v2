@@ -104,7 +104,7 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
         return HistoricalCoverage(start, end, None, None, expected, 0, 0.0, CoverageStatus.UNAVAILABLE)
 
     actual_start, actual_end = observed[0], observed[-1]
-    actual = len(observed)
+    actual = min(len(observed), expected)
     missing = sorted(expected_set - normalized_times)
     gaps: list[tuple[datetime, datetime]] = []
     if missing:
@@ -116,8 +116,6 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
             previous = timestamp
         gaps.append((gap_start, previous + interval))
 
-    # A provider may also return the source candle itself. That candle is kept
-    # as evidence, but completeness is judged on the strict post-source grid.
     boundaries_complete = (
         bool(expected_times)
         and actual_start <= market_grid_start
