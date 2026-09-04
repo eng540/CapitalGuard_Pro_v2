@@ -151,6 +151,8 @@ class BinanceClient:
         for attempt in range(max_retries + 1):
             try:
                 response = requests.get(endpoint, params=params, timeout=timeout_seconds)
+                if response.status_code == 404:
+                    return sorted(self._fetch_vision_agg_trades(symbol=normalized_symbol, start=start_utc, end=end_utc, market=normalized_market), key=lambda x: (x["timestamp"], x.get("trade_id") or 0))
                 if response.status_code in RETRYABLE_STATUS_CODES:
                     if attempt >= max_retries:
                         response.raise_for_status()
