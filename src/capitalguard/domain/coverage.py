@@ -72,9 +72,8 @@ def _floor_to_grid(value: datetime, interval: timedelta) -> datetime:
 def _expected_market_grid(*, requested_start: datetime, requested_end: datetime, interval: timedelta) -> tuple[datetime, datetime, list[datetime]]:
     start = _utc(requested_start)
     end = _utc(requested_end)
-    # Replay never includes the source minute itself. The first candle is the
-    # next complete exchange-aligned interval, even when the source is already
-    # exactly on a candle boundary. This gives a strict post-publication grid.
+    # Strictly post-publication: never count the source candle itself as the
+    # first replay candle, even when the source timestamp is on the grid.
     market_grid_start = _floor_to_grid(start, interval) + interval
     duration = end - start
     expected_count = int((duration + interval - timedelta(microseconds=1)) // interval)
@@ -101,15 +100,17 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
     )
     expected_set = set(expected_times)
     expected = len(expected_times)
-    normalized_times = {_utc(item) for item in candle_times}
-    times = sorted(normalized_times & expected_set)
-    actual = len(times)
-
-    if not times:
+    normalized_times = {_utc(item) for item in candle_times if start <= _utc(item) <= end}
+    observed = sorted(normalized_times)
+    if not observed:
         return HistoricalCoverage(start, end, None, None, expected, 0, 0.0, CoverageStatus.UNAVAILABLE)
 
-    actual_start, actual_end = times[0], times[-1]
-    missing = sorted(expected_set - set(times))
+    actual_start, actual_end = observed[0], observed[-1]
+    # Coverage ratio measures observations against the requested elapsed
+    # interval. Grid membership is used only for completeness/gap detection;
+    # this preserves a provider candle exactly at requested_start for audit data.
+    actual = len(observed)
+    missing = sorted(expected_set - normalized_times)
     gaps: list[tuple[datetime, datetime]] = []
     if missing:
         gap_start = previous = missing[0]
@@ -120,7 +121,7 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
             previous = timestamp
         gaps.append((gap_start, previous + interval))
 
-    boundaries_complete = bool(expected_times) and actual_start == expected_times[0] and actual_end == expected_times[-1]
+    boundaries_complete = bool(expected_times) and expected_set.issubset(normalized_times)
     if boundaries_complete and gaps:
         status = CoverageStatus.GAPPED
     elif actual == expected and boundaries_complete:
