@@ -14,18 +14,10 @@ class CoverageStatus(str, Enum):
 
 
 INTERVAL_DELTAS = {
-    "1m": timedelta(minutes=1),
-    "3m": timedelta(minutes=3),
-    "5m": timedelta(minutes=5),
-    "15m": timedelta(minutes=15),
-    "30m": timedelta(minutes=30),
-    "1h": timedelta(hours=1),
-    "2h": timedelta(hours=2),
-    "4h": timedelta(hours=4),
-    "6h": timedelta(hours=6),
-    "8h": timedelta(hours=8),
-    "12h": timedelta(hours=12),
-    "1d": timedelta(days=1),
+    "1m": timedelta(minutes=1), "3m": timedelta(minutes=3), "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15), "30m": timedelta(minutes=30), "1h": timedelta(hours=1),
+    "2h": timedelta(hours=2), "4h": timedelta(hours=4), "6h": timedelta(hours=6),
+    "8h": timedelta(hours=8), "12h": timedelta(hours=12), "1d": timedelta(days=1),
 }
 
 
@@ -48,7 +40,7 @@ class HistoricalCoverage:
 
     @property
     def missing_candles(self) -> int:
-        return sum(int((gap_end - gap_start) / self.interval) for gap_start, gap_end in self.gaps)
+        return sum(int((end - start) / self.interval) for start, end in self.gaps)
 
 
 def interval_delta(interval: str) -> timedelta:
@@ -70,34 +62,26 @@ def _floor_to_grid(value: datetime, interval: timedelta) -> datetime:
     return epoch + ((normalized - epoch) // interval) * interval
 
 
-def _ceil_to_grid(value: datetime, interval: timedelta) -> datetime:
-    floored = _floor_to_grid(value, interval)
-    if floored == _utc(value):
-        return floored
-    return floored + interval
-
-
 def _expected_market_grid(*, requested_start: datetime, requested_end: datetime, interval: timedelta) -> tuple[datetime, datetime, list[datetime]]:
-    """Build the exchange candle-open grid, independent of message seconds.
+    """Build exchange candle opens from normalized market-grid boundaries.
 
-    A request beginning at 20:38:30 therefore starts coverage at 20:38:00,
-    while the requested end is ceiled to the next candle boundary.  This is
-    deliberately based on exchange candle opens, not the source timestamp.
+    Source seconds are never used as candle-grid coordinates. A 20:38:30
+    source timestamp maps to the 20:38:00 candle; a 24h request therefore
+    contains exactly 1440 one-minute candle opens through 20:37:00 next day.
     """
     start = _utc(requested_start)
     end = _utc(requested_end)
     grid_start = _floor_to_grid(start, interval)
-    grid_end_exclusive = _ceil_to_grid(end, interval)
-    if grid_end_exclusive <= grid_start:
+    grid_end = _floor_to_grid(end, interval)
+    if grid_end <= grid_start:
         return grid_start, grid_start - interval, []
-    expected_count = int((grid_end_exclusive - grid_start) / interval)
-    expected = [grid_start + interval * index for index in range(expected_count)]
+    expected_count = int((grid_end - grid_start) / interval)
+    expected = [grid_start + interval * i for i in range(expected_count)]
     return grid_start, expected[-1], expected
 
 
 def calculate_historical_coverage(*, requested_start: datetime, requested_end: datetime, candle_times: Iterable[datetime], interval: timedelta) -> HistoricalCoverage:
-    start = _utc(requested_start)
-    end = _utc(requested_end)
+    start, end = _utc(requested_start), _utc(requested_end)
     if start >= end:
         raise ValueError("Historical coverage bounds are invalid")
     if interval.total_seconds() <= 0:
@@ -108,8 +92,8 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
     )
     expected_set = set(expected_times)
     expected = len(expected_times)
-    normalized_times = {_utc(item) for item in candle_times}
-    observed = sorted(normalized_times & expected_set)
+    normalized = {_utc(item) for item in candle_times}
+    observed = sorted(normalized & expected_set)
     if not observed:
         return HistoricalCoverage(start, end, None, None, expected, 0, 0.0, CoverageStatus.UNAVAILABLE, interval=interval)
 
@@ -127,23 +111,6 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
         gaps.append((gap_start, previous + interval))
 
     boundaries_complete = actual_start == market_grid_start and actual_end == market_grid_end
-    if boundaries_complete and not missing:
-        status = CoverageStatus.FULL
-    elif boundaries_complete:
-        status = CoverageStatus.GAPPED
-    else:
-        status = CoverageStatus.PARTIAL_WINDOW
-
+    status = CoverageStatus.FULL if boundaries_complete and not missing else CoverageStatus.GAPPED if boundaries_complete else CoverageStatus.PARTIAL_WINDOW
     ratio = min(1.0, actual / expected) if expected else 0.0
-    return HistoricalCoverage(
-        requested_start=start,
-        requested_end=end,
-        actual_start=actual_start,
-        actual_end=actual_end,
-        expected_candles=expected,
-        actual_candles=actual,
-        coverage_ratio=ratio,
-        status=status,
-        gaps=tuple(gaps),
-        interval=interval,
-    )
+    return HistoricalCoverage(start, end, actual_start, actual_end, expected, actual, ratio, status, tuple(gaps), interval)
