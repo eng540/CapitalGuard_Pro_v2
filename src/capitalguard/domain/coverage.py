@@ -76,22 +76,25 @@ def _ceil_to_grid(value: datetime, interval: timedelta) -> datetime:
 
 
 def _expected_market_grid(*, requested_start: datetime, requested_end: datetime, interval: timedelta) -> tuple[datetime, datetime, list[datetime]]:
-    """Build the expected exchange candle grid from the floored start.
-
-    Source timestamps may contain arbitrary seconds. Replay coverage is about
-    exchange candles, so the grid is anchored at floor(T_start). The number
-    of expected candles is the ceiling of the requested duration, which keeps
-    a 24h window at 1440 one-minute candles even when T_start has seconds.
-    """
     start = _utc(requested_start)
     end = _utc(requested_end)
     market_grid_start = _floor_to_grid(start, interval)
     market_grid_end = _ceil_to_grid(end, interval)
+
+    # Aligned requests retain the historical inclusive-end contract used by
+    # the existing provider/tests. Off-grid source timestamps use the first
+    # full exchange candle after T0 and ceil(duration), e.g. 20:38:30 ->
+    # 20:39:00 for a 24h window, producing exactly 1440 one-minute candles.
     duration = end - start
-    expected_count = int((duration + interval - timedelta(microseconds=1)) // interval)
-    if expected_count <= 0:
-        return market_grid_start, market_grid_end, []
-    expected = [market_grid_start + interval * index for index in range(expected_count)]
+    quotient = duration // interval
+    remainder = duration - quotient * interval
+    if start == market_grid_start and end == market_grid_end:
+        expected_count = int(quotient) + 1
+    else:
+        expected_count = int(quotient) + (1 if remainder else 0)
+
+    first_expected = market_grid_start if start == market_grid_start else market_grid_start + interval
+    expected = [first_expected + interval * index for index in range(max(0, expected_count))]
     return market_grid_start, market_grid_end, expected
 
 
