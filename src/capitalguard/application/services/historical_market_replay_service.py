@@ -29,7 +29,10 @@ from .historical_signal_service import HistoricalSignalService, HistoricalSignal
 
 
 REPLAY_VERSION = "G6-R1"
-REPLAY_POLICY_VERSION = "G6-OHLCV-UTC-1"
+# Bump the policy fingerprint when the historical candle-grid semantics change.
+# This prevents a previously persisted PARTIAL run from being reused after the
+# temporal-alignment fix.
+REPLAY_POLICY_VERSION = "G6-OHLCV-MARKET-GRID-2"
 
 
 @dataclass(frozen=True)
