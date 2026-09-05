@@ -454,7 +454,12 @@ class HistoricalMarketReplayService:
         terminal_states = {"CLOSED_TARGETS", "CLOSED_STOP", "FINAL_CLOSE"}
         resolution_quality = (
             "VERIFIED"
-            if lifecycle_terminal_event is not None and getattr(lifecycle_terminal_event, "replay_status", None) == "VERIFIED"
+            if (
+                lifecycle_terminal_event is not None
+                and getattr(lifecycle_terminal_event, "replay_status", None) == "VERIFIED"
+                and str(getattr(run, "data_as_of_status", "UNVERIFIABLE")).upper() == "VERIFIED"
+                and str(getattr(run, "ambiguity_status", "NONE")).upper() in {"NONE", "RESOLVED"}
+            )
             else "UNVERIFIABLE"
         )
 
