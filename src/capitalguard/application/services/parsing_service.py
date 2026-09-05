@@ -190,18 +190,29 @@ class ParsingService:
             if any(re.search(r'\b' + re.escape(kw.upper()) + r'\b', txt) for kw in keywords):
                 side = s
                 break
-        hashtag_match = re.search(r'#([A-Z0-9]{3,12})', txt)
-        if hashtag_match and hashtag_match.group(1).upper() not in self.ASSET_BLACKLIST:
-            asset = hashtag_match.group(1).upper()
+        # Standard trading pairs have priority over Telegram sequence tags.
+        # In particular, #123/#46 are recommendation numbers, not financial assets.
+        pair_match = re.search(r'\b([A-Z]{2,8}[/-]?(?:USDT|PERP|BTC|ETH))\b', txt)
+        if pair_match and pair_match.group(1).upper() not in self.ASSET_BLACKLIST:
+            asset = pair_match.group(1).upper().replace('/', '').replace('-', '')
         else:
-            pair_match = re.search(r'\b([A-Z]{2,8}[/-]?(?:USDT|PERP|BTC|ETH))\b', txt)
-            if pair_match and pair_match.group(1).upper() not in self.ASSET_BLACKLIST:
-                asset = pair_match.group(1).upper().replace('/', '').replace('-', '')
+            # Hashtags may identify an asset only when they contain at least one letter.
+            hashtag_match = re.search(r'#([A-Z]*[A-Z0-9]{2,11})\b', txt)
+            if hashtag_match and not hashtag_match.group(1).isdigit() and hashtag_match.group(1).upper() not in self.ASSET_BLACKLIST:
+                asset = hashtag_match.group(1).upper()
             else:
                 fallback = re.search(r'\b([A-Z]{3,8})\b', txt)
                 if fallback and fallback.group(1).upper() not in self.ASSET_BLACKLIST:
                     if fallback.group(1).upper() not in ['ENTRY', 'STOP', 'LONG', 'SHORT', 'TARGET']:
-                        asset = fallback.group(1).upper()
+                        base_asset = fallback.group(1).upper()
+                        # Telegram often writes the base symbol (e.g. BTC) while the
+                        # execution market is the canonical USDT pair.
+                        usdt_bases = {
+                            'BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'AVAX',
+                            'LINK', 'DOT', 'TRX', 'LTC', 'BCH', 'UNI', 'ATOM', 'ETC',
+                            'FIL', 'NEAR', 'APT', 'ARB', 'OP', 'SUI', 'TON', 'PEPE',
+                        }
+                        asset = f"{base_asset}USDT" if base_asset in usdt_bases else base_asset
         return asset, side
 
     def _apply_regex_template(self, text: str, template_snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
