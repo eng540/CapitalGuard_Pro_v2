@@ -322,7 +322,7 @@ def build_single_result_card(
     replay_status = str(replay.get("replay_status") or "").upper()
     if replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
         if replay_status == "COMPLETED_UNVERIFIABLE":
-            lines.append("المحاكاة التاريخية: اكتملت وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
+            lines.append("المحاكاة التاريخية: اكتملت، لكن بيانات السوق غير قابلة للتحقق بالكامل؛ تم حسم الإغلاق المالي مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
         else:
             lines.append("المحاكاة التاريخية: اكتملت وفق بيانات السوق المتاحة.")
         for label, key in (("الحالة", "replay_status"), ("عدد الأحداث", "event_count"), ("آخر حدث", "last_event"), ("دورة الحياة", "lifecycle_status")):
