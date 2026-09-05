@@ -322,13 +322,15 @@ def build_single_result_card(
     replay_status = str(replay.get("replay_status") or "").upper()
     if replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
         if replay_status == "COMPLETED_UNVERIFIABLE":
-            lines.append("المحاكاة التاريخية: اكتملت، لكن بيانات السوق غير قابلة للتحقق؛ لا تُستخدم كنتيجة نهائية أو للترتيب.")
+            lines.append("المحاكاة التاريخية: اكتملت وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
         else:
             lines.append("المحاكاة التاريخية: اكتملت وفق بيانات السوق المتاحة.")
         for label, key in (("الحالة", "replay_status"), ("عدد الأحداث", "event_count"), ("آخر حدث", "last_event"), ("دورة الحياة", "lifecycle_status")):
             value = replay.get(key)
             if value is not None:
                 lines.append(f"{label}: <code>{_text(value)}</code>")
+        if replay_status == "COMPLETED_UNVERIFIABLE":
+            lines.append("⚠️ اكتملت المحاكاة وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
     elif replay:
         replay_message = {
             "BLOCKED": "المحاكاة التاريخية مؤجلة؛ نتيجة الاستخراج جاهزة.",
@@ -425,7 +427,7 @@ def build_batch_summary(
         if replay_pending is not None:
             lines.append(f"تنتظر نتيجة: {_text(replay_pending)}")
         if replay_status == "COMPLETED_UNVERIFIABLE":
-            lines.append("اكتملت المحاكاة، لكن بيانات السوق غير قابلة للتحقق؛ لا تُستخدم للترتيب أو التداول.")
+            lines.append("⚠️ اكتملت المحاكاة وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
         elif replay_status == "COMPLETED":
             lines.append("اكتملت المحاكاة وفق بيانات السوق المتاحة.")
         elif replay_failed:
