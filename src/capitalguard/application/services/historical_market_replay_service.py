@@ -392,7 +392,7 @@ class HistoricalMarketReplayService:
     ) -> dict:
         """Run G6 from an existing G5 materialization; caller owns commit/rollback."""
         self._g5_materialization(session, signal_id=signal_id, materialization_id=materialization_id)
-        signal, _, _, _ = self._signal_levels(session, signal_id)
+        signal, _, _, target_levels = self._signal_levels(session, signal_id)
         source_lifecycle = self._source_lifecycle(session, signal_id=signal_id)
         start_utc, end_utc = self._utc(start), self._utc(replay_end)
         if start_utc >= end_utc:
@@ -428,9 +428,50 @@ class HistoricalMarketReplayService:
         evidence = session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.replay_run_id == run.id)).scalars().first()
         run.dataset_hash = evidence.artifact_hash if evidence else self._artifact_hash(self._artifact_payload(signal_id=signal_id, asset=signal.asset, market=signal.market, interval=interval, candles=candles, replay_end=end_utc, provider_endpoint=endpoint))
         run.ambiguity_status = "AMBIGUOUS" if any(event.replay_status == "AMBIGUOUS" for event in events) else "NONE"; run.quality_status = "UNVERIFIABLE" if run.ambiguity_status in {"AMBIGUOUS", "INFERRED"} or run.data_as_of_status != "VERIFIED" else "UNASSESSED"
-        if coverage.status in {CoverageStatus.PARTIAL_WINDOW, CoverageStatus.GAPPED}: run.status = "REPLAY_PARTIAL"
-        else: run.status = "COMPLETED_UNVERIFIABLE" if run.ambiguity_status in {"AMBIGUOUS", "INFERRED"} or run.data_as_of_status != "VERIFIED" else "COMPLETED"
-        run.result_json = {"event_ids": [event.id for event in events], "event_count": len(events), "events": [{"id": event.id, "type": event.event_type, "timestamp": event.event_timestamp.isoformat(), "price": str(event.price) if event.price is not None else None, "replay_status": event.replay_status, "confidence": str(event.event_confidence), "data": event.event_data} for event in events], "evidence_id": evidence.id if evidence else None, "ambiguity_status": run.ambiguity_status, "coverage": {"status": coverage.status.value, "ratio": coverage.coverage_ratio, "requested_start": start_utc.isoformat(), "requested_end": end_utc.isoformat(), "actual_start": coverage.actual_start.isoformat() if coverage.actual_start else None, "actual_end": coverage.actual_end.isoformat() if coverage.actual_end else None, "expected_candles": coverage.expected_candles, "actual_candles": coverage.actual_candles, "gaps": [[gap_start.isoformat(), gap_end.isoformat()] for gap_start, gap_end in coverage.gaps]}, "source_lifecycle": source_lifecycle}
+
+        # Lifecycle-First Termination: a financially terminal trade remains terminal
+        # even when the provider could not cover the remainder of the requested window.
+        event_types = [str(getattr(event, "event_type", "")) for event in events]
+        target_count = len(target_levels)
+        hit_targets = {
+            int(event_type[2:])
+            for event_type in event_types
+            if event_type.startswith("TP") and event_type[2:].isdigit()
+        }
+        if "SL" in event_types:
+            lifecycle_state = "CLOSED_STOP"
+            lifecycle_terminal_event = next((event for event in reversed(events) if event.event_type == "SL"), None)
+        elif target_count and len(hit_targets) >= target_count:
+            lifecycle_state = "CLOSED_TARGETS"
+            lifecycle_terminal_event = next((event for event in reversed(events) if event.event_type.startswith("TP") and event.event_type[2:].isdigit()), None)
+        elif "CLOSE" in event_types:
+            lifecycle_state = "FINAL_CLOSE"
+            lifecycle_terminal_event = next((event for event in reversed(events) if event.event_type == "CLOSE"), None)
+        else:
+            lifecycle_state = "ACTIVE" if "ACTIVATED" in event_types else "NOT_ACTIVATED"
+            lifecycle_terminal_event = None
+
+        terminal_states = {"CLOSED_TARGETS", "CLOSED_STOP", "FINAL_CLOSE"}
+        resolution_quality = (
+            "VERIFIED"
+            if lifecycle_terminal_event is not None and getattr(lifecycle_terminal_event, "replay_status", None) == "VERIFIED"
+            else "UNVERIFIABLE"
+        )
+
+        if lifecycle_state in terminal_states:
+            run.status = "COMPLETED" if resolution_quality == "VERIFIED" else "COMPLETED_UNVERIFIABLE"
+            run.termination_reason = "LIFECYCLE_COMPLETED"
+            run.exit_timestamp = getattr(lifecycle_terminal_event, "event_timestamp", None)
+        elif coverage.status in {CoverageStatus.PARTIAL_WINDOW, CoverageStatus.GAPPED}:
+            run.status = "REPLAY_PARTIAL"
+            run.termination_reason = "DATA_TRUNCATED_WHILE_ACTIVE"
+            run.exit_timestamp = coverage.actual_end
+        else:
+            run.status = "STILL_ACTIVE"
+            run.termination_reason = "HORIZON_REACHED"
+            run.exit_timestamp = coverage.actual_end
+
+        run.result_json = {"event_ids": [event.id for event in events], "event_count": len(events), "events": [{"id": event.id, "type": event.event_type, "timestamp": event.event_timestamp.isoformat(), "price": str(event.price) if event.price is not None else None, "replay_status": event.replay_status, "confidence": str(event.event_confidence), "data": event.event_data} for event in events], "evidence_id": evidence.id if evidence else None, "ambiguity_status": run.ambiguity_status, "lifecycle_status": lifecycle_state, "resolution_quality": resolution_quality, "termination_reason": run.termination_reason, "exit_timestamp": run.exit_timestamp.isoformat() if run.exit_timestamp else None, "coverage": {"status": coverage.status.value, "ratio": coverage.coverage_ratio, "requested_start": start_utc.isoformat(), "requested_end": end_utc.isoformat(), "actual_start": coverage.actual_start.isoformat() if coverage.actual_start else None, "actual_end": coverage.actual_end.isoformat() if coverage.actual_end else None, "expected_candles": coverage.expected_candles, "actual_candles": coverage.actual_candles, "gaps": [[gap_start.isoformat(), gap_end.isoformat()] for gap_start, gap_end in coverage.gaps]}, "source_lifecycle": source_lifecycle}
         run.completed_at = datetime.now(timezone.utc); session.flush()
         return {"run": run, "events": events, "status": run.status, "replayed": not created, "coverage": coverage}
 
