@@ -106,9 +106,8 @@ def test_g6_partial_window_is_persisted_without_fabricating_a_complete_result(db
         provider=FakeProvider(_candles(signal, count=1)),
     )
 
-    # No terminal lifecycle event occurred in this one-candle scenario, so
-    # PARTIAL_WINDOW remains a genuine active/truncated replay. If a target
-    # had been reached, G6 lifecycle-first semantics would allow
+    # With no terminal lifecycle event, truncated active replay remains partial.
+    # If a target/stop had been reached, lifecycle-first semantics would allow
     # COMPLETED_UNVERIFIABLE while preserving PARTIAL_WINDOW coverage.
     assert result["status"] == "REPLAY_PARTIAL"
     assert result["coverage"].status.value == "PARTIAL_WINDOW"
