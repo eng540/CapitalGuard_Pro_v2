@@ -152,7 +152,7 @@ def test_build_batch_summary_shows_historical_replay_outcome():
 
     assert "نتيجة المحاكاة التاريخية" in view.text
     assert "مكتملة: 2" in view.text
-    assert "بيانات السوق غير قابلة للتحقق" in view.text
+    assert "اكتملت وتم حسم الإغلاق المالي" in view.text
     assert "اكتملت المعالجة والمحاكاة التاريخية" in view.text
 
 
@@ -230,8 +230,8 @@ def test_build_single_result_card_labels_unverifiable_replay_truthfully():
         },
     )
 
-    assert "اكتملت، لكن بيانات السوق غير قابلة للتحقق" in view.text
-    assert "لا تُستخدم كنتيجة نهائية أو للترتيب" in view.text
+    assert "اكتملت وتم حسم الإغلاق المالي" in view.text
+    assert "تعذر التحقق الكامل من ترتيب الصفقات اللحظية" in view.text
     assert "COMPLETED_UNVERIFIABLE" in view.text
     assert "HIDDEN-REF" not in view.text
 
@@ -285,7 +285,6 @@ def test_complete_extraction_stays_visible_when_semantic_work_is_deferred():
     assert "يحتاج استكمالًا بسيطًا" not in view.text
     assert "SEMANTIC_REVIEW_REQUIRED" not in view.text
     assert "BTCUSDT" in view.text and "79625.20" in view.text
-
 
 
 def test_deferred_replay_explains_result_without_exposing_internal_block_reason():
