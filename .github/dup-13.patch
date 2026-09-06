@@ -1,0 +1,30 @@
+diff --git a/src/capitalguard/interfaces/telegram/presentation_adapter.py b/src/capitalguard/interfaces/telegram/presentation_adapter.py
+index ae68af7..b78a66e 100644
+--- a/src/capitalguard/interfaces/telegram/presentation_adapter.py
++++ b/src/capitalguard/interfaces/telegram/presentation_adapter.py
+@@ -320,7 +321,24 @@ def build_single_result_card(
+     if outcome.get("exit_price") is None:
+         outcome["exit_price"] = _value(candidate, "exit_price")
+     replay_status = str(replay.get("replay_status") or "").upper()
+-    if replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
++    already_registered = bool(replay.get("duplicate")) or str(replay.get("status") or "").upper() == "ALREADY_REGISTERED"
++    if already_registered:
++        lines.append("♻️ <b>التوصية مسجلة مسبقاً</b>")
++        lines.append("لم تتم إعادة المحاكاة؛ تم استرجاع نتيجة الرسالة المسجلة سابقاً.")
++        if replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
++            if replay_status == "COMPLETED_UNVERIFIABLE":
++                lines.append("المحاكاة التاريخية السابقة: اكتملت وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
++            else:
++                lines.append("المحاكاة التاريخية السابقة: اكتملت وفق بيانات السوق المتاحة.")
++            for label, key in (("الحالة", "replay_status"), ("عدد الأحداث", "event_count"), ("آخر حدث", "last_event"), ("دورة الحياة", "lifecycle_status")):
++                value = replay.get(key)
++                if value is not None:
++                    lines.append(f"{label}: <code>{_text(value)}</code>")
++            if replay_status == "COMPLETED_UNVERIFIABLE":
++                lines.append("⚠️ اكتملت المحاكاة وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
++        else:
++            lines.append("لا توجد نتيجة Replay نهائية محفوظة لهذه الرسالة حتى الآن.")
++    elif replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
+         if replay_status == "COMPLETED_UNVERIFIABLE":
+             lines.append("المحاكاة التاريخية: اكتملت وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
+         else:
