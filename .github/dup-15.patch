@@ -1,0 +1,13 @@
+diff --git a/tests/test_historical_forwarding_auto_progression.py b/tests/test_historical_forwarding_auto_progression.py
+index f8222fa..9e3a0d2 100644
+--- a/tests/test_historical_forwarding_auto_progression.py
++++ b/tests/test_historical_forwarding_auto_progression.py
+@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
+ 
+ from sqlalchemy import select
+ 
+-from capitalguard.application.services.historical_forwarding_service import HistoricalForwardingService
++from capitalguard.application.services.historical_forwarding_service import ForwardedMessageInput, HistoricalForwardingService
+ from capitalguard.application.services.historical_message_foundation_service import HistoricalMessageFoundationService
+ from capitalguard.application.services.historical_semantic_materialization_service import HistoricalSemanticMaterializationService
+ from capitalguard.application.services.historical_signal_service import HistoricalSignalService
