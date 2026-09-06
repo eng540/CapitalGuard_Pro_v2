@@ -1,0 +1,15 @@
+diff --git a/src/capitalguard/interfaces/telegram/presentation_adapter.py b/src/capitalguard/interfaces/telegram/presentation_adapter.py
+index ae68af7..b78a66e 100644
+--- a/src/capitalguard/interfaces/telegram/presentation_adapter.py
++++ b/src/capitalguard/interfaces/telegram/presentation_adapter.py
+@@ -426,7 +444,9 @@ def build_batch_summary(
+             lines.append(f"تعذر إكمالها: {_text(replay_failed)}")
+         if replay_pending is not None:
+             lines.append(f"تنتظر نتيجة: {_text(replay_pending)}")
+-        if replay_status == "COMPLETED_UNVERIFIABLE":
++        if replay_status == "ALREADY_REGISTERED":
++            lines.append("♻️ التوصية مسجلة مسبقاً؛ تم استرجاع النتائج السابقة دون إعادة المحاكاة.")
++        elif replay_status == "COMPLETED_UNVERIFIABLE":
+             lines.append("⚠️ اكتملت المحاكاة وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
+         elif replay_status == "COMPLETED":
+             lines.append("اكتملت المحاكاة وفق بيانات السوق المتاحة.")
