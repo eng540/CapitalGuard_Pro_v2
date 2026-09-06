@@ -220,7 +220,7 @@ class HistoricalForwardingService:
         """
         canonical = session.execute(
             select(HistoricalCanonicalMessage).where(
-                HistoricalCanonicalMessage.source_kind == HistoricalForwardingService.SOURCE_KIND,
+                HistoricalCanonicalMessage.source_kind == "TELEGRAM",
                 HistoricalCanonicalMessage.source_chat_id == source_chat_id,
                 HistoricalCanonicalMessage.external_message_id == source_message_id,
             )
