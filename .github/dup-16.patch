@@ -2,10 +2,7 @@ diff --git a/tests/test_historical_forwarding_auto_progression.py b/tests/test_h
 index f8222fa..9e3a0d2 100644
 --- a/tests/test_historical_forwarding_auto_progression.py
 +++ b/tests/test_historical_forwarding_auto_progression.py
-@@ -432,3 +432,95 @@ def test_auto_policy_never_sets_human_reviewer_identity(db_session):
-     assert draft.override_json["actor_type"] == "SYSTEM_POLICY"
-     assert draft.override_json["human_reviewer"] is False
-     assert draft.override_json["live_activation"] is False
+@@ -0,0 +1,95 @@
 +
 +
 +def test_same_source_message_id_is_duplicate_and_rehydrates_final_replay(db_session):
