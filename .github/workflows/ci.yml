@@ -29,8 +29,8 @@ jobs:
             git fetch origin "$GITHUB_HEAD_REF"
             git checkout -B "$GITHUB_HEAD_REF" "origin/$GITHUB_HEAD_REF"
             for patch in $(find .github -maxdepth 1 -type f -name 'dup-*.patch' | sort); do
-              git apply --check "$patch"
-              git apply "$patch"
+              git apply --recount --check "$patch"
+              git apply --recount "$patch"
             done
             rm -f .github/dup-*.patch .github/duplicate-resolution-apply.patch .github/workflows/apply-duplicate-resolution.yml
             git restore --source=origin/main -- .github/workflows/ci.yml
