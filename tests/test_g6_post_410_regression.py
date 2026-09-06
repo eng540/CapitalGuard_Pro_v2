@@ -85,6 +85,7 @@ def _g6_replay_harness(monkeypatch, *, event_types, event_statuses=None, coverag
     service = HistoricalMarketReplayService()
     signal = SimpleNamespace(asset="BTCUSDT", market="FUTURES", side="LONG", decision_timestamp=datetime(2025, 12, 4, 0, 0, tzinfo=UTC), targets=[{"price": "110"}, {"price": "120"}, {"price": "130"}])
     run = SimpleNamespace(
+        id=1,
         status="RUNNING", ambiguity_status="NONE", data_as_of_status="UNVERIFIABLE",
         coverage_status=None, coverage_ratio=None, actual_start=None, actual_end=None,
         provider=None, provider_endpoint=None, data_source=None, provider_metadata=None,
