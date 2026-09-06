@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   core:
@@ -19,56 +19,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Apply prepared duplicate-resolution patch chunks
-        if: github.event_name == 'pull_request' && github.head_ref == 'fix/duplicate-resolution-from-main'
-        run: |
-          set -euo pipefail
-          if compgen -G '.github/dup-*.patch' > /dev/null; then
-            git fetch origin main
-            git fetch origin "$GITHUB_HEAD_REF"
-            git checkout -B "$GITHUB_HEAD_REF" "origin/$GITHUB_HEAD_REF"
-            python - <<'PY'
-            from pathlib import Path
-            import re
-
-            for path in sorted(Path('.github').glob('dup-*.patch')):
-                text = path.read_text()
-                lines = text.splitlines()
-                out = []
-                i = 0
-                while i < len(lines):
-                    line = lines[i]
-                    if line.startswith('@@ '):
-                        body = []
-                        i += 1
-                        while i < len(lines) and not lines[i].startswith('@@ ') and not lines[i].startswith('diff --git '):
-                            body.append(lines[i])
-                            i += 1
-                        old_count = sum(1 for x in body if x.startswith((' ', '-')))
-                        new_count = sum(1 for x in body if x.startswith((' ', '+')))
-                        m = re.match(r'@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@(.*)', line)
-                        if not m:
-                            raise SystemExit(f'Invalid hunk header in {path}: {line}')
-                        out.append(f'@@ -{m.group(1)},{old_count} +{m.group(2)},{new_count} @@{m.group(3)}')
-                        out.extend(body)
-                    else:
-                        out.append(line)
-                        i += 1
-                path.write_text('\n'.join(out) + '\n')
-            PY
-            for patch in $(find .github -maxdepth 1 -type f -name 'dup-*.patch' | sort); do
-              git apply --check "$patch"
-              git apply "$patch"
-            done
-            rm -f .github/dup-*.patch .github/duplicate-resolution-apply.patch .github/workflows/apply-duplicate-resolution.yml
-            git restore --source=origin/main -- .github/workflows/ci.yml
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add -A
-            git commit -m "fix: resolve duplicate historical source messages"
-            git push origin HEAD:"$GITHUB_HEAD_REF"
-          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5
