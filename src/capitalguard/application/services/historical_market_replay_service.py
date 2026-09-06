@@ -175,7 +175,7 @@ class HistoricalMarketReplayService:
             run = session.get(HistoricalReplayRun, replay_run_id)
             if run is None:
                 raise HistoricalSignalValidationError("ReplayRun does not exist")
-            replay_run_ref = run.run_ref
+            replay_run_ref = f"HMKT-{uuid4().hex[:24].upper()}"
         existing = session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.artifact_key == artifact_key)).scalar_one_or_none()
         if existing is not None:
             if replay_run_id is not None and existing.replay_run_id is None:
