@@ -19,19 +19,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Apply duplicate-resolution contract correction
+      - name: Apply duplicate-resolution contract fixes
         if: github.event_name == 'pull_request' && github.head_ref == 'fix/duplicate-resolution-from-main'
         run: |
           set -euo pipefail
           git fetch origin "$GITHUB_HEAD_REF"
           git checkout -B "$GITHUB_HEAD_REF" "origin/$GITHUB_HEAD_REF"
           python -c 'from pathlib import Path; import re; p=Path("src/capitalguard/interfaces/telegram/presentation_adapter.py"); s=p.read_text(); p.write_text(re.sub(r"\\n(?=[ \\t]+)", "\\n", s))'
-          python -c 'from pathlib import Path; p=Path("src/capitalguard/application/services/historical_forwarding_service.py"); s=p.read_text(); s=s.replace("HistoricalCanonicalMessage.source_kind == HistoricalForwardingService.SOURCE_KIND,", "HistoricalCanonicalMessage.source_kind == \"TELEGRAM\","); p.write_text(s)'
+          python -c 'from pathlib import Path; p=Path("src/capitalguard/application/services/historical_forwarding_service.py"); s=p.read_text(); old="        metadata = batch.metadata_json or {}\n        if metadata.get(\"mode\") != \"AUTO\" or batch.source_kind != self.SOURCE_KIND:\n            return False\n"; new="        metadata = batch.metadata_json or {}\n        receipt_statuses = session.execute(select(HistoricalForwardReceipt.validation_status).where(HistoricalForwardReceipt.batch_id == batch.id)).scalars().all()\n        if receipt_statuses and all(status == \"DUPLICATE\" for status in receipt_statuses):\n            return True\n        if metadata.get(\"mode\") != \"AUTO\" or batch.source_kind != self.SOURCE_KIND:\n            return False\n"; assert old in s; p.write_text(s.replace(old,new,1))'
           python -m py_compile src/capitalguard/interfaces/telegram/presentation_adapter.py src/capitalguard/application/services/historical_forwarding_service.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/capitalguard/interfaces/telegram/presentation_adapter.py src/capitalguard/application/services/historical_forwarding_service.py
-          if ! git diff --cached --quiet; then git commit -m "fix: resolve canonical Telegram duplicate identity"; git push origin HEAD:"$GITHUB_HEAD_REF"; fi
+          if ! git diff --cached --quiet; then git commit -m "fix: resolve duplicate-only historical batch"; git push origin HEAD:"$GITHUB_HEAD_REF"; fi
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
