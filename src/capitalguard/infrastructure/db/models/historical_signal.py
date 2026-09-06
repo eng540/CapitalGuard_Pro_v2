@@ -94,7 +94,7 @@ class HistoricalMarketEvidence(Base):
     id = Column(Integer, primary_key=True)
     signal_id = Column(Integer, ForeignKey("historical_signals.id", ondelete="CASCADE"), nullable=False, index=True)
     replay_run_id = Column(Integer, ForeignKey("historical_replay_runs.id", ondelete="RESTRICT"), nullable=True, index=True)
-    replay_run_ref = Column(String(48), nullable=False, unique=True, index=True)
+    replay_run_ref = Column(String(48), nullable=False, index=True)
     provider = Column(String(80), nullable=False, index=True)
     provider_endpoint = Column(String(255), nullable=True)
     asset = Column(String(80), nullable=False, index=True)

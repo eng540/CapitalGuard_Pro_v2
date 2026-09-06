@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Iterable
 from uuid import uuid4
@@ -26,6 +26,7 @@ from capitalguard.infrastructure.db.models import (
     HistoricalSignalEvidence,
 )
 
+from .adaptive_historical_replay import AdaptiveHistoricalReplayPlanner, LifecycleState
 from .historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
 
 
@@ -174,7 +175,7 @@ class HistoricalMarketReplayService:
             run = session.get(HistoricalReplayRun, replay_run_id)
             if run is None:
                 raise HistoricalSignalValidationError("ReplayRun does not exist")
-            replay_run_ref = run.run_ref
+            replay_run_ref = f"HMKT-{uuid4().hex[:24].upper()}"
         existing = session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.artifact_key == artifact_key)).scalar_one_or_none()
         if existing is not None:
             if replay_run_id is not None and existing.replay_run_id is None:
@@ -377,6 +378,214 @@ class HistoricalMarketReplayService:
             return {"run": previous, "events": list(previous.events or []), "status": previous.status, "replayed": True, "retry_skipped": True}
         return self.replay_g6(session, signal_id=signal.id, materialization_id=materialization.id, start=previous.window_start, replay_end=previous.window_end, interval=previous.interval, limit=previous.limit_count, provider=provider, retry_of_fingerprint=previous.request_fingerprint)
 
+    def _replay_g6_annual_adaptive(
+        self,
+        session: Session,
+        *,
+        signal_id: int,
+        materialization_id: int,
+        start: datetime,
+        replay_end: datetime,
+        limit: int,
+        provider,
+        retry_of_fingerprint: str | None = None,
+    ) -> dict:
+        """Traverse daily candles in 365-day chunks and drill down only critical days."""
+        signal, entry, stop, target_levels = self._signal_levels(session, signal_id)
+        source_lifecycle = self._source_lifecycle(session, signal_id=signal_id)
+        end_utc = self._utc(replay_end)
+        planner = AdaptiveHistoricalReplayPlanner()
+        macro_start = planner.day_start(self._utc(signal.decision_timestamp))
+        run, created = self._get_or_create_run(
+            session, signal_id=signal_id, materialization_id=materialization_id,
+            start=macro_start, replay_end=end_utc, interval="1m", limit=limit,
+            retry_of_fingerprint=retry_of_fingerprint,
+        )
+        if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:
+            events = session.execute(select(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_run_id == run.id).order_by(HistoricalSignalEvent.event_timestamp, HistoricalSignalEvent.id)).scalars().all()
+            return {"run": run, "events": events, "status": run.status, "replayed": True}
+
+        state = LifecycleState(
+            activated=False,
+            hit_target_indices=frozenset(),
+            remaining_target_indices=frozenset(range(1, len(target_levels) + 1)),
+            current_stop=stop,
+            lifecycle_state="NOT_ACTIVATED",
+            last_processed_timestamp=None,
+        )
+        all_events: list[HistoricalSignalEvent] = []
+        drilldown_days: list[str] = []
+        macro_chunks: list[dict] = []
+        macro_statuses: list[str] = []
+        macro_times = []
+        first_actual = None
+        last_actual = None
+        macro_expected = 0
+        macro_actual = 0
+        fetched_at = datetime.now(timezone.utc)
+
+        def range_touches(candle, level: Decimal, *, is_stop: bool = False) -> bool:
+            side = str(signal.side or "").upper()
+            if side == "LONG":
+                return candle.low <= level if is_stop else candle.high >= level
+            return candle.high >= level if is_stop else candle.low <= level
+
+        for annual in planner.annual_windows(macro_start, end_utc):
+            daily_fetch = getattr(provider, "fetch_daily", None)
+            if daily_fetch is None:
+                raise HistoricalSignalValidationError("Adaptive G6 provider lacks daily coverage adapter")
+            daily, endpoint, coverage = daily_fetch(
+                asset=str(signal.asset or ""), market=signal.market,
+                start=annual.start, end=annual.end, limit=annual.limit,
+            )
+            macro_statuses.append(coverage.status.value)
+            macro_times.extend(self._utc(c.open_time) for c in daily)
+            macro_expected += coverage.expected_candles
+            macro_actual += coverage.actual_candles
+            if coverage.actual_start is not None and (first_actual is None or coverage.actual_start < first_actual):
+                first_actual = coverage.actual_start
+            if coverage.actual_end is not None and (last_actual is None or coverage.actual_end > last_actual):
+                last_actual = coverage.actual_end
+            macro_chunks.append({
+                "start": annual.start.isoformat(), "end": annual.end.isoformat(),
+                "limit": annual.limit, "coverage_status": coverage.status.value,
+                "coverage_ratio": coverage.coverage_ratio,
+                "actual_start": coverage.actual_start.isoformat() if coverage.actual_start else None,
+                "actual_end": coverage.actual_end.isoformat() if coverage.actual_end else None,
+            })
+
+            for day_candle in sorted(daily, key=lambda item: self._utc(item.open_time)):
+                day = planner.day_start(day_candle.open_time)
+                if day < macro_start or day >= end_utc:
+                    continue
+                is_day_zero = day == macro_start
+                if is_day_zero:
+                    critical = True
+                elif state.activated:
+                    critical = bool(
+                        state.current_stop is not None and range_touches(day_candle, state.current_stop, is_stop=True)
+                    ) or any(
+                        index in state.remaining_target_indices and range_touches(day_candle, level)
+                        for index, level in enumerate(target_levels, start=1)
+                    )
+                else:
+                    critical = entry is not None and range_touches(day_candle, entry)
+                if not critical:
+                    continue
+
+                window = planner.minute_window_for_day(
+                    day=day, signal_source_time=self._utc(signal.decision_timestamp), now=end_utc
+                )
+                if window is None:
+                    continue
+                drilldown_days.append(day.isoformat())
+                minute_fetch = getattr(provider, "fetch_minute_day", None)
+                if minute_fetch is None:
+                    raise HistoricalSignalValidationError("Adaptive G6 provider lacks critical-day minute adapter")
+                minutes, minute_endpoint, minute_coverage = minute_fetch(
+                    asset=str(signal.asset or ""), market=signal.market,
+                    start=window.start, end=window.end,
+                )
+                macro_statuses.append(minute_coverage.status.value)
+                if not minutes:
+                    continue
+                day_events = self.replay_candles(
+                    session, signal_id=signal_id, candles=minutes, replay_end=window.end,
+                    interval="1m", provider_endpoint=minute_endpoint, replay_run_id=run.id,
+                    fetched_at=fetched_at, data_as_of_status="UNVERIFIABLE", refresh_ranking=False,
+                    resolver_client=getattr(provider, "client", None), initial_state=state,
+                )
+                all_events.extend(day_events)
+                hit = set(state.hit_target_indices)
+                activated = state.activated
+                lifecycle = state.lifecycle_state
+                last_ts = state.last_processed_timestamp
+                for event in day_events:
+                    event_type = str(event.event_type)
+                    last_ts = event.event_timestamp
+                    if event_type == "ACTIVATED":
+                        activated = True; lifecycle = "ACTIVE"
+                    elif event_type.startswith("TP") and event_type[2:].isdigit():
+                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE"
+                    elif event_type == "SL":
+                        lifecycle = "CLOSED_STOP"
+                    elif event_type == "CLOSE":
+                        lifecycle = "FINAL_CLOSE"
+                    elif event_type == "AMBIGUOUS":
+                        lifecycle = "CLOSED_UNVERIFIABLE"
+                state = LifecycleState(
+                    activated=activated, hit_target_indices=frozenset(hit),
+                    remaining_target_indices=frozenset(set(range(1, len(target_levels) + 1)) - hit),
+                    current_stop=state.current_stop, lifecycle_state=lifecycle,
+                    last_processed_timestamp=last_ts,
+                )
+                if planner.terminal(state):
+                    break
+            if planner.terminal(state):
+                break
+
+        terminal_states = {"CLOSED_TARGETS", "CLOSED_STOP", "FINAL_CLOSE", "CLOSED_UNVERIFIABLE"}
+        terminal_event = next((event for event in reversed(all_events) if str(event.event_type) in {"SL", "CLOSE", "AMBIGUOUS"} or str(event.event_type).startswith("TP")), None)
+        if state.lifecycle_state in terminal_states:
+            run.status = "COMPLETED" if state.lifecycle_state != "CLOSED_UNVERIFIABLE" else "COMPLETED_UNVERIFIABLE"
+            run.termination_reason = "LIFECYCLE_COMPLETED"
+            run.exit_timestamp = getattr(terminal_event, "event_timestamp", None)
+        elif any(status in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"} for status in macro_statuses):
+            run.status = "REPLAY_PARTIAL"
+            run.termination_reason = "DATA_TRUNCATED_WHILE_ACTIVE"
+            run.exit_timestamp = last_actual
+        else:
+            run.status = "STILL_ACTIVE"
+            run.termination_reason = "HORIZON_REACHED"
+            run.exit_timestamp = end_utc
+
+        run.coverage_status = "FULL" if macro_statuses and not any(status in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"} for status in macro_statuses) else ("GAPPED" if "GAPPED" in macro_statuses else "PARTIAL_WINDOW")
+        run.coverage_ratio = (macro_actual / macro_expected) if macro_expected else 0.0
+        run.actual_start = first_actual
+        run.actual_end = last_actual
+        run.provider = "MULTI_SOURCE"
+        run.provider_endpoint = "ADAPTIVE_DAILY_1M"
+        run.data_source = run.provider
+        run.fetched_at = fetched_at
+        run.data_as_of_status = "UNVERIFIABLE"
+        run.ambiguity_status = "AMBIGUOUS" if any(str(e.event_type) == "AMBIGUOUS" for e in all_events) else "NONE"
+        run.quality_status = "UNVERIFIABLE" if run.ambiguity_status == "AMBIGUOUS" else "UNASSESSED"
+        run.provider_metadata = {
+            "resolution_mode": "HYBRID_MACRO_DRILLDOWN", "macro_interval": "1d",
+            "macro_chunk_days": 365, "critical_days_count": len(drilldown_days),
+            "critical_days": drilldown_days, "macro_chunks": macro_chunks,
+            "current_stop": str(state.current_stop) if state.current_stop is not None else None,
+            "remaining_target_indices": sorted(state.remaining_target_indices),
+            "last_processed_timestamp": state.last_processed_timestamp.isoformat() if state.last_processed_timestamp else None,
+            "requested_start": macro_start.isoformat(), "requested_end": end_utc.isoformat(),
+        }
+        evidences = session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.replay_run_id == run.id)).scalars().all()
+        for evidence in evidences:
+            metadata = dict(evidence.metadata_json or {})
+            metadata.update({
+                "resolution_mode": "HYBRID_MACRO_DRILLDOWN",
+                "macro_chunk_days": 365,
+                "critical_days_count": len(drilldown_days),
+            })
+            evidence.metadata_json = metadata
+        if evidences:
+            run.dataset_hash = self._artifact_hash({"evidence_hashes": sorted(e.artifact_hash for e in evidences)})
+        run.result_json = {
+            "event_ids": [event.id for event in all_events], "event_count": len(all_events),
+            "events": [{"id": event.id, "type": event.event_type, "timestamp": event.event_timestamp.isoformat(), "price": str(event.price) if event.price is not None else None, "replay_status": event.replay_status, "confidence": str(event.event_confidence), "data": event.event_data} for event in all_events],
+            "ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state,
+            "termination_reason": run.termination_reason,
+            "exit_timestamp": run.exit_timestamp.isoformat() if run.exit_timestamp else None,
+            "evidence_metadata": {"resolution_mode": "HYBRID_MACRO_DRILLDOWN", "macro_chunk_days": 365, "critical_days_count": len(drilldown_days)},
+            "source_lifecycle": source_lifecycle,
+        }
+        run.completed_at = datetime.now(timezone.utc)
+        session.flush()
+        coverage = self._coverage_from_candles(start=macro_start, end=end_utc, interval="1d", candles=[
+            MarketCandle(asset=str(signal.asset or ""), market=signal.market, open_time=t, open=Decimal("1"), high=Decimal("1"), low=Decimal("1"), close=Decimal("1"), volume=Decimal("1"), data_source="ADAPTIVE_MACRO") for t in macro_times
+        ])
+        return {"run": run, "events": all_events, "status": run.status, "replayed": not created, "coverage": coverage}
+
     def replay_g6(
         self,
         session: Session,
@@ -397,6 +606,11 @@ class HistoricalMarketReplayService:
         start_utc, end_utc = self._utc(start), self._utc(replay_end)
         if start_utc >= end_utc:
             raise HistoricalSignalValidationError("Replay window is invalid")
+        if provider is None:
+            from capitalguard.infrastructure.market.historical_ohlcv_provider import BinanceHistoricalOhlcvProvider
+            provider = BinanceHistoricalOhlcvProvider()
+        if interval == "1m" and hasattr(provider, "fetch_daily") and hasattr(provider, "fetch_minute_day"):
+            return self._replay_g6_annual_adaptive(session, signal_id=signal_id, materialization_id=materialization_id, start=start_utc, replay_end=end_utc, limit=limit, provider=provider, retry_of_fingerprint=retry_of_fingerprint)
         run, created = self._get_or_create_run(session, signal_id=signal_id, materialization_id=materialization_id, start=start_utc, replay_end=end_utc, interval=interval, limit=limit, retry_of_fingerprint=retry_of_fingerprint)
         if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "REPLAY_PARTIAL"}:
             events = session.execute(select(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_run_id == run.id).order_by(HistoricalSignalEvent.event_timestamp, HistoricalSignalEvent.id)).scalars().all()
@@ -565,8 +779,10 @@ class HistoricalMarketReplayService:
                     selected.extend(hour_candles)
         return sorted(selected, key=lambda item: item.open_time)
 
-    def replay_candles(self, session: Session, *, signal_id: int, candles: Iterable[MarketCandle], replay_end: datetime, interval: str = "1m", provider_endpoint: str | None = None, replay_run_id: int | None = None, fetched_at: datetime | None = None, data_as_of_status: str = "UNVERIFIABLE", refresh_ranking: bool = True, resolver_client=None) -> list[HistoricalSignalEvent]:
+    def replay_candles(self, session: Session, *, signal_id: int, candles: Iterable[MarketCandle], replay_end: datetime, interval: str = "1m", provider_endpoint: str | None = None, replay_run_id: int | None = None, fetched_at: datetime | None = None, data_as_of_status: str = "UNVERIFIABLE", refresh_ranking: bool = True, resolver_client=None, initial_state: LifecycleState | None = None) -> list[HistoricalSignalEvent]:
         signal, entry, stop, target_levels = self._signal_levels(session, signal_id); end_time=self._utc(replay_end); normalized=[]
+        if initial_state is not None:
+            stop = initial_state.current_stop if initial_state.current_stop is not None else stop
         for candle in candles:
             timestamp=self._utc(candle.open_time)
             if timestamp > end_time: raise HistoricalSignalValidationError("Market candle is after replay_end")
@@ -575,8 +791,8 @@ class HistoricalMarketReplayService:
             values=[self._decimal(value) for value in (candle.open,candle.high,candle.low,candle.close,candle.volume)]
             if any(value is None or value <= 0 for value in values): raise HistoricalSignalValidationError("OHLCV candle values must be positive")
             normalized.append(candle)
-        normalized.sort(key=lambda item:self._utc(item.open_time)); events=[]; activated=False; closed=False; hit_targets=set(); dedup_prefix=f"g6:{replay_run_id}" if replay_run_id is not None else f"replay:{signal.id}"; decision_time=self._utc(signal.decision_timestamp); clock=SimulationClock(decision_time)
-        eligible_candles=self._coarse_to_fine_candles([candle for candle in normalized if self._utc(candle.open_time)>=decision_time], side=signal.side, entry=entry, stop=stop, target_levels=target_levels); ambiguity_status="NONE"
+        normalized.sort(key=lambda item:self._utc(item.open_time)); events=[]; activated=bool(initial_state.activated) if initial_state is not None else False; closed=False; hit_targets=set(initial_state.hit_target_indices) if initial_state is not None else set(); dedup_prefix=f"g6:{replay_run_id}" if replay_run_id is not None else f"replay:{signal.id}"; decision_time=self._utc(signal.decision_timestamp); clock=SimulationClock(decision_time)
+        eligible_source=[candle for candle in normalized if self._utc(candle.open_time)>=decision_time]; eligible_candles=sorted(eligible_source, key=lambda item:self._utc(item.open_time)) if initial_state is not None and initial_state.activated else self._coarse_to_fine_candles(eligible_source, side=signal.side, entry=entry, stop=stop, target_levels=target_levels); ambiguity_status="NONE"
         market_evidence=self._record_market_evidence(session, signal_id=signal.id, asset=signal.asset, market=signal.market, interval=interval, candles=normalized, replay_end=end_time, provider_endpoint=provider_endpoint, replay_run_id=replay_run_id, fetched_at=fetched_at, data_as_of_status=data_as_of_status, ambiguity_status=ambiguity_status, quality_status="UNASSESSED")
         for candle in eligible_candles:
             clock.advance_to(self._utc(candle.open_time)); candle_time=clock.current_time

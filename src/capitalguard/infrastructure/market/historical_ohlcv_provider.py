@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from capitalguard.application.services.historical_market_replay_service import MarketCandle
 from capitalguard.domain.coverage import HistoricalCoverage, calculate_historical_coverage, interval_delta
@@ -84,8 +84,6 @@ class BinanceHistoricalOhlcvProvider:
             if next_cursor <= cursor:
                 break
             cursor = next_cursor
-
-            # A short page is not proof that the requested window is complete.
             if last_open >= end_utc:
                 break
 
@@ -97,6 +95,50 @@ class BinanceHistoricalOhlcvProvider:
             interval=interval_duration,
         )
         return candles, endpoint, coverage
+
+    def fetch_daily(
+        self,
+        *,
+        asset: str,
+        market: str | None,
+        start: datetime,
+        end: datetime,
+        limit: int = 365,
+    ) -> tuple[list[MarketCandle], str, HistoricalCoverage]:
+        """Thin semantic adapter for G6 annual macro traversal; reuses fetch_with_coverage()."""
+        end_utc = self._normalize_bounds(start, end)[1]
+        bounded_end = end_utc - timedelta(microseconds=1)
+        bounded_end = bounded_end.replace(hour=0, minute=0, second=0, microsecond=0)
+        return self.fetch_with_coverage(
+            asset=asset,
+            market=market,
+            interval="1d",
+            start=start,
+            end=bounded_end,
+            limit=min(max(1, int(limit)), 365),
+        )
+
+    def fetch_minute_day(
+        self,
+        *,
+        asset: str,
+        market: str | None,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[MarketCandle], str, HistoricalCoverage]:
+        """Fetch exactly one bounded critical-day minute window; never targets the next day."""
+        start_utc, end_utc = self._normalize_bounds(start, end)
+        day_end = start_utc.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        bounded_end = min(end_utc, day_end) - timedelta(microseconds=1)
+        bounded_end = bounded_end.replace(second=0, microsecond=0)
+        return self.fetch_with_coverage(
+            asset=asset,
+            market=market,
+            interval="1m",
+            start=start_utc,
+            end=bounded_end,
+            limit=PROVIDER_PAGE_LIMIT,
+        )
 
     def fetch(
         self,
