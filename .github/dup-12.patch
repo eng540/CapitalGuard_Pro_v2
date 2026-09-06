@@ -2,7 +2,7 @@ diff --git a/src/capitalguard/interfaces/telegram/presentation_adapter.py b/src/
 index ae68af7..b78a66e 100644
 --- a/src/capitalguard/interfaces/telegram/presentation_adapter.py
 +++ b/src/capitalguard/interfaces/telegram/presentation_adapter.py
-@@ -152,7 +152,8 @@ def _route_badge(route: Any) -> str:
+@@ -152,5 +152,7 @@ def _route_badge(route: Any) -> str:
          "CLOSED_EVENT": "حدث إغلاق",
          "QUARANTINE": "تم الاستخراج؛ التتبع ينتظر تحقق المصدر",
          "REVISION_REVIEW": "تم الاستخراج؛ يحتاج استكمالًا بسيطًا",
