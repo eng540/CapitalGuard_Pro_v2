@@ -23,6 +23,8 @@ jobs:
         if: github.event_name == 'pull_request' && github.head_ref == 'fix/duplicate-resolution-from-main'
         run: |
           set -euo pipefail
+          git fetch origin "$GITHUB_HEAD_REF"
+          git checkout -B "$GITHUB_HEAD_REF" "origin/$GITHUB_HEAD_REF"
           python -c 'from pathlib import Path; import re; p=Path("src/capitalguard/interfaces/telegram/presentation_adapter.py"); s=p.read_text(); p.write_text(re.sub(r"\\n(?=[ \\t]+)", "\\n", s))'
           python -m py_compile src/capitalguard/interfaces/telegram/presentation_adapter.py
           git config user.name "github-actions[bot]"
