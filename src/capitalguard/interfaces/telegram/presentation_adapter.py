@@ -152,7 +152,8 @@ def _route_badge(route: Any) -> str:
         "CLOSED_EVENT": "حدث إغلاق",
         "QUARANTINE": "تم الاستخراج؛ التتبع ينتظر تحقق المصدر",
         "REVISION_REVIEW": "تم الاستخراج؛ يحتاج استكمالًا بسيطًا",
-        "DUPLICATE": "مكررة",
+        "DUPLICATE": "♻️ التوصية مسجلة مسبقاً",
+        "ALREADY_REGISTERED": "♻️ التوصية مسجلة مسبقاً",
     }.get(normalized, "الحالة محدثة")
 
 

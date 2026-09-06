@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from capitalguard.application.services.historical_forwarding_service import HistoricalForwardingService
+from capitalguard.application.services.historical_forwarding_service import ForwardedMessageInput, HistoricalForwardingService
 from capitalguard.application.services.historical_message_foundation_service import HistoricalMessageFoundationService
 from capitalguard.application.services.historical_semantic_materialization_service import HistoricalSemanticMaterializationService
 from capitalguard.application.services.historical_signal_service import HistoricalSignalService
@@ -124,3 +124,188 @@ def test_auto_policy_never_sets_human_reviewer_identity(db_session):
     result = HistoricalForwardingService().auto_progress_canonical_batch(db_session, batch_id=batch.id, replay_end=SOURCE_TIME + timedelta(minutes=10), limit=3, provider=FakeProvider(_candles(high=111)))
     draft = db_session.execute(select(HistoricalRecommendationDraft).where(HistoricalRecommendationDraft.revision_id == revision.id)).scalar_one()
     assert result["status"] == "COMPLETED" and draft.reviewed_by_user_id is None and draft.override_json["actor_type"] == "SYSTEM_POLICY" and draft.override_json["human_reviewer"] is False and draft.override_json["live_activation"] is False
+
+
+def test_same_source_message_id_is_duplicate_and_rehydrates_final_replay(db_session):
+    batch, _, _, _ = _auto_batch(db_session, raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures")
+    first = HistoricalForwardingService().auto_progress_canonical_batch(
+        db_session,
+        batch_id=batch.id,
+        replay_end=SOURCE_TIME + timedelta(minutes=10),
+        limit=3,
+        provider=FakeProvider(_candles(high=111)),
+    )
+    assert first["status"] == "COMPLETED"
+
+    duplicate_batch = HistoricalForwardingService().start_batch(
+        db_session,
+        channel_catalog_id=batch.channel_catalog_id,
+        requested_by_user_id=77,
+        expected_source_chat_id=-1007001,
+        mode="SINGLE",
+        max_records=1,
+    )
+    duplicate = HistoricalForwardingService().stage_message(
+        db_session,
+        batch_id=duplicate_batch.id,
+        message=ForwardedMessageInput(
+            receiver_chat_id=701,
+            receiver_message_id=8001,
+            forwarding_user_id=77,
+            source_chat_id=-1007001,
+            source_message_id=7001,
+            source_origin_type="CHANNEL",
+            source_message_timestamp=SOURCE_TIME,
+            raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures",
+            metadata={"source_title": "Canonical historical source"},
+        ),
+    )
+    assert duplicate.validation_status == "DUPLICATE"
+    resolution = duplicate.metadata_json["duplicate_resolution"]
+    assert resolution["status"] == "ALREADY_REGISTERED"
+    assert resolution["replay"]["replay_status"] == "COMPLETED"
+    assert resolution["replay"]["lifecycle_status"] == "CLOSED_TARGETS"
+
+    preview = HistoricalForwardingService().preview_batch(db_session, batch_id=duplicate_batch.id)
+    assert preview.accepted_records == 0
+    assert preview.duplicate_records == 1
+    assert preview.manifest["records"][0]["metadata"]["validation_status"] == "DUPLICATE"
+
+    result = HistoricalForwardingService().auto_progress_canonical_batch(
+        db_session,
+        batch_id=duplicate_batch.id,
+        replay_end=SOURCE_TIME + timedelta(minutes=10),
+        limit=3,
+        provider=FakeProvider(_candles(high=111)),
+    )
+    assert result["status"] == "ALREADY_REGISTERED"
+    assert result["progressed"] == 0
+    assert result["duplicate_count"] == 1
+    assert result["items"][0]["status"] == "ALREADY_REGISTERED"
+    assert result["items"][0]["replay_status"] == "COMPLETED"
+
+
+def test_same_content_with_different_source_message_id_is_new_recommendation(db_session):
+    batch, _, _, _ = _auto_batch(db_session, raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures")
+    service = HistoricalForwardingService()
+    new_batch = service.start_batch(
+        db_session,
+        channel_catalog_id=batch.channel_catalog_id,
+        requested_by_user_id=77,
+        expected_source_chat_id=-1007001,
+        mode="SINGLE",
+        max_records=1,
+    )
+    receipt = service.stage_message(
+        db_session,
+        batch_id=new_batch.id,
+        message=ForwardedMessageInput(
+            receiver_chat_id=701,
+            receiver_message_id=8002,
+            forwarding_user_id=77,
+            source_chat_id=-1007001,
+            source_message_id=7002,
+            source_origin_type="CHANNEL",
+            source_message_timestamp=SOURCE_TIME,
+            raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures",
+            metadata={"source_title": "Canonical historical source"},
+        ),
+    )
+    assert receipt.validation_status == "STAGED"
+    preview = service.preview_batch(db_session, batch_id=new_batch.id)
+    assert preview.accepted_records == 1
+    assert preview.duplicate_records == 0
+    assert preview.manifest["records"][0]["telegram_message_id"] == 7002
+
+
+def test_same_source_message_id_is_duplicate_and_rehydrates_final_replay(db_session):
+    batch, _, _, _ = _auto_batch(db_session, raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures")
+    first = HistoricalForwardingService().auto_progress_canonical_batch(
+        db_session,
+        batch_id=batch.id,
+        replay_end=SOURCE_TIME + timedelta(minutes=10),
+        limit=3,
+        provider=FakeProvider(_candles(high=111)),
+    )
+    assert first["status"] == "COMPLETED"
+
+    duplicate_batch = HistoricalForwardingService().start_batch(
+        db_session,
+        channel_catalog_id=batch.channel_catalog_id,
+        requested_by_user_id=77,
+        expected_source_chat_id=-1007001,
+        mode="SINGLE",
+        max_records=1,
+    )
+    duplicate = HistoricalForwardingService().stage_message(
+        db_session,
+        batch_id=duplicate_batch.id,
+        message=ForwardedMessageInput(
+            receiver_chat_id=701,
+            receiver_message_id=8001,
+            forwarding_user_id=77,
+            source_chat_id=-1007001,
+            source_message_id=7001,
+            source_origin_type="CHANNEL",
+            source_message_timestamp=SOURCE_TIME,
+            raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures",
+            metadata={"source_title": "Canonical historical source"},
+        ),
+    )
+    assert duplicate.validation_status == "DUPLICATE"
+    resolution = duplicate.metadata_json["duplicate_resolution"]
+    assert resolution["status"] == "ALREADY_REGISTERED"
+    assert resolution["replay"]["replay_status"] == "COMPLETED"
+    assert resolution["replay"]["lifecycle_status"] == "CLOSED_TARGETS"
+
+    preview = HistoricalForwardingService().preview_batch(db_session, batch_id=duplicate_batch.id)
+    assert preview.accepted_records == 0
+    assert preview.duplicate_records == 1
+    assert preview.manifest["records"][0]["metadata"]["validation_status"] == "DUPLICATE"
+
+    result = HistoricalForwardingService().auto_progress_canonical_batch(
+        db_session,
+        batch_id=duplicate_batch.id,
+        replay_end=SOURCE_TIME + timedelta(minutes=10),
+        limit=3,
+        provider=FakeProvider(_candles(high=111)),
+    )
+    assert result["status"] == "ALREADY_REGISTERED"
+    assert result["progressed"] == 0
+    assert result["duplicate_count"] == 1
+    assert result["items"][0]["status"] == "ALREADY_REGISTERED"
+    assert result["items"][0]["replay_status"] == "COMPLETED"
+
+
+def test_same_content_with_different_source_message_id_is_new_recommendation(db_session):
+    batch, _, _, _ = _auto_batch(db_session, raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures")
+    service = HistoricalForwardingService()
+    new_batch = service.start_batch(
+        db_session,
+        channel_catalog_id=batch.channel_catalog_id,
+        requested_by_user_id=77,
+        expected_source_chat_id=-1007001,
+        mode="SINGLE",
+        max_records=1,
+    )
+    receipt = service.stage_message(
+        db_session,
+        batch_id=new_batch.id,
+        message=ForwardedMessageInput(
+            receiver_chat_id=701,
+            receiver_message_id=8002,
+            forwarding_user_id=77,
+            source_chat_id=-1007001,
+            source_message_id=7002,
+            source_origin_type="CHANNEL",
+            source_message_timestamp=SOURCE_TIME,
+            raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures",
+            metadata={"source_title": "Canonical historical source"},
+        ),
+    )
+    assert receipt.validation_status == "STAGED"
+    preview = service.preview_batch(db_session, batch_id=new_batch.id)
+    assert preview.accepted_records == 1
+    assert preview.duplicate_records == 0
+    assert preview.manifest["records"][0]["telegram_message_id"] == 7002
+
