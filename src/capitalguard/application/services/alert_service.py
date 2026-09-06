@@ -1,4 +1,4 @@
-# --- START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
+# ---  START OF FULL, FINAL, AND CONFIRMED READY-TO-USE FILE ---
 # File: src/capitalguard/application/services/alert_service.py
 # Version: v30.0-PARTITIONED
 #
