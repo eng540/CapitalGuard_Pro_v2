@@ -1,0 +1,11 @@
+name: apply-g6-integrated-patch
+on:
+  push:
+    branches: [feature/g6-annual-adaptive-replay]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo disabled
