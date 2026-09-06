@@ -55,11 +55,12 @@ def test_day_zero_rapid_exit_starts_at_signal_time_and_stays_inside_day(db_sessi
 def test_multi_year_cursor_preserves_activation_and_remaining_targets(db_session):
     signal, bridge = _setup(db_session)
     signal.decision_timestamp = datetime(2025,1,1,10,tzinfo=UTC); signal.entry = Decimal("100"); signal.stop_loss = Decimal("90"); signal.targets = [{"price":"110","close_percent":50},{"price":"120","close_percent":50}]
-    provider = AdaptiveFakeProvider([c(datetime(2025,1,1,tzinfo=UTC)), c(datetime(2026,2,1,tzinfo=UTC), high=111), c(datetime(2026,1,15,tzinfo=UTC), high=121)], [c(datetime(2025,1,1,10,tzinfo=UTC)), c(datetime(2026,2,1,9,tzinfo=UTC), high=111), c(datetime(2026,1,15,9,tzinfo=UTC), high=121)])
+    provider = AdaptiveFakeProvider([c(datetime(2025,1,1,tzinfo=UTC)), c(datetime(2026,1,15,tzinfo=UTC), high=111), c(datetime(2026,2,1,tzinfo=UTC), high=121)], [c(datetime(2025,1,1,10,tzinfo=UTC)), c(datetime(2026,1,15,9,tzinfo=UTC), high=111), c(datetime(2026,2,1,9,tzinfo=UTC), high=121)])
     result = HistoricalMarketReplayService().replay_g6(db_session, signal_id=signal.id, materialization_id=bridge.id, start=signal.decision_timestamp, replay_end=datetime(2026,3,1,tzinfo=UTC), provider=provider)
     assert result["status"] == "COMPLETED"
     assert len(provider.daily_calls) == 2
     assert len(provider.minute_calls) == 3
     event_types = [e.event_type for e in result["events"]]
     assert event_types.count("ACTIVATED") == 1 and "TP1" in event_types and "TP2" in event_types
+    assert result["run"].provider_metadata["current_stop"] == "90"
     assert result["run"].provider_metadata["remaining_target_indices"] == []
