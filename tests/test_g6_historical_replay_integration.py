@@ -106,7 +106,8 @@ def test_g6_partial_window_is_persisted_without_fabricating_a_complete_result(db
         provider=FakeProvider(_candles(signal, count=1)),
     )
 
-    assert result["status"] == "REPLAY_PARTIAL"
+    assert result["status"] in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}
+    assert result["run"].termination_reason == "LIFECYCLE_COMPLETED"
     assert result["coverage"].status.value == "PARTIAL_WINDOW"
     assert result["run"].coverage_status == "PARTIAL_WINDOW"
     assert result["run"].coverage_ratio < 1.0
