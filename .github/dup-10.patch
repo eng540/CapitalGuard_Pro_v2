@@ -1,0 +1,12 @@
+diff --git a/src/capitalguard/application/services/historical_forwarding_service.py b/src/capitalguard/application/services/historical_forwarding_service.py
+index 556e0a0..896a918 100644
+--- a/src/capitalguard/application/services/historical_forwarding_service.py
++++ b/src/capitalguard/application/services/historical_forwarding_service.py
+@@ -737,6 +853,7 @@ class HistoricalForwardingService:
+                 "progressed": progressed,
+                 "review_required": review_required,
+                 "failed": failed,
++                "duplicate_count": duplicate_count,
+                 "replay_end": end.isoformat(),
+                 "completed_at": datetime.now(timezone.utc).isoformat(),
+                 "items": items,
