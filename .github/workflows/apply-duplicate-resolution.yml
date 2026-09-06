@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/duplicate-resolution-from-main
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -22,7 +25,10 @@ jobs:
       - name: Apply prepared patch and commit
         run: |
           set -euo pipefail
-          test -f .github/duplicate-resolution-apply.patch
+          if [ ! -f .github/duplicate-resolution-apply.patch ]; then
+            echo "Patch already applied; nothing to do."
+            exit 0
+          fi
           git apply --check .github/duplicate-resolution-apply.patch
           git apply .github/duplicate-resolution-apply.patch
           rm .github/duplicate-resolution-apply.patch .github/workflows/apply-duplicate-resolution.yml
