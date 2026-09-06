@@ -2,7 +2,7 @@ diff --git a/src/capitalguard/application/services/historical_forwarding_service
 index 556e0a0..896a918 100644
 --- a/src/capitalguard/application/services/historical_forwarding_service.py
 +++ b/src/capitalguard/application/services/historical_forwarding_service.py
-@@ -12,9 +12,11 @@ from capitalguard.infrastructure.db.models import (
+@@ -12,7 +12,9 @@ from capitalguard.infrastructure.db.models import (
      HistoricalShadowChannel,
      HistoricalFinancialCandidate,
      HistoricalForwardReceipt,
@@ -12,4 +12,3 @@ index 556e0a0..896a918 100644
      HistoricalRecommendationDraft,
 +    HistoricalReplayRun,
      HistoricalSignalMaterialization,
- )
