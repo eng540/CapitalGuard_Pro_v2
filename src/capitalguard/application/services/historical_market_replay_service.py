@@ -451,12 +451,16 @@ class HistoricalMarketReplayService:
             lifecycle_state = "ACTIVE" if "ACTIVATED" in event_types else "NOT_ACTIVATED"
             lifecycle_terminal_event = None
 
-        # An OHLCV collision (TP and SL touched in the same candle) closes the
-        # financial lifecycle, but its intra-candle ordering is unknowable.
-        terminal_states = {"CLOSED_TARGETS", "CLOSED_STOP", "FINAL_CLOSE", "CLOSED_UNVERIFIABLE"}
+        # OHLCV collision is financially terminal but intra-candle ordering is unknowable.
+        # Preserve factual coverage while classifying the lifecycle as an unverifiable close.
         if "AMBIGUOUS" in event_types:
             lifecycle_state = "CLOSED_UNVERIFIABLE"
-            lifecycle_terminal_event = next((event for event in reversed(events) if event.event_type == "AMBIGUOUS"), None)
+            lifecycle_terminal_event = next(
+                (event for event in reversed(events) if event.event_type == "AMBIGUOUS"),
+                None,
+            )
+
+        terminal_states = {"CLOSED_TARGETS", "CLOSED_STOP", "FINAL_CLOSE", "CLOSED_UNVERIFIABLE"}
         resolution_quality = (
             "VERIFIED"
             if lifecycle_terminal_event is not None and getattr(lifecycle_terminal_event, "replay_status", None) == "VERIFIED"
