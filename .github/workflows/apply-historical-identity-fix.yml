@@ -1,0 +1,78 @@
+name: apply-historical-identity-fix
+on:
+  push:
+    branches: [fix/historical-source-identity-and-parser-stability-r2]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/historical-source-identity-and-parser-stability-r2
+          fetch-depth: 0
+      - name: Apply historical identity/display patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          f = Path('src/capitalguard/application/services/historical_forwarding_service.py')
+          s = f.read_text()
+          old = '''        replay_payload = None\n        if replay is not None:\n            result = dict(replay.result_json or {})\n            replay_payload = {'''
+          new = '''        replay_payload = None\n        canonical_signal_payload = None\n        if replay is not None:\n            result = dict(replay.result_json or {})\n            replay_payload = {'''
+          if old not in s:
+              raise SystemExit('forwarding anchor 1 not found')
+          s = s.replace(old, new, 1)
+
+          old = '''                "run_ref": replay.run_ref,\n            }\n\n        return {'''
+          new = '''                "run_ref": replay.run_ref,\n            }\n\n        if replay is not None:\n            materialization = session.get(HistoricalSignalMaterialization, replay.materialization_id)\n            signal = getattr(materialization, "signal", None) if materialization is not None else None\n            if signal is not None:\n                canonical_signal_payload = {\n                    "asset": signal.asset,\n                    "side": signal.side,\n                    "entry": str(signal.entry) if signal.entry is not None else None,\n                    "stop_loss": str(signal.stop_loss) if signal.stop_loss is not None else None,\n                    "targets": signal.targets or [],\n                    "market": signal.market,\n                    "public_ref": signal.public_ref,\n                }\n\n        return {'''
+          if old not in s:
+              raise SystemExit('forwarding anchor 2 not found')
+          s = s.replace(old, new, 1)
+
+          old = '''            "replay": replay_payload,\n            "status": "ALREADY_REGISTERED",'''
+          new = '''            "replay": replay_payload,\n            "canonical_signal": canonical_signal_payload,\n            "status": "ALREADY_REGISTERED",'''
+          if old not in s:
+              raise SystemExit('forwarding anchor 3 not found')
+          s = s.replace(old, new, 1)
+          f.write_text(s)
+
+          f = Path('src/capitalguard/interfaces/telegram/historical_forwarding_handler.py')
+          s = f.read_text()
+          old = '''                parsed = parser.parse(record.get("raw_text"))\n                parsed_data = dict(parsed.data or {}) if parsed.parse_status == "PARSED" else {}\n                semantic_projection = record_metadata.get("semantic_projection") or {}'''
+          new = '''                validation_status = str(record_metadata.get("validation_status") or "").upper()\n                duplicate_resolution = record_metadata.get("duplicate_resolution") or {}\n                canonical_signal = duplicate_resolution.get("canonical_signal") or {}\n                if validation_status == "DUPLICATE" and duplicate_resolution:\n                    # A duplicate is identified strictly by source chat/message ID.\n                    # Never re-run the current parser: reuse the persisted canonical\n                    # signal and prior replay result so parser drift cannot change the\n                    # result shown to the user.\n                    parsed_status = "PARSED" if canonical_signal else "DUPLICATE"\n                    parsed_data = dict(canonical_signal)\n                    parsed_data["_duplicate_resolution"] = duplicate_resolution\n                else:\n                    parsed = parser.parse(record.get("raw_text"))\n                    parsed_status = parsed.parse_status\n                    parsed_data = dict(parsed.data or {}) if parsed_status == "PARSED" else {}\n                semantic_projection = record_metadata.get("semantic_projection") or {}'''
+          if old not in s:
+              raise SystemExit('handler anchor 1 not found')
+          s = s.replace(old, new, 1)
+
+          s = s.replace('is_complete = parsed.parse_status == "PARSED" or semantic_status == "SUCCESS"', 'is_complete = parsed_status == "PARSED" or semantic_status == "SUCCESS"', 1)
+          s = s.replace('parse_status=parsed.parse_status,', 'parse_status=parsed_status,', 1)
+          s = s.replace('display_result = (parsed_data, record, semantic_status or parsed.parse_status)', 'display_result = (parsed_data, record, semantic_status or parsed_status)', 1)
+          f.write_text(s)
+          PY
+
+      - name: Validate changed Python files
+        run: |
+          python -m py_compile \
+            src/capitalguard/application/services/historical_forwarding_service.py \
+            src/capitalguard/interfaces/telegram/historical_forwarding_handler.py
+
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/capitalguard/application/services/historical_forwarding_service.py src/capitalguard/interfaces/telegram/historical_forwarding_handler.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix: reuse canonical replay for historical duplicates'
+          git push origin HEAD:fix/historical-source-identity-and-parser-stability-r2
+
+      - name: Remove one-shot workflow
+        if: always()
+        run: |
+          git fetch origin fix/historical-source-identity-and-parser-stability-r2
+          git checkout -B cleanup origin/fix/historical-source-identity-and-parser-stability-r2
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f .github/workflows/apply-historical-identity-fix.yml || true
+          git diff --cached --quiet || (git commit -m 'chore: remove one-shot identity patch workflow' && git push origin HEAD:fix/historical-source-identity-and-parser-stability-r2)
