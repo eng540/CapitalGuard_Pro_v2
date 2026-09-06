@@ -578,6 +578,9 @@ class HistoricalForwardingService:
         still needs immutable Telegram source identity and source timestamp.
         """
         metadata = batch.metadata_json or {}
+        receipt_statuses = session.execute(select(HistoricalForwardReceipt.validation_status).where(HistoricalForwardReceipt.batch_id == batch.id)).scalars().all()
+        if receipt_statuses and all(status == "DUPLICATE" for status in receipt_statuses):
+            return True
         if metadata.get("mode") != "AUTO" or batch.source_kind != self.SOURCE_KIND:
             return False
         expected_source = self._normalize_chat_id(metadata.get("source_chat_id"))
