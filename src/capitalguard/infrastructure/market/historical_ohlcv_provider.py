@@ -51,7 +51,7 @@ class BinanceHistoricalOhlcvProvider:
         cursor = start_utc
 
         for _ in range(self.max_pages):
-            if cursor >= end_utc:
+            if cursor > end_utc:
                 break
             records = self.client.get_historical_ohlcv(
                 symbol=asset,
@@ -76,8 +76,7 @@ class BinanceHistoricalOhlcvProvider:
                     volume=record.volume,
                     data_source=f"BINANCE_{record.market}",
                 )
-                if start_utc <= record.open_time < end_utc:
-                    candles_by_time[record.open_time] = candle
+                candles_by_time[record.open_time] = candle
                 endpoint = record.provider_endpoint
 
             last_open = records[-1].open_time
@@ -85,7 +84,7 @@ class BinanceHistoricalOhlcvProvider:
             if next_cursor <= cursor:
                 break
             cursor = next_cursor
-            if last_open >= end_utc - interval_duration:
+            if last_open >= end_utc:
                 break
 
         candles = sorted(candles_by_time.values(), key=lambda candle: candle.open_time)
@@ -107,12 +106,15 @@ class BinanceHistoricalOhlcvProvider:
         limit: int = 365,
     ) -> tuple[list[MarketCandle], str, HistoricalCoverage]:
         """Thin semantic adapter for G6 annual macro traversal; reuses fetch_with_coverage()."""
+        end_utc = self._normalize_bounds(start, end)[1]
+        bounded_end = end_utc - timedelta(microseconds=1)
+        bounded_end = bounded_end.replace(hour=0, minute=0, second=0, microsecond=0)
         return self.fetch_with_coverage(
             asset=asset,
             market=market,
             interval="1d",
             start=start,
-            end=end,
+            end=bounded_end,
             limit=min(max(1, int(limit)), 365),
         )
 
@@ -127,7 +129,8 @@ class BinanceHistoricalOhlcvProvider:
         """Fetch exactly one bounded critical-day minute window; never targets the next day."""
         start_utc, end_utc = self._normalize_bounds(start, end)
         day_end = start_utc.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        bounded_end = min(end_utc, day_end)
+        bounded_end = min(end_utc, day_end) - timedelta(microseconds=1)
+        bounded_end = bounded_end.replace(second=0, microsecond=0)
         return self.fetch_with_coverage(
             asset=asset,
             market=market,

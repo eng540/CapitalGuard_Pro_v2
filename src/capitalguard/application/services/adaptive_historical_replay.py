@@ -59,7 +59,8 @@ class AdaptiveHistoricalReplayPlanner:
         end = cls.utc(end)
         while cursor < end:
             chunk_end = min(cursor + timedelta(days=cls.annual_chunk_days), end)
-            days = max(1, (chunk_end - cursor).days + (1 if chunk_end.time() else 0))
+            last_day = cls.day_start(chunk_end - timedelta(microseconds=1))
+            days = max(1, (last_day - cursor).days + 1)
             yield ReplayWindow(cursor, chunk_end, min(cls.annual_chunk_days, days))
             cursor = chunk_end
 
@@ -86,6 +87,8 @@ class AdaptiveHistoricalReplayPlanner:
         if start >= end:
             return None
         minutes = int((end - start).total_seconds() // 60)
+        if (end - start).total_seconds() % 60:
+            minutes += 1
         if minutes <= 0:
             return None
         return ReplayWindow(start=start, end=end, limit=minutes)
