@@ -1,0 +1,18 @@
+diff --git a/src/capitalguard/application/services/historical_forwarding_service.py b/src/capitalguard/application/services/historical_forwarding_service.py
+index 556e0a0..896a918 100644
+--- a/src/capitalguard/application/services/historical_forwarding_service.py
++++ b/src/capitalguard/application/services/historical_forwarding_service.py
+@@ -371,10 +460,12 @@ class HistoricalForwardingService:
+                         "source_message_timestamp": receipt.source_message_timestamp.isoformat() if receipt.source_message_timestamp else None,
+                         "source_reply_to_message_id": receipt.source_reply_to_message_id,
+                         "forwarding_receipt_id": receipt.id,
++                        "validation_status": receipt.validation_status,
++                        "duplicate_resolution": (receipt.metadata_json or {}).get("duplicate_resolution"),
+                         **timeline_annotations.get(receipt.id, {}),
+                     },
+                 }
+-                for receipt in ordered_accepted
++                for receipt in manifest_receipts
+             ],
+         }
+         batch.total_records = len(receipts)
