@@ -256,6 +256,7 @@ class HistoricalForwardingService:
         ).scalars().first()
 
         replay_payload = None
+        canonical_signal_payload = None
         if replay is not None:
             result = dict(replay.result_json or {})
             replay_payload = {
@@ -271,11 +272,26 @@ class HistoricalForwardingService:
                 "run_ref": replay.run_ref,
             }
 
+        if replay is not None:
+            materialization = session.get(HistoricalSignalMaterialization, replay.materialization_id)
+            signal = getattr(materialization, "signal", None) if materialization is not None else None
+            if signal is not None:
+                canonical_signal_payload = {
+                    "asset": signal.asset,
+                    "side": signal.side,
+                    "entry": str(signal.entry) if signal.entry is not None else None,
+                    "stop_loss": str(signal.stop_loss) if signal.stop_loss is not None else None,
+                    "targets": signal.targets or [],
+                    "market": signal.market,
+                    "public_ref": signal.public_ref,
+                }
+
         return {
             "canonical_message_id": canonical.id,
             "previous_receipt_id": previous_receipt.id if previous_receipt else None,
             "previous_revision_id": None,
             "replay": replay_payload,
+            "canonical_signal": canonical_signal_payload,
             "status": "ALREADY_REGISTERED",
         }
 

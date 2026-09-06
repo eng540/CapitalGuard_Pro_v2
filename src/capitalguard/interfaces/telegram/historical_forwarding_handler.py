@@ -249,8 +249,21 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                 temporal_reasons.update(temporal_decision.get("reason_codes") or [])
                 if temporal_decision.get("age_seconds") is not None:
                     temporal_ages.append(temporal_decision["age_seconds"])
-                parsed = parser.parse(record.get("raw_text"))
-                parsed_data = dict(parsed.data or {}) if parsed.parse_status == "PARSED" else {}
+                validation_status = str(record_metadata.get("validation_status") or "").upper()
+                duplicate_resolution = record_metadata.get("duplicate_resolution") or {}
+                canonical_signal = duplicate_resolution.get("canonical_signal") or {}
+                if validation_status == "DUPLICATE" and duplicate_resolution:
+                    # A duplicate is identified strictly by source chat/message ID.
+                    # Never re-run the current parser: reuse the persisted canonical
+                    # signal and prior replay result so parser drift cannot change the
+                    # result shown to the user.
+                    parsed_status = "PARSED" if canonical_signal else "DUPLICATE"
+                    parsed_data = dict(canonical_signal)
+                    parsed_data["_duplicate_resolution"] = duplicate_resolution
+                else:
+                    parsed = parser.parse(record.get("raw_text"))
+                    parsed_status = parsed.parse_status
+                    parsed_data = dict(parsed.data or {}) if parsed_status == "PARSED" else {}
                 semantic_projection = record_metadata.get("semantic_projection") or {}
                 projection_canonical = semantic_projection.get("canonical") or {}
                 semantic_status = str(semantic_projection.get("status") or "").upper()
@@ -270,7 +283,7 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                     parsed_data.get(field) not in (None, "", [])
                     for field in ("asset", "side", "entry", "stop_loss", "targets")
                 )
-                is_complete = parsed.parse_status == "PARSED" or semantic_status == "SUCCESS"
+                is_complete = parsed_status == "PARSED" or semantic_status == "SUCCESS"
                 if is_complete:
                     parsed_count += 1
                 else:
@@ -280,14 +293,14 @@ async def _finalize_auto_batch_job(context: ContextTypes.DEFAULT_TYPE):
                     financial_outcome_status[outcome["status"]] += 1
                 financial_outcome_warnings.update(outcome.get("warnings") or [])
                 gate = replay_gate.assess(
-                    parse_status=parsed.parse_status,
+                    parse_status=parsed_status,
                     financial_outcome=outcome,
                     market_data_available=False,
                 )
                 replay_gate_status[gate.status] += 1
                 replay_gate_reasons.update(gate.reason_codes)
                 asset = parsed_data.get("asset")
-                display_result = (parsed_data, record, semantic_status or parsed.parse_status)
+                display_result = (parsed_data, record, semantic_status or parsed_status)
                 parsed_results.append(display_result)
                 if displayable:
                     if asset:
