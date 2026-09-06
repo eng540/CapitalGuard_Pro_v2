@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   core:
@@ -19,16 +19,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Apply one-shot G6 integration patch
-        if: github.ref_name == 'feature/g6-annual-adaptive-replay' && hashFiles('scripts/apply_g6_integrated_patch.py') != ''
-        run: |
-          python scripts/apply_g6_integrated_patch.py
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'feat(g6): integrate annual adaptive replay lifecycle'
-          git push origin HEAD:feature/g6-annual-adaptive-replay
 
       - name: Setup Python
         uses: actions/setup-python@v5
