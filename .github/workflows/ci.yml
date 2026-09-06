@@ -19,18 +19,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Normalize duplicate-resolution presentation patch
+      - name: Apply duplicate-resolution contract correction
         if: github.event_name == 'pull_request' && github.head_ref == 'fix/duplicate-resolution-from-main'
         run: |
           set -euo pipefail
           git fetch origin "$GITHUB_HEAD_REF"
           git checkout -B "$GITHUB_HEAD_REF" "origin/$GITHUB_HEAD_REF"
           python -c 'from pathlib import Path; import re; p=Path("src/capitalguard/interfaces/telegram/presentation_adapter.py"); s=p.read_text(); p.write_text(re.sub(r"\\n(?=[ \\t]+)", "\\n", s))'
-          python -m py_compile src/capitalguard/interfaces/telegram/presentation_adapter.py
+          python -c 'from pathlib import Path; p=Path("src/capitalguard/application/services/historical_forwarding_service.py"); s=p.read_text(); s=s.replace("HistoricalCanonicalMessage.source_kind == HistoricalForwardingService.SOURCE_KIND,", "HistoricalCanonicalMessage.source_kind == \"TELEGRAM\","); p.write_text(s)'
+          python -m py_compile src/capitalguard/interfaces/telegram/presentation_adapter.py src/capitalguard/application/services/historical_forwarding_service.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/capitalguard/interfaces/telegram/presentation_adapter.py
-          if ! git diff --cached --quiet; then git commit -m "fix: normalize duplicate presentation text"; git push origin HEAD:"$GITHUB_HEAD_REF"; fi
+          git add src/capitalguard/interfaces/telegram/presentation_adapter.py src/capitalguard/application/services/historical_forwarding_service.py
+          if ! git diff --cached --quiet; then git commit -m "fix: resolve canonical Telegram duplicate identity"; git push origin HEAD:"$GITHUB_HEAD_REF"; fi
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
