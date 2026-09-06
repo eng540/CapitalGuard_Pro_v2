@@ -12,9 +12,11 @@ from capitalguard.infrastructure.db.models import (
     HistoricalShadowChannel,
     HistoricalFinancialCandidate,
     HistoricalForwardReceipt,
+    HistoricalCanonicalMessage,
     HistoricalImportBatch,
     HistoricalMessageRevision,
     HistoricalRecommendationDraft,
+    HistoricalReplayRun,
     HistoricalSignalMaterialization,
 )
 
@@ -205,6 +207,79 @@ class HistoricalForwardingService:
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
     @staticmethod
+    def _duplicate_resolution(
+        session: Session,
+        *,
+        source_chat_id: int,
+        source_message_id: int,
+    ) -> dict[str, Any] | None:
+        """Resolve duplicate identity strictly by Telegram source chat + message ID.
+
+        Content similarity/hash is deliberately excluded from identity. A new
+        Telegram message with identical text is a new historical observation.
+        """
+        canonical = session.execute(
+            select(HistoricalCanonicalMessage).where(
+                HistoricalCanonicalMessage.source_kind == HistoricalForwardingService.SOURCE_KIND,
+                HistoricalCanonicalMessage.source_chat_id == source_chat_id,
+                HistoricalCanonicalMessage.external_message_id == source_message_id,
+            )
+        ).scalar_one_or_none()
+        if canonical is None:
+            return None
+
+        replay = session.execute(
+            select(HistoricalReplayRun)
+            .join(
+                HistoricalSignalMaterialization,
+                HistoricalReplayRun.materialization_id == HistoricalSignalMaterialization.id,
+            )
+            .join(
+                HistoricalMessageRevision,
+                HistoricalSignalMaterialization.revision_id == HistoricalMessageRevision.id,
+            )
+            .where(
+                HistoricalMessageRevision.message_id == canonical.id,
+                HistoricalReplayRun.status.in_({"COMPLETED", "COMPLETED_UNVERIFIABLE"}),
+            )
+            .order_by(HistoricalReplayRun.completed_at.desc(), HistoricalReplayRun.id.desc())
+        ).scalars().first()
+
+        previous_receipt = session.execute(
+            select(HistoricalForwardReceipt)
+            .join(
+                HistoricalMessageRevision,
+                HistoricalMessageRevision.receipt_id == HistoricalForwardReceipt.id,
+            )
+            .where(HistoricalMessageRevision.message_id == canonical.id)
+            .order_by(HistoricalForwardReceipt.id.desc())
+        ).scalars().first()
+
+        replay_payload = None
+        if replay is not None:
+            result = dict(replay.result_json or {})
+            replay_payload = {
+                "replay_status": str(replay.status),
+                "event_count": result.get("event_count", len(result.get("events") or [])),
+                "last_event": (result.get("events") or [{}])[-1].get("type") if result.get("events") else None,
+                "lifecycle_status": result.get("lifecycle_status"),
+                "resolution_quality": result.get("resolution_quality"),
+                "termination_reason": result.get("termination_reason"),
+                "exit_timestamp": result.get("exit_timestamp"),
+                "coverage_status": replay.coverage_status,
+                "run_id": replay.id,
+                "run_ref": replay.run_ref,
+            }
+
+        return {
+            "canonical_message_id": canonical.id,
+            "previous_receipt_id": previous_receipt.id if previous_receipt else None,
+            "previous_revision_id": None,
+            "replay": replay_payload,
+            "status": "ALREADY_REGISTERED",
+        }
+
+    @staticmethod
     def _validate_positive(value: int, field: str) -> None:
         if not isinstance(value, int) or value <= 0:
             raise HistoricalSignalValidationError(f"{field} must be a positive integer")
@@ -301,6 +376,8 @@ class HistoricalForwardingService:
 
         existing_source = None
         if source_chat_id is not None and message.source_message_id is not None:
+            # Batch-local duplicates are still idempotent, but the historical
+            # identity contract is global: (source_chat_id, source_message_id).
             existing_source = session.execute(
                 select(HistoricalForwardReceipt).where(
                     HistoricalForwardReceipt.batch_id == batch_id,
@@ -311,6 +388,18 @@ class HistoricalForwardingService:
             ).scalar_one_or_none()
         if existing_source is not None:
             return existing_source
+
+        duplicate_resolution = None
+        if validation_status == "STAGED" and source_chat_id is not None and message.source_message_id is not None:
+            duplicate_resolution = self._duplicate_resolution(
+                session,
+                source_chat_id=source_chat_id,
+                source_message_id=int(message.source_message_id),
+            )
+            if duplicate_resolution is not None:
+                validation_status = "DUPLICATE"
+                rejection_reason = "SOURCE_MESSAGE_ALREADY_REGISTERED"
+                metadata["duplicate_resolution"] = duplicate_resolution
 
         receipt = HistoricalForwardReceipt(
             batch_id=batch_id,
@@ -349,8 +438,8 @@ class HistoricalForwardingService:
         rejected = [receipt for receipt in receipts if receipt.validation_status.startswith("REJECTED")]
         hidden = [receipt for receipt in receipts if receipt.validation_status == "REJECTED_ORIGIN"]
         duplicates = [receipt for receipt in receipts if receipt.validation_status == "DUPLICATE"]
-        ordered_accepted = self.ordered_receipts(accepted)
-        timeline_annotations = self._timeline_annotations(ordered_accepted)
+        manifest_receipts = self.ordered_receipts([*accepted, *duplicates])
+        timeline_annotations = self._timeline_annotations(manifest_receipts)
         manifest = {
             "source_kind": self.SOURCE_KIND,
             "ordering": "source_chat_id,source_message_timestamp,source_message_id,source_message_revision",
@@ -371,10 +460,12 @@ class HistoricalForwardingService:
                         "source_message_timestamp": receipt.source_message_timestamp.isoformat() if receipt.source_message_timestamp else None,
                         "source_reply_to_message_id": receipt.source_reply_to_message_id,
                         "forwarding_receipt_id": receipt.id,
+                        "validation_status": receipt.validation_status,
+                        "duplicate_resolution": (receipt.metadata_json or {}).get("duplicate_resolution"),
                         **timeline_annotations.get(receipt.id, {}),
                     },
                 }
-                for receipt in ordered_accepted
+                for receipt in manifest_receipts
             ],
         }
         batch.total_records = len(receipts)
@@ -566,7 +657,30 @@ class HistoricalForwardingService:
         failed = 0
         replay_statuses: list[str] = []
 
+        duplicate_count = 0
         for receipt in receipts:
+            if receipt.validation_status == "DUPLICATE":
+                duplicate_count += 1
+                resolution = (receipt.metadata_json or {}).get("duplicate_resolution") or {}
+                replay = resolution.get("replay") or {}
+                duplicate_item = {
+                    "receipt_id": receipt.id,
+                    "status": "ALREADY_REGISTERED",
+                    "replay_status": replay.get("replay_status"),
+                    "event_count": replay.get("event_count", 0),
+                    "last_event": replay.get("last_event"),
+                    "lifecycle_status": replay.get("lifecycle_status"),
+                    "resolution_quality": replay.get("resolution_quality"),
+                    "termination_reason": replay.get("termination_reason"),
+                    "exit_timestamp": replay.get("exit_timestamp"),
+                    "coverage_status": replay.get("coverage_status"),
+                    "duplicate": True,
+                    "previous_receipt_id": resolution.get("previous_receipt_id"),
+                    "canonical_message_id": resolution.get("canonical_message_id"),
+                    "message": "SOURCE_MESSAGE_ALREADY_REGISTERED",
+                }
+                items.append(duplicate_item)
+                continue
             if receipt.validation_status != "STAGED":
                 if receipt.id in previous_by_receipt:
                     items.append(previous_by_receipt[receipt.id])
@@ -727,7 +841,9 @@ class HistoricalForwardingService:
         if remaining_staged == 0 and progressed:
             batch.status = "EVIDENCE_INGESTED"
         overall_status = "PARTIAL"
-        if progressed and not review_required and not failed:
+        if not progressed and not review_required and not failed and duplicate_count:
+            overall_status = "ALREADY_REGISTERED"
+        elif progressed and not review_required and not failed:
             overall_status = "COMPLETED_UNVERIFIABLE" if "COMPLETED_UNVERIFIABLE" in replay_statuses else "COMPLETED"
         batch.metadata_json = {
             **(batch.metadata_json or {}),
@@ -737,6 +853,7 @@ class HistoricalForwardingService:
                 "progressed": progressed,
                 "review_required": review_required,
                 "failed": failed,
+                "duplicate_count": duplicate_count,
                 "replay_end": end.isoformat(),
                 "completed_at": datetime.now(timezone.utc).isoformat(),
                 "items": items,
@@ -748,6 +865,7 @@ class HistoricalForwardingService:
             "progressed": progressed,
             "review_required": review_required,
             "failed": failed,
+            "duplicate_count": duplicate_count,
             "items": items,
         }
 
