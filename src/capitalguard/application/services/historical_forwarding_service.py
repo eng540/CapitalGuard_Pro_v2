@@ -1,934 +1,430 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Mapping
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, desc, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from capitalguard.infrastructure.db.models import (
-    ChannelCatalog,
-    HistoricalShadowChannel,
+from capitalguard.infrastructure.db.models.dedup import DedupLedger
+from capitalguard.infrastructure.db.models.historical_financial_candidate import (
     HistoricalFinancialCandidate,
+)
+from capitalguard.infrastructure.db.models.historical_forwarding import (
+    HistoricalForwardBatch,
     HistoricalForwardReceipt,
-    HistoricalCanonicalMessage,
-    HistoricalImportBatch,
-    HistoricalMessageRevision,
-    HistoricalRecommendationDraft,
-    HistoricalReplayRun,
-    HistoricalSignalMaterialization,
 )
+from capitalguard.infrastructure.db.models.historical_message import HistoricalMessage
+from capitalguard.infrastructure.db.models.historical_replay_run import HistoricalReplayRun
+from capitalguard.infrastructure.db.uow import UnitOfWork
 
-from .historical_evidence_ingestion_service import (
-    HistoricalEvidenceIngestionError,
-    HistoricalEvidenceIngestionService,
-)
-from .historical_market_replay_service import HistoricalMarketReplayService
-from .historical_message_foundation_service import HistoricalMessageFoundationService
-from .historical_outcome_reconciliation_service import TimelineEventInput
-from .historical_replay_gate_service import HistoricalReplayGateService
-from .historical_signal_materialization_service import (
-    HistoricalSignalMaterializationBlocked,
-    HistoricalSignalMaterializationService,
-)
-from .historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
+logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ForwardedMessageInput:
-    receiver_chat_id: int
-    receiver_message_id: int
-    forwarding_user_id: int | None
-    source_chat_id: int | None
-    source_message_id: int | None
-    source_origin_type: str
-    source_message_timestamp: datetime | None
-    raw_text: str | None
-    source_message_revision: int = 0
-    source_edit_date: datetime | None = None
-    source_reply_to_message_id: int | None = None
-    metadata: dict[str, Any] | None = None
+@dataclass
+class ItemDiagnostic:
+    receipt_id: int
+    status: str
+    reason: Optional[str] = None
+    replay_status: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "receipt_id": self.receipt_id,
+            "status": self.status,
+            "reason": self.reason,
+            "replay_status": self.replay_status,
+        }
 
 
-@dataclass(frozen=True)
-class ForwardingPreview:
+@dataclass
+class BatchProgressionResult:
     batch_id: int
-    total_records: int
-    accepted_records: int
-    rejected_records: int
-    duplicate_records: int
-    hidden_origin_records: int
-    manifest: dict[str, Any]
-
-
-class _StaticCandleProvider:
-    """Adapter used after the network fetch has completed outside G6 writes."""
-
-    def __init__(self, candles, endpoint: str | None):
-        self.candles = list(candles)
-        self.endpoint = endpoint
-
-    def fetch(self, **kwargs):
-        return list(self.candles), self.endpoint
+    status: str
+    progressed: int
+    review_required: int
+    failed: int
+    items: int
+    replay_statuses: List[str]
+    details: List[ItemDiagnostic] = field(default_factory=list)
 
 
 class HistoricalForwardingService:
-    """Stages user-forwarded Telegram messages for historical review only."""
-
-    SOURCE_KIND = "TELEGRAM_FORWARD"
-    AUTO_PROGRESS_POLICY = "HISTORICAL_AUTO_PROGRESS_V1"
-    VALID_ORIGIN_TYPES = {"CHANNEL", "MESSAGE_ORIGIN_CHANNEL"}
+    """
+    خدمة استقبال الإشارات التاريخية عبر التلجرام.
+    تدير فحص التكرار، الترطيب الحتمي للبيانات، والاستكمال الذاتي للمحاكاة الفاشلة (Self-Healing).
+    """
 
     def __init__(
         self,
-        signal_service: HistoricalSignalService | None = None,
-        message_foundation_service: HistoricalMessageFoundationService | None = None,
-        evidence_ingestion_service: HistoricalEvidenceIngestionService | None = None,
-        materialization_service: HistoricalSignalMaterializationService | None = None,
-        replay_service: HistoricalMarketReplayService | None = None,
-        replay_gate_service: HistoricalReplayGateService | None = None,
-    ):
-        self.signal_service = signal_service or HistoricalSignalService()
-        self.message_foundation_service = message_foundation_service or HistoricalMessageFoundationService()
-        self.evidence_ingestion_service = evidence_ingestion_service or HistoricalEvidenceIngestionService(self.signal_service)
-        self.materialization_service = materialization_service or HistoricalSignalMaterializationService()
-        self.replay_service = replay_service or HistoricalMarketReplayService(self.signal_service)
-        self.replay_gate_service = replay_gate_service or HistoricalReplayGateService()
+        uow_factory: Callable[[], UnitOfWork],
+        parser_service: Any,
+        replay_service: Any,
+        dedup_service: Optional[Any] = None,
+        adjudication_service: Optional[Any] = None,
+    ) -> None:
+        self.uow_factory = uow_factory
+        self.parser_service = parser_service
+        self.replay_service = replay_service
+        self.dedup_service = dedup_service
+        self.adjudication_service = adjudication_service
 
-    @staticmethod
-    def _normalize_chat_id(value: Any) -> int | None:
-        if value is None or isinstance(value, bool):
-            return None
-        try:
-            return int(str(value).strip())
-        except (TypeError, ValueError):
-            return None
+    def _utc_now(self) -> datetime:
+        return datetime.now(timezone.utc)
 
-    @staticmethod
-    def _utc(value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-
-    @staticmethod
-    def canonical_order_key(message: Any) -> tuple[int, datetime, int, int]:
-        """Return deterministic source ordering for receipts and manifest records."""
-        source_chat_id = HistoricalForwardingService._normalize_chat_id(
-            message.get("source_chat_id") if isinstance(message, Mapping) else getattr(message, "source_chat_id", None)
-        )
-        source_timestamp = (
-            message.get("source_message_timestamp")
-            if isinstance(message, Mapping)
-            else getattr(message, "source_message_timestamp", None)
-        )
-        source_message_id = HistoricalForwardingService._normalize_chat_id(
-            message.get("source_message_id") if isinstance(message, Mapping) else getattr(message, "source_message_id", None)
-        )
-        revision = (
-            message.get("source_message_revision", 0)
-            if isinstance(message, Mapping)
-            else getattr(message, "source_message_revision", 0)
-        )
-        if source_timestamp is None and isinstance(message, Mapping):
-            source_timestamp = message.get("message_timestamp")
-        if source_timestamp is None:
-            source_timestamp = datetime.min.replace(tzinfo=timezone.utc)
-        elif source_timestamp.tzinfo is None:
-            source_timestamp = source_timestamp.replace(tzinfo=timezone.utc)
-        else:
-            source_timestamp = source_timestamp.astimezone(timezone.utc)
-        try:
-            revision_value = max(0, int(revision or 0))
-        except (TypeError, ValueError):
-            revision_value = 0
-        return (
-            source_chat_id if source_chat_id is not None else -(2**63),
-            source_timestamp,
-            source_message_id if source_message_id is not None else -1,
-            revision_value,
-        )
-
-    @classmethod
-    def ordered_receipts(cls, receipts: Iterable[HistoricalForwardReceipt]) -> list[HistoricalForwardReceipt]:
-        """Order receipts by source facts, never by receiver arrival order."""
-        return sorted(list(receipts), key=cls.canonical_order_key)
-
-    @classmethod
-    def _timeline_annotations(cls, receipts: Iterable[HistoricalForwardReceipt]) -> dict[int, dict[str, Any]]:
-        """Annotate reply relationships without guessing unrelated messages together."""
-        ordered = cls.ordered_receipts(receipts)
-        source_ids = {
-            receipt.source_message_id
-            for receipt in ordered
-            if receipt.source_message_id is not None
-        }
-        annotations: dict[int, dict[str, Any]] = {}
-        for receipt in ordered:
-            parent_id = receipt.source_reply_to_message_id
-            if parent_id is not None and parent_id in source_ids:
-                annotations[receipt.id] = {
-                    "timeline_role": "CHILD_UPDATE",
-                    "timeline_parent_message_id": parent_id,
-                    "timeline_link_status": "EXPLICIT_REPLY",
-                }
-            elif parent_id is not None:
-                annotations[receipt.id] = {
-                    "timeline_role": "UNRESOLVED_CHILD",
-                    "timeline_parent_message_id": parent_id,
-                    "timeline_link_status": "PENDING_REVIEW",
-                }
-            else:
-                annotations[receipt.id] = {
-                    "timeline_role": "ROOT_CANDIDATE",
-                    "timeline_parent_message_id": None,
-                    "timeline_link_status": "UNLINKED",
-                }
-        return annotations
-
-    @staticmethod
-    def _source_content_hash(raw_text: str | None, metadata: dict[str, Any]) -> str:
-        """Hash the raw semantic input, including media identity when present."""
-        import hashlib
-        import json
-
-        media = metadata.get("media") or {}
-        payload = {
-            "raw_text": raw_text or "",
-            "media": {
-                "file_id": media.get("file_id"),
-                "media_unique_id": media.get("media_unique_id"),
-                "media_type": media.get("media_type"),
-            },
-        }
-        normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-    @staticmethod
-    def _duplicate_resolution(
-        session: Session,
-        *,
-        source_chat_id: int,
-        source_message_id: int,
-    ) -> dict[str, Any] | None:
-        """Resolve duplicate identity strictly by Telegram source chat + message ID.
-
-        Content similarity/hash is deliberately excluded from identity. A new
-        Telegram message with identical text is a new historical observation.
+    async def ingest_forward_batch(
+        self,
+        messages: List[Dict[str, Any]],
+        channel_id: Optional[str] = None,
+        channel_title: Optional[str] = None,
+        forwarded_from: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> Tuple[HistoricalForwardBatch, List[HistoricalForwardReceipt]]:
         """
-        canonical = session.execute(
-            select(HistoricalCanonicalMessage).where(
-                HistoricalCanonicalMessage.source_kind == "TELEGRAM",
-                HistoricalCanonicalMessage.source_chat_id == source_chat_id,
-                HistoricalCanonicalMessage.external_message_id == source_message_id,
+        استقبال دفعة رسائل وإصدار إيصالات أولية.
+        """
+        async with self.uow_factory() as uow:
+            batch = HistoricalForwardBatch(
+                channel_id=channel_id,
+                channel_title=channel_title,
+                forwarded_from=forwarded_from,
+                user_id=user_id,
+                total_items=len(messages),
+                status="INGESTED",
+                created_at=self._utc_now(),
             )
-        ).scalar_one_or_none()
-        if canonical is None:
-            return None
+            uow.session.add(batch)
+            await uow.session.flush()
 
-        replay = session.execute(
-            select(HistoricalReplayRun)
-            .join(
-                HistoricalSignalMaterialization,
-                HistoricalReplayRun.materialization_id == HistoricalSignalMaterialization.id,
-            )
-            .join(
-                HistoricalMessageRevision,
-                HistoricalSignalMaterialization.revision_id == HistoricalMessageRevision.id,
-            )
-            .where(
-                HistoricalMessageRevision.message_id == canonical.id,
-                HistoricalReplayRun.status.in_({"COMPLETED", "COMPLETED_UNVERIFIABLE"}),
-            )
-            .order_by(HistoricalReplayRun.completed_at.desc(), HistoricalReplayRun.id.desc())
-        ).scalars().first()
+            receipts: List[HistoricalForwardReceipt] = []
+            for msg in messages:
+                raw_text = msg.get("text") or msg.get("caption") or ""
+                source_msg_id = str(msg.get("message_id") or "")
+                date_val = msg.get("date")
 
-        previous_receipt = session.execute(
-            select(HistoricalForwardReceipt)
-            .join(
-                HistoricalMessageRevision,
-                HistoricalMessageRevision.receipt_id == HistoricalForwardReceipt.id,
-            )
-            .where(HistoricalMessageRevision.message_id == canonical.id)
-            .order_by(HistoricalForwardReceipt.id.desc())
-        ).scalars().first()
+                if isinstance(date_val, (int, float)):
+                    msg_time = datetime.fromtimestamp(date_val, tz=timezone.utc)
+                elif isinstance(date_val, datetime):
+                    msg_time = date_val if date_val.tzinfo else date_val.replace(tzinfo=timezone.utc)
+                else:
+                    msg_time = self._utc_now()
 
-        replay_payload = None
-        canonical_signal_payload = None
-        if replay is not None:
-            result = dict(replay.result_json or {})
-            replay_payload = {
-                "replay_status": str(replay.status),
-                "event_count": result.get("event_count", len(result.get("events") or [])),
-                "last_event": (result.get("events") or [{}])[-1].get("type") if result.get("events") else None,
-                "lifecycle_status": result.get("lifecycle_status"),
-                "resolution_quality": result.get("resolution_quality"),
-                "termination_reason": result.get("termination_reason"),
-                "exit_timestamp": result.get("exit_timestamp"),
-                "coverage_status": replay.coverage_status,
-                "run_id": replay.id,
-                "run_ref": replay.run_ref,
-            }
-
-        if replay is not None:
-            materialization = session.get(HistoricalSignalMaterialization, replay.materialization_id)
-            signal = getattr(materialization, "signal", None) if materialization is not None else None
-            if signal is not None:
-                canonical_signal_payload = {
-                    "asset": signal.asset,
-                    "side": signal.side,
-                    "entry": str(signal.entry) if signal.entry is not None else None,
-                    "stop_loss": str(signal.stop_loss) if signal.stop_loss is not None else None,
-                    "targets": signal.targets or [],
-                    "market": signal.market,
-                    "public_ref": signal.public_ref,
-                }
-
-        return {
-            "canonical_message_id": canonical.id,
-            "previous_receipt_id": previous_receipt.id if previous_receipt else None,
-            "previous_revision_id": None,
-            "replay": replay_payload,
-            "canonical_signal": canonical_signal_payload,
-            "status": "ALREADY_REGISTERED",
-        }
-
-    @staticmethod
-    def _validate_positive(value: int, field: str) -> None:
-        if not isinstance(value, int) or value <= 0:
-            raise HistoricalSignalValidationError(f"{field} must be a positive integer")
-
-    def start_batch(
-        self,
-        session: Session,
-        *,
-        channel_catalog_id: int,
-        requested_by_user_id: int,
-        expected_source_chat_id: int,
-        mode: str = "BATCH",
-        max_records: int = 500,
-    ) -> HistoricalImportBatch:
-        self._validate_positive(channel_catalog_id, "channel_catalog_id")
-        self._validate_positive(requested_by_user_id, "requested_by_user_id")
-        expected_source_chat_id = self._normalize_chat_id(expected_source_chat_id)
-        if expected_source_chat_id in (None, 0):
-            raise HistoricalSignalValidationError("expected_source_chat_id must be a non-zero integer")
-        if mode not in {"SINGLE", "BATCH"}:
-            raise HistoricalSignalValidationError("Unsupported forwarding mode")
-        if not 1 <= max_records <= 5000:
-            raise HistoricalSignalValidationError("max_records must be between 1 and 5000")
-        batch = self.signal_service.create_import_batch(
-            session,
-            source_kind=self.SOURCE_KIND,
-            manifest=[],
-            channel_catalog_id=channel_catalog_id,
-            requested_by_user_id=requested_by_user_id,
-            metadata={
-                "mode": mode,
-                "expected_source_chat_id": expected_source_chat_id,
-                "max_records": max_records,
-                "intake_status": "STAGING",
-            },
-        )
-        batch.status = "STAGING"
-        session.flush()
-        return batch
-
-    def stage_message(
-        self,
-        session: Session,
-        *,
-        batch_id: int,
-        message: ForwardedMessageInput,
-    ) -> HistoricalForwardReceipt:
-        batch = session.get(HistoricalImportBatch, batch_id)
-        if batch is None:
-            raise HistoricalSignalValidationError("Forwarding batch does not exist")
-        if batch.status != "STAGING":
-            raise HistoricalSignalValidationError("Forwarding batch is not open for staging")
-        self._validate_positive(message.receiver_chat_id, "receiver_chat_id")
-        self._validate_positive(message.receiver_message_id, "receiver_message_id")
-        metadata = dict(message.metadata or {})
-        expected_source_chat_id = self._normalize_chat_id(
-            (batch.metadata_json or {}).get("expected_source_chat_id")
-        )
-        source_chat_id = self._normalize_chat_id(message.source_chat_id)
-        max_records = int((batch.metadata_json or {}).get("max_records") or 500)
-
-        existing_receiver = session.execute(
-            select(HistoricalForwardReceipt).where(
-                HistoricalForwardReceipt.receiver_chat_id == message.receiver_chat_id,
-                HistoricalForwardReceipt.receiver_message_id == message.receiver_message_id,
-            )
-        ).scalar_one_or_none()
-        if existing_receiver is not None:
-            return existing_receiver
-
-        source_timestamp = self._utc(message.source_message_timestamp)
-        edit_date = self._utc(message.source_edit_date)
-        source_revision = max(0, int(message.source_message_revision or 0))
-        content_hash = self._source_content_hash(message.raw_text, metadata)
-        rejection_reason = None
-        validation_status = "STAGED"
-        origin_type = str(message.source_origin_type or "UNKNOWN").upper()
-        if len([item for item in session.execute(
-            select(HistoricalForwardReceipt).where(HistoricalForwardReceipt.batch_id == batch_id)
-        ).scalars().all()]) >= max_records:
-            raise HistoricalSignalValidationError("Forwarding batch max_records exceeded")
-        if origin_type not in self.VALID_ORIGIN_TYPES or source_chat_id is None or message.source_message_id is None:
-            validation_status = "REJECTED_ORIGIN"
-            rejection_reason = "Missing or hidden channel origin"
-        elif expected_source_chat_id is None or source_chat_id != expected_source_chat_id:
-            validation_status = "REJECTED_CHANNEL"
-            rejection_reason = "Forwarded source channel is not allow-listed"
-        elif source_timestamp is None:
-            validation_status = "REJECTED_TIMESTAMP"
-            rejection_reason = "Source message timestamp is required"
-        elif source_timestamp > datetime.now(timezone.utc):
-            validation_status = "REJECTED_TIMESTAMP"
-            rejection_reason = "Source message timestamp is in the future"
-
-        existing_source = None
-        if source_chat_id is not None and message.source_message_id is not None:
-            # Batch-local duplicates are still idempotent, but the historical
-            # identity contract is global: (source_chat_id, source_message_id).
-            existing_source = session.execute(
-                select(HistoricalForwardReceipt).where(
-                    HistoricalForwardReceipt.batch_id == batch_id,
-                    HistoricalForwardReceipt.source_chat_id == source_chat_id,
-                    HistoricalForwardReceipt.source_message_id == message.source_message_id,
-                    HistoricalForwardReceipt.source_message_revision == source_revision,
+                receipt = HistoricalForwardReceipt(
+                    batch_id=batch.id,
+                    source_message_id=source_msg_id,
+                    channel_id=channel_id,
+                    raw_text=raw_text,
+                    message_timestamp=msg_time,
+                    status="PENDING",
+                    created_at=self._utc_now(),
                 )
-            ).scalar_one_or_none()
-        if existing_source is not None:
-            return existing_source
+                uow.session.add(receipt)
+                receipts.append(receipt)
 
-        duplicate_resolution = None
-        if validation_status == "STAGED" and source_chat_id is not None and message.source_message_id is not None:
-            duplicate_resolution = self._duplicate_resolution(
-                session,
-                source_chat_id=source_chat_id,
-                source_message_id=int(message.source_message_id),
-            )
-            if duplicate_resolution is not None:
-                validation_status = "DUPLICATE"
-                rejection_reason = "SOURCE_MESSAGE_ALREADY_REGISTERED"
-                metadata["duplicate_resolution"] = duplicate_resolution
+            await uow.commit()
+            return batch, receipts
 
-        receipt = HistoricalForwardReceipt(
-            batch_id=batch_id,
-            forwarding_user_id=message.forwarding_user_id,
-            receiver_chat_id=message.receiver_chat_id,
-            receiver_message_id=message.receiver_message_id,
-            source_chat_id=source_chat_id,
-            source_message_id=message.source_message_id,
-            source_message_revision=source_revision,
-            source_origin_type=origin_type,
-            source_message_timestamp=source_timestamp,
-            source_edit_date=edit_date,
-            source_reply_to_message_id=message.source_reply_to_message_id,
-            raw_text=message.raw_text,
-            content_hash=content_hash,
-            validation_status=validation_status,
-            rejection_reason=rejection_reason,
-            metadata_json=metadata,
-        )
-        session.add(receipt)
-        session.flush()
-        if receipt.validation_status == "STAGED":
-            self.message_foundation_service.record_receipt(session, receipt=receipt)
-        return receipt
-
-    def preview_batch(self, session: Session, *, batch_id: int) -> ForwardingPreview:
-        batch = session.get(HistoricalImportBatch, batch_id)
-        if batch is None:
-            raise HistoricalSignalValidationError("Forwarding batch does not exist")
-        if batch.status not in {"STAGING", "DRY_RUN"}:
-            raise HistoricalSignalValidationError("Only a staged batch can be previewed")
-        receipts = list(session.execute(
-            select(HistoricalForwardReceipt).where(HistoricalForwardReceipt.batch_id == batch_id)
-        ).scalars().all())
-        accepted = [receipt for receipt in receipts if receipt.validation_status == "STAGED"]
-        rejected = [receipt for receipt in receipts if receipt.validation_status.startswith("REJECTED")]
-        hidden = [receipt for receipt in receipts if receipt.validation_status == "REJECTED_ORIGIN"]
-        duplicates = [receipt for receipt in receipts if receipt.validation_status == "DUPLICATE"]
-        manifest_receipts = self.ordered_receipts([*accepted, *duplicates])
-        timeline_annotations = self._timeline_annotations(manifest_receipts)
-        manifest = {
-            "source_kind": self.SOURCE_KIND,
-            "ordering": "source_chat_id,source_message_timestamp,source_message_id,source_message_revision",
-            "records": [
-                {
-                    "telegram_channel_id": receipt.source_chat_id,
-                    "telegram_message_id": receipt.source_message_id,
-                    "message_revision": receipt.source_message_revision,
-                    "message_timestamp": receipt.source_message_timestamp.isoformat() if receipt.source_message_timestamp else None,
-                    "raw_text": receipt.raw_text,
-                    "source_uri": f"telegram-forward://{receipt.receiver_chat_id}/{receipt.receiver_message_id}",
-                    "metadata": {
-                        **(receipt.metadata_json or {}),
-                        "receiver_chat_id": receipt.receiver_chat_id,
-                        "receiver_message_id": receipt.receiver_message_id,
-                        "source_origin_type": receipt.source_origin_type,
-                        "source_edit_date": receipt.source_edit_date.isoformat() if receipt.source_edit_date else None,
-                        "source_message_timestamp": receipt.source_message_timestamp.isoformat() if receipt.source_message_timestamp else None,
-                        "source_reply_to_message_id": receipt.source_reply_to_message_id,
-                        "forwarding_receipt_id": receipt.id,
-                        "validation_status": receipt.validation_status,
-                        "duplicate_resolution": (receipt.metadata_json or {}).get("duplicate_resolution"),
-                        **timeline_annotations.get(receipt.id, {}),
-                    },
-                }
-                for receipt in manifest_receipts
-            ],
-        }
-        batch.total_records = len(receipts)
-        batch.accepted_records = len(accepted)
-        batch.rejected_records = len(rejected)
-        batch.status = "DRY_RUN"
-        batch.metadata_json = {**(batch.metadata_json or {}), "intake_status": "DRY_RUN"}
-        session.flush()
-        return ForwardingPreview(
-            batch_id=batch_id,
-            total_records=len(receipts),
-            accepted_records=len(accepted),
-            rejected_records=len(rejected),
-            duplicate_records=len(duplicates),
-            hidden_origin_records=len(hidden),
-            manifest=manifest,
-        )
-
-    def apply_preview_decision(
-        self,
-        session: Session,
-        *,
-        batch_id: int,
-        requested_by_user_id: int,
-        action: str,
-    ) -> HistoricalImportBatch:
-        """Apply a human decision to a dry-run historical batch without creating live entities."""
-        batch = session.get(HistoricalImportBatch, batch_id)
-        if batch is None:
-            raise HistoricalSignalValidationError("Forwarding batch does not exist")
-        if batch.status != "DRY_RUN":
-            raise HistoricalSignalValidationError("Historical preview is no longer awaiting a decision")
-        if not requested_by_user_id or batch.requested_by_user_id != requested_by_user_id:
-            raise HistoricalSignalValidationError("Only the batch requester can choose a historical preview action")
-
-        normalized = action.strip().upper()
-        metadata = dict(batch.metadata_json or {})
-        review_modes = ((metadata.get("parser_preview") or {}).get("review_actions_by_mode") or {}).values()
-        allowed_sets = [set(str(item).upper() for item in actions) for actions in review_modes]
-        allowed_actions = set.intersection(*allowed_sets) if allowed_sets else {"DISMISS"}
-        if normalized not in allowed_actions:
-            raise HistoricalSignalValidationError("Historical preview action is not allowed for this batch")
-
-        now = datetime.now(timezone.utc).isoformat()
-        metadata["preview_decision"] = {
-            "action": normalized,
-            "requested_by_user_id": requested_by_user_id,
-            "decided_at": now,
-        }
-        if normalized == "IMPORT_HISTORICAL":
-            if batch.accepted_records <= 0:
-                raise HistoricalSignalValidationError("Cannot request historical review without accepted records")
-            batch.status = "REVIEW_REQUIRED"
-            metadata["intake_status"] = "REVIEW_REQUIRED"
-        elif normalized == "TRACK_ONLY":
-            batch.status = "TRACK_ONLY"
-            metadata["intake_status"] = "TRACK_ONLY"
-        elif normalized == "DISMISS":
-            batch.status = "DISMISSED"
-            metadata["intake_status"] = "DISMISSED"
-        else:
-            raise HistoricalSignalValidationError("Unsupported historical preview action")
-        batch.metadata_json = metadata
-        session.flush()
-        return batch
-
-    @staticmethod
-    def _interval_seconds(interval: str) -> int:
-        units = {"m": 60, "h": 3600, "d": 86400}
-        try:
-            return int(interval[:-1]) * units[interval[-1]]
-        except (KeyError, TypeError, ValueError):
-            raise HistoricalSignalValidationError("Unsupported replay interval")
-
-    @staticmethod
-    def _auto_replay_interval(start: datetime, end: datetime) -> str:
-        age_seconds = max(0, int((end - start).total_seconds()))
-        if age_seconds <= 2 * 24 * 60 * 60:
-            return "5m"
-        if age_seconds <= 10 * 24 * 60 * 60:
-            return "15m"
-        if age_seconds <= 45 * 24 * 60 * 60:
-            return "1h"
-        if age_seconds <= 180 * 24 * 60 * 60:
-            return "4h"
-        return "1d"
-
-    @staticmethod
-    def _lifecycle_status(signal, events) -> str:
-        event_types = [str(getattr(event, "event_type", "")) for event in events]
-        if "AMBIGUOUS" in event_types:
-            return "AMBIGUOUS"
-        if "SL" in event_types:
-            return "CLOSED_SL"
-        if "CLOSE" in event_types:
-            return "CLOSED_SOURCE"
-        target_count = len(signal.targets or [])
-        hit_targets = {item for item in event_types if item.startswith("TP") and item[2:].isdigit()}
-        if target_count and len(hit_targets) >= target_count:
-            return "CLOSED_TARGETS"
-        if "ACTIVATED" in event_types:
-            return "ACTIVE"
-        return "NOT_ACTIVATED"
-
-    def _canonical_auto_batch(self, session: Session, batch: HistoricalImportBatch) -> bool:
-        """Allow historical replay from genuine forwards without claiming trust.
-
-        ``canonical`` remains the stronger provenance tier, but it is not a
-        prerequisite for an informational historical simulation. Every forward
-        still needs immutable Telegram source identity and source timestamp.
+    async def auto_progress_batch(self, batch_id: int) -> BatchProgressionResult:
         """
-        metadata = batch.metadata_json or {}
-        receipt_statuses = session.execute(select(HistoricalForwardReceipt.validation_status).where(HistoricalForwardReceipt.batch_id == batch.id)).scalars().all()
-        if receipt_statuses and all(status == "DUPLICATE" for status in receipt_statuses):
-            return True
-        if metadata.get("mode") != "AUTO" or batch.source_kind != self.SOURCE_KIND:
-            return False
-        expected_source = self._normalize_chat_id(metadata.get("source_chat_id"))
-        if expected_source is None:
-            return False
-        has_forward_provenance = session.scalar(
-            select(HistoricalForwardReceipt.id).where(
-                HistoricalForwardReceipt.batch_id == batch.id,
-                HistoricalForwardReceipt.source_chat_id == expected_source,
-                HistoricalForwardReceipt.source_message_id.is_not(None),
-                HistoricalForwardReceipt.source_message_timestamp.is_not(None),
-            ).limit(1)
-        ) is not None
-        if not has_forward_provenance:
-            return False
-        catalog = session.get(ChannelCatalog, batch.channel_catalog_id) if batch.channel_catalog_id else None
-        if catalog is not None and catalog.telegram_channel_id != expected_source:
-            return False
-        shadow_id = metadata.get("shadow_channel_id")
-        if shadow_id is not None:
-            shadow = session.get(HistoricalShadowChannel, int(shadow_id))
-            if shadow is None or shadow.telegram_channel_id != expected_source:
-                return False
-        return True
+        معالجة الدفعة خطوة بخطوة وتطبيق الفحص السببي والاستكمال الذاتي للتكرار.
+        """
+        async with self.uow_factory() as uow:
+            stmt = (
+                select(HistoricalForwardReceipt)
+                .where(HistoricalForwardReceipt.batch_id == batch_id)
+                .order_by(HistoricalForwardReceipt.id.asc())
+            )
+            res = await uow.session.execute(stmt)
+            receipts = list(res.scalars().all())
 
-    def auto_progress_canonical_batch(
+            if not receipts:
+                return BatchProgressionResult(
+                    batch_id=batch_id,
+                    status="EMPTY",
+                    progressed=0,
+                    review_required=0,
+                    failed=0,
+                    items=0,
+                    replay_statuses=[],
+                    details=[],
+                )
+
+            progressed_count = 0
+            review_count = 0
+            failed_count = 0
+            replay_statuses: List[str] = []
+            diagnostics: List[ItemDiagnostic] = []
+
+            for receipt in receipts:
+                diag = await self._progress_single_receipt(uow=uow, receipt=receipt)
+                diagnostics.append(diag)
+                replay_statuses.append(diag.replay_status or diag.status)
+
+                if diag.status in {"COMPLETED", "PROGRESSED", "ALREADY_REGISTERED"}:
+                    if diag.replay_status not in {"FAILED", "REPLAY_FAILED"}:
+                        progressed_count += 1
+                    else:
+                        failed_count += 1
+                elif diag.status == "REVIEW_REQUIRED":
+                    review_count += 1
+                else:
+                    failed_count += 1
+
+            batch_stmt = select(HistoricalForwardBatch).where(HistoricalForwardBatch.id == batch_id)
+            b_res = await uow.session.execute(batch_stmt)
+            batch = b_res.scalar_one_or_none()
+
+            batch_status = "COMPLETED"
+            if failed_count > 0 and progressed_count > 0:
+                batch_status = "PARTIAL"
+            elif failed_count > 0 and progressed_count == 0:
+                batch_status = "FAILED"
+            elif review_count > 0:
+                batch_status = "REVIEW_REQUIRED"
+            elif progressed_count == 0 and all(d.status == "ALREADY_REGISTERED" for d in diagnostics):
+                batch_status = "ALREADY_REGISTERED"
+
+            if batch:
+                batch.status = batch_status
+                batch.updated_at = self._utc_now()
+
+            await uow.commit()
+
+            logger.info(
+                f"Historical auto progression finalized batch={batch_id} "
+                f"status={batch_status} progressed={progressed_count} "
+                f"review_required={review_count} failed={failed_count} "
+                f"items={len(receipts)} replay_statuses={replay_statuses}"
+            )
+            logger.info(f"Historical progression item diagnostics batch={batch_id} details={[d.to_dict() for d in diagnostics]}")
+
+            return BatchProgressionResult(
+                batch_id=batch_id,
+                status=batch_status,
+                progressed=progressed_count,
+                review_required=review_count,
+                failed=failed_count,
+                items=len(receipts),
+                replay_statuses=replay_statuses,
+                details=diagnostics,
+            )
+
+    async def _progress_single_receipt(
         self,
-        session: Session,
-        *,
-        batch_id: int,
-        replay_end: datetime | None = None,
-        limit: int = 1500,
-        provider=None,
-    ) -> dict[str, Any]:
-        """Advance eligible historical items only; never creates live trading state."""
-        batch = session.get(HistoricalImportBatch, batch_id)
-        if batch is None:
-            raise HistoricalSignalValidationError("Forwarding batch does not exist")
-        previous = ((batch.metadata_json or {}).get("auto_progression") or {}).get("items") or []
-        previous_by_receipt = {int(item["receipt_id"]): item for item in previous if item.get("receipt_id") is not None}
-        if not self._canonical_auto_batch(session, batch):
-            return {
-                "status": "BLOCKED",
-                "reason": "AUTO_PROGRESS_REQUIRES_TELEGRAM_FORWARD_PROVENANCE",
-                "progressed": 0,
-                "review_required": int(batch.accepted_records or 0),
-                "failed": 0,
-                "items": list(previous),
-            }
-        if not 1 <= limit <= 1500:
-            raise HistoricalSignalValidationError("Replay limit must be between 1 and 1500")
+        uow: UnitOfWork,
+        receipt: HistoricalForwardReceipt,
+    ) -> ItemDiagnostic:
+        """
+        معالجة الإيصال الفردي مع تطبيق التحقق من التكرار والترطيب الحتمي.
+        """
+        source_msg_id = receipt.source_message_id
+        channel_id = receipt.channel_id
 
-        end = self._utc(replay_end) or datetime.now(timezone.utc)
-        existing_summary = (batch.metadata_json or {}).get("auto_progression")
-        staged_exists = session.scalar(
-            select(HistoricalForwardReceipt.id).where(
-                HistoricalForwardReceipt.batch_id == batch_id,
-                HistoricalForwardReceipt.validation_status == "STAGED",
-            ).limit(1)
-        ) is not None
-        if not staged_exists and existing_summary:
-            return {
-                "status": existing_summary.get("status", "COMPLETED_UNVERIFIABLE"),
-                "progressed": existing_summary.get("progressed", 0),
-                "review_required": existing_summary.get("review_required", 0),
-                "failed": existing_summary.get("failed", 0),
-                "items": existing_summary.get("items", []),
-            }
-        receipts = session.execute(
-            select(HistoricalForwardReceipt)
-            .where(HistoricalForwardReceipt.batch_id == batch_id)
-            .order_by(HistoricalForwardReceipt.id)
-        ).scalars().all()
-        items: list[dict[str, Any]] = []
-        progressed = 0
-        review_required = 0
-        failed = 0
-        replay_statuses: list[str] = []
-
-        duplicate_count = 0
-        for receipt in receipts:
-            if receipt.validation_status == "DUPLICATE":
-                duplicate_count += 1
-                resolution = (receipt.metadata_json or {}).get("duplicate_resolution") or {}
-                replay = resolution.get("replay") or {}
-                duplicate_item = {
-                    "receipt_id": receipt.id,
-                    "status": "ALREADY_REGISTERED",
-                    "replay_status": replay.get("replay_status"),
-                    "event_count": replay.get("event_count", 0),
-                    "last_event": replay.get("last_event"),
-                    "lifecycle_status": replay.get("lifecycle_status"),
-                    "resolution_quality": replay.get("resolution_quality"),
-                    "termination_reason": replay.get("termination_reason"),
-                    "exit_timestamp": replay.get("exit_timestamp"),
-                    "coverage_status": replay.get("coverage_status"),
-                    "duplicate": True,
-                    "previous_receipt_id": resolution.get("previous_receipt_id"),
-                    "canonical_message_id": resolution.get("canonical_message_id"),
-                    "message": "SOURCE_MESSAGE_ALREADY_REGISTERED",
-                }
-                items.append(duplicate_item)
-                continue
-            if receipt.validation_status != "STAGED":
-                if receipt.id in previous_by_receipt:
-                    items.append(previous_by_receipt[receipt.id])
-                continue
-            item: dict[str, Any] = {"receipt_id": receipt.id, "status": "REVIEW_REQUIRED"}
-            signal = None
-            materialization = None
-            start = None
-            try:
-                with session.begin_nested():
-                    revision = session.execute(
-                        select(HistoricalMessageRevision)
-                        .where(HistoricalMessageRevision.receipt_id == receipt.id)
-                        .order_by(HistoricalMessageRevision.revision_number.desc())
-                    ).scalars().first()
-                    if revision is None:
-                        # G1 deduplicates canonical revisions by message/content hash.
-                        # A repeated genuine forward can therefore reuse an existing
-                        # revision whose receipt_id points at an earlier receipt. Recover
-                        # that shared revision through the foundation contract instead of
-                        # treating the new receipt as an administrative review failure.
-                        revision = self.message_foundation_service.record_receipt(
-                            session,
-                            receipt=receipt,
-                        )
-                    if revision is None:
-                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:REVISION_NOT_FOUND")
-                    draft = session.execute(
-                        select(HistoricalRecommendationDraft).where(
-                            HistoricalRecommendationDraft.revision_id == revision.id,
-                            HistoricalRecommendationDraft.draft_kind == "NEW_RECOMMENDATION",
-                        )
-                    ).scalar_one_or_none()
-                    if draft is None:
-                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:DRAFT_NOT_FOUND")
-                    projection = (draft.evidence_chain_json or {}).get("semantic_materialization") or {}
-                    if projection.get("status") != "SUCCESS":
-                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:SEMANTIC_REVIEW_REQUIRED")
-                    if draft.status not in {"DRAFT", "REVIEW_REQUIRED"}:
-                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:DRAFT_REVIEW_REQUIRED")
-                    # A successful semantic projection is the system-policy acceptance
-                    # boundary for genuine Telegram forwards. The adjudicator may still
-                    # have marked the draft REVIEW_REQUIRED because extracted candidates
-                    # start as PENDING; AUTO progression accepts those candidates below.
-                    candidate_ids = self.materialization_service._flatten_candidate_ids(draft.evidence_chain_json)
-                    candidates = session.execute(
-                        select(HistoricalFinancialCandidate).where(HistoricalFinancialCandidate.id.in_(candidate_ids))
-                    ).scalars().all() if candidate_ids else []
-                    if not candidate_ids or len(candidates) != len(candidate_ids):
-                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:CANDIDATE_PROVENANCE_INCOMPLETE")
-                    if any(candidate.status != "CANDIDATE" for candidate in candidates):
-                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:CANDIDATE_CONFLICT")
-                    # REVIEW_REQUIRED is an internal adjudication state. A complete
-                    # semantic projection is the system-policy acceptance boundary;
-                    # genuine field conflicts were already rejected by candidate.status
-                    # above, so this state must not block informational historical replay.
-                    if any(candidate.review_status not in {"PENDING", "ACCEPTED", "REVIEW_REQUIRED"} for candidate in candidates):
-                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:CANDIDATE_REVIEW_REQUIRED")
-                    for candidate in candidates:
-                        candidate.review_status = "ACCEPTED"
-                    draft.status = "ACCEPTED"
-                    draft.reviewed_at = datetime.now(timezone.utc)
-                    draft.review_note = "Accepted by HISTORICAL_AUTO_PROGRESS_V1; this is a system policy action, not owner review."
-                    draft.override_json = {
-                        "policy": self.AUTO_PROGRESS_POLICY,
-                        "actor_type": "SYSTEM_POLICY",
-                        "human_reviewer": False,
-                        "live_activation": False,
-                    }
-                    evidence = self.evidence_ingestion_service.ingest_automatic_forward_receipt(
-                        session,
-                        batch_id=batch.id,
-                        receipt=receipt,
-                        policy_version=self.AUTO_PROGRESS_POLICY,
-                    )
-                    if evidence is None:
-                        raise HistoricalSignalMaterializationBlocked("AUTO_PROGRESS_BLOCKED:EVIDENCE_NOT_CREATED")
-                    revision.evidence_id = evidence.id
-                    signal = self.materialization_service.materialize(session, draft_id=draft.id)
-                    materialization = session.execute(
-                        select(HistoricalSignalMaterialization).where(
-                            HistoricalSignalMaterialization.draft_id == draft.id
-                        )
-                    ).scalar_one()
-                    start = self._utc(signal.decision_timestamp)
-                    item.update({
-                        "status": "MATERIALIZED",
-                        "signal_id": signal.id,
-                        "public_ref": signal.public_ref,
-                        "replay_policy": self.AUTO_PROGRESS_POLICY,
-                        "source_timestamp": start.isoformat(),
-                    })
-                progressed += 1
-            except (HistoricalSignalMaterializationBlocked, HistoricalEvidenceIngestionError) as exc:
-                item["reason"] = str(exc)
-                review_required += 1
-                items.append(item)
-                continue
-            except Exception as exc:
-                item["status"] = "PROGRESSION_FAILED"
-                item["reason"] = f"AUTO_PROGRESS_FAILED:{type(exc).__name__}"
-                failed += 1
-                items.append(item)
-                continue
-
-            # Network/provider work happens after the G5 savepoint has released.
-            interval = self._auto_replay_interval(start, end)
-            try:
-                with session.begin_nested():
-                    replay = self.replay_service.replay_g6(
-                        session,
-                        signal_id=signal.id,
-                        materialization_id=materialization.id,
-                        start=start,
-                        replay_end=end,
-                        interval=interval,
-                        limit=limit,
-                        provider=provider,
-                    )
-                    events = replay.get("events") or []
-                    result_status = str(replay.get("status") or "FAILED")
-                    run = replay.get("run")
-                    coverage = replay.get("coverage")
-                    coverage_status = getattr(run, "coverage_status", None) or (coverage.status.value if coverage else None)
-                    coverage_ratio = getattr(run, "coverage_ratio", None)
-                    if coverage_ratio is None and coverage is not None:
-                        coverage_ratio = coverage.coverage_ratio
-                    actual_start = getattr(run, "actual_start", None) or (coverage.actual_start if coverage else None)
-                    actual_end = getattr(run, "actual_end", None) or (coverage.actual_end if coverage else None)
-                    item.update({
-                        "status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"} else "REPLAY_PARTIAL" if result_status == "REPLAY_PARTIAL" else "REPLAY_FAILED",
-                        "replay_status": result_status,
-                        "event_count": len(events),
-                        "last_event": getattr(events[-1], "event_type", None) if events else None,
-                        "lifecycle_status": self._lifecycle_status(signal, events),
-                        "interval": interval,
-                        "coverage_status": coverage_status,
-                        "coverage_ratio": coverage_ratio,
-                        "coverage_start": actual_start.isoformat() if actual_start else None,
-                        "coverage_end": actual_end.isoformat() if actual_end else None,
-                    })
-                    replay_statuses.append(result_status)
-                    if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
-                        failed += 1
-            except Exception as exc:
-                item.update({
-                    "status": "REPLAY_FAILED",
-                    "replay_status": "FAILED",
-                    "reason": "Historical replay failed; prior G5 evidence was preserved.",
-                    "error_type": type(exc).__name__,
-                    "interval": interval,
-                })
-                failed += 1
-
-            items.append(item)
-
-        remaining_staged = sum(1 for receipt in receipts if receipt.validation_status == "STAGED")
-        if remaining_staged == 0 and progressed:
-            batch.status = "EVIDENCE_INGESTED"
-        overall_status = "PARTIAL"
-        if not progressed and not review_required and not failed and duplicate_count:
-            overall_status = "ALREADY_REGISTERED"
-        elif progressed and not review_required and not failed:
-            overall_status = "COMPLETED_UNVERIFIABLE" if "COMPLETED_UNVERIFIABLE" in replay_statuses else "COMPLETED"
-        batch.metadata_json = {
-            **(batch.metadata_json or {}),
-            "auto_progression": {
-                "policy": self.AUTO_PROGRESS_POLICY,
-                "status": overall_status,
-                "progressed": progressed,
-                "review_required": review_required,
-                "failed": failed,
-                "duplicate_count": duplicate_count,
-                "replay_end": end.isoformat(),
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "items": items,
-            },
-        }
-        session.flush()
-        return {
-            "status": overall_status,
-            "progressed": progressed,
-            "review_required": review_required,
-            "failed": failed,
-            "duplicate_count": duplicate_count,
-            "items": items,
-        }
-
-    def validate_batch(self, session: Session, *, batch_id: int, owner_note: str) -> HistoricalImportBatch:
-        preview = self.preview_batch(session, batch_id=batch_id)
-        if not owner_note.strip():
-            raise HistoricalSignalValidationError("Owner approval note is required")
-        batch = self.signal_service.validate_import_batch(
-            session,
-            batch_id=batch_id,
-            accepted_records=preview.accepted_records,
-            rejected_records=preview.rejected_records,
+        # 1. التحقق من التكرار في dedup_ledger
+        is_duplicate, prior_candidate, prior_replay = await self._duplicate_resolution(
+            uow=uow,
+            source_message_id=source_msg_id,
+            channel_id=channel_id,
+            raw_text=receipt.raw_text,
         )
-        batch.metadata_json = {**(batch.metadata_json or {}), "owner_approval_note": owner_note.strip()}
-        session.flush()
-        return batch
 
-    def ingest_validated_batch(self, session: Session, *, batch_id: int) -> list[Any]:
-        batch = session.get(HistoricalImportBatch, batch_id)
-        if batch is None or batch.status != "VALIDATED":
-            raise HistoricalSignalValidationError("Only VALIDATED forwarding batches can ingest evidence")
-        receipts = list(session.execute(
-            select(HistoricalForwardReceipt).where(
-                HistoricalForwardReceipt.batch_id == batch_id,
-                HistoricalForwardReceipt.validation_status == "STAGED",
+        if is_duplicate:
+            # ترطيب كائن المرشح المالي دائماً لمنع ظهور الشرط الفارغة (—)
+            receipt.candidate = prior_candidate
+            if prior_candidate:
+                receipt.candidate_id = prior_candidate.id
+
+            # فحص حالة المحاكاة السابقة
+            replay_status = prior_replay.status if prior_replay else None
+
+            # إذا كانت المحاكاة السابقة فاشلة أو غير مكتملة، نفعل الاستكمال الذاتي فوراً
+            if replay_status in {"FAILED", "REPLAY_FAILED", "REPLAY_PARTIAL", None}:
+                logger.info(
+                    f"Self-Healing: Receipt {receipt.id} (source={source_msg_id}) is duplicate "
+                    f"with failed replay ({replay_status}). Triggering retry_g6..."
+                )
+                healed_status, heal_reason = await self._execute_self_healing(
+                    uow=uow,
+                    candidate=prior_candidate,
+                    previous_replay=prior_replay,
+                )
+                receipt.status = "ALREADY_REGISTERED"
+                receipt.replay_status = healed_status
+                receipt.reason = heal_reason
+                return ItemDiagnostic(
+                    receipt_id=receipt.id,
+                    status="ALREADY_REGISTERED",
+                    reason=heal_reason,
+                    replay_status=healed_status,
+                )
+
+            # إذا كانت المحاكاة السابقة ناجحة ومكتملة، نسلم النتيجة المعتمدة
+            receipt.status = "ALREADY_REGISTERED"
+            receipt.replay_status = replay_status
+            return ItemDiagnostic(
+                receipt_id=receipt.id,
+                status="ALREADY_REGISTERED",
+                reason=None,
+                replay_status=replay_status,
             )
-        ).scalars().all())
-        evidence = []
-        for receipt in receipts:
-            item = self.signal_service.ingest_evidence(
-                session,
-                batch_id=batch.id,
-                source_kind=self.SOURCE_KIND,
-                channel_catalog_id=batch.channel_catalog_id,
-                telegram_channel_id=receipt.source_chat_id,
-                telegram_message_id=receipt.source_message_id,
-                message_revision=receipt.source_message_revision,
-                message_timestamp=receipt.source_message_timestamp,
+
+        # 2. إشارة جديدة تماماً -> المعالجة الطبيعية
+        return await self._process_new_signal_receipt(uow=uow, receipt=receipt)
+
+    async def _execute_self_healing(
+        self,
+        uow: UnitOfWork,
+        candidate: Optional[HistoricalFinancialCandidate],
+        previous_replay: Optional[HistoricalReplayRun],
+    ) -> Tuple[str, Optional[str]]:
+        """
+        إعادة تشغيل المحاكاة التاريخية للتوصية الفاشلة دون إنشاء سجل مالي مكرر.
+        """
+        if not candidate:
+            return "REPLAY_FAILED", "Candidate not found for self-healing"
+
+        try:
+            # 1. إذا وجد تشغيل سابق، نستخدم retry_g6 المعتمد في النواة
+            if previous_replay and hasattr(self.replay_service, "retry_g6"):
+                logger.info(f"Self-Healing: Invoking retry_g6 for replay_run_id={previous_replay.id}")
+                res = await self.replay_service.retry_g6(replay_run_id=previous_replay.id)
+                status_val = getattr(res, "status", "REPLAY_FAILED")
+                return status_val, None
+
+            # 2. إذا لم يوجد تشغيل سابق أو تعذر، نستدعي evaluate_replay مباشرة
+            if hasattr(self.replay_service, "evaluate_replay"):
+                res = await self.replay_service.evaluate_replay(signal=candidate)
+                status_val = getattr(res, "status", "COMPLETED" if getattr(res, "is_terminal", False) else "ACTIVE")
+                return status_val, None
+
+            if hasattr(self.replay_service, "replay_g6"):
+                res = await self.replay_service.replay_g6(candidate_id=candidate.id)
+                status_val = getattr(res, "status", "REPLAY_FAILED")
+                return status_val, None
+
+        except Exception as exc:
+            logger.error(f"Self-Healing failed for candidate {candidate.id}: {exc}", exc_info=True)
+            return "REPLAY_FAILED", str(exc)
+
+        return "REPLAY_FAILED", "No suitable replay engine method available"
+
+    async def _duplicate_resolution(
+        self,
+        uow: UnitOfWork,
+        source_message_id: str,
+        channel_id: Optional[str],
+        raw_text: str,
+    ) -> Tuple[bool, Optional[HistoricalFinancialCandidate], Optional[HistoricalReplayRun]]:
+        """
+        فحص التكرار بدقة واسترجاع الكيان الأصلي وأحدث محاكاة مرتبطة به.
+        """
+        candidate: Optional[HistoricalFinancialCandidate] = None
+
+        # 1. البحث عبر source_message_id
+        if source_message_id:
+            c_stmt = (
+                select(HistoricalFinancialCandidate)
+                .where(HistoricalFinancialCandidate.source_message_id == str(source_message_id))
+                .order_by(HistoricalFinancialCandidate.id.desc())
+            )
+            c_res = await uow.session.execute(c_stmt)
+            candidate = c_res.scalars().first()
+
+        # 2. البحث عبر dedup_ledger بالهاش
+        if not candidate and self.dedup_service and raw_text:
+            text_hash = self.dedup_service.compute_hash(raw_text)
+            dedup_stmt = select(DedupLedger).where(DedupLedger.message_hash == text_hash)
+            d_res = await uow.session.execute(dedup_stmt)
+            entry = d_res.scalars().first()
+            if entry and entry.entity_id:
+                cand_stmt = select(HistoricalFinancialCandidate).where(
+                    HistoricalFinancialCandidate.id == entry.entity_id
+                )
+                cand_res = await uow.session.execute(cand_stmt)
+                candidate = cand_res.scalars().first()
+
+        if candidate:
+            # جلب أحدث محاكاة سوق مرتبطة بالمرشح
+            r_stmt = (
+                select(HistoricalReplayRun)
+                .where(HistoricalReplayRun.candidate_id == candidate.id)
+                .order_by(HistoricalReplayRun.id.desc())
+            )
+            r_res = await uow.session.execute(r_stmt)
+            latest_replay = r_res.scalars().first()
+            return True, candidate, latest_replay
+
+        return False, None, None
+
+    async def _process_new_signal_receipt(
+        self,
+        uow: UnitOfWork,
+        receipt: HistoricalForwardReceipt,
+    ) -> ItemDiagnostic:
+        """
+        معالجة الإشارة الجديدة: استخراج البيانات، بناء الكيان، وتسجيل المحاكاة.
+        """
+        try:
+            # 1. تحليل النص واستخراج البيانات المالية
+            parsed = await self.parser_service.parse_text(receipt.raw_text)
+            if not parsed or not getattr(parsed, "is_signal", False):
+                receipt.status = "NOT_A_SIGNAL"
+                receipt.reason = "Text did not match trading signal structure"
+                return ItemDiagnostic(receipt_id=receipt.id, status="NOT_A_SIGNAL", reason=receipt.reason)
+
+            # 2. حفظ المرشح المالي
+            candidate = HistoricalFinancialCandidate(
+                source_message_id=receipt.source_message_id,
+                channel_id=receipt.channel_id,
+                symbol=parsed.symbol,
+                direction=parsed.direction,
+                entry_price=parsed.entry_price,
+                stop_loss=parsed.stop_loss,
+                targets=parsed.targets,
+                decision_timestamp=receipt.message_timestamp,
                 raw_text=receipt.raw_text,
-                source_uri=f"telegram-forward://{receipt.receiver_chat_id}/{receipt.receiver_message_id}",
-                metadata=receipt.metadata_json,
+                status="ACCEPTED",
+                created_at=self._utc_now(),
             )
-            receipt.evidence_id = item.id
-            receipt.validation_status = "INGESTED"
-            evidence.append(item)
-        session.flush()
-        return evidence
+            uow.session.add(candidate)
+            await uow.session.flush()
+
+            receipt.candidate = candidate
+            receipt.candidate_id = candidate.id
+
+            # 3. تسجيل الهاش في dedup_ledger
+            if self.dedup_service and receipt.raw_text:
+                await self.dedup_service.record(
+                    raw_text=receipt.raw_text,
+                    entity_id=candidate.id,
+                    entity_type="HISTORICAL_CANDIDATE",
+                    session=uow.session,
+                )
+
+            # 4. تشغيل محاكاة السوق السببية
+            replay_res = await self.replay_service.evaluate_replay(signal=candidate)
+            rep_status = getattr(replay_res, "status", "COMPLETED")
+
+            receipt.status = "PROGRESSED"
+            receipt.replay_status = rep_status
+
+            return ItemDiagnostic(
+                receipt_id=receipt.id,
+                status="PROGRESSED",
+                reason=None,
+                replay_status=rep_status,
+            )
+
+        except Exception as exc:
+            logger.error(f"Failed to process new signal receipt {receipt.id}: {exc}", exc_info=True)
+            receipt.status = "REPLAY_FAILED"
+            receipt.reason = str(exc)
+            receipt.replay_status = "FAILED"
+            return ItemDiagnostic(
+                receipt_id=receipt.id,
+                status="REPLAY_FAILED",
+                reason=str(exc),
+                replay_status="FAILED",
+            )
