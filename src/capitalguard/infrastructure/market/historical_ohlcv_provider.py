@@ -105,16 +105,21 @@ class BinanceHistoricalOhlcvProvider:
         end: datetime,
         limit: int = 365,
     ) -> tuple[list[MarketCandle], str, HistoricalCoverage]:
-        """Thin semantic adapter for G6 annual macro traversal; reuses fetch_with_coverage()."""
-        end_utc = self._normalize_bounds(start, end)[1]
-        bounded_end = end_utc - timedelta(microseconds=1)
-        bounded_end = bounded_end.replace(hour=0, minute=0, second=0, microsecond=0)
+        """Fetch daily candles on Binance's UTC day-open grid.
+
+        The replay horizon is preserved. Only the request start is aligned to
+        00:00 UTC; flooring the end back to midnight can collapse a same-day
+        replay into an invalid request and prevent the minute drill-down from
+        ever running.
+        """
+        start_utc, end_utc = self._normalize_bounds(start, end)
+        aligned_start = start_utc.replace(hour=0, minute=0, second=0, microsecond=0)
         return self.fetch_with_coverage(
             asset=asset,
             market=market,
             interval="1d",
-            start=start,
-            end=bounded_end,
+            start=aligned_start,
+            end=end_utc,
             limit=min(max(1, int(limit)), 365),
         )
 
