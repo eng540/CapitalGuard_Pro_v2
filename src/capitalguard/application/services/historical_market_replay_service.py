@@ -395,10 +395,12 @@ class HistoricalMarketReplayService:
         source_lifecycle = self._source_lifecycle(session, signal_id=signal_id)
         end_utc = self._utc(replay_end)
         planner = AdaptiveHistoricalReplayPlanner()
-        macro_start = planner.day_start(self._utc(signal.decision_timestamp))
+        source_time = self._utc(signal.decision_timestamp)
+        day_zero = planner.day_start(source_time)
+        macro_start = day_zero + timedelta(days=1)
         run, created = self._get_or_create_run(
             session, signal_id=signal_id, materialization_id=materialization_id,
-            start=macro_start, replay_end=end_utc, interval="1m", limit=limit,
+            start=source_time, replay_end=end_utc, interval="1m", limit=limit,
             retry_of_fingerprint=retry_of_fingerprint,
         )
         if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:
@@ -429,6 +431,53 @@ class HistoricalMarketReplayService:
             if side == "LONG":
                 return candle.low <= level if is_stop else candle.high >= level
             return candle.high >= level if is_stop else candle.low <= level
+
+        # Day-0 is resolved causally from the exact signal source timestamp.
+        # Daily macro traversal begins on the following UTC day.
+        day_zero_window = planner.minute_window_for_day(
+            day=day_zero, signal_source_time=source_time, now=end_utc
+        )
+        if day_zero_window is not None:
+            minute_fetch = getattr(provider, "fetch_minute_day", None)
+            if minute_fetch is None:
+                raise HistoricalSignalValidationError("Adaptive G6 provider lacks critical-day minute adapter")
+            minutes, minute_endpoint, minute_coverage = minute_fetch(
+                asset=str(signal.asset or ""), market=signal.market,
+                start=day_zero_window.start, end=day_zero_window.end,
+            )
+            macro_statuses.append(minute_coverage.status.value)
+            if minutes:
+                drilldown_days.append(day_zero.isoformat())
+                day_events = self.replay_candles(
+                    session, signal_id=signal_id, candles=minutes, replay_end=day_zero_window.end,
+                    interval="1m", provider_endpoint=minute_endpoint, replay_run_id=run.id,
+                    fetched_at=fetched_at, data_as_of_status="UNVERIFIABLE", refresh_ranking=False,
+                    resolver_client=getattr(provider, "client", None), initial_state=state,
+                )
+                all_events.extend(day_events)
+                hit = set(state.hit_target_indices)
+                activated = state.activated
+                lifecycle = state.lifecycle_state
+                last_ts = state.last_processed_timestamp
+                for event in day_events:
+                    event_type = str(event.event_type)
+                    last_ts = event.event_timestamp
+                    if event_type == "ACTIVATED":
+                        activated = True; lifecycle = "ACTIVE"
+                    elif event_type.startswith("TP") and event_type[2:].isdigit():
+                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE"
+                    elif event_type == "SL":
+                        lifecycle = "CLOSED_STOP"
+                    elif event_type == "CLOSE":
+                        lifecycle = "FINAL_CLOSE"
+                    elif event_type == "AMBIGUOUS":
+                        lifecycle = "CLOSED_UNVERIFIABLE"
+                state = LifecycleState(
+                    activated=activated, hit_target_indices=frozenset(hit),
+                    remaining_target_indices=frozenset(set(range(1, len(target_levels) + 1)) - hit),
+                    current_stop=state.current_stop, lifecycle_state=lifecycle,
+                    last_processed_timestamp=last_ts,
+                )
 
         for annual in planner.annual_windows(macro_start, end_utc):
             daily_fetch = getattr(provider, "fetch_daily", None)
@@ -557,7 +606,7 @@ class HistoricalMarketReplayService:
             "current_stop": str(state.current_stop) if state.current_stop is not None else None,
             "remaining_target_indices": sorted(state.remaining_target_indices),
             "last_processed_timestamp": state.last_processed_timestamp.isoformat() if state.last_processed_timestamp else None,
-            "requested_start": macro_start.isoformat(), "requested_end": end_utc.isoformat(),
+            "requested_start": source_time.isoformat(), "requested_end": end_utc.isoformat(),
         }
         evidences = session.execute(select(HistoricalMarketEvidence).where(HistoricalMarketEvidence.replay_run_id == run.id)).scalars().all()
         for evidence in evidences:

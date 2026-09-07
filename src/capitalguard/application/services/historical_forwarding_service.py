@@ -240,7 +240,6 @@ class HistoricalForwardingService:
             )
             .where(
                 HistoricalMessageRevision.message_id == canonical.id,
-                HistoricalReplayRun.status.in_({"COMPLETED", "COMPLETED_UNVERIFIABLE"}),
             )
             .order_by(HistoricalReplayRun.completed_at.desc(), HistoricalReplayRun.id.desc())
         ).scalars().first()
@@ -651,13 +650,14 @@ class HistoricalForwardingService:
 
         end = self._utc(replay_end) or datetime.now(timezone.utc)
         existing_summary = (batch.metadata_json or {}).get("auto_progression")
-        staged_exists = session.scalar(
-            select(HistoricalForwardReceipt.id).where(
-                HistoricalForwardReceipt.batch_id == batch_id,
-                HistoricalForwardReceipt.validation_status == "STAGED",
-            ).limit(1)
-        ) is not None
-        if not staged_exists and existing_summary:
+        receipts = session.execute(
+            select(HistoricalForwardReceipt)
+            .where(HistoricalForwardReceipt.batch_id == batch_id)
+            .order_by(HistoricalForwardReceipt.id)
+        ).scalars().all()
+        staged_exists = any(receipt.validation_status == "STAGED" for receipt in receipts)
+        duplicate_exists = any(receipt.validation_status == "DUPLICATE" for receipt in receipts)
+        if not staged_exists and not duplicate_exists and existing_summary:
             return {
                 "status": existing_summary.get("status", "COMPLETED_UNVERIFIABLE"),
                 "progressed": existing_summary.get("progressed", 0),
@@ -665,11 +665,6 @@ class HistoricalForwardingService:
                 "failed": existing_summary.get("failed", 0),
                 "items": existing_summary.get("items", []),
             }
-        receipts = session.execute(
-            select(HistoricalForwardReceipt)
-            .where(HistoricalForwardReceipt.batch_id == batch_id)
-            .order_by(HistoricalForwardReceipt.id)
-        ).scalars().all()
         items: list[dict[str, Any]] = []
         progressed = 0
         review_required = 0
@@ -681,7 +676,39 @@ class HistoricalForwardingService:
             if receipt.validation_status == "DUPLICATE":
                 duplicate_count += 1
                 resolution = (receipt.metadata_json or {}).get("duplicate_resolution") or {}
+                if receipt.source_chat_id is not None and receipt.source_message_id is not None:
+                    refreshed = self._duplicate_resolution(
+                        session, source_chat_id=int(receipt.source_chat_id),
+                        source_message_id=int(receipt.source_message_id),
+                    )
+                    if refreshed is not None:
+                        resolution = refreshed
+                        receipt.metadata_json = {**(receipt.metadata_json or {}), "duplicate_resolution": resolution}
+                        session.flush()
                 replay = resolution.get("replay") or {}
+                replay_status = str(replay.get("replay_status") or "")
+                previous_receipt_id = resolution.get("previous_receipt_id")
+                if replay_status in {"FAILED", "REPLAY_PARTIAL"} and previous_receipt_id:
+                    try:
+                        healed = self.replay_service.retry_g6(session, receipt_id=int(previous_receipt_id), provider=provider)
+                        healed_run = healed.get("run")
+                        if healed_run is not None:
+                            result = dict(healed_run.result_json or {})
+                            events = result.get("events") or []
+                            replay = {**replay, "replay_status": str(healed_run.status), "event_count": result.get("event_count", len(events)), "last_event": events[-1].get("type") if events else None, "lifecycle_status": result.get("lifecycle_status"), "resolution_quality": result.get("resolution_quality"), "termination_reason": result.get("termination_reason"), "exit_timestamp": result.get("exit_timestamp"), "coverage_status": healed_run.coverage_status, "run_id": healed_run.id, "run_ref": healed_run.run_ref}
+                            resolution["replay"] = replay
+                            receipt.metadata_json = {**(receipt.metadata_json or {}), "duplicate_resolution": resolution}
+                            session.flush()
+                            if str(healed_run.status) not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
+                                failed += 1
+                            else:
+                                replay_statuses.append(str(healed_run.status))
+                    except Exception as exc:
+                        failed += 1
+                        replay = {**replay, "replay_status": "FAILED", "retry_error_type": type(exc).__name__}
+                        resolution["replay"] = replay
+                        receipt.metadata_json = {**(receipt.metadata_json or {}), "duplicate_resolution": resolution}
+                        session.flush()
                 duplicate_item = {
                     "receipt_id": receipt.id,
                     "status": "ALREADY_REGISTERED",
