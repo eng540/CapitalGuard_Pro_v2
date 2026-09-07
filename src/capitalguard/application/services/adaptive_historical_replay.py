@@ -75,20 +75,18 @@ class AdaptiveHistoricalReplayPlanner:
         """Return only the requested portion of one day.
 
         Day 0 starts exactly at the signal timestamp. Later days start at 00:00.
-        The end is clamped to the day boundary and to T_now. No next-day candles
-        can be requested.
+        The end is clamped to the day boundary and to a completed-minute grid so
+        a live/open Binance minute is never treated as historical evidence.
         """
         day_start = cls.day_start(day)
         day_end = day_start + timedelta(days=1)
         source = cls.utc(signal_source_time)
         now = cls.utc(now)
         start = max(day_start, source)
-        end = min(day_end, now)
+        end = min(day_end, now).replace(second=0, microsecond=0)
         if start >= end:
             return None
         minutes = int((end - start).total_seconds() // 60)
-        if (end - start).total_seconds() % 60:
-            minutes += 1
         if minutes <= 0:
             return None
         return ReplayWindow(start=start, end=end, limit=minutes)
