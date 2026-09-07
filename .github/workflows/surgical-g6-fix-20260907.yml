@@ -1,0 +1,144 @@
+name: surgical-g6-fix-20260907
+
+on:
+  push:
+    branches:
+      - fix/g6-causal-replay-surgical-20260907
+
+permissions:
+  contents: write
+
+jobs:
+  surgical-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply surgical G6 fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          ROOT = Path('.')
+
+          def replace_once(path, old, new):
+              p = ROOT / path
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          # 1) Binance 1D requests must be aligned to the exchange's daily grid.
+          replace_once(
+              'src/capitalguard/infrastructure/market/historical_ohlcv_provider.py',
+              '''        bounded_end = end_utc - timedelta(microseconds=1)\n        bounded_end = bounded_end.replace(hour=0, minute=0, second=0, microsecond=0)\n        return self.fetch_with_coverage(\n            asset=asset,\n            market=market,\n            interval="1d",\n            start=start,\n            end=bounded_end,\n            limit=min(max(1, int(limit)), 365),\n''',
+              '''        bounded_end = end_utc - timedelta(microseconds=1)\n        bounded_end = bounded_end.replace(hour=0, minute=0, second=0, microsecond=0)\n        aligned_start = start.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)\n        if aligned_start >= bounded_end:\n            return [], "", HistoricalCoverage(\n                requested_start=aligned_start, requested_end=bounded_end,\n                actual_start=None, actual_end=None, expected_candles=0, actual_candles=0,\n                coverage_ratio=1.0, status=CoverageStatus.FULL, interval=interval_delta("1d"),\n            )\n        return self.fetch_with_coverage(\n            asset=asset,\n            market=market,\n            interval="1d",\n            start=aligned_start,\n            end=bounded_end,\n            limit=min(max(1, int(limit)), 365),\n'''
+          )
+
+          # Provider already imports HistoricalCoverage/interval_delta; add enum import for the zero-day guard.
+          replace_once(
+              'src/capitalguard/infrastructure/market/historical_ohlcv_provider.py',
+              'from capitalguard.domain.coverage import HistoricalCoverage, calculate_historical_coverage, interval_delta',
+              'from capitalguard.domain.coverage import CoverageStatus, HistoricalCoverage, calculate_historical_coverage, interval_delta',
+          )
+
+          # 2) Never request the currently-open 1m candle. Day-0 remains causal to T0.
+          replace_once(
+              'src/capitalguard/application/services/adaptive_historical_replay.py',
+              '''        start = max(day_start, source)\n        end = min(day_end, now)\n        if start >= end:\n            return None\n''',
+              '''        start = max(day_start, source)\n        safe_now = now.replace(second=0, microsecond=0)\n        end = min(day_end, safe_now)\n        if start >= end:\n            return None\n''',
+          )
+
+          # 3) G6 annual adaptive replay: Day-0 is 1m from T0; 1D starts only on Day-1.
+          replay_path = ROOT / 'src/capitalguard/application/services/historical_market_replay_service.py'
+          replay = replay_path.read_text()
+          replace_once(
+              'src/capitalguard/application/services/historical_market_replay_service.py',
+              '        macro_start = planner.day_start(self._utc(signal.decision_timestamp))\n',
+              '        source_time = self._utc(signal.decision_timestamp)\n        day_zero = planner.day_start(source_time)\n        macro_start = day_zero + timedelta(days=1)\n',
+          )
+          replace_once(
+              'src/capitalguard/application/services/historical_market_replay_service.py',
+              '            start=macro_start, replay_end=end_utc, interval="1m", limit=limit,\n',
+              '            start=source_time, replay_end=end_utc, interval="1m", limit=limit,\n',
+          )
+          day0 = '''        day_zero_window = planner.minute_window_for_day(\n            day=day_zero, signal_source_time=source_time, now=end_utc\n        )\n        if day_zero_window is not None:\n            minute_fetch = getattr(provider, "fetch_minute_day", None)\n            if minute_fetch is None:\n                raise HistoricalSignalValidationError("Adaptive G6 provider lacks critical-day minute adapter")\n            minutes, minute_endpoint, minute_coverage = minute_fetch(\n                asset=str(signal.asset or ""), market=signal.market,\n                start=day_zero_window.start, end=day_zero_window.end,\n            )\n            macro_statuses.append(minute_coverage.status.value)\n            if minute_coverage.actual_start is not None and (first_actual is None or minute_coverage.actual_start < first_actual):\n                first_actual = minute_coverage.actual_start\n            if minute_coverage.actual_end is not None and (last_actual is None or minute_coverage.actual_end > last_actual):\n                last_actual = minute_coverage.actual_end\n            drilldown_days.append(day_zero.isoformat())\n            if minutes:\n                day_events = self.replay_candles(\n                    session, signal_id=signal_id, candles=minutes, replay_end=day_zero_window.end,\n                    interval="1m", provider_endpoint=minute_endpoint, replay_run_id=run.id,\n                    fetched_at=fetched_at, data_as_of_status="UNVERIFIABLE", refresh_ranking=False,\n                    resolver_client=getattr(provider, "client", None), initial_state=state,\n                )\n                all_events.extend(day_events)\n                hit = set(state.hit_target_indices)\n                activated = state.activated\n                lifecycle = state.lifecycle_state\n                last_ts = state.last_processed_timestamp\n                for event in day_events:\n                    event_type = str(event.event_type)\n                    last_ts = event.event_timestamp\n                    if event_type == "ACTIVATED":\n                        activated = True; lifecycle = "ACTIVE"\n                    elif event_type.startswith("TP") and event_type[2:].isdigit():\n                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE"\n                    elif event_type == "SL":\n                        lifecycle = "CLOSED_STOP"\n                    elif event_type == "CLOSE":\n                        lifecycle = "FINAL_CLOSE"\n                    elif event_type == "AMBIGUOUS":\n                        lifecycle = "CLOSED_UNVERIFIABLE"\n                state = LifecycleState(\n                    activated=activated, hit_target_indices=frozenset(hit),\n                    remaining_target_indices=frozenset(set(range(1, len(target_levels) + 1)) - hit),\n                    current_stop=state.current_stop, lifecycle_state=lifecycle,\n                    last_processed_timestamp=last_ts,\n                )\n\n'''
+          marker = '        for annual in planner.annual_windows(macro_start, end_utc):\n'
+          if replay.count(marker) != 1:
+              raise SystemExit(f'historical_market_replay_service.py: annual loop marker count={replay.count(marker)}')
+          replay = replay.replace(marker, day0 + '        annual_windows = () if planner.terminal(state) else planner.annual_windows(macro_start, end_utc)\n        for annual in annual_windows:\n', 1)
+          replay_path.write_text(replay)
+
+          # 4) Duplicate resolution must inspect the latest replay, not only successful runs.
+          replace_once(
+              'src/capitalguard/application/services/historical_forwarding_service.py',
+              '''                HistoricalMessageRevision.message_id == canonical.id,\n                HistoricalReplayRun.status.in_({"COMPLETED", "COMPLETED_UNVERIFIABLE"}),\n            )\n            .order_by(HistoricalReplayRun.completed_at.desc(), HistoricalReplayRun.id.desc())\n''',
+              '''                HistoricalMessageRevision.message_id == canonical.id,\n            )\n            .order_by(HistoricalReplayRun.id.desc())\n''',
+          )
+
+          # 5) A duplicate whose previous replay failed/was partial gets one causal G6 retry.
+          duplicate_old = '''            if receipt.validation_status == "DUPLICATE":\n                duplicate_count += 1\n                resolution = (receipt.metadata_json or {}).get("duplicate_resolution") or {}\n                replay = resolution.get("replay") or {}\n'''
+          duplicate_new = '''            if receipt.validation_status == "DUPLICATE":\n                duplicate_count += 1\n                resolution = (receipt.metadata_json or {}).get("duplicate_resolution") or {}\n                replay = resolution.get("replay") or {}\n                prior_receipt_id = resolution.get("previous_receipt_id")\n                if prior_receipt_id and replay.get("replay_status") in {"FAILED", "REPLAY_PARTIAL"}:\n                    try:\n                        healed = self.replay_service.retry_g6(\n                            session, receipt_id=int(prior_receipt_id), provider=provider\n                        )\n                        healed_run = healed.get("run")\n                        healed_status = str(healed.get("status") or getattr(healed_run, "status", "FAILED"))\n                        replay = {\n                            **replay,\n                            "replay_status": healed_status,\n                            "event_count": len(healed.get("events") or []),\n                            "run_id": getattr(healed_run, "id", replay.get("run_id")),\n                            "run_ref": getattr(healed_run, "run_ref", replay.get("run_ref")),\n                            "coverage_status": getattr(healed_run, "coverage_status", replay.get("coverage_status")),\n                        }\n                        resolution["replay"] = replay\n                        receipt.metadata_json = {**(receipt.metadata_json or {}), "duplicate_resolution": resolution}\n                        if healed_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:\n                            progressed += 1\n                            replay_statuses.append(healed_status)\n                        else:\n                            failed += 1\n                    except Exception as exc:\n                        replay = {**replay, "replay_status": "FAILED", "self_healing_error": type(exc).__name__}\n                        resolution["replay"] = replay\n                        receipt.metadata_json = {**(receipt.metadata_json or {}), "duplicate_resolution": resolution}\n                        failed += 1\n'''
+          replace_once('src/capitalguard/application/services/historical_forwarding_service.py', duplicate_old, duplicate_new)
+
+          # 6) Parser: remove execution-update/activity tails before any target regex runs.
+          replace_once(
+              'ai_service/services/regex_parser.py',
+              '    raw = text\n    txt = _normalize_text(raw)\n',
+              '''    raw = re.split(\n        r"(?is)\\b(?:Latest\\s+Updates?|Activity|Updates|التحديثات|النشاط)\\s*:",\n        text,\n        maxsplit=1,\n    )[0]\n    txt = _normalize_text(raw)\n''',
+          )
+
+          # 7) Regression tests for the causal boundaries and parser isolation.
+          test_path = ROOT / 'tests/test_g6_surgical_repairs.py'
+          test_path.write_text(r'''from datetime import datetime, timezone
+from decimal import Decimal
+
+from capitalguard.application.services.adaptive_historical_replay import AdaptiveHistoricalReplayPlanner
+from ai_service.services.regex_parser import parse_with_regex
+
+UTC = timezone.utc
+
+
+def test_day_zero_minute_window_is_causal_and_excludes_open_minute():
+    planner = AdaptiveHistoricalReplayPlanner()
+    window = planner.minute_window_for_day(
+        day=datetime(2026, 1, 10, tzinfo=UTC),
+        signal_source_time=datetime(2026, 1, 10, 19, 7, 22, tzinfo=UTC),
+        now=datetime(2026, 1, 10, 19, 8, 45, tzinfo=UTC),
+    )
+    assert window is not None
+    assert window.start == datetime(2026, 1, 10, 19, 7, 22, tzinfo=UTC)
+    assert window.end == datetime(2026, 1, 10, 19, 8, tzinfo=UTC)
+
+
+def test_parser_does_not_turn_update_clock_into_target():
+    result = parse_with_regex(
+        "#BTCUSDT LONG Entry: 71599.80 SL: 71000 TP1: 71650 TP2: 71700\n"
+        "Latest Updates: 17:46 Tp2 ✅"
+    )
+    assert result is not None
+    prices = [Decimal(str(item["price"])) for item in result["targets"]]
+    assert Decimal("17") not in prices
+    assert Decimal("71650") in prices
+    assert Decimal("71700") in prices
+''')
+          PY
+
+          pytest -q tests/test_g6_surgical_repairs.py tests/test_adaptive_historical_replay.py tests/test_g6_annual_macro_replay.py tests/test_historical_forwarding_auto_progression.py
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/capitalguard/infrastructure/market/historical_ohlcv_provider.py \
+                  src/capitalguard/application/services/adaptive_historical_replay.py \
+                  src/capitalguard/application/services/historical_market_replay_service.py \
+                  src/capitalguard/application/services/historical_forwarding_service.py \
+                  ai_service/services/regex_parser.py \
+                  tests/test_g6_surgical_repairs.py
+          git commit -m "fix: restore causal adaptive historical replay"
+          git rm .github/workflows/surgical-g6-fix-20260907.yml
+          git commit -m "chore: remove surgical patch bootstrap"
+          git push origin HEAD:fix/g6-causal-replay-surgical-20260907
