@@ -10,6 +10,13 @@ MINUTES_PER_DAY = 24 * 60
 PROVIDER_PAGE_LIMIT = 1000
 
 
+PENDING_ORDER = "PENDING_ORDER"
+ACTIVE_POSITION = "ACTIVE_POSITION"
+CLOSED_STOP = "CLOSED_STOP"
+CLOSED_TARGETS = "CLOSED_TARGETS"
+CLOSED_UNVERIFIABLE = "CLOSED_UNVERIFIABLE"
+
+
 @dataclass(frozen=True)
 class ReplayWindow:
     start: datetime
@@ -23,7 +30,7 @@ class LifecycleState:
     hit_target_indices: frozenset[int] = frozenset()
     remaining_target_indices: frozenset[int] = frozenset()
     current_stop: object | None = None
-    lifecycle_state: str = "NOT_ACTIVATED"
+    lifecycle_state: str = PENDING_ORDER
     last_processed_timestamp: datetime | None = None
 
 
@@ -107,7 +114,14 @@ class AdaptiveHistoricalReplayPlanner:
         return sum(1 for _ in cls.minute_page_windows(window))
 
     @staticmethod
-    def lifecycle_after_event(state: LifecycleState, *, event_type: str, target_index: int | None = None, stop=None, timestamp: datetime | None = None) -> LifecycleState:
+    def lifecycle_after_event(
+        state: LifecycleState,
+        *,
+        event_type: str,
+        target_index: int | None = None,
+        stop=None,
+        timestamp: datetime | None = None,
+    ) -> LifecycleState:
         hit = set(state.hit_target_indices)
         remaining = set(state.remaining_target_indices)
         activated = state.activated
@@ -115,18 +129,20 @@ class AdaptiveHistoricalReplayPlanner:
         current_stop = state.current_stop if stop is None else stop
         if event_type == "ACTIVATED":
             activated = True
-            lifecycle = "ACTIVE"
+            lifecycle = ACTIVE_POSITION
         elif event_type.startswith("TP") and target_index is not None:
             activated = True
             hit.add(target_index)
             remaining.discard(target_index)
-            lifecycle = "CLOSED_TARGETS" if not remaining else "ACTIVE"
+            lifecycle = CLOSED_TARGETS if not remaining else ACTIVE_POSITION
         elif event_type == "SL":
-            lifecycle = "CLOSED_STOP"
+            activated = True
+            lifecycle = CLOSED_STOP
         elif event_type == "CLOSE":
-            lifecycle = "FINAL_CLOSE"
+            activated = True
+            lifecycle = CLOSED_UNVERIFIABLE
         elif event_type == "AMBIGUOUS":
-            lifecycle = "CLOSED_UNVERIFIABLE"
+            lifecycle = CLOSED_UNVERIFIABLE
         return LifecycleState(
             activated=activated,
             hit_target_indices=frozenset(hit),
@@ -138,4 +154,4 @@ class AdaptiveHistoricalReplayPlanner:
 
     @staticmethod
     def terminal(state: LifecycleState) -> bool:
-        return state.lifecycle_state in {"CLOSED_TARGETS", "CLOSED_STOP", "FINAL_CLOSE", "CLOSED_UNVERIFIABLE"}
+        return state.lifecycle_state in {CLOSED_TARGETS, CLOSED_STOP, CLOSED_UNVERIFIABLE}
