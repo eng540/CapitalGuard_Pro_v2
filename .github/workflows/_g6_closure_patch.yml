@@ -1,0 +1,80 @@
+name: Temporary G6 closure patch
+on:
+  push:
+    branches:
+      - fix/g6-replay-closure-observability-parser-20260908
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply integrated G6 fixes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Batch replay diagnostics: preserve the real exception and traceback.
+          p = Path('src/capitalguard/application/services/historical_forwarding_service.py')
+          s = p.read_text()
+          old = '''            except Exception as exc:\n                item.update({\n                    "status": "REPLAY_FAILED",\n                    "replay_status": "FAILED",\n                    "reason": "Historical replay failed; prior G5 evidence was preserved.",\n                    "error_type": type(exc).__name__,\n                    "interval": interval,\n                })\n                failed += 1\n'''
+          new = '''            except Exception as exc:\n                import logging\n                logging.getLogger(__name__).exception(\n                    "G6 batch replay failed: receipt_id=%s signal_id=%s materialization_id=%s "\n                    "interval=%s replay_end=%s",\n                    receipt.id,\n                    getattr(signal, "id", None),\n                    getattr(materialization, "id", None),\n                    interval,\n                    end.isoformat(),\n                )\n                error_message = f"[{type(exc).__name__}] {str(exc)}"\n                item.update({\n                    "status": "REPLAY_FAILED",\n                    "replay_status": "FAILED",\n                    "reason": error_message,\n                    "error_type": type(exc).__name__,\n                    "error_message": str(exc),\n                    "interval": interval,\n                    "replay_end": end.isoformat(),\n                })\n                failed += 1\n'''
+          if old not in s:
+              raise SystemExit('forwarding catch block not found; aborting')
+          p.write_text(s.replace(old, new, 1))
+
+          # 2) Provider pre-flight context. Never log credentials; only public request facts.
+          p = Path('src/capitalguard/infrastructure/market/historical_ohlcv_provider.py')
+          s = p.read_text()
+          s = s.replace('from datetime import datetime, timedelta, timezone\n', 'from datetime import datetime, timedelta, timezone\nimport logging\n')
+          s = s.replace('PROVIDER_PAGE_LIMIT = 1000\n', 'PROVIDER_PAGE_LIMIT = 1000\nlogger = logging.getLogger(__name__)\n')
+          needle = '''        request_limit = min(max(1, int(limit)), PROVIDER_PAGE_LIMIT)\n        market_kind = "FUTURES" if str(market or "").upper().startswith("FUTURES") else "SPOT"\n'''
+          repl = '''        request_limit = min(max(1, int(limit)), PROVIDER_PAGE_LIMIT)\n        market_kind = "FUTURES" if str(market or "").upper().startswith("FUTURES") else "SPOT"\n        logger.info(\n            "Historical OHLCV preflight: symbol=%r market=%s interval=%s "\n            "start=%s start_ms=%d end=%s end_ms=%d limit=%d",\n            asset, market_kind, interval, start_utc.isoformat(), int(start_utc.timestamp() * 1000),\n            end_utc.isoformat(), int(end_utc.timestamp() * 1000), request_limit,\n        )\n'''
+          if needle not in s:
+              raise SystemExit('provider preflight insertion point not found; aborting')
+          p.write_text(s.replace(needle, repl, 1))
+
+          # 3) Binance client: preserve actionable HTTP response details in logs/errors.
+          p = Path('src/capitalguard/infrastructure/market/binance_client.py')
+          s = p.read_text()
+          s = s.replace('import zipfile\n', 'import zipfile\nimport logging\n')
+          s = s.replace('RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}\n', 'RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}\nlogger = logging.getLogger(__name__)\n')
+          old = '''            except requests.RequestException as exc:\n                if attempt >= max_retries:\n                    raise HistoricalMarketProviderError("Historical candle provider is unavailable") from exc\n                time.sleep(self._retry_delay(attempt))\n'''
+          new = '''            except requests.RequestException as exc:\n                status = getattr(response, "status_code", None)\n                raw_text = ""\n                try:\n                    raw_text = (response.text or "")[:1000] if response is not None else ""\n                except Exception:\n                    raw_text = ""\n                logger.error(\n                    "Binance historical OHLCV request failed: status=%s symbol=%s interval=%s "\n                    "start_ms=%s end_ms=%s response=%s",\n                    status, normalized_symbol, normalized_interval, params.get("startTime"),\n                    params.get("endTime"), raw_text, exc_info=True,\n                )\n                if attempt >= max_retries:\n                    detail = f"HTTP {status}: {raw_text}" if status is not None else str(exc)\n                    raise HistoricalMarketProviderError(\n                        f"Historical candle provider is unavailable ({detail[:700]})"\n                    ) from exc\n                time.sleep(self._retry_delay(attempt))\n'''
+          if old not in s:
+              raise SystemExit('binance request exception block not found; aborting')
+          s = s.replace(old, new, 1)
+          # Log non-retryable HTTP responses before raise_for_status too.
+          old2 = '''                response.raise_for_status()\n                rows = response.json()\n                break\n            except requests.RequestException as exc:\n'''
+          new2 = '''                try:\n                    response.raise_for_status()\n                except requests.HTTPError:\n                    logger.error(\n                        "Binance historical OHLCV HTTP error: status=%s symbol=%s interval=%s "\n                        "start_ms=%s end_ms=%s response=%s",\n                        response.status_code, normalized_symbol, normalized_interval, params.get("startTime"),\n                        params.get("endTime"), (response.text or "")[:1000], exc_info=True,\n                    )\n                    raise\n                rows = response.json()\n                break\n            except requests.RequestException as exc:\n'''
+          if old2 not in s:
+              raise SystemExit('binance raise_for_status insertion point not found; aborting')
+          p.write_text(s.replace(old2, new2, 1))
+
+          # 4) Conservative parser hardening: strip clock prefixes from target text.
+          # This does not change the canonical HistoricalParserService contract; it only
+          # prevents activity timestamps such as 17:46 from becoming financial numbers.
+          p = Path('ai_service/services/regex_parser.py')
+          s = p.read_text()
+          needle = '''def _extract_targets_from_string(targets_raw: str, source_text: str="") -> List[Dict[str, Decimal]]:\n    """\n    Uses parsing_utils.normalize_targets when possible, then coerces all numeric fields into Decimal.\n    Returns list of {price: Decimal, close_percent: Decimal}.\n    """\n    results: List[Dict[str, Decimal]] = []\n'''
+          repl = '''def _extract_targets_from_string(targets_raw: str, source_text: str="") -> List[Dict[str, Decimal]]:\n    """\n    Uses parsing_utils.normalize_targets when possible, then coerces all numeric fields into Decimal.\n    Returns list of {price: Decimal, close_percent: Decimal}.\n\n    Target extraction must not interpret activity timestamps (e.g. ``17:46``)\n    as financial levels. Only clock-shaped tokens are removed; actual TP\n    declarations such as ``TP1: 72300`` remain unchanged.\n    """\n    results: List[Dict[str, Decimal]] = []\n    targets_raw = re.sub(r"\\b(?:[01]?\\d|2[0-3]):[0-5]\\d\\b", " ", targets_raw or "")\n'''
+          if needle not in s:
+              raise SystemExit('regex target function insertion point not found; aborting')
+          p.write_text(s.replace(needle, repl, 1))
+          PY
+
+          # Remove this bootstrap workflow from the final tree, then commit all changes.
+          rm -f .github/workflows/_g6_closure_patch.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/capitalguard/application/services/historical_forwarding_service.py \
+                  src/capitalguard/infrastructure/market/historical_ohlcv_provider.py \
+                  src/capitalguard/infrastructure/market/binance_client.py \
+                  ai_service/services/regex_parser.py \
+                  .github/workflows/_g6_closure_patch.yml
+          git commit -m 'fix: close G6 replay diagnostics and parser timestamp leak'
+          git push
