@@ -35,7 +35,7 @@ def test_98k_pending_order_has_zero_pnl(db_session):
     day0_start=datetime(2025,11,23,tzinfo=UTC); day0_end=datetime(2025,11,24,tzinfo=UTC)
     minutes={day0_start: minute_series(datetime(2025,11,23,18,54,40,tzinfo=UTC), day0_end, 90000, 88000)}
     result=HistoricalMarketReplayService().replay_g6(db_session,signal_id=signal.id,materialization_id=bridge.id,start=signal.decision_timestamp,replay_end=datetime(2025,11,25,tzinfo=UTC),provider=Provider(days,minutes))
-    assert result["status"]=="COMPLETED"; assert result["run"].result_json["lifecycle_status"]=="PENDING_ORDER"; assert result["run"].result_json["pnl_percentage"]=="0"; assert result["events"]==[]
+    assert result["status"]=="COMPLETED"; assert result["run"].result_json["lifecycle_status"]=="PENDING_ORDER"; assert result["run"].result_json["pnl_percentage"]=="0"; assert result["events"]==[]; assert result["run"].coverage_status=="FULL"
 
 
 def test_daily_entry_plus_stop_is_unverifiable(db_session):
