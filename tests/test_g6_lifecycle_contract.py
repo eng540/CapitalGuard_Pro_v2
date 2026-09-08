@@ -50,3 +50,11 @@ def test_partial_after_activation_stays_partial(db_session):
     days=[candle(datetime(2025,1,1,tzinfo=UTC)),candle(datetime(2025,1,2,tzinfo=UTC)),candle(datetime(2025,1,3,tzinfo=UTC),111,99)]; minutes={datetime(2025,1,1,tzinfo=UTC):[candle(datetime(2025,1,1,12,tzinfo=UTC),101,99)]}
     result=HistoricalMarketReplayService().replay_g6(db_session,signal_id=signal.id,materialization_id=bridge.id,start=signal.decision_timestamp,replay_end=datetime(2025,1,4,tzinfo=UTC),provider=Provider(days,minutes))
     assert result["status"]=="REPLAY_PARTIAL"; assert result["run"].result_json["lifecycle_status"]=="CLOSED_TARGETS"; assert result["run"].termination_reason=="DATA_TRUNCATED_WHILE_ACTIVE"
+
+
+def test_active_daily_stop_plus_target_is_unverifiable(db_session):
+    signal, bridge = _setup(db_session); signal.decision_timestamp=datetime(2025,1,1,12,tzinfo=UTC); signal.entry=Decimal("100"); signal.stop_loss=Decimal("90"); signal.targets=[{"price":"110","close_percent":100}]
+    days=[candle(datetime(2025,1,1,tzinfo=UTC)),candle(datetime(2025,1,2,tzinfo=UTC),111,89)]
+    minutes={datetime(2025,1,1,tzinfo=UTC): minute_series(datetime(2025,1,1,12,tzinfo=UTC), datetime(2025,1,2,tzinfo=UTC), 101,99)}
+    result=HistoricalMarketReplayService().replay_g6(db_session,signal_id=signal.id,materialization_id=bridge.id,start=signal.decision_timestamp,replay_end=datetime(2025,1,3,tzinfo=UTC),provider=Provider(days,minutes))
+    assert result["status"]=="COMPLETED_UNVERIFIABLE"; assert result["run"].result_json["lifecycle_status"]=="CLOSED_UNVERIFIABLE"
