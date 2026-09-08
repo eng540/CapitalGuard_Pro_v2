@@ -31,9 +31,9 @@ def minute_series(start, end, high, low):
 
 def test_98k_pending_order_has_zero_pnl(db_session):
     signal, bridge = _setup(db_session); signal.decision_timestamp=datetime(2025,11,23,18,54,40,tzinfo=UTC); signal.entry=Decimal("98000"); signal.stop_loss=Decimal("97000"); signal.targets=[{"price":"99000","close_percent":50},{"price":"100000","close_percent":50}]
-    days=[candle(datetime(2025,11,23,tzinfo=UTC),90000,88000),candle(datetime(2025,11,24,tzinfo=UTC),89228,87000)]
+    days=[candle(datetime(2025,11,23,tzinfo=UTC),90000,88000),candle(datetime(2025,11,24,tzinfo=UTC),89228,87000),candle(datetime(2025,11,25,tzinfo=UTC),90000,88000)]
     day0_start=datetime(2025,11,23,tzinfo=UTC); day0_end=datetime(2025,11,24,tzinfo=UTC)
-    minutes={day0_start: minute_series(datetime(2025,11,23,18,54,tzinfo=UTC), day0_end, 90000, 88000)}
+    minutes={day0_start: minute_series(datetime(2025,11,23,18,54,40,tzinfo=UTC), day0_end, 90000, 88000)}
     result=HistoricalMarketReplayService().replay_g6(db_session,signal_id=signal.id,materialization_id=bridge.id,start=signal.decision_timestamp,replay_end=datetime(2025,11,25,tzinfo=UTC),provider=Provider(days,minutes))
     assert result["status"]=="COMPLETED"; assert result["run"].result_json["lifecycle_status"]=="PENDING_ORDER"; assert result["run"].result_json["pnl_percentage"]=="0"; assert result["events"]==[]
 

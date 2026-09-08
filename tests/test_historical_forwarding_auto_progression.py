@@ -65,7 +65,7 @@ def test_unclaimed_source_is_replayable_without_becoming_trusted_or_live(db_sess
     batch, receipt, _, _ = _auto_batch(db_session, raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures", claim_status="UNCLAIMED")
     result = HistoricalForwardingService().auto_progress_canonical_batch(db_session, batch_id=batch.id, replay_end=SOURCE_TIME + timedelta(minutes=10), limit=3, provider=FakeProvider(_candles()))
     assert result["status"] == "PARTIAL" and result["progressed"] == 1 and result["failed"] == 1
-    assert result["items"][0]["replay_status"] == "STILL_ACTIVE"
+    assert result["items"][0]["replay_status"] == "REPLAY_PARTIAL"
     assert receipt.validation_status == "INGESTED" and len(db_session.execute(select(HistoricalSignalEvidence)).scalars().all()) == 1
     evidence = db_session.execute(select(HistoricalSignalEvidence)).scalars().all()[0]; assert evidence.metadata_json["source_trust"] == "UNVERIFIED_FORWARD"
     signal = db_session.execute(select(HistoricalSignal)).scalars().all()[0]; assert signal.trust_tier == "UNVERIFIED" and signal.eligible_for_ranking is False
@@ -95,12 +95,12 @@ def test_multiple_targets_are_preserved_and_partial_target_does_not_close_lifecy
     batch, _, _, projection = _auto_batch(db_session, raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 105@50% TP2 110@50% Futures")
     assert projection["status"] == "SUCCESS"
     result = HistoricalForwardingService().auto_progress_canonical_batch(db_session, batch_id=batch.id, replay_end=SOURCE_TIME + timedelta(minutes=10), limit=3, provider=FakeProvider(_candles(high=106)))
-    assert result["progressed"] == 1; signal = db_session.execute(select(HistoricalSignal)).scalar_one(); assert len(signal.targets) == 2 and result["items"][0]["lifecycle_status"] == "ACTIVE"
+    assert result["progressed"] == 1; signal = db_session.execute(select(HistoricalSignal)).scalar_one(); assert len(signal.targets) == 2 and result["items"][0]["lifecycle_status"] == "ACTIVE_POSITION"
 
 def test_ambiguous_candle_is_unverifiable_and_not_final(db_session):
     batch, _, _, _ = _auto_batch(db_session, raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures")
     result = HistoricalForwardingService().auto_progress_canonical_batch(db_session, batch_id=batch.id, replay_end=SOURCE_TIME + timedelta(minutes=10), limit=3, provider=FakeProvider(_candles(high=110, low=90)))
-    item = result["items"][0]; assert item["replay_status"] == "COMPLETED_UNVERIFIABLE" and item["lifecycle_status"] == "AMBIGUOUS" and item["status"] == "REPLAYED" and result["status"] == "COMPLETED_UNVERIFIABLE"
+    item = result["items"][0]; assert item["replay_status"] == "COMPLETED_UNVERIFIABLE" and item["lifecycle_status"] == "CLOSED_UNVERIFIABLE" and item["status"] == "REPLAYED" and result["status"] == "COMPLETED_UNVERIFIABLE"
 
 def test_replay_window_shortfall_is_explicit_and_reaches_canonical_g6(db_session):
     old_time = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)

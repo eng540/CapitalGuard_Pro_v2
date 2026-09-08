@@ -572,7 +572,7 @@ class HistoricalForwardingService:
     def _lifecycle_status(signal, events) -> str:
         event_types = [str(getattr(event, "event_type", "")) for event in events]
         if "AMBIGUOUS" in event_types:
-            return "AMBIGUOUS"
+            return "CLOSED_UNVERIFIABLE"
         if "SL" in event_types:
             return "CLOSED_SL"
         if "CLOSE" in event_types:
@@ -582,8 +582,8 @@ class HistoricalForwardingService:
         if target_count and len(hit_targets) >= target_count:
             return "CLOSED_TARGETS"
         if "ACTIVATED" in event_types:
-            return "ACTIVE"
-        return "NOT_ACTIVATED"
+            return "ACTIVE_POSITION"
+        return "PENDING_ORDER"
 
     def _canonical_auto_batch(self, session: Session, batch: HistoricalImportBatch) -> bool:
         """Allow historical replay from genuine forwards without claiming trust.
@@ -857,7 +857,7 @@ class HistoricalForwardingService:
                     actual_start = getattr(run, "actual_start", None) or (coverage.actual_start if coverage else None)
                     actual_end = getattr(run, "actual_end", None) or (coverage.actual_end if coverage else None)
                     item.update({
-                        "status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"} else "REPLAY_PARTIAL" if result_status == "REPLAY_PARTIAL" else "REPLAY_FAILED",
+                        "status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"} else "REPLAY_PARTIAL" if result_status == "REPLAY_PARTIAL" else "REPLAY_FAILED",
                         "replay_status": result_status,
                         "event_count": len(events),
                         "last_event": getattr(events[-1], "event_type", None) if events else None,
@@ -869,7 +869,7 @@ class HistoricalForwardingService:
                         "coverage_end": actual_end.isoformat() if actual_end else None,
                     })
                     replay_statuses.append(result_status)
-                    if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:
+                    if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
                         failed += 1
             except Exception as exc:
                 import logging
@@ -882,7 +882,7 @@ class HistoricalForwardingService:
                     interval,
                     end.isoformat(),
                 )
-                error_message = f"[{type(exc).__name__}] {str(exc)}"
+                error_message = f"[{type(exc).__name__}] {str(exc)}; G5 evidence was preserved."
                 item.update({
                     "status": "REPLAY_FAILED",
                     "replay_status": "FAILED",

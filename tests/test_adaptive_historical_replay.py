@@ -55,7 +55,7 @@ def test_lifecycle_state_persists_remaining_targets():
         hit_target_indices=frozenset({1}),
         remaining_target_indices=frozenset({2, 3}),
         current_stop=100,
-        lifecycle_state="ACTIVE",
+        lifecycle_state="ACTIVE_POSITION",
     )
     state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(
         state,
@@ -66,7 +66,7 @@ def test_lifecycle_state_persists_remaining_targets():
     assert state.hit_target_indices == frozenset({1, 2})
     assert state.remaining_target_indices == frozenset({3})
     assert state.current_stop == 100
-    assert state.lifecycle_state == "ACTIVE"
+    assert state.lifecycle_state == "ACTIVE_POSITION"
 
 
 def test_terminal_lifecycle_is_terminal():
