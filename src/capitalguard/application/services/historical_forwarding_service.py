@@ -857,7 +857,7 @@ class HistoricalForwardingService:
                     actual_start = getattr(run, "actual_start", None) or (coverage.actual_start if coverage else None)
                     actual_end = getattr(run, "actual_end", None) or (coverage.actual_end if coverage else None)
                     item.update({
-                        "status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"} else "REPLAY_PARTIAL" if result_status == "REPLAY_PARTIAL" else "REPLAY_FAILED",
+                        "status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"} else "REPLAY_PARTIAL" if result_status == "REPLAY_PARTIAL" else "REPLAY_FAILED",
                         "replay_status": result_status,
                         "event_count": len(events),
                         "last_event": getattr(events[-1], "event_type", None) if events else None,
@@ -869,7 +869,7 @@ class HistoricalForwardingService:
                         "coverage_end": actual_end.isoformat() if actual_end else None,
                     })
                     replay_statuses.append(result_status)
-                    if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
+                    if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:
                         failed += 1
             except Exception as exc:
                 import logging
