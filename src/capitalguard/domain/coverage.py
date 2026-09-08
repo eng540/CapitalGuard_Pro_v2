@@ -73,15 +73,14 @@ def _floor_to_grid(value: datetime, interval: timedelta) -> datetime:
 def _expected_market_grid(*, requested_start: datetime, requested_end: datetime, interval: timedelta) -> tuple[datetime, datetime, list[datetime]]:
     start = _utc(requested_start)
     end = _utc(requested_end)
-    market_grid_start = _floor_to_grid(start, interval) + interval
-    duration = end - start
+    floor_start = _floor_to_grid(start, interval)
+    market_grid_start = floor_start if start == floor_start else floor_start + interval
+    if market_grid_start >= end:
+        return market_grid_start, market_grid_start - interval, []
+    duration = end - market_grid_start
     expected_count = int((duration + interval - timedelta(microseconds=1)) // interval)
     expected_count = max(0, expected_count)
-    market_grid_end = (
-        market_grid_start + interval * (expected_count - 1)
-        if expected_count
-        else market_grid_start - interval
-    )
+    market_grid_end = market_grid_start + interval * (expected_count - 1) if expected_count else market_grid_start - interval
     expected = [market_grid_start + interval * index for index in range(expected_count)]
     return market_grid_start, market_grid_end, expected
 
@@ -99,7 +98,7 @@ def calculate_historical_coverage(*, requested_start: datetime, requested_end: d
     )
     expected_set = set(expected_times)
     expected = len(expected_times)
-    normalized_times = {_utc(item) for item in candle_times if start <= _utc(item) <= end}
+    normalized_times = {_utc(item) for item in candle_times if start <= _utc(item) < end}
     observed = sorted(normalized_times)
     if not observed:
         return HistoricalCoverage(start, end, None, None, expected, 0, 0.0, CoverageStatus.UNAVAILABLE, interval=interval)
