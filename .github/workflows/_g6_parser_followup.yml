@@ -1,0 +1,31 @@
+name: Temporary parser follow-up
+on:
+  push:
+    branches:
+      - fix/g6-replay-closure-observability-parser-20260908
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove target labels before numeric normalization
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('ai_service/services/regex_parser.py')
+          s = p.read_text()
+          old = '    targets_raw = re.sub(r"\\b(?:[01]?\\d|2[0-3]):[0-5]\\d\\b", " ", targets_raw or "")\n'
+          new = '''    targets_raw = re.sub(r"\\b(?:[01]?\\d|2[0-3]):[0-5]\\d\\b", " ", targets_raw or "")\n    # `normalize_targets()` expects numeric tokens; TP labels such as `TP2`\n    # must never be interpreted as the number 2.\n    targets_raw = re.sub(r"\\b(?:TP|TARGET)\\d*\\b", " ", targets_raw, flags=re.IGNORECASE)\n'''
+          if old not in s:
+              raise SystemExit('parser timestamp sanitization line not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          rm -f .github/workflows/_g6_parser_followup.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ai_service/services/regex_parser.py .github/workflows/_g6_parser_followup.yml
+          git commit -m 'fix: prevent TP labels from becoming numeric targets'
+          git push
