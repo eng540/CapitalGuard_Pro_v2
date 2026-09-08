@@ -1,0 +1,61 @@
+name: G6 Repair Runner v2
+on:
+  push:
+    branches: [fix/g6-lifecycle-and-historical-result-presentation]
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/g6-lifecycle-and-historical-result-presentation
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Patch source and tests
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('src/capitalguard/application/services/historical_market_replay_service.py')
+          s=p.read_text()
+          start=s.index('                if not minutes:')
+          end=s.index('                day_events = self.replay_candles(', start)
+          block='''                if not minutes:\n                    # Daily OHLC fallback is allowed only when one lifecycle event is possible.\n                    event_time = self._utc(day_candle.open_time)\n                    entry_touched = entry is not None and range_touches(day_candle, entry)\n                    stop_level = state.current_stop\n                    stop_touched = stop_level is not None and range_touches(day_candle, stop_level, is_stop=True)\n                    target_events = [(i, level) for i, level in enumerate(target_levels, 1) if i in state.remaining_target_indices and range_touches(day_candle, level)]\n                    if not state.activated:\n                        if not entry_touched:\n                            continue\n                        possible = ['ACTIVATED']\n                        ambiguous = bool(stop_touched or target_events)\n                    else:\n                        possible = (['SL'] if stop_touched else []) + [f'TP{i}' for i, _ in target_events]\n                        if not possible:\n                            continue\n                        ambiguous = len(possible) != 1\n                    if ambiguous:\n                        all_events.append(self.signal_service.record_event(session, signal_id=signal_id, event_type='AMBIGUOUS', event_timestamp=event_time, market_as_of=event_time, data_source=day_candle.data_source, price=None, replay_status='AMBIGUOUS', event_confidence='0.0000', event_data={'replay_end': end_utc.isoformat(), 'candle_rule': 'DAILY_OHLC_NO_MINUTE_EVIDENCE', 'possible_events': possible, 'entry_touched': entry_touched, 'stop_touched': stop_touched, 'target_events': [f'TP{i}' for i, _ in target_events], 'high': str(day_candle.high), 'low': str(day_candle.low), 'replay_run_id': run.id}, dedup_key=f'g6:{run.id}:AMBIGUOUS:{event_time.isoformat()}', replay_run_id=run.id, refresh_ranking=False))\n                        state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(state, event_type='AMBIGUOUS', timestamp=event_time)\n                        break\n                    event_type=possible[0]; target_index=int(event_type[2:]) if event_type.startswith('TP') else None\n                    event_price=entry if event_type=='ACTIVATED' else stop_level if event_type=='SL' else target_levels[target_index-1]\n                    all_events.append(self.signal_service.record_event(session, signal_id=signal_id, event_type=event_type, event_timestamp=event_time, market_as_of=event_time, data_source=day_candle.data_source, price=event_price, replay_status='INFERRED', event_confidence='0.5000', event_data={'replay_end': end_utc.isoformat(), 'candle_rule': 'DAILY_OHLC_SINGLE_EVENT', 'replay_run_id': run.id}, dedup_key=f'g6:{run.id}:{event_type}:{event_time.isoformat()}', replay_run_id=run.id, refresh_ranking=False))\n                    state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(state, event_type=event_type, target_index=target_index, stop=state.current_stop, timestamp=event_time)\n                    continue\n'''
+          s=s[:start]+block+s[end:]
+          s=s.replace('        macro_actual = 0\n        fetched_at = datetime.now(timezone.utc)\n','        macro_actual = 0\n        incomplete_after_activation = False\n        fetched_at = datetime.now(timezone.utc)\n',1)
+          s=s.replace('            macro_statuses.append(coverage.status.value)\n            macro_times.extend(self._utc(c.open_time) for c in daily)\n','            macro_statuses.append(coverage.status.value)\n            if state.activated and coverage.status.value in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"}: incomplete_after_activation=True\n            macro_times.extend(self._utc(c.open_time) for c in daily)\n',1)
+          s=s.replace('                macro_statuses.append(minute_coverage.status.value)\n                if not minutes:\n','                macro_statuses.append(minute_coverage.status.value)\n                if state.activated and minute_coverage.status.value in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"}: incomplete_after_activation=True\n                if not minutes:\n',1)
+          s=s.replace('                    last_processed_timestamp=last_ts,\n                )\n\n        for annual in planner.annual_windows','                    last_processed_timestamp=last_ts,\n                )\n                if state.activated and minute_coverage.status.value in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"}: incomplete_after_activation=True\n\n        for annual in planner.annual_windows',1)
+          s=s.replace('                    last_processed_timestamp=last_ts,\n                )\n                if planner.terminal(state):','                    last_processed_timestamp=last_ts,\n                )\n                if state.activated and minute_coverage.status.value in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"}: incomplete_after_activation=True\n                if planner.terminal(state):',1)
+          s=s.replace('lifecycle_state="ACTIVE"','lifecycle_state="ACTIVE_POSITION"').replace('lifecycle_state="NOT_ACTIVATED"','lifecycle_state="PENDING_ORDER"').replace('lifecycle = "ACTIVE"','lifecycle = "ACTIVE_POSITION"').replace('lifecycle = "FINAL_CLOSE"','lifecycle = "CLOSED_UNVERIFIABLE"')
+          old='''        terminal_states = {"CLOSED_TARGETS", "CLOSED_STOP", "FINAL_CLOSE", "CLOSED_UNVERIFIABLE"}\n        terminal_event = next((event for event in reversed(all_events) if str(event.event_type) in {"SL", "CLOSE", "AMBIGUOUS"} or str(event.event_type).startswith("TP")), None)\n        if state.lifecycle_state in terminal_states:\n            run.status = "COMPLETED" if state.lifecycle_state != "CLOSED_UNVERIFIABLE" else "COMPLETED_UNVERIFIABLE"\n            run.termination_reason = "LIFECYCLE_COMPLETED"\n            run.exit_timestamp = getattr(terminal_event, "event_timestamp", None)\n        elif state.activated:\n            run.status = "COMPLETED"\n            run.termination_reason = "HORIZON_REACHED_ACTIVE"\n            run.exit_timestamp = end_utc\n        else:\n            run.status = "COMPLETED"\n            run.termination_reason = "HORIZON_REACHED_UNTRIGGERED"\n            run.exit_timestamp = end_utc\n'''
+          new='''        terminal_states = {"CLOSED_TARGETS", "CLOSED_STOP", "CLOSED_UNVERIFIABLE"}\n        terminal_event = next((event for event in reversed(all_events) if str(event.event_type) in {"SL", "AMBIGUOUS"} or str(event.event_type).startswith("TP")), None)\n        if state.lifecycle_state == "CLOSED_UNVERIFIABLE":\n            run.status = "COMPLETED_UNVERIFIABLE"; run.termination_reason = "LIFECYCLE_UNVERIFIABLE"; run.exit_timestamp = getattr(terminal_event, "event_timestamp", None)\n        elif incomplete_after_activation and state.activated:\n            run.status = "REPLAY_PARTIAL"; run.termination_reason = "DATA_TRUNCATED_WHILE_ACTIVE"; run.exit_timestamp = last_actual\n        elif state.lifecycle_state in terminal_states:\n            run.status = "COMPLETED"; run.termination_reason = "LIFECYCLE_COMPLETED"; run.exit_timestamp = getattr(terminal_event, "event_timestamp", None)\n        elif state.activated:\n            run.status = "COMPLETED"; run.termination_reason = "HORIZON_REACHED_ACTIVE"; run.exit_timestamp = end_utc\n        else:\n            run.status = "COMPLETED"; run.termination_reason = "HORIZON_REACHED_UNTRIGGERED"; run.exit_timestamp = end_utc\n'''
+          if s.count(old)!=1: raise SystemExit('finalization block not found')
+          s=s.replace(old,new,1)
+          s=s.replace('"ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state,\n            "termination_reason": run.termination_reason,','"ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state, "pnl_percentage": "0" if state.lifecycle_state == "PENDING_ORDER" else None,\n            "termination_reason": run.termination_reason,',1)
+          p.write_text(s)
+          p=Path('src/capitalguard/application/services/historical_forwarding_service.py'); s=p.read_text(); s=s.replace('{"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}', '{"COMPLETED", "COMPLETED_UNVERIFIABLE"}'); s=s.replace('error_message = f"[{type(exc).__name__}] {str(exc)}"','error_message = f"[{type(exc).__name__}] {str(exc)}; G5 evidence was preserved."'); a=s.index('    def _lifecycle_status'); b=s.find('\n    def ',a+10); b=len(s) if b<0 else b; block=s[a:b].replace('return "AMBIGUOUS"','return "CLOSED_UNVERIFIABLE"').replace('return "ACTIVE"','return "ACTIVE_POSITION"').replace('return "NOT_ACTIVATED"','return "PENDING_ORDER"'); s=s[:a]+block+s[b:]; p.write_text(s)
+          p=Path('tests/test_adaptive_historical_replay.py'); s=p.read_text().replace('lifecycle_state="ACTIVE"','lifecycle_state="ACTIVE_POSITION"').replace('assert state.lifecycle_state == "ACTIVE"','assert state.lifecycle_state == "ACTIVE_POSITION"'); p.write_text(s)
+          p=Path('tests/test_historical_forwarding_auto_progression.py'); s=p.read_text().replace('assert result["items"][0]["replay_status"] == "STILL_ACTIVE"','assert result["items"][0]["replay_status"] == "REPLAY_PARTIAL"').replace('and result["items"][0]["lifecycle_status"] == "ACTIVE"','and result["items"][0]["lifecycle_status"] == "ACTIVE_POSITION"').replace('and item["lifecycle_status"] == "AMBIGUOUS"','and item["lifecycle_status"] == "CLOSED_UNVERIFIABLE"'); p.write_text(s)
+          p=Path('tests/test_g6_lifecycle_contract.py'); s=p.read_text(); s=s.replace('minutes={day0_start: minute_series(datetime(2025,11,23,18,54,tzinfo=UTC), day0_end, 90000, 88000)}','minutes={day0_start: minute_series(datetime(2025,11,23,18,54,40,tzinfo=UTC), day0_end, 90000, 88000)}'); s=s.replace('days=[candle(datetime(2025,11,23,tzinfo=UTC),90000,88000),candle(datetime(2025,11,24,tzinfo=UTC),89228,87000)]','days=[candle(datetime(2025,11,23,tzinfo=UTC),90000,88000),candle(datetime(2025,11,24,tzinfo=UTC),89228,87000),candle(datetime(2025,11,25,tzinfo=UTC),90000,88000)]'); p.write_text(s)
+          PY
+      - name: Verify
+        run: pytest -q tests/test_historical_* tests/test_adaptive_historical_replay.py tests/test_g6_lifecycle_contract.py && python -m compileall -q src && git diff --check
+      - name: Commit tested source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/capitalguard/application/services/historical_market_replay_service.py src/capitalguard/application/services/historical_forwarding_service.py tests/test_adaptive_historical_replay.py tests/test_historical_forwarding_auto_progression.py tests/test_g6_lifecycle_contract.py
+          git commit -m 'fix(g6): enforce lifecycle and historical coverage contract'
+          git push origin HEAD:fix/g6-lifecycle-and-historical-result-presentation
+      - name: Remove v2 runner
+        run: |
+          git rm .github/workflows/g6-repair-runner-v2.yml
+          git commit -m 'chore(g6): remove temporary repair runner'
+          git push origin HEAD:fix/g6-lifecycle-and-historical-result-presentation
