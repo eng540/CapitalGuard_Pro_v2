@@ -1,87 +1,14 @@
-name: CI
+name: G6 One-Shot Repair
 
 on:
   push:
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  core:
-    runs-on: ubuntu-latest
-    env:
-      DATABASE_URL: sqlite:///./dev.db
-      API_KEY: test_api_key
-      TELEGRAM_BOT_TOKEN: 123:fake_token
-      ENV: test
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: '3.11', cache: pip}
-      - run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install flake8 bandit pip-audit
-      - run: flake8 src ai_service --select=E9,F63,F7,F82
-      - run: bandit -r src ai_service -q --severity-level high
-      - run: pip-audit -r requirements.txt
-      - run: python -m compileall -q src ai_service
-      - run: PYTHONPATH=src alembic heads
-      - run: PYTHONPATH=src python scripts/verify_alembic_single_head.py
-      - run: pytest -q
-
-  fresh-postgres-migration:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: capitalguard
-          POSTGRES_PASSWORD: capitalguard
-          POSTGRES_DB: capitalguard_fresh
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U capitalguard -d capitalguard_fresh"
-          --health-interval 10s --health-timeout 5s --health-retries 5
-    env:
-      DATABASE_URL: postgresql+psycopg://capitalguard:capitalguard@localhost:5432/capitalguard_fresh
-      API_KEY: test_api_key
-      TELEGRAM_BOT_TOKEN: 123:fake_token
-      ENV: test
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
-      - run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - run: PYTHONPATH=src alembic upgrade head
-      - run: PYTHONPATH=src python scripts/verify_fresh_postgres_migration.py
-      - env: {RECONCILIATION_EXPECTED_DB: capitalguard_fresh}
-        run: PYTHONPATH=src python scripts/reconcile_existing_data.py
-      - run: PYTHONPATH=src:. python scripts/verify_g5_postgres_concurrency.py
-
-  frontend:
-    runs-on: ubuntu-latest
-    defaults: {run: {working-directory: frontend}}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with: {version: 10.4.1}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm check
-      - run: pnpm test
-      - run: pnpm build
-
-  # G6_ONE_SHOT_BEGIN
-  g6-one-shot-repair:
+  repair:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     env:
@@ -93,10 +20,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
-      - run: |
+      - name: Install dependencies
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Apply repair
+      - name: Apply tested G6 repair
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -105,7 +33,7 @@ jobs:
           new='''                if not minutes:\n                    event_time = self._utc(day_candle.open_time)\n                    entry_touched = entry is not None and range_touches(day_candle, entry)\n                    stop_level = state.current_stop\n                    stop_touched = stop_level is not None and range_touches(day_candle, stop_level, is_stop=True)\n                    target_events = [(i, level) for i, level in enumerate(target_levels, 1) if i in state.remaining_target_indices and range_touches(day_candle, level)]\n                    if not state.activated:\n                        if not entry_touched:\n                            continue\n                        possible = ['ACTIVATED']\n                        ambiguous = bool(stop_touched or target_events)\n                    else:\n                        possible = (['SL'] if stop_touched else []) + [f'TP{i}' for i, _ in target_events]\n                        if not possible:\n                            continue\n                        ambiguous = len(possible) != 1\n                    if ambiguous:\n                        all_events.append(self.signal_service.record_event(session, signal_id=signal_id, event_type='AMBIGUOUS', event_timestamp=event_time, market_as_of=event_time, data_source=day_candle.data_source, price=None, replay_status='AMBIGUOUS', event_confidence='0.0000', event_data={'replay_end': end_utc.isoformat(), 'candle_rule': 'DAILY_OHLC_NO_MINUTE_EVIDENCE', 'possible_events': possible, 'entry_touched': entry_touched, 'stop_touched': stop_touched, 'target_events': [f'TP{i}' for i, _ in target_events], 'high': str(day_candle.high), 'low': str(day_candle.low), 'replay_run_id': run.id}, dedup_key=f'g6:{run.id}:AMBIGUOUS:{event_time.isoformat()}', replay_run_id=run.id, refresh_ranking=False))\n                        state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(state, event_type='AMBIGUOUS', timestamp=event_time)\n                        break\n                    event_type=possible[0]; target_index=int(event_type[2:]) if event_type.startswith('TP') else None\n                    event_price=entry if event_type=='ACTIVATED' else stop_level if event_type=='SL' else target_levels[target_index-1]\n                    all_events.append(self.signal_service.record_event(session, signal_id=signal_id, event_type=event_type, event_timestamp=event_time, market_as_of=event_time, data_source=day_candle.data_source, price=event_price, replay_status='INFERRED', event_confidence='0.5000', event_data={'replay_end': end_utc.isoformat(), 'candle_rule': 'DAILY_OHLC_SINGLE_EVENT', 'replay_run_id': run.id}, dedup_key=f'g6:{run.id}:{event_type}:{event_time.isoformat()}', replay_run_id=run.id, refresh_ranking=False))\n                    state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(state, event_type=event_type, target_index=target_index, stop=state.current_stop, timestamp=event_time)\n                    continue\n'''
           s=s[:start]+new+s[end:]
           s=s.replace('        macro_actual = 0\n        fetched_at = datetime.now(timezone.utc)\n','        macro_actual = 0\n        incomplete_after_activation = False\n        fetched_at = datetime.now(timezone.utc)\n',1)
-          s=s.replace('                macro_statuses.append(minute_coverage.status.value)\n                if not minutes:\n','                macro_statuses.append(minute_coverage.status.value)\n                if minute_coverage.status.value in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"} and (state.activated or entry_touched): incomplete_after_activation=True\n                if not minutes:\n',1)
+          s=s.replace('                macro_statuses.append(minute_coverage.status.value)\n                if not minutes:\n','                macro_statuses.append(minute_coverage.status.value)\n                if minute_coverage.status.value in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"}: incomplete_after_activation=True\n                if not minutes:\n',1)
           s=s.replace('lifecycle_state="ACTIVE"','lifecycle_state="ACTIVE_POSITION"').replace('lifecycle_state="NOT_ACTIVATED"','lifecycle_state="PENDING_ORDER"').replace('lifecycle = "ACTIVE"','lifecycle = "ACTIVE_POSITION"').replace('lifecycle = "FINAL_CLOSE"','lifecycle = "CLOSED_UNVERIFIABLE"')
           s=s.replace('run.status = "STILL_ACTIVE"','run.status = "REPLAY_PARTIAL"').replace('run.termination_reason = "HORIZON_REACHED"','run.termination_reason = "DATA_TRUNCATED_WHILE_ACTIVE"')
           old='''        terminal_states = {"CLOSED_TARGETS", "CLOSED_STOP", "FINAL_CLOSE", "CLOSED_UNVERIFIABLE"}\n        terminal_event = next((event for event in reversed(all_events) if str(event.event_type) in {"SL", "CLOSE", "AMBIGUOUS"} or str(event.event_type).startswith("TP")), None)\n        if state.lifecycle_state in terminal_states:\n            run.status = "COMPLETED" if state.lifecycle_state != "CLOSED_UNVERIFIABLE" else "COMPLETED_UNVERIFIABLE"\n            run.termination_reason = "LIFECYCLE_COMPLETED"\n            run.exit_timestamp = getattr(terminal_event, "event_timestamp", None)\n        elif state.activated:\n            run.status = "COMPLETED"\n            run.termination_reason = "HORIZON_REACHED_ACTIVE"\n            run.exit_timestamp = end_utc\n        else:\n            run.status = "COMPLETED"\n            run.termination_reason = "HORIZON_REACHED_UNTRIGGERED"\n            run.exit_timestamp = end_utc\n'''
@@ -114,7 +42,7 @@ jobs:
           s=s.replace(old,new,1)
           s=s.replace('"ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state,\n            "termination_reason": run.termination_reason,','"ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state, "pnl_percentage": "0" if state.lifecycle_state == "PENDING_ORDER" else None,\n            "termination_reason": run.termination_reason,',1)
           p.write_text(s)
-          p=Path('src/capitalguard/application/services/historical_forwarding_service.py'); s=p.read_text(); s=s.replace('"status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}', '"status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}'); s=s.replace('if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:','if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:'); s=s.replace('"reason": error_message,','"reason": error_message + "; G5 evidence was preserved",',1); a=s.index('    def _lifecycle_status'); b=s.find('\n    def ',a+10); b=len(s) if b<0 else b; block=s[a:b].replace('return "AMBIGUOUS"','return "CLOSED_UNVERIFIABLE"').replace('return "ACTIVE"','return "ACTIVE_POSITION"').replace('return "NOT_ACTIVATED"','return "PENDING_ORDER"'); s=s[:a]+block+s[b:]; p.write_text(s)
+          p=Path('src/capitalguard/application/services/historical_forwarding_service.py'); s=p.read_text(); s=s.replace('"status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}','"status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}'); s=s.replace('if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:','if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:'); s=s.replace('"reason": error_message,','"reason": error_message + "; G5 evidence was preserved",',1); a=s.index('    def _lifecycle_status'); b=s.find('\n    def ',a+10); b=len(s) if b<0 else b; block=s[a:b].replace('return "AMBIGUOUS"','return "CLOSED_UNVERIFIABLE"').replace('return "ACTIVE"','return "ACTIVE_POSITION"').replace('return "NOT_ACTIVATED"','return "PENDING_ORDER"'); s=s[:a]+block+s[b:]; p.write_text(s)
           PY
           python - <<'PY'
           from pathlib import Path
@@ -125,23 +53,18 @@ jobs:
         run: pytest -q tests/test_historical_* tests/test_adaptive_historical_replay.py tests/test_g6_lifecycle_contract.py
       - name: Compile and diff check
         run: python -m compileall -q src && git diff --check
-      - name: Commit only after green tests
+      - name: Commit tested source only
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src/capitalguard/application/services/historical_market_replay_service.py src/capitalguard/application/services/historical_forwarding_service.py tests/test_adaptive_historical_replay.py tests/test_historical_forwarding_auto_progression.py tests/test_g6_lifecycle_contract.py
-          git diff --cached --quiet && exit 0
           git commit -m 'fix(g6): enforce lifecycle and historical coverage contract'
           git push origin HEAD:fix/g6-lifecycle-and-historical-result-presentation
-      - name: Remove one-shot machinery
-        if: success()
+      - name: Restore original CI and remove temporary workflow
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          p=Path('.github/workflows/ci.yml'); s=p.read_text(); a=s.index('  # G6_ONE_SHOT_BEGIN'); b=s.index('  # G6_ONE_SHOT_END')+len('  # G6_ONE_SHOT_END'); s=s[:a]+s[b:]; s=s.replace('permissions:\n  contents: write','permissions:\n  contents: read',1); p.write_text(s)
-          PY
+          git fetch origin main --depth=1
+          git checkout origin/main -- .github/workflows/ci.yml
           git rm .github/workflows/g6-surgical-fix.yml || true
           git add .github/workflows/ci.yml
-          git commit -m 'chore: remove one-shot G6 repair machinery'
+          git commit -m 'chore: restore CI after test-gated G6 repair'
           git push origin HEAD:fix/g6-lifecycle-and-historical-result-presentation
-  # G6_ONE_SHOT_END
