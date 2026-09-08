@@ -90,8 +90,13 @@ def _extract_targets_from_string(targets_raw: str, source_text: str="") -> List[
     """
     Uses parsing_utils.normalize_targets when possible, then coerces all numeric fields into Decimal.
     Returns list of {price: Decimal, close_percent: Decimal}.
+
+    Target extraction must not interpret activity timestamps (e.g. ``17:46``)
+    as financial levels. Only clock-shaped tokens are removed; actual TP
+    declarations such as ``TP1: 72300`` remain unchanged.
     """
     results: List[Dict[str, Decimal]] = []
+    targets_raw = re.sub(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", " ", targets_raw or "")
     try:
         # First try SSoT's normalize_targets for broad coverage
         norm = normalize_targets(targets_raw, source_text=source_text)

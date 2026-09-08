@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 
 from capitalguard.application.services.historical_market_replay_service import MarketCandle
 from capitalguard.domain.coverage import HistoricalCoverage, calculate_historical_coverage, interval_delta
@@ -9,6 +10,7 @@ from .binance_client import BinanceClient, MAX_KLINES_LIMIT
 
 
 PROVIDER_PAGE_LIMIT = 1000
+logger = logging.getLogger(__name__)
 DEFAULT_MAX_PAGES = 1000
 
 
@@ -45,6 +47,12 @@ class BinanceHistoricalOhlcvProvider:
         interval_duration = interval_delta(interval)
         request_limit = min(max(1, int(limit)), PROVIDER_PAGE_LIMIT)
         market_kind = "FUTURES" if str(market or "").upper().startswith("FUTURES") else "SPOT"
+        logger.info(
+            "Historical OHLCV preflight: symbol=%r market=%s interval=%s "
+            "start=%s start_ms=%d end=%s end_ms=%d limit=%d",
+            asset, market_kind, interval, start_utc.isoformat(), int(start_utc.timestamp() * 1000),
+            end_utc.isoformat(), int(end_utc.timestamp() * 1000), request_limit,
+        )
 
         candles_by_time: dict[datetime, MarketCandle] = {}
         endpoint = ""

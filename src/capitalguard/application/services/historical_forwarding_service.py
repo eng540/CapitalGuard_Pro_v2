@@ -872,12 +872,25 @@ class HistoricalForwardingService:
                     if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
                         failed += 1
             except Exception as exc:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "G6 batch replay failed: receipt_id=%s signal_id=%s materialization_id=%s "
+                    "interval=%s replay_end=%s",
+                    receipt.id,
+                    getattr(signal, "id", None),
+                    getattr(materialization, "id", None),
+                    interval,
+                    end.isoformat(),
+                )
+                error_message = f"[{type(exc).__name__}] {str(exc)}"
                 item.update({
                     "status": "REPLAY_FAILED",
                     "replay_status": "FAILED",
-                    "reason": "Historical replay failed; prior G5 evidence was preserved.",
+                    "reason": error_message,
                     "error_type": type(exc).__name__,
+                    "error_message": str(exc),
                     "interval": interval,
+                    "replay_end": end.isoformat(),
                 })
                 failed += 1
 
