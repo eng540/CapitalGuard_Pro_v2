@@ -54,10 +54,13 @@ def parse_decimal_token(token: str) -> Optional[Decimal]:
         elif s.endswith('b'):
             multiplier = _SUFFIXES["B"]
             num_part = s[:-1]
-        
+        # Reject semantic labels / clock timestamps before stripping punctuation.
+        if re.fullmatch(r"(?:tp|target)\d*", s, flags=re.IGNORECASE):
+            return None
+        if re.fullmatch(r"(?:[01]?\d|2[0-3]):[0-5]\d", s):
+            return None
         # Remove any non-numeric chars except dot and minus
         num_part = re.sub(r"[^\d\.-]", "", num_part)
-        
         if not num_part: return None
         val = Decimal(num_part) * multiplier
         return val if val.is_finite() and val >= 0 else None
@@ -76,11 +79,11 @@ def normalize_targets(targets_raw: Any, source_text: str = "") -> List[Dict[str,
             else: items.append(str(t))
     elif isinstance(targets_raw, str):
         items = re.split(r'[\s,]+', targets_raw)
-    
+
     for item in items:
         price = None
         pct = 0.0
-        
+
         if isinstance(item, dict):
             price = parse_decimal_token(str(item.get("price")))
             pct = float(item.get("close_percent", 0))
@@ -94,14 +97,14 @@ def normalize_targets(targets_raw: Any, source_text: str = "") -> List[Dict[str,
                 except: pct = 0.0
             else:
                 price = parse_decimal_token(s)
-        
+
         if price and price > 0:
             normalized.append({"price": price, "close_percent": pct})
 
     # Default last target to 100% if all are 0
     if normalized and all(t["close_percent"] == 0.0 for t in normalized):
         normalized[-1]["close_percent"] = 100.0
-        
+
     return normalized
 
 # --- ✅ NEW: Robust Side Normalizer ---
@@ -109,20 +112,20 @@ def normalize_side(side_raw: Any) -> Optional[str]:
     """Converts various side representations (Emojis, Synonyms) to LONG/SHORT."""
     if not side_raw: return None
     s = str(side_raw).upper().strip()
-    
+
     # Direct Match
     if s in ["LONG", "SHORT"]: return s
-    
+
     # Synonyms Map
     LONG_TERMS = ["BUY", "UP", "CALL", "🟢", "📈", "🐂", "شراء", "صعود", "لونج"]
     SHORT_TERMS = ["SELL", "DOWN", "PUT", "🔴", "📉", "🐻", "بيع", "هبوط", "شورت"]
-    
+
     for term in LONG_TERMS:
         if term in s: return "LONG"
-    
+
     for term in SHORT_TERMS:
         if term in s: return "SHORT"
-        
+
     return None
 
 # --- 2. Validation ---
@@ -137,16 +140,16 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
         # 2. Parse Numbers
         entry = parse_decimal_token(str(data.get("entry")))
         sl = parse_decimal_token(str(data.get("stop_loss")))
-        
+
         if entry is None or sl is None:
             # Allow missing SL if it's a spot buy signal sometimes, but generally we want strictness.
             # For now, fail if missing.
             log.warning(f"Financial check failed: Missing valid Entry or SL. Entry={entry}, SL={sl}")
             return False
-            
+
         data["entry"] = entry
         data["stop_loss"] = sl
-        
+
         # 3. Validate Logic
         if data["side"] == "LONG" and sl >= entry:
             log.warning(f"Logic Error: LONG SL ({sl}) must be < Entry ({entry})")
@@ -154,7 +157,7 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
         if data["side"] == "SHORT" and sl <= entry:
             log.warning(f"Logic Error: SHORT SL ({sl}) must be > Entry ({entry})")
             return False
-            
+
         return True
     except Exception as e:
         log.warning(f"Financial check exception: {e}")
@@ -164,17 +167,17 @@ def _financial_consistency_check(data: Dict[str, Any]) -> bool:
 def _safe_outer_json_extract(text: str) -> Optional[str]:
     """Extracts JSON from text, handling markdown blocks and common errors."""
     if not text: return None
-    
+
     # 1. Try Markdown Code Block
     match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
     if match: return match.group(1)
-    
+
     # 2. Try finding the first { and last }
     start = text.find('{')
     end = text.rfind('}')
     if start != -1 and end != -1:
         return text[start:end+1]
-        
+
     return None
 
 # ... (Rest of HTTP helpers remain the same) ...
@@ -256,7 +259,7 @@ def _extract_google_response(resp):
 def _extract_openai_response(resp):
     try: return resp["choices"][0]["message"]["content"]
     except: return ""
-    
+
 def _extract_claude_response(resp): return _extract_openai_response(resp)
 def _extract_qwen_response(resp): return _extract_openai_response(resp)
 def _smart_signal_selector(x): return x if isinstance(x, dict) else (x[0] if x else None)

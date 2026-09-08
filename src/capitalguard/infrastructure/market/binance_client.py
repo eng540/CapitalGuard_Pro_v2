@@ -7,6 +7,7 @@ import random
 import re
 import time
 import zipfile
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -22,6 +23,7 @@ SUPPORTED_INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "
 MAX_KLINES_LIMIT = 1500
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{5,20}$")
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+logger = logging.getLogger(__name__)
 
 
 class HistoricalMarketProviderError(RuntimeError):
@@ -206,12 +208,36 @@ class BinanceClient:
                     headers = getattr(response, "headers", {}) or {}
                     time.sleep(self._retry_delay(attempt, headers.get("Retry-After")))
                     continue
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError:
+                    logger.error(
+                        "Binance historical OHLCV HTTP error: status=%s symbol=%s interval=%s "
+                        "start_ms=%s end_ms=%s response=%s",
+                        response.status_code, normalized_symbol, normalized_interval, params.get("startTime"),
+                        params.get("endTime"), (response.text or "")[:1000], exc_info=True,
+                    )
+                    raise
                 rows = response.json()
                 break
             except requests.RequestException as exc:
+                status = getattr(response, "status_code", None)
+                raw_text = ""
+                try:
+                    raw_text = (response.text or "")[:1000] if response is not None else ""
+                except Exception:
+                    raw_text = ""
+                logger.error(
+                    "Binance historical OHLCV request failed: status=%s symbol=%s interval=%s "
+                    "start_ms=%s end_ms=%s response=%s",
+                    status, normalized_symbol, normalized_interval, params.get("startTime"),
+                    params.get("endTime"), raw_text, exc_info=True,
+                )
                 if attempt >= max_retries:
-                    raise HistoricalMarketProviderError("Historical candle provider is unavailable") from exc
+                    detail = f"HTTP {status}: {raw_text}" if status is not None else str(exc)
+                    raise HistoricalMarketProviderError(
+                        f"Historical candle provider is unavailable ({detail[:700]})"
+                    ) from exc
                 time.sleep(self._retry_delay(attempt))
             except ValueError as exc:
                 raise HistoricalMarketProviderError("Historical candle provider returned invalid JSON") from exc
