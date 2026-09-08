@@ -97,6 +97,9 @@ def _extract_targets_from_string(targets_raw: str, source_text: str="") -> List[
     """
     results: List[Dict[str, Decimal]] = []
     targets_raw = re.sub(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", " ", targets_raw or "")
+    # `normalize_targets()` expects numeric tokens; TP labels such as `TP2`
+    # must never be interpreted as the number 2.
+    targets_raw = re.sub(r"\b(?:TP|TARGET)\d*\b", " ", targets_raw, flags=re.IGNORECASE)
     try:
         # First try SSoT's normalize_targets for broad coverage
         norm = normalize_targets(targets_raw, source_text=source_text)
