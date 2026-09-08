@@ -1,1 +1,0 @@
-One-off workflow trigger for G6 lifecycle/presentation patch verification.
