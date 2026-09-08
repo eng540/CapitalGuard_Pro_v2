@@ -1,14 +1,121 @@
-name: G6 One-Shot Repair
+name: CI
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  repair:
+  core:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: sqlite:///./dev.db
+      API_KEY: test_api_key
+      TELEGRAM_BOT_TOKEN: 123:fake_token
+      ENV: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 bandit pip-audit
+      - name: Lint critical Python errors
+        run: flake8 src ai_service --select=E9,F63,F7,F82
+      - name: Security (Bandit high severity)
+        run: bandit -r src ai_service -q --severity-level high
+      - name: Dependencies audit
+        run: pip-audit -r requirements.txt
+      - name: Compile
+        run: python -m compileall -q src ai_service
+      - name: Alembic heads
+        run: PYTHONPATH=src alembic heads
+      - name: Verify single Alembic head
+        run: PYTHONPATH=src python scripts/verify_alembic_single_head.py
+      - name: G6 and Core tests
+        run: pytest -q
+
+  fresh-postgres-migration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: capitalguard
+          POSTGRES_PASSWORD: capitalguard
+          POSTGRES_DB: capitalguard_fresh
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U capitalguard -d capitalguard_fresh"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://capitalguard:capitalguard@localhost:5432/capitalguard_fresh
+      API_KEY: test_api_key
+      TELEGRAM_BOT_TOKEN: 123:fake_token
+      ENV: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install migration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Apply Alembic to empty PostgreSQL database
+        run: PYTHONPATH=src alembic upgrade head
+      - name: Verify fresh schema
+        run: PYTHONPATH=src python scripts/verify_fresh_postgres_migration.py
+      - name: Verify reconciliation
+        env:
+          RECONCILIATION_EXPECTED_DB: capitalguard_fresh
+        run: PYTHONPATH=src python scripts/reconcile_existing_data.py
+      - name: Verify G5 PostgreSQL concurrency
+        run: PYTHONPATH=src:. python scripts/verify_g5_postgres_concurrency.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: TypeScript check
+        run: pnpm check
+      - name: Frontend tests
+        run: pnpm test
+      - name: Production build
+        run: pnpm build
+
+  # G6_ONE_SHOT_BEGIN
+  g6-one-shot-repair:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     env:
@@ -19,12 +126,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
+        with:
+          python-version: '3.11'
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Apply tested G6 repair
+      - name: Apply repair and lifecycle contract
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -42,7 +150,7 @@ jobs:
           s=s.replace(old,new,1)
           s=s.replace('"ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state,\n            "termination_reason": run.termination_reason,','"ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state, "pnl_percentage": "0" if state.lifecycle_state == "PENDING_ORDER" else None,\n            "termination_reason": run.termination_reason,',1)
           p.write_text(s)
-          p=Path('src/capitalguard/application/services/historical_forwarding_service.py'); s=p.read_text(); s=s.replace('"status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}','"status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}'); s=s.replace('if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:','if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:'); s=s.replace('"reason": error_message,','"reason": error_message + "; G5 evidence was preserved",',1); a=s.index('    def _lifecycle_status'); b=s.find('\n    def ',a+10); b=len(s) if b<0 else b; block=s[a:b].replace('return "AMBIGUOUS"','return "CLOSED_UNVERIFIABLE"').replace('return "ACTIVE"','return "ACTIVE_POSITION"').replace('return "NOT_ACTIVATED"','return "PENDING_ORDER"'); s=s[:a]+block+s[b:]; p.write_text(s)
+          p=Path('src/capitalguard/application/services/historical_forwarding_service.py'); s=p.read_text(); s=s.replace('"status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}','"status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}'); s=s.replace('if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:','if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:'); a=s.index('    def _lifecycle_status'); b=s.find('\n    def ',a+10); b=len(s) if b<0 else b; block=s[a:b].replace('return "AMBIGUOUS"','return "CLOSED_UNVERIFIABLE"').replace('return "ACTIVE"','return "ACTIVE_POSITION"').replace('return "NOT_ACTIVATED"','return "PENDING_ORDER"'); s=s[:a]+block+s[b:]; p.write_text(s)
           PY
           python - <<'PY'
           from pathlib import Path
@@ -53,7 +161,7 @@ jobs:
         run: pytest -q tests/test_historical_* tests/test_adaptive_historical_replay.py tests/test_g6_lifecycle_contract.py
       - name: Compile and diff check
         run: python -m compileall -q src && git diff --check
-      - name: Commit tested source only
+      - name: Commit tested source
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -68,3 +176,4 @@ jobs:
           git add .github/workflows/ci.yml
           git commit -m 'chore: restore CI after test-gated G6 repair'
           git push origin HEAD:fix/g6-lifecycle-and-historical-result-presentation
+  # G6_ONE_SHOT_END
