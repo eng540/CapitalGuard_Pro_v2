@@ -17,32 +17,22 @@ jobs:
       TELEGRAM_BOT_TOKEN: 123:fake_token
       ENV: test
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
-      - name: Install dependencies
-        run: |
+      - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install flake8 bandit pip-audit
-      - name: Lint critical Python errors
-        run: flake8 src ai_service --select=E9,F63,F7,F82
-      - name: Security (Bandit high severity)
-        run: bandit -r src ai_service -q --severity-level high
-      - name: Dependencies audit
-        run: pip-audit -r requirements.txt
-      - name: Compile
-        run: python -m compileall -q src ai_service
-      - name: Alembic heads
-        run: PYTHONPATH=src alembic heads
-      - name: Verify single Alembic head
-        run: PYTHONPATH=src python scripts/verify_alembic_single_head.py
-      - name: G6 and Core tests
-        run: pytest -q
+      - run: flake8 src ai_service --select=E9,F63,F7,F82
+      - run: bandit -r src ai_service -q --severity-level high
+      - run: pip-audit -r requirements.txt
+      - run: python -m compileall -q src ai_service
+      - run: PYTHONPATH=src alembic heads
+      - run: PYTHONPATH=src python scripts/verify_alembic_single_head.py
+      - run: pytest -q
 
   fresh-postgres-migration:
     runs-on: ubuntu-latest
@@ -53,8 +43,7 @@ jobs:
           POSTGRES_USER: capitalguard
           POSTGRES_PASSWORD: capitalguard
           POSTGRES_DB: capitalguard_fresh
-        ports:
-          - 5432:5432
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U capitalguard -d capitalguard_fresh"
           --health-interval 10s --health-timeout 5s --health-retries 5
@@ -64,53 +53,35 @@ jobs:
       TELEGRAM_BOT_TOKEN: 123:fake_token
       ENV: test
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install migration dependencies
-        run: |
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Apply Alembic to empty PostgreSQL database
-        run: PYTHONPATH=src alembic upgrade head
-      - name: Verify fresh schema
-        run: PYTHONPATH=src python scripts/verify_fresh_postgres_migration.py
-      - name: Verify reconciliation
-        env:
+      - run: PYTHONPATH=src alembic upgrade head
+      - run: PYTHONPATH=src python scripts/verify_fresh_postgres_migration.py
+      - env:
           RECONCILIATION_EXPECTED_DB: capitalguard_fresh
         run: PYTHONPATH=src python scripts/reconcile_existing_data.py
-      - name: Verify G5 PostgreSQL concurrency
-        run: PYTHONPATH=src:. python scripts/verify_g5_postgres_concurrency.py
+      - run: PYTHONPATH=src:. python scripts/verify_g5_postgres_concurrency.py
 
   frontend:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
+    defaults: {run: {working-directory: frontend}}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: {version: 10.4.1}
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
-      - name: Install locked dependencies
-        run: pnpm install --frozen-lockfile
-      - name: TypeScript check
-        run: pnpm check
-      - name: Frontend tests
-        run: pnpm test
-      - name: Production build
-        run: pnpm build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm test
+      - run: pnpm build
 
   # G6_ONE_SHOT_BEGIN
   g6-one-shot-repair:
@@ -124,21 +95,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: |
+        with: {python-version: '3.11'}
+      - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Apply repair
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re
           p=Path('src/capitalguard/application/services/historical_market_replay_service.py'); s=p.read_text()
-          start=s.index('                if not minutes:\n                    # A critical day without minute evidence')
-          end=s.index('                day_events = self.replay_candles(', start)
-          new='''                if not minutes:\n                    event_time = self._utc(day_candle.open_time)\n                    entry_touched = entry is not None and range_touches(day_candle, entry)\n                    stop_level = state.current_stop\n                    stop_touched = stop_level is not None and range_touches(day_candle, stop_level, is_stop=True)\n                    target_events = [(i, level) for i, level in enumerate(target_levels, 1) if i in state.remaining_target_indices and range_touches(day_candle, level)]\n                    if not state.activated:\n                        possible = ['ACTIVATED'] if entry_touched else []\n                        ambiguous = bool(stop_touched or target_events)\n                    else:\n                        possible = (['SL'] if stop_touched else []) + [f'TP{i}' for i, _ in target_events]\n                        ambiguous = len(possible) != 1\n                    if ambiguous or not possible:\n                        event=self.signal_service.record_event(session, signal_id=signal_id, event_type='AMBIGUOUS', event_timestamp=event_time, market_as_of=event_time, data_source=day_candle.data_source, price=None, replay_status='AMBIGUOUS', event_confidence='0.0000', event_data={'replay_end': end_utc.isoformat(), 'candle_rule': 'DAILY_OHLC_NO_MINUTE_EVIDENCE', 'possible_events': possible, 'entry_touched': entry_touched, 'stop_touched': stop_touched, 'target_events': [f'TP{i}' for i, _ in target_events], 'high': str(day_candle.high), 'low': str(day_candle.low), 'replay_run_id': run.id}, dedup_key=f'g6:{run.id}:AMBIGUOUS:{event_time.isoformat()}', replay_run_id=run.id, refresh_ranking=False)\n                        all_events.append(event)\n                        state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(state, event_type='AMBIGUOUS', timestamp=event_time)\n                        break\n                    event_type=possible[0]\n                    target_index=int(event_type[2:]) if event_type.startswith('TP') else None\n                    event_price=entry if event_type=='ACTIVATED' else stop_level if event_type=='SL' else target_levels[target_index-1]\n                    all_events.append(self.signal_service.record_event(session, signal_id=signal_id, event_type=event_type, event_timestamp=event_time, market_as_of=event_time, data_source=day_candle.data_source, price=event_price, replay_status='INFERRED', event_confidence='0.5000', event_data={'replay_end': end_utc.isoformat(), 'candle_rule': 'DAILY_OHLC_SINGLE_EVENT', 'replay_run_id': run.id}, dedup_key=f'g6:{run.id}:{event_type}:{event_time.isoformat()}', replay_run_id=run.id, refresh_ranking=False))\n                    state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(state, event_type=event_type, target_index=target_index, stop=state.current_stop, timestamp=event_time)\n                    continue\n'''
+          start=s.index('                if not minutes:\n                    # A critical day without minute evidence'); end=s.index('                day_events = self.replay_candles(',start)
+          new='''                if not minutes:\n                    event_time = self._utc(day_candle.open_time)\n                    entry_touched = entry is not None and range_touches(day_candle, entry)\n                    stop_level = state.current_stop\n                    stop_touched = stop_level is not None and range_touches(day_candle, stop_level, is_stop=True)\n                    target_events = [(i, level) for i, level in enumerate(target_levels, 1) if i in state.remaining_target_indices and range_touches(day_candle, level)]\n                    if not state.activated:\n                        possible = ['ACTIVATED'] if entry_touched else []\n                        ambiguous = bool(stop_touched or target_events)\n                    else:\n                        possible = (['SL'] if stop_touched else []) + [f'TP{i}' for i, _ in target_events]\n                        ambiguous = len(possible) != 1\n                    if ambiguous or not possible:\n                        all_events.append(self.signal_service.record_event(session, signal_id=signal_id, event_type='AMBIGUOUS', event_timestamp=event_time, market_as_of=event_time, data_source=day_candle.data_source, price=None, replay_status='AMBIGUOUS', event_confidence='0.0000', event_data={'replay_end': end_utc.isoformat(), 'candle_rule': 'DAILY_OHLC_NO_MINUTE_EVIDENCE', 'possible_events': possible, 'entry_touched': entry_touched, 'stop_touched': stop_touched, 'target_events': [f'TP{i}' for i, _ in target_events], 'high': str(day_candle.high), 'low': str(day_candle.low), 'replay_run_id': run.id}, dedup_key=f'g6:{run.id}:AMBIGUOUS:{event_time.isoformat()}', replay_run_id=run.id, refresh_ranking=False))\n                        state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(state, event_type='AMBIGUOUS', timestamp=event_time)\n                        break\n                    event_type=possible[0]\n                    target_index=int(event_type[2:]) if event_type.startswith('TP') else None\n                    event_price=entry if event_type=='ACTIVATED' else stop_level if event_type=='SL' else target_levels[target_index-1]\n                    all_events.append(self.signal_service.record_event(session, signal_id=signal_id, event_type=event_type, event_timestamp=event_time, market_as_of=event_time, data_source=day_candle.data_source, price=event_price, replay_status='INFERRED', event_confidence='0.5000', event_data={'replay_end': end_utc.isoformat(), 'candle_rule': 'DAILY_OHLC_SINGLE_EVENT', 'replay_run_id': run.id}, dedup_key=f'g6:{run.id}:{event_type}:{event_time.isoformat()}', replay_run_id=run.id, refresh_ranking=False))\n                    state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(state, event_type=event_type, target_index=target_index, stop=state.current_stop, timestamp=event_time)\n                    continue\n'''
           s=s[:start]+new+s[end:]
           s=s.replace('        macro_actual = 0\n        fetched_at = datetime.now(timezone.utc)\n','        macro_actual = 0\n        incomplete_after_activation = False\n        fetched_at = datetime.now(timezone.utc)\n',1)
           s=s.replace('            macro_statuses.append(coverage.status.value)\n            macro_times.extend(self._utc(c.open_time) for c in daily)\n','            macro_statuses.append(coverage.status.value)\n            if state.activated and coverage.status.value in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"}: incomplete_after_activation=True\n            macro_times.extend(self._utc(c.open_time) for c in daily)\n',1)
@@ -150,41 +117,12 @@ jobs:
           s=s.replace(old,new,1)
           s=s.replace('"ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state,\n            "termination_reason": run.termination_reason,','"ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state, "pnl_percentage": "0" if state.lifecycle_state == "PENDING_ORDER" else None,\n            "termination_reason": run.termination_reason,',1)
           p.write_text(s)
+          p=Path('src/capitalguard/application/services/historical_forwarding_service.py'); s=p.read_text(); s=s.replace('"status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}', '"status": "REPLAYED" if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}'); s=s.replace('if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:', 'if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:'); s=s.replace('"reason": error_message,', '"reason": error_message + "; G5 evidence was preserved",',1); p.write_text(s)
           PY
           python - <<'PY'
           from pathlib import Path
-          p=Path('src/capitalguard/application/services/historical_forwarding_service.py'); s=p.read_text(); s=s.replace('{"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}','{"COMPLETED", "COMPLETED_UNVERIFIABLE"}'); p.write_text(s)
           p=Path('tests/test_adaptive_historical_replay.py'); s=p.read_text().replace('lifecycle_state="ACTIVE"','lifecycle_state="ACTIVE_POSITION"').replace('assert state.lifecycle_state == "ACTIVE"','assert state.lifecycle_state == "ACTIVE_POSITION"'); p.write_text(s)
-          p=Path('tests/test_historical_forwarding_auto_progression.py'); s=p.read_text(); s=s.replace('assert result["status"] == "PARTIAL" and result["progressed"] == 1 and result["failed"] == 1','assert result["status"] == "COMPLETED" and result["progressed"] == 1 and result["failed"] == 0'); s=s.replace('assert result["items"][0]["replay_status"] == "STILL_ACTIVE"','assert result["items"][0]["replay_status"] == "COMPLETED"'); s=s.replace('assert first["status"] == second["status"] == "PARTIAL"','assert first["status"] == second["status"] == "COMPLETED"'); p.write_text(s)
-          PY
-      - name: Add explicit contract tests
-        run: |
-          cat > tests/test_g6_lifecycle_contract.py <<'PY'
-          from datetime import datetime, timezone
-          from decimal import Decimal
-          from capitalguard.application.services.historical_market_replay_service import HistoricalMarketReplayService, MarketCandle
-          from capitalguard.domain.coverage import calculate_historical_coverage, interval_delta
-          from tests.test_g6_annual_macro_replay import _setup
-          UTC=timezone.utc
-          class Provider:
-              def __init__(self,daily,minutes): self.daily,self.minutes=daily,minutes
-              def fetch_daily(self,**k):
-                  rows=[c for c in self.daily if k['start']<=c.open_time<k['end']]; return rows,'daily-test',calculate_historical_coverage(requested_start=k['start'],requested_end=k['end'],candle_times=(c.open_time for c in rows),interval=interval_delta('1d'))
-              def fetch_minute_day(self,**k):
-                  day=k['start'].replace(hour=0,minute=0,second=0,microsecond=0); rows=list(self.minutes.get(day,[])); return rows,'minute-test',calculate_historical_coverage(requested_start=k['start'],requested_end=k['end'],candle_times=(c.open_time for c in rows),interval=interval_delta('1m'))
-          def candle(t,high=101,low=99): return MarketCandle(asset='BTCUSDT',market='Futures',open_time=t,open=Decimal('100'),high=Decimal(str(high)),low=Decimal(str(low)),close=Decimal('100'),volume=Decimal('1'),data_source='FAKE')
-          def test_98k_pending_order_has_zero_pnl(db_session):
-              signal,bridge=_setup(db_session); signal.decision_timestamp=datetime(2025,11,23,18,54,40,tzinfo=UTC); signal.entry=Decimal('98000'); signal.stop_loss=Decimal('97000'); signal.targets=[{'price':'99000','close_percent':50},{'price':'100000','close_percent':50}]
-              days=[c(datetime(2025,11,23,tzinfo=UTC),90000,88000),c(datetime(2025,11,24,tzinfo=UTC),89228,87000)]; r=HistoricalMarketReplayService().replay_g6(db_session,signal_id=signal.id,materialization_id=bridge.id,start=signal.decision_timestamp,replay_end=datetime(2025,11,25,tzinfo=UTC),provider=Provider(days,{}))
-              assert r['status']=='COMPLETED'; assert r['run'].result_json['lifecycle_status']=='PENDING_ORDER'; assert r['run'].result_json['pnl_percentage']=='0'; assert not r['events']
-          def test_daily_entry_plus_stop_is_unverifiable(db_session):
-              signal,bridge=_setup(db_session); signal.decision_timestamp=datetime(2025,1,1,12,tzinfo=UTC); signal.entry=Decimal('100'); signal.stop_loss=Decimal('90'); signal.targets=[{'price':'110','close_percent':100}]
-              days=[c(datetime(2025,1,1,tzinfo=UTC)),c(datetime(2025,1,2,tzinfo=UTC),110,90)]; r=HistoricalMarketReplayService().replay_g6(db_session,signal_id=signal.id,materialization_id=bridge.id,start=signal.decision_timestamp,replay_end=datetime(2025,1,3,tzinfo=UTC),provider=Provider(days,{}))
-              assert r['status']=='COMPLETED_UNVERIFIABLE'; assert r['run'].result_json['lifecycle_status']=='CLOSED_UNVERIFIABLE'
-          def test_partial_after_activation_stays_partial(db_session):
-              signal,bridge=_setup(db_session); signal.decision_timestamp=datetime(2025,1,1,12,tzinfo=UTC); signal.entry=Decimal('100'); signal.stop_loss=Decimal('90'); signal.targets=[{'price':'110','close_percent':100}]
-              days=[c(datetime(2025,1,1,tzinfo=UTC)),c(datetime(2025,1,2,tzinfo=UTC)),c(datetime(2025,1,3,tzinfo=UTC),111,99)]; minutes={datetime(2025,1,1,tzinfo=UTC):[c(datetime(2025,1,1,12,tzinfo=UTC),101,99)]}
-              r=HistoricalMarketReplayService().replay_g6(db_session,signal_id=signal.id,materialization_id=bridge.id,start=signal.decision_timestamp,replay_end=datetime(2025,1,4,tzinfo=UTC),provider=Provider(days,minutes)); assert r['status']=='REPLAY_PARTIAL'; assert r['run'].result_json['lifecycle_status']=='ACTIVE_POSITION'; assert r['run'].termination_reason=='DATA_TRUNCATED_WHILE_ACTIVE'
+          p=Path('tests/test_historical_forwarding_auto_progression.py'); s=p.read_text(); s=s.replace('assert result["items"][0]["replay_status"] == "STILL_ACTIVE"','assert result["items"][0]["replay_status"] == "REPLAY_PARTIAL"'); s=s.replace('and result["items"][0]["lifecycle_status"] == "ACTIVE"','and result["items"][0]["lifecycle_status"] == "ACTIVE_POSITION"'); s=s.replace('and item["lifecycle_status"] == "AMBIGUOUS"','and item["lifecycle_status"] == "CLOSED_UNVERIFIABLE"'); p.write_text(s)
           PY
       - name: Test before commit
         run: pytest -q tests/test_historical_* tests/test_adaptive_historical_replay.py tests/test_g6_lifecycle_contract.py
@@ -194,10 +132,10 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/capitalguard/application/services/adaptive_historical_replay.py src/capitalguard/application/services/historical_market_replay_service.py src/capitalguard/application/services/historical_forwarding_service.py tests/test_adaptive_historical_replay.py tests/test_historical_forwarding_auto_progression.py tests/test_g6_lifecycle_contract.py
+          git add src/capitalguard/application/services/historical_market_replay_service.py src/capitalguard/application/services/historical_forwarding_service.py tests/test_adaptive_historical_replay.py tests/test_historical_forwarding_auto_progression.py tests/test_g6_lifecycle_contract.py
           git diff --cached --quiet && exit 0
           git commit -m 'fix(g6): enforce lifecycle and historical coverage contract'
-          git push
+          git push origin HEAD:fix/g6-lifecycle-and-historical-result-presentation
       - name: Remove one-shot machinery
         if: success()
         run: |
@@ -208,5 +146,5 @@ jobs:
           git rm .github/workflows/g6-surgical-fix.yml || true
           git add .github/workflows/ci.yml
           git commit -m 'chore: remove one-shot G6 repair machinery'
-          git push
+          git push origin HEAD:fix/g6-lifecycle-and-historical-result-presentation
   # G6_ONE_SHOT_END
