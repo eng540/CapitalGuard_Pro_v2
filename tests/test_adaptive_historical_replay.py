@@ -49,7 +49,7 @@ def test_full_day_is_two_pages_max_1000_and_440():
     assert pages[-1].end == datetime(2026, 1, 11, tzinfo=UTC)
 
 
-def test_lifecycle_state_persists_remaining_targets():
+def test_lifecycle_state_persists_remaining_targets_and_fixed_stop():
     state = LifecycleState(
         activated=True,
         hit_target_indices=frozenset({1}),
@@ -61,6 +61,7 @@ def test_lifecycle_state_persists_remaining_targets():
         state,
         event_type="TP2",
         target_index=2,
+        stop=100,
         timestamp=datetime(2026, 1, 11, tzinfo=UTC),
     )
     assert state.hit_target_indices == frozenset({1, 2})
