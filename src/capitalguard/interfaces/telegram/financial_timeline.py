@@ -1,10 +1,7 @@
-"""Pure financial timeline formatting for historical replay results.
-
-This module is presentation-only: it consumes already-authorized replay data and
-never infers trading events that are not present in the supplied evidence.
-"""
+"""Pure financial timeline formatting for historical replay results."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from html import escape
 from typing import Any, Mapping, Sequence
@@ -27,6 +24,12 @@ def _value(source: Any, key: str, default: Any = None) -> Any:
     if isinstance(source, Mapping): return source.get(key, default)
     return getattr(source, key, default)
 
+def _first(source: Any, keys: Sequence[str], default: Any = None) -> Any:
+    for key in keys:
+        value = _value(source, key)
+        if value is not None and value != "": return value
+    return default
+
 def _text(value: Any, default: str = "—") -> str:
     if value is None or value == "": return default
     return escape(str(value))
@@ -44,18 +47,21 @@ def _event_pnl(event: Any) -> Any:
         value = _value(event, key)
         if value is not None: return value
     data = _value(event, "event_data", {}) or {}
+    if isinstance(data, str):
+        try: data = json.loads(data)
+        except (TypeError, ValueError): data = {}
     if isinstance(data, Mapping):
         for key in ("pnl_pct", "net_pnl_pct", "realized_pnl_pct", "pnl"):
             if data.get(key) is not None: return data[key]
     return None
 
 def _event_name(event: Any) -> str:
-    raw = str(_value(event, "event_type", _value(event, "type", "EVENT")) or "EVENT").upper()
+    raw = str(_first(event, ("event_type", "event", "type"), "EVENT") or "EVENT").upper()
     return _EVENT_LABELS.get(raw, f"📌 {raw}")
 
 def _event_line(event: Any) -> str:
-    timestamp = _time(_value(event, "event_timestamp", _value(event, "timestamp")))
-    label = _event_name(event); price = _value(event, "price"); pnl = _event_pnl(event)
+    timestamp = _time(_first(event, ("event_timestamp", "timestamp", "occurred_at", "created_at")))
+    label = _event_name(event); price = _first(event, ("price", "event_price", "execution_price")); pnl = _event_pnl(event)
     line = f"▫️ [{timestamp}] {_text(label)}"
     if price is not None: line += f" عند {_text(price)}"
     if pnl is not None:
@@ -65,6 +71,9 @@ def _event_line(event: Any) -> str:
 
 def _normalize_events(events: Any) -> list[Any]:
     if events is None: return []
+    if isinstance(events, str):
+        try: events = json.loads(events)
+        except (TypeError, ValueError): return []
     if isinstance(events, Mapping): events = [events]
     if not isinstance(events, Sequence) or isinstance(events, (str, bytes)): return []
     return list(events)
@@ -72,13 +81,13 @@ def _normalize_events(events: Any) -> list[Any]:
 def format_events_timeline(events: Any, *, empty_message: str | None = None) -> list[str]:
     normalized = _normalize_events(events)
     if not normalized: return [empty_message] if empty_message else []
-    normalized.sort(key=lambda event: str(_value(event, "event_timestamp", _value(event, "timestamp", ""))))
+    normalized.sort(key=lambda event: str(_first(event, ("event_timestamp", "timestamp", "occurred_at", "created_at"), "")))
     return [_event_line(event) for event in normalized]
 
 def _replay_events(replay: Mapping[str, Any]) -> Any:
-    """Accept both service-level events and persisted JSON payload naming."""
     for key in ("events", "events_payload", "event_payload"):
-        if replay.get(key) not in (None, "", []): return replay[key]
+        value = replay.get(key)
+        if value not in (None, "", []): return value
     return None
 
 def format_financial_replay_result(replay: Mapping[str, Any] | None, *, events: Any = None) -> list[str]:
