@@ -403,7 +403,7 @@ class HistoricalMarketReplayService:
             start=source_time, replay_end=end_utc, interval="1m", limit=limit,
             retry_of_fingerprint=retry_of_fingerprint,
         )
-        if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:
+        if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
             events = session.execute(select(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_run_id == run.id).order_by(HistoricalSignalEvent.event_timestamp, HistoricalSignalEvent.id)).scalars().all()
             return {"run": run, "events": events, "status": run.status, "replayed": True}
 
@@ -466,7 +466,7 @@ class HistoricalMarketReplayService:
                     if event_type == "ACTIVATED":
                         activated = True; lifecycle = "ACTIVE_POSITION"
                     elif event_type.startswith("TP") and event_type[2:].isdigit():
-                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE"
+                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE_POSITION"
                     elif event_type == "SL":
                         lifecycle = "CLOSED_STOP"
                     elif event_type == "CLOSE":
@@ -580,7 +580,7 @@ class HistoricalMarketReplayService:
                     if event_type == "ACTIVATED":
                         activated = True; lifecycle = "ACTIVE_POSITION"
                     elif event_type.startswith("TP") and event_type[2:].isdigit():
-                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE"
+                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE_POSITION"
                     elif event_type == "SL":
                         lifecycle = "CLOSED_STOP"
                     elif event_type == "CLOSE":
