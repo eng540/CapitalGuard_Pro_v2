@@ -130,7 +130,7 @@ def format_financial_replay_result(replay: Mapping[str, Any] | None, *, events: 
     lines = ["<b>📊 النتيجة المالية للمحاكاة</b>", f"الحالة المالية: <code>{_text(_LIFECYCLE_LABELS.get(lifecycle, lifecycle))}</code>"]
     if status == "COMPLETED_UNVERIFIABLE":
         lines.append("المحاكاة: <code>COMPLETED_UNVERIFIABLE</code> — اكتملت مع تعذر التحقق الكامل من ترتيب بعض الأحداث اللحظية.")
-        lines.append("⚠️ الإغلاق المالي حُسم، لكن ترتيب الصفقات اللحظية داخل بعض الشموع لا يمكن إثباته بالكامل.")
+        lines.append("⚠️ الإغلاق المالي حُسم، لكن تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
     elif status == "COMPLETED":
         lines.append("المحاكاة: اكتملت وفق الأدلة المتاحة.")
     elif status in {"PARTIAL_WINDOW", "REPLAY_PARTIAL"}:
