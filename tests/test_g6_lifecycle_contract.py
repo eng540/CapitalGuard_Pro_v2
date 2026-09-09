@@ -38,6 +38,20 @@ def test_98k_pending_order_has_zero_pnl(db_session):
     assert result["status"]=="COMPLETED"; assert result["run"].result_json["lifecycle_status"]=="PENDING_ORDER"; assert result["run"].result_json["pnl_percentage"]=="0"; assert result["events"]==[]; assert result["run"].coverage_status=="FULL"
 
 
+def test_exact_daily_window_with_one_completed_candle_is_full():
+    start = datetime(2025, 11, 24, tzinfo=UTC)
+    end = datetime(2025, 11, 25, tzinfo=UTC)
+    coverage = calculate_historical_coverage(
+        requested_start=start,
+        requested_end=end,
+        candle_times=[start],
+        interval=interval_delta("1d"),
+    )
+    assert coverage.status.value == "FULL"
+    assert coverage.expected_candles == 1
+    assert coverage.actual_candles == 1
+
+
 def test_daily_entry_plus_stop_is_unverifiable(db_session):
     signal, bridge = _setup(db_session); signal.decision_timestamp=datetime(2025,1,1,12,tzinfo=UTC); signal.entry=Decimal("100"); signal.stop_loss=Decimal("90"); signal.targets=[{"price":"110","close_percent":100}]
     days=[candle(datetime(2025,1,1,tzinfo=UTC)),candle(datetime(2025,1,2,tzinfo=UTC),110,90)]
