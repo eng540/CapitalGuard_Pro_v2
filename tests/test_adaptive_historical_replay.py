@@ -77,4 +77,5 @@ def test_terminal_lifecycle_is_terminal():
         state, event_type="SL", timestamp=datetime(2026, 1, 12, tzinfo=UTC)
     )
     assert state.lifecycle_state == "CLOSED_STOP"
+    assert state.current_stop == 100
     assert AdaptiveHistoricalReplayPlanner.terminal(state)
