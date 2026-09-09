@@ -102,7 +102,7 @@ class HistoricalReplayDecisionAuthority:
         status = str(getattr(previous_run, "status", "") or "").upper()
         previous_engine = getattr(previous_run, "replay_version", None)
         previous_policy = getattr(previous_run, "policy_version", None)
-        if status == "STILL_ACTIVE" and (previous_engine != self.replay_version or previous_policy != self.policy_version):
+        if status == "STILL_ACTIVE":
             reason = ReplayDecisionReason.LEGACY_STILL_ACTIVE
         elif status == "FAILED":
             reason = ReplayDecisionReason.FAILED
