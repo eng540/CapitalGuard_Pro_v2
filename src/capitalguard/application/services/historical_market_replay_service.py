@@ -27,11 +27,9 @@ from capitalguard.infrastructure.db.models import (
 )
 
 from .adaptive_historical_replay import AdaptiveHistoricalReplayPlanner, LifecycleState
+from .historical_replay_decision_service import HistoricalReplayDecisionAuthority
+from .historical_replay_version import REPLAY_POLICY_VERSION, REPLAY_VERSION
 from .historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
-
-
-REPLAY_VERSION = "G6-R1"
-REPLAY_POLICY_VERSION = "G6-OHLCV-MARKET-GRID-2"
 
 
 @dataclass(frozen=True)
@@ -314,6 +312,7 @@ class HistoricalMarketReplayService:
         interval: str,
         limit: int,
         retry_of_fingerprint: str | None = None,
+        reprocess_of_run_id: int | None = None,
     ) -> tuple[HistoricalReplayRun, bool]:
         fingerprint = self._request_fingerprint(
             signal_id=signal_id,
@@ -334,6 +333,7 @@ class HistoricalMarketReplayService:
             request_fingerprint=fingerprint,
             replay_version=REPLAY_VERSION,
             policy_version=REPLAY_POLICY_VERSION,
+            reprocess_of_run_id=reprocess_of_run_id,
             status="RUNNING",
             window_start=start,
             window_end=replay_end,
@@ -361,6 +361,13 @@ class HistoricalMarketReplayService:
         )
 
     def retry_g6(self, session: Session, *, receipt_id: int, provider=None) -> dict:
+        """Re-evaluate a persisted replay through the single Decision Authority.
+
+        This method deliberately has no status-only retry gate. A duplicate receipt
+        may therefore resolve to REUSE, or create a new non-destructive ReplayRun.
+        """
+        import logging
+
         receipt = session.get(HistoricalForwardReceipt, receipt_id)
         if receipt is None or receipt.evidence_id is None:
             raise HistoricalSignalValidationError("Historical receipt does not have replayable evidence")
@@ -368,15 +375,71 @@ class HistoricalMarketReplayService:
         if evidence is None or not evidence.signals:
             raise HistoricalSignalValidationError("Historical receipt does not have a materialized signal")
         signal = sorted(evidence.signals, key=lambda item: item.id)[0]
-        materialization = session.execute(select(HistoricalSignalMaterialization).where(HistoricalSignalMaterialization.signal_id == signal.id).order_by(HistoricalSignalMaterialization.id.desc())).scalars().first()
+        materialization = session.execute(
+            select(HistoricalSignalMaterialization)
+            .where(HistoricalSignalMaterialization.signal_id == signal.id)
+            .order_by(HistoricalSignalMaterialization.id.desc())
+        ).scalars().first()
         if materialization is None:
             raise HistoricalSignalValidationError("Historical signal has no G5 materialization")
-        previous = session.execute(select(HistoricalReplayRun).where(HistoricalReplayRun.signal_id == signal.id, HistoricalReplayRun.materialization_id == materialization.id).order_by(HistoricalReplayRun.started_at.desc(), HistoricalReplayRun.id.desc())).scalars().first()
+        previous = session.execute(
+            select(HistoricalReplayRun)
+            .where(
+                HistoricalReplayRun.signal_id == signal.id,
+                HistoricalReplayRun.materialization_id == materialization.id,
+            )
+            .order_by(HistoricalReplayRun.started_at.desc(), HistoricalReplayRun.id.desc())
+        ).scalars().first()
+
+        authority = HistoricalReplayDecisionAuthority()
+        decision = authority.decide(previous)
+        logging.getLogger(__name__).info(
+            "G6 replay decision action=%s reason=%s previous_run=%s previous_status=%s previous_version=%s current_version=%s previous_policy=%s current_policy=%s coverage=%s",
+            decision.action.value, decision.reason.value, decision.previous_run_id,
+            decision.previous_status, decision.previous_replay_version,
+            decision.current_replay_version, decision.previous_policy_version,
+            decision.current_policy_version, decision.coverage.reason,
+        )
+
+        if not decision.is_reprocess and previous is not None:
+            return {
+                "run": previous,
+                "events": list(previous.events or []),
+                "status": previous.status,
+                "replayed": True,
+                "retry_skipped": True,
+                "decision": decision,
+            }
+
         if previous is None:
-            raise HistoricalSignalValidationError("Historical receipt has no previous G6 replay")
-        if previous.status not in {"REPLAY_PARTIAL", "FAILED"}:
-            return {"run": previous, "events": list(previous.events or []), "status": previous.status, "replayed": True, "retry_skipped": True}
-        return self.replay_g6(session, signal_id=signal.id, materialization_id=materialization.id, start=previous.window_start, replay_end=previous.window_end, interval=previous.interval, limit=previous.limit_count, provider=provider, retry_of_fingerprint=previous.request_fingerprint)
+            start = self._utc(signal.decision_timestamp)
+            replay_end = datetime.now(timezone.utc)
+            retry_of_fingerprint = None
+            reprocess_of_run_id = None
+            interval = "1m"
+            limit = 1500
+        else:
+            start = previous.window_start
+            replay_end = previous.window_end
+            retry_of_fingerprint = previous.request_fingerprint
+            reprocess_of_run_id = previous.id
+            interval = previous.interval
+            limit = previous.limit_count
+
+        result = self.replay_g6(
+            session,
+            signal_id=signal.id,
+            materialization_id=materialization.id,
+            start=start,
+            replay_end=replay_end,
+            interval=interval,
+            limit=limit,
+            provider=provider,
+            retry_of_fingerprint=retry_of_fingerprint,
+            reprocess_of_run_id=reprocess_of_run_id,
+        )
+        result["decision"] = decision
+        return result
 
     def _replay_g6_annual_adaptive(
         self,
@@ -389,6 +452,7 @@ class HistoricalMarketReplayService:
         limit: int,
         provider,
         retry_of_fingerprint: str | None = None,
+        reprocess_of_run_id: int | None = None,
     ) -> dict:
         """Traverse daily candles in 365-day chunks and drill down only critical days."""
         signal, entry, stop, target_levels = self._signal_levels(session, signal_id)
@@ -401,7 +465,7 @@ class HistoricalMarketReplayService:
         run, created = self._get_or_create_run(
             session, signal_id=signal_id, materialization_id=materialization_id,
             start=source_time, replay_end=end_utc, interval="1m", limit=limit,
-            retry_of_fingerprint=retry_of_fingerprint,
+            retry_of_fingerprint=retry_of_fingerprint, reprocess_of_run_id=reprocess_of_run_id,
         )
         if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
             events = session.execute(select(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_run_id == run.id).order_by(HistoricalSignalEvent.event_timestamp, HistoricalSignalEvent.id)).scalars().all()
@@ -672,6 +736,7 @@ class HistoricalMarketReplayService:
         limit: int = 1500,
         provider=None,
         retry_of_fingerprint: str | None = None,
+        reprocess_of_run_id: int | None = None,
     ) -> dict:
         """Run G6 from an existing G5 materialization; caller owns commit/rollback."""
         self._g5_materialization(session, signal_id=signal_id, materialization_id=materialization_id)
@@ -684,8 +749,8 @@ class HistoricalMarketReplayService:
             from capitalguard.infrastructure.market.historical_ohlcv_provider import BinanceHistoricalOhlcvProvider
             provider = BinanceHistoricalOhlcvProvider()
         if interval == "1m" and hasattr(provider, "fetch_daily") and hasattr(provider, "fetch_minute_day"):
-            return self._replay_g6_annual_adaptive(session, signal_id=signal_id, materialization_id=materialization_id, start=start_utc, replay_end=end_utc, limit=limit, provider=provider, retry_of_fingerprint=retry_of_fingerprint)
-        run, created = self._get_or_create_run(session, signal_id=signal_id, materialization_id=materialization_id, start=start_utc, replay_end=end_utc, interval=interval, limit=limit, retry_of_fingerprint=retry_of_fingerprint)
+            return self._replay_g6_annual_adaptive(session, signal_id=signal_id, materialization_id=materialization_id, start=start_utc, replay_end=end_utc, limit=limit, provider=provider, retry_of_fingerprint=retry_of_fingerprint, reprocess_of_run_id=reprocess_of_run_id)
+        run, created = self._get_or_create_run(session, signal_id=signal_id, materialization_id=materialization_id, start=start_utc, replay_end=end_utc, interval=interval, limit=limit, retry_of_fingerprint=retry_of_fingerprint, reprocess_of_run_id=reprocess_of_run_id)
         if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "REPLAY_PARTIAL"}:
             events = session.execute(select(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_run_id == run.id).order_by(HistoricalSignalEvent.event_timestamp, HistoricalSignalEvent.id)).scalars().all()
             return {"run": run, "events": events, "status": run.status, "replayed": True}
@@ -759,6 +824,10 @@ class HistoricalMarketReplayService:
             run.status = "COMPLETED" if resolution_quality == "VERIFIED" else "COMPLETED_UNVERIFIABLE"
             run.termination_reason = "LIFECYCLE_COMPLETED"
             run.exit_timestamp = getattr(lifecycle_terminal_event, "event_timestamp", None)
+        elif lifecycle_state == "NOT_ACTIVATED" and coverage.status == CoverageStatus.FULL:
+            run.status = "COMPLETED"
+            run.termination_reason = "HORIZON_REACHED_UNTRIGGERED"
+            run.exit_timestamp = end_utc
         elif coverage.status in {CoverageStatus.PARTIAL_WINDOW, CoverageStatus.GAPPED}:
             run.status = "REPLAY_PARTIAL"
             run.termination_reason = "DATA_TRUNCATED_WHILE_ACTIVE"
@@ -768,7 +837,7 @@ class HistoricalMarketReplayService:
             run.termination_reason = "DATA_TRUNCATED_WHILE_ACTIVE"
             run.exit_timestamp = coverage.actual_end
 
-        run.result_json = {"event_ids": [event.id for event in events], "event_count": len(events), "events": [{"id": event.id, "type": event.event_type, "timestamp": event.event_timestamp.isoformat(), "price": str(event.price) if event.price is not None else None, "replay_status": event.replay_status, "confidence": str(event.event_confidence), "data": event.event_data} for event in events], "evidence_id": evidence.id if evidence else None, "ambiguity_status": run.ambiguity_status, "lifecycle_status": lifecycle_state, "resolution_quality": resolution_quality, "termination_reason": run.termination_reason, "exit_timestamp": run.exit_timestamp.isoformat() if run.exit_timestamp else None, "coverage": {"status": coverage.status.value, "ratio": coverage.coverage_ratio, "requested_start": start_utc.isoformat(), "requested_end": end_utc.isoformat(), "actual_start": coverage.actual_start.isoformat() if coverage.actual_start else None, "actual_end": coverage.actual_end.isoformat() if coverage.actual_end else None, "expected_candles": coverage.expected_candles, "actual_candles": coverage.actual_candles, "gaps": [[gap_start.isoformat(), gap_end.isoformat()] for gap_start, gap_end in coverage.gaps]}, "source_lifecycle": source_lifecycle}
+        run.result_json = {"event_ids": [event.id for event in events], "event_count": len(events), "events": [{"id": event.id, "type": event.event_type, "timestamp": event.event_timestamp.isoformat(), "price": str(event.price) if event.price is not None else None, "replay_status": event.replay_status, "confidence": str(event.event_confidence), "data": event.event_data} for event in events], "evidence_id": evidence.id if evidence else None, "ambiguity_status": run.ambiguity_status, "lifecycle_status": lifecycle_state, "resolution_quality": resolution_quality, "activation_risk": bool(lifecycle_state == "NOT_ACTIVATED" and coverage.status != CoverageStatus.FULL), "entry_ambiguity": bool(lifecycle_state == "NOT_ACTIVATED" and coverage.status != CoverageStatus.FULL), "termination_reason": run.termination_reason, "exit_timestamp": run.exit_timestamp.isoformat() if run.exit_timestamp else None, "coverage": {"status": coverage.status.value, "ratio": coverage.coverage_ratio, "requested_start": start_utc.isoformat(), "requested_end": end_utc.isoformat(), "actual_start": coverage.actual_start.isoformat() if coverage.actual_start else None, "actual_end": coverage.actual_end.isoformat() if coverage.actual_end else None, "expected_candles": coverage.expected_candles, "actual_candles": coverage.actual_candles, "gaps": [[gap_start.isoformat(), gap_end.isoformat()] for gap_start, gap_end in coverage.gaps]}, "source_lifecycle": source_lifecycle}
         run.completed_at = datetime.now(timezone.utc); session.flush()
         return {"run": run, "events": events, "status": run.status, "replayed": not created, "coverage": coverage}
 

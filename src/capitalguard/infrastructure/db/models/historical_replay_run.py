@@ -16,6 +16,7 @@ class HistoricalReplayRun(Base):
     request_fingerprint = Column(String(64), nullable=False, unique=True, index=True)
     replay_version = Column(String(32), nullable=False)
     policy_version = Column(String(32), nullable=False)
+    reprocess_of_run_id = Column(Integer, ForeignKey("historical_replay_runs.id", ondelete="RESTRICT"), nullable=True, index=True)
     status = Column(String(24), nullable=False, server_default="CREATED", index=True)
     window_start = Column(DateTime(timezone=True), nullable=False)
     window_end = Column(DateTime(timezone=True), nullable=False)
@@ -45,5 +46,7 @@ class HistoricalReplayRun(Base):
 
     signal = relationship("HistoricalSignal")
     materialization = relationship("HistoricalSignalMaterialization")
+    reprocess_of = relationship("HistoricalReplayRun", remote_side=[id], foreign_keys=[reprocess_of_run_id], back_populates="reprocess_children")
+    reprocess_children = relationship("HistoricalReplayRun", foreign_keys=[reprocess_of_run_id], back_populates="reprocess_of", cascade="", passive_deletes=True)
     market_evidence = relationship("HistoricalMarketEvidence", back_populates="replay_run")
     events = relationship("HistoricalSignalEvent", back_populates="replay_run")

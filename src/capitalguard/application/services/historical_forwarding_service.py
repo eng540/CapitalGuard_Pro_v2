@@ -688,7 +688,10 @@ class HistoricalForwardingService:
                 replay = resolution.get("replay") or {}
                 replay_status = str(replay.get("replay_status") or "")
                 previous_receipt_id = resolution.get("previous_receipt_id")
-                if replay_status in {"FAILED", "REPLAY_PARTIAL"} and previous_receipt_id:
+                # Duplicate identity is resolved before G6. The replay service is now
+                # the single Decision Authority: it may REUSE a valid current run or
+                # create a new non-destructive run for any stale/failed/partial case.
+                if previous_receipt_id:
                     try:
                         healed = self.replay_service.retry_g6(session, receipt_id=int(previous_receipt_id), provider=provider)
                         healed_run = healed.get("run")
