@@ -14,6 +14,8 @@ from typing import Any, Callable, Mapping, Sequence
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from .financial_timeline import format_financial_replay_result
+
 
 class VisualCardState(str, Enum):
     COMPLETE = "CARD_COMPLETE"
@@ -321,17 +323,11 @@ def build_single_result_card(
     if outcome.get("exit_price") is None:
         outcome["exit_price"] = _value(candidate, "exit_price")
     replay_status = str(replay.get("replay_status") or "").upper()
-    if replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
-        if replay_status == "COMPLETED_UNVERIFIABLE":
-            lines.append("المحاكاة التاريخية: اكتملت وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
-        else:
-            lines.append("المحاكاة التاريخية: اكتملت وفق بيانات السوق المتاحة.")
-        for label, key in (("الحالة", "replay_status"), ("عدد الأحداث", "event_count"), ("آخر حدث", "last_event"), ("دورة الحياة", "lifecycle_status")):
-            value = replay.get(key)
-            if value is not None:
-                lines.append(f"{label}: <code>{_text(value)}</code>")
-        if replay_status == "COMPLETED_UNVERIFIABLE":
-            lines.append("⚠️ اكتملت المحاكاة وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
+    if replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "ACTIVE", "PENDING_ORDER", "ACTIVE_POSITION"}:
+        if replay_status in {"ACTIVE", "PENDING_ORDER"} and not replay.get("lifecycle_status"):
+            replay = dict(replay)
+            replay["lifecycle_status"] = "ACTIVE_POSITION" if replay_status == "ACTIVE" else "PENDING_ORDER"
+        lines.extend(format_financial_replay_result(replay))
     elif replay:
         replay_message = {
             "BLOCKED": "المحاكاة التاريخية مؤجلة؛ نتيجة الاستخراج جاهزة.",
@@ -418,6 +414,7 @@ def build_batch_summary(
     replay_completed = _value(summary, "replay_completed_records", None)
     replay_failed = _value(summary, "replay_failed_records", None)
     replay_pending = _value(summary, "replay_pending_records", None)
+
     if replay_status or any(value is not None for value in (replay_completed, replay_failed, replay_pending)):
         lines.append("")
         lines.append("<b>نتيجة المحاكاة التاريخية:</b>")
