@@ -4,12 +4,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from .historical_replay_version import REPLAY_POLICY_VERSION, REPLAY_VERSION
 
-# Single source of truth for the existing replay versioning mechanism.
-# This is deliberately not a third version system; HistoricalReplayRun already
-# persists replay_version and policy_version.
-CURRENT_REPLAY_VERSION = "G6-R2"
-CURRENT_REPLAY_POLICY_VERSION = "G6-OHLCV-MARKET-GRID-3"
+CURRENT_REPLAY_VERSION = REPLAY_VERSION
+CURRENT_REPLAY_POLICY_VERSION = REPLAY_POLICY_VERSION
 
 
 class ReplayAction(str, Enum):
@@ -59,19 +57,9 @@ class ReplayDecision:
 
 
 class HistoricalReplayDecisionAuthority:
-    """The single authority for REUSE versus REPROCESS.
+    """Single, side-effect-free authority for REUSE versus REPROCESS."""
 
-    This class is intentionally side-effect free. It reasons from the persisted
-    ReplayRun identity, version/policy and explicit coverage evidence. Replay
-    execution remains the responsibility of HistoricalMarketReplayService.
-    """
-
-    def __init__(
-        self,
-        *,
-        replay_version: str = CURRENT_REPLAY_VERSION,
-        policy_version: str = CURRENT_REPLAY_POLICY_VERSION,
-    ) -> None:
+    def __init__(self, *, replay_version: str = CURRENT_REPLAY_VERSION, policy_version: str = CURRENT_REPLAY_POLICY_VERSION) -> None:
         self.replay_version = replay_version
         self.policy_version = policy_version
 
@@ -79,7 +67,6 @@ class HistoricalReplayDecisionAuthority:
     def coverage_validity(run: Any | None) -> CoverageValidity:
         if run is None:
             return CoverageValidity(valid=False, reason="NO_REPLAY_EVIDENCE")
-
         result = dict(getattr(run, "result_json", None) or {})
         provider_meta = dict(getattr(run, "provider_metadata", None) or {})
         coverage = dict(result.get("coverage") or {})
@@ -102,64 +89,20 @@ class HistoricalReplayDecisionAuthority:
             "actual_start": coverage.get("actual_start") or provider_meta.get("actual_start"),
             "actual_end": coverage.get("actual_end") or provider_meta.get("actual_end"),
         }
-
-        # A FULL grid is not sufficient when a gap can hide activation. This is
-        # the explicit guard required by the 98K regression contract.
         if activation_risk:
-            return CoverageValidity(
-                valid=False,
-                reason="GAP_CAN_HIDE_ACTIVATION",
-                requested_start=evidence["requested_start"],
-                requested_end=evidence["requested_end"],
-                actual_start=evidence["actual_start"],
-                actual_end=evidence["actual_end"],
-                gaps=gaps,
-                activation_risk=True,
-                evidence=evidence,
-            )
-        if status not in {"FULL"}:
-            return CoverageValidity(
-                valid=False,
-                reason=f"COVERAGE_{status}",
-                requested_start=evidence["requested_start"],
-                requested_end=evidence["requested_end"],
-                actual_start=evidence["actual_start"],
-                actual_end=evidence["actual_end"],
-                gaps=gaps,
-                activation_risk=False,
-                evidence=evidence,
-            )
-        return CoverageValidity(
-            valid=True,
-            reason="FULL_COVERAGE_NO_ACTIVATION_RISK",
-            requested_start=evidence["requested_start"],
-            requested_end=evidence["requested_end"],
-            actual_start=evidence["actual_start"],
-            actual_end=evidence["actual_end"],
-            gaps=gaps,
-            activation_risk=False,
-            evidence=evidence,
-        )
+            return CoverageValidity(False, "GAP_CAN_HIDE_ACTIVATION", evidence=evidence, gaps=gaps, activation_risk=True, requested_start=evidence["requested_start"], requested_end=evidence["requested_end"], actual_start=evidence["actual_start"], actual_end=evidence["actual_end"])
+        if status != "FULL":
+            return CoverageValidity(False, f"COVERAGE_{status}", evidence=evidence, gaps=gaps, requested_start=evidence["requested_start"], requested_end=evidence["requested_end"], actual_start=evidence["actual_start"], actual_end=evidence["actual_end"])
+        return CoverageValidity(True, "FULL_COVERAGE_NO_ACTIVATION_RISK", evidence=evidence, gaps=gaps, requested_start=evidence["requested_start"], requested_end=evidence["requested_end"], actual_start=evidence["actual_start"], actual_end=evidence["actual_end"])
 
     def decide(self, previous_run: Any | None) -> ReplayDecision:
         coverage = self.coverage_validity(previous_run)
         if previous_run is None:
-            return ReplayDecision(
-                ReplayAction.REPROCESS,
-                ReplayDecisionReason.NO_PREVIOUS_REPLAY,
-                None, None, None, None,
-                self.replay_version,
-                self.policy_version,
-                coverage,
-            )
-
+            return ReplayDecision(ReplayAction.REPROCESS, ReplayDecisionReason.NO_PREVIOUS_REPLAY, None, None, None, None, self.replay_version, self.policy_version, coverage)
         status = str(getattr(previous_run, "status", "") or "").upper()
         previous_engine = getattr(previous_run, "replay_version", None)
         previous_policy = getattr(previous_run, "policy_version", None)
-
-        if status == "STILL_ACTIVE" and (
-            previous_engine != self.replay_version or previous_policy != self.policy_version
-        ):
+        if status == "STILL_ACTIVE" and (previous_engine != self.replay_version or previous_policy != self.policy_version):
             reason = ReplayDecisionReason.LEGACY_STILL_ACTIVE
         elif status == "FAILED":
             reason = ReplayDecisionReason.FAILED
@@ -172,23 +115,8 @@ class HistoricalReplayDecisionAuthority:
         elif not coverage.valid:
             reason = ReplayDecisionReason.INVALID_COVERAGE
         else:
-            return ReplayDecision(
-                ReplayAction.REUSE,
-                ReplayDecisionReason.CURRENT_REPLAY_VALID,
-                int(previous_run.id), status, previous_engine, previous_policy,
-                self.replay_version,
-                self.policy_version,
-                coverage,
-            )
-
-        return ReplayDecision(
-            ReplayAction.REPROCESS,
-            reason,
-            int(previous_run.id), status, previous_engine, previous_policy,
-            self.replay_version,
-            self.policy_version,
-            coverage,
-        )
+            return ReplayDecision(ReplayAction.REUSE, ReplayDecisionReason.CURRENT_REPLAY_VALID, int(previous_run.id), status, previous_engine, previous_policy, self.replay_version, self.policy_version, coverage)
+        return ReplayDecision(ReplayAction.REPROCESS, reason, int(previous_run.id), status, previous_engine, previous_policy, self.replay_version, self.policy_version, coverage)
 
     @staticmethod
     def assert_valid_lineage(*, previous_run: Any, new_run: Any) -> None:
@@ -204,14 +132,11 @@ class HistoricalReplayDecisionAuthority:
             raise ValueError("A reprocess must have a new unique request fingerprint")
         if int(getattr(new_run, "reprocess_of_run_id", -1)) != int(previous_run.id):
             raise ValueError("Invalid replay lineage parent")
-        # The new parent must not already be a descendant of the new run.
         cursor = previous_run
         seen: set[int] = set()
         while cursor is not None:
             current_id = int(cursor.id)
-            if current_id in seen:
+            if current_id in seen or current_id == int(new_run.id):
                 raise ValueError("Replay lineage cycle detected")
             seen.add(current_id)
-            if current_id == int(new_run.id):
-                raise ValueError("Replay lineage cycle detected")
             cursor = getattr(cursor, "reprocess_of", None)
