@@ -88,9 +88,9 @@ def test_lineage_cycle_is_rejected():
     run1 = run(status="FAILED", run_id=1, fingerprint="fp-1")
     run2 = run(status="FAILED", run_id=2, fingerprint="fp-2", parent=1)
     run3 = run(status="FAILED", run_id=3, fingerprint="fp-3", parent=2)
-    run1.reprocess_of = run3
+    run2.reprocess_of = run3
     with pytest.raises(ValueError, match="cycle"):
-        AUTHORITY.assert_valid_lineage(previous_run=run1, new_run=run3)
+        AUTHORITY.assert_valid_lineage(previous_run=run2, new_run=run3)
 
 
 def test_98k_pending_order_requires_evidence_not_activated_flag():
