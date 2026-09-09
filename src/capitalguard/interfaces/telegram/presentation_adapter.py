@@ -1,4 +1,10 @@
-"""Pure Telegram presentation models for forwarded-signal intake."""
+"""Pure Telegram presentation models for forwarded-signal intake.
+
+This module deliberately contains no persistence, parsing, routing, market, or
+lifecycle logic. It translates already-authorized Core read data into safe
+Telegram text and keyboard models.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -34,6 +40,8 @@ class CardAction(str, Enum):
 
 @dataclass(frozen=True)
 class TelegramCardView:
+    """Presentation-only result consumed by a Telegram handler."""
+
     text: str
     reply_markup: InlineKeyboardMarkup | None
     visual_state: VisualCardState
@@ -42,12 +50,14 @@ class TelegramCardView:
 
 @dataclass(frozen=True)
 class BatchSummaryView:
+    """Presentation-only summary for a transport/import batch."""
+
     text: str
     reply_markup: InlineKeyboardMarkup | None
     actions: tuple[str, ...] = ()
 
 
-_ACTION_LABELS = {
+_ACTION_LABELS: dict[str, str] = {
     CardAction.ACCEPT_LIVE_REVIEW.value: "تأكيد المراجعة الحية",
     CardAction.IMPORT_HISTORICAL.value: "المحاكاة التاريخية",
     CardAction.TRACK_ONLY.value: "تتبع فقط",
@@ -60,6 +70,19 @@ _ACTION_LABELS = {
     CardAction.RETRY.value: "إعادة المحاولة",
     CardAction.PROVIDE_SOURCE.value: "إثبات المصدر",
     CardAction.DISMISS.value: "إلغاء",
+}
+
+_INTERNAL_FIELDS = {
+    "batch_id",
+    "claim_status",
+    "receipt_id",
+    "replay_gate",
+    "replay_gate_reasons",
+    "temporal_route",
+    "temporal_mode",
+    "reason_codes",
+    "source_uri",
+    "correlation_id",
 }
 
 
@@ -76,10 +99,12 @@ def _text(value: Any, default: str = "—") -> str:
 
 
 def _source_time_text(value: Any) -> str:
+    """Render source T0 clearly while preserving the stored timestamp."""
     if value is None or value == "":
         return "—"
     try:
         from datetime import datetime, timezone
+
         parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             return escape(parsed.strftime("%Y-%m-%d %H:%M:%S UTC"))
@@ -89,15 +114,22 @@ def _source_time_text(value: Any) -> str:
 
 
 def _normalize_actions(actions: Sequence[str] | None) -> tuple[str, ...]:
-    normalized = []
-    for action in actions or ():
+    if not actions:
+        return ()
+    normalized: list[str] = []
+    for action in actions:
         value = str(action).strip().upper()
         if value in _ACTION_LABELS and value not in normalized:
             normalized.append(value)
     return tuple(normalized)
 
 
-def _state_for(*, visual_state, internal_status, substatus) -> VisualCardState:
+def _state_for(
+    *,
+    visual_state: VisualCardState | str | None,
+    internal_status: str | None,
+    substatus: str | None,
+) -> VisualCardState:
     if visual_state is not None:
         if isinstance(visual_state, VisualCardState):
             return visual_state
@@ -114,6 +146,7 @@ def _state_for(*, visual_state, internal_status, substatus) -> VisualCardState:
 
 
 def _route_badge(route: Any) -> str:
+    normalized = str(route or "").strip().upper()
     return {
         "LIVE_REVIEW": "توصية حية",
         "HISTORICAL_CANDIDATE": "توصية تاريخية",
@@ -123,7 +156,7 @@ def _route_badge(route: Any) -> str:
         "REVISION_REVIEW": "تم الاستخراج؛ يحتاج استكمالًا بسيطًا",
         "DUPLICATE": "♻️ التوصية مسجلة مسبقاً",
         "ALREADY_REGISTERED": "♻️ التوصية مسجلة مسبقاً",
-    }.get(str(route or "").strip().upper(), "الحالة محدثة")
+    }.get(normalized, "الحالة محدثة")
 
 
 def _format_targets(targets: Any) -> str:
@@ -131,10 +164,12 @@ def _format_targets(targets: Any) -> str:
         return "—"
     if isinstance(targets, Mapping):
         targets = [targets]
-    if isinstance(targets, (str, bytes)) or not isinstance(targets, Sequence):
+    if isinstance(targets, (str, bytes)):
         return _text(targets)
-    rendered = []
-    for index, target in enumerate(targets, 1):
+    if not isinstance(targets, Sequence):
+        return _text(targets)
+    rendered: list[str] = []
+    for index, target in enumerate(targets, start=1):
         if isinstance(target, Mapping):
             price = target.get("price", target.get("value", target.get("target")))
             percentage = target.get("percentage", target.get("allocation"))
@@ -146,55 +181,97 @@ def _format_targets(targets: Any) -> str:
 
 
 def _has_complete_extraction(candidate: Any) -> bool:
-    values = (
-        _value(candidate, "asset", _value(candidate, "symbol")),
-        _value(candidate, "side", _value(candidate, "direction")),
-        _value(candidate, "entry", _value(candidate, "entry_price")),
-        _value(candidate, "stop_loss", _value(candidate, "sl")),
-        _value(candidate, "targets", _value(candidate, "take_profits")),
-    )
-    return all(value not in (None, "", []) for value in values)
+    """Keep extraction visibility independent from deferred semantic/replay work."""
+    asset = _value(candidate, "asset", _value(candidate, "symbol"))
+    side = _value(candidate, "side", _value(candidate, "direction"))
+    entry = _value(candidate, "entry", _value(candidate, "entry_price"))
+    stop_loss = _value(candidate, "stop_loss", _value(candidate, "sl"))
+    targets = _value(candidate, "targets", _value(candidate, "take_profits"))
+    return all(value not in (None, "", []) for value in (asset, side, entry, stop_loss, targets))
 
 
-def _button_markup(actions, callback_data_factory):
+def _button_markup(
+    actions: Sequence[str],
+    callback_data_factory: Callable[[str], str] | None,
+) -> InlineKeyboardMarkup | None:
     if not actions:
         return None
     factory = callback_data_factory or (lambda action: action)
-    buttons = [InlineKeyboardButton(_ACTION_LABELS[action], callback_data=factory(action)) for action in actions]
-    return InlineKeyboardMarkup([buttons[index:index + 2] for index in range(0, len(buttons), 2)])
+    buttons = [
+        InlineKeyboardButton(_ACTION_LABELS[action], callback_data=factory(action))
+        for action in actions
+    ]
+    rows: list[list[InlineKeyboardButton]] = []
+    for index in range(0, len(buttons), 2):
+        rows.append(buttons[index : index + 2])
+    return InlineKeyboardMarkup(rows)
 
 
-def build_card(candidate: Any, *, temporal_route=None, source_timestamp=None, source_title=None,
-               allowed_actions=None, visual_state=None, internal_status=None, substatus=None,
-               provenance=None, callback_data_factory=None) -> TelegramCardView:
-    state = _state_for(visual_state=visual_state, internal_status=internal_status, substatus=substatus)
+def build_card(
+    candidate: Any,
+    *,
+    temporal_route: str | None = None,
+    source_timestamp: Any = None,
+    source_title: Any = None,
+    allowed_actions: Sequence[str] | None = None,
+    visual_state: VisualCardState | str | None = None,
+    internal_status: str | None = None,
+    substatus: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
+    callback_data_factory: Callable[[str], str] | None = None,
+) -> TelegramCardView:
+    """Build one safe card from already-authorized read data.
+
+    The function never evaluates a temporal route and never invents an action.
+    The caller must provide the actions authorized by Core.
+    """
+
+    state = _state_for(
+        visual_state=visual_state,
+        internal_status=internal_status,
+        substatus=substatus,
+    )
     actions = list(_normalize_actions(allowed_actions))
-    route = str(temporal_route or "").strip().upper()
-    if route in {"HISTORICAL_CANDIDATE", "QUARANTINE", "UNVERIFIED_TIME"}:
-        actions = [a for a in actions if a not in {CardAction.ACCEPT_LIVE_REVIEW.value, CardAction.RECOVER_REVIEW.value}]
+    normalized_route = str(temporal_route or "").strip().upper()
+    if normalized_route in {"HISTORICAL_CANDIDATE", "QUARANTINE", "UNVERIFIED_TIME"}:
+        actions = [
+            action
+            for action in actions
+            if action not in {CardAction.ACCEPT_LIVE_REVIEW.value, CardAction.RECOVER_REVIEW.value}
+        ]
     provenance = provenance or {}
     conflict = bool(provenance.get("conflict")) or str(substatus or "").upper() == "CONFLICT"
     if conflict:
         state = VisualCardState.INCOMPLETE
     elif state == VisualCardState.INCOMPLETE and _has_complete_extraction(candidate):
+        # A deferred semantic/replay decision must not hide fields already extracted.
         state = VisualCardState.COMPLETE
+
     status_title = {
         VisualCardState.COMPLETE: "تم استخراج التوصية",
         VisualCardState.INCOMPLETE: "تم الاستخراج ويحتاج استكمالًا بسيطًا",
         VisualCardState.UNAVAILABLE: "تعذر تجهيز التوصية مؤقتًا",
     }[state]
+    route_label = _route_badge(temporal_route)
     asset = _value(candidate, "asset", _value(candidate, "symbol"))
     side = _value(candidate, "side", _value(candidate, "direction"))
     entry = _value(candidate, "entry", _value(candidate, "entry_price"))
     stop_loss = _value(candidate, "stop_loss", _value(candidate, "sl"))
     targets = _value(candidate, "targets", _value(candidate, "take_profits"))
     market = _value(candidate, "market")
+
     lines = [
-        f"<b>{status_title}</b>", f"الحالة: {_text(_route_badge(temporal_route))}",
-        f"المصدر: {_text(source_title)}", f"وقت النشر: {_source_time_text(source_timestamp)}", "",
-        f"الأصل: <code>{_text(asset)}</code>", f"الاتجاه: <code>{_text(side)}</code>",
-        f"السوق: <code>{_text(market)}</code>", f"الدخول: <code>{_text(entry)}</code>",
-        f"الأهداف:\n<code>{_format_targets(targets)}</code>", f"وقف الخسارة: <code>{_text(stop_loss)}</code>",
+        f"<b>{status_title}</b>",
+        f"الحالة: {_text(route_label)}",
+        f"المصدر: {_text(source_title)}",
+        f"وقت النشر: {_source_time_text(source_timestamp)}",
+        "",
+        f"الأصل: <code>{_text(asset)}</code>",
+        f"الاتجاه: <code>{_text(side)}</code>",
+        f"السوق: <code>{_text(market)}</code>",
+        f"الدخول: <code>{_text(entry)}</code>",
+        f"الأهداف:\n<code>{_format_targets(targets)}</code>",
+        f"وقف الخسارة: <code>{_text(stop_loss)}</code>",
     ]
     if conflict:
         lines.extend(["", "توجد قيم متعارضة. راجعها وعدّل القيمة الصحيحة إذا لزم."])
@@ -202,29 +279,57 @@ def build_card(candidate: Any, *, temporal_route=None, source_timestamp=None, so
         lines.extend(["", "يمكنك إكمال أو تعديل القيم من زر التعديل في Web."])
     elif state == VisualCardState.UNAVAILABLE:
         lines.extend(["", "يمكنك إعادة المحاولة أو استخدام الإدخال اليدوي إذا كان متاحًا."])
-    return TelegramCardView("\n".join(lines), _button_markup(actions, callback_data_factory), state, tuple(actions))
+
+    return TelegramCardView(
+        text="\n".join(lines),
+        reply_markup=_button_markup(actions, callback_data_factory),
+        visual_state=state,
+        actions=tuple(actions),
+    )
 
 
-def build_single_result_card(candidate: Any, *, temporal_route=None, source_timestamp=None, source_title=None,
-                             allowed_actions=None, visual_state=None, internal_status=None, substatus=None,
-                             provenance=None, financial_outcome=None, replay_result=None,
-                             callback_data_factory=None) -> TelegramCardView:
-    base = build_card(candidate, temporal_route=temporal_route, source_timestamp=source_timestamp,
-                      source_title=source_title, allowed_actions=allowed_actions, visual_state=visual_state,
-                      internal_status=internal_status, substatus=substatus, provenance=provenance,
-                      callback_data_factory=callback_data_factory)
+def build_single_result_card(
+    candidate: Any,
+    *,
+    temporal_route: str | None = None,
+    source_timestamp: Any = None,
+    source_title: Any = None,
+    allowed_actions: Sequence[str] | None = None,
+    visual_state: VisualCardState | str | None = None,
+    internal_status: str | None = None,
+    substatus: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
+    financial_outcome: Mapping[str, Any] | None = None,
+    replay_result: Mapping[str, Any] | None = None,
+    callback_data_factory: Callable[[str], str] | None = None,
+) -> TelegramCardView:
+    """Build a single-forward card with extraction and explicitly sourced outcome data."""
+
+    base = build_card(
+        candidate,
+        temporal_route=temporal_route,
+        source_timestamp=source_timestamp,
+        source_title=source_title,
+        allowed_actions=allowed_actions,
+        visual_state=visual_state,
+        internal_status=internal_status,
+        substatus=substatus,
+        provenance=provenance,
+        callback_data_factory=callback_data_factory,
+    )
     lines = [base.text, "", "<b>نتيجة ما عمله النظام</b>"]
-    replay = dict(replay_result or {})
+    replay = replay_result or {}
     outcome = dict(financial_outcome or {})
     if outcome.get("exit_price") is None:
         outcome["exit_price"] = _value(candidate, "exit_price")
-    status = str(replay.get("replay_status") or replay.get("status") or "").upper()
-    if status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "ACTIVE", "PENDING_ORDER", "ACTIVE_POSITION"}:
-        if status in {"ACTIVE", "ACTIVE_POSITION", "PENDING_ORDER"} and not replay.get("lifecycle_status"):
-            replay["lifecycle_status"] = status if status != "ACTIVE" else "ACTIVE_POSITION"
-        lines.extend(format_financial_replay_result(replay, events=replay.get("events")))
+    replay_status = str(replay.get("replay_status") or "").upper()
+    if replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "ACTIVE", "PENDING_ORDER", "ACTIVE_POSITION"}:
+        if replay_status in {"ACTIVE", "PENDING_ORDER"} and not replay.get("lifecycle_status"):
+            replay = dict(replay)
+            replay["lifecycle_status"] = "ACTIVE_POSITION" if replay_status == "ACTIVE" else "PENDING_ORDER"
+        lines.extend(format_financial_replay_result(replay))
     elif replay:
-        messages = {
+        replay_message = {
             "BLOCKED": "المحاكاة التاريخية مؤجلة؛ نتيجة الاستخراج جاهزة.",
             "REVIEW_REQUIRED": "المحاكاة التاريخية تنتظر استكمال القيم؛ يمكنك تعديل الاستخراج.",
             "REPLAY_PENDING": "المحاكاة التاريخية قيد الانتظار؛ تم حفظ الاستخراج.",
@@ -234,26 +339,49 @@ def build_single_result_card(candidate: Any, *, temporal_route=None, source_time
             "PROVIDER_UNAVAILABLE": "تعذر جلب بيانات السوق الآن؛ تم حفظ الاستخراج ويمكن إعادة المحاولة لاحقًا.",
             "PARTIAL_WINDOW": "⚠️ وصلت المحاكاة إلى G6، لكن التغطية التاريخية جزئية؛ لن يتم احتساب إغلاق أو ربح كامل دون تغطية زمنية كافية.",
             "PARTIAL": "المحاكاة التاريخية جزئية؛ تم حفظ ما توفر.",
-        }
-        lines.append(messages.get(status, "المحاكاة التاريخية لم تكتمل بعد؛ تم حفظ الاستخراج."))
-        if status == "PARTIAL_WINDOW":
-            coverage = replay.get("coverage_status") or "PARTIAL_WINDOW"
-            ratio = replay.get("coverage_ratio")
-            lines.append(f"التغطية: <code>{_text(coverage)}</code>" + (f" · {float(ratio) * 100:.2f}%" if ratio is not None else ""))
+        }.get(replay_status, "المحاكاة التاريخية لم تكتمل بعد؛ تم حفظ الاستخراج.")
+        lines.append(replay_message)
+        if replay_status == "PARTIAL_WINDOW":
+            coverage_status = replay.get("coverage_status") or "PARTIAL_WINDOW"
+            coverage_ratio = replay.get("coverage_ratio")
+            if coverage_ratio is not None:
+                lines.append(f"التغطية: <code>{_text(coverage_status)}</code> · {float(coverage_ratio) * 100:.2f}%")
+            else:
+                lines.append(f"التغطية: <code>{_text(coverage_status)}</code>")
+            if replay.get("coverage_start") or replay.get("coverage_end"):
+                lines.append(f"النطاق المتاح: <code>{_text(replay.get('coverage_start'))} → {_text(replay.get('coverage_end'))}</code>")
             lines.append("تم حفظ الاستخراج وبيانات G5؛ لا توجد نتيجة تداول كاملة ما لم تصبح التغطية FULL.")
     elif outcome.get("status") or outcome.get("reported_pnl_pct") is not None or outcome.get("derived_pnl_pct") is not None:
         lines.append("النتيجة الموجودة في الرسالة المصدر (لم تُعتبر Replay موثقًا):")
-        if outcome.get("status") is not None: lines.append(f"الحالة: <code>{_text(outcome['status'])}</code>")
-        if outcome.get("reported_pnl_pct") is not None: lines.append(f"النتيجة المذكورة: <code>{_text(outcome['reported_pnl_pct'])}%</code>")
-        if outcome.get("derived_pnl_pct") is not None: lines.append(f"النتيجة المحسوبة من الدخول والخروج: <code>{_text(outcome['derived_pnl_pct'])}%</code>")
-        if outcome.get("exit_price") is not None: lines.append(f"سعر الخروج: <code>{_text(outcome['exit_price'])}</code>")
+        if outcome.get("status") is not None:
+            lines.append(f"الحالة: <code>{_text(outcome.get('status'))}</code>")
+        if outcome.get("reported_pnl_pct") is not None:
+            lines.append(f"النتيجة المذكورة: <code>{_text(outcome.get('reported_pnl_pct'))}%</code>")
+        if outcome.get("derived_pnl_pct") is not None:
+            lines.append(f"النتيجة المحسوبة من الدخول والخروج: <code>{_text(outcome.get('derived_pnl_pct'))}%</code>")
+        if outcome.get("exit_price") is not None:
+            lines.append(f"سعر الخروج: <code>{_text(outcome.get('exit_price'))}</code>")
         lines.append("المحاكاة السوقية التاريخية تحتاج Evidence وReplay مستقلين.")
     else:
-        lines.extend(["المحاكاة التاريخية: لم تُنفذ بعد", "تم حفظ الاستخراج، وتحتاج النتيجة إلى بيانات السوق وReplay قبل اعتبارها محققة."])
-    return TelegramCardView("\n".join(lines), base.reply_markup, base.visual_state, base.actions)
+        lines.append("المحاكاة التاريخية: لم تُنفذ بعد")
+        lines.append("تم حفظ الاستخراج، وتحتاج النتيجة إلى بيانات السوق وReplay قبل اعتبارها محققة.")
+    return TelegramCardView(
+        text="\n".join(lines),
+        reply_markup=base.reply_markup,
+        visual_state=base.visual_state,
+        actions=base.actions,
+    )
 
 
-def build_batch_summary(summary: Any, *, allowed_actions=None, callback_data_factory=None, extracted_items=None) -> BatchSummaryView:
+def build_batch_summary(
+    summary: Any,
+    *,
+    allowed_actions: Sequence[str] | None = None,
+    callback_data_factory: Callable[[str], str] | None = None,
+    extracted_items: Sequence[Any] | None = None,
+) -> BatchSummaryView:
+    """Build a concise user-facing summary without operational identifiers."""
+
     actions = _normalize_actions(allowed_actions)
     total = _value(summary, "total_records", _value(summary, "total", 0))
     complete = _value(summary, "complete_records", _value(summary, "accepted_records", 0))
@@ -262,48 +390,89 @@ def build_batch_summary(summary: Any, *, allowed_actions=None, callback_data_fac
     duplicate = _value(summary, "duplicate_records", 0)
     processed = _value(summary, "processed_records", None)
     source_title = _value(summary, "source_title", None)
-    lines = ["<b>ملخص معالجة الدفعة</b>"]
-    if source_title: lines.append(f"المصدر: {_text(source_title)}")
     period = _value(summary, "period", None)
-    if period: lines.append(f"الفترة: {_text(period)}")
-    lines.append(f"تمت المعالجة: {_text(processed)} من {_text(total)}" if processed is not None and total else f"تم الاستلام: {_text(total)}")
-    lines.extend([f"مكتملة: {_text(complete)}", f"تحتاج استكمالًا: {_text(incomplete)}", f"تعذر تجهيزها: {_text(unavailable)}"])
-    if duplicate: lines.append(f"مكررة: {_text(duplicate)}")
+
+    lines = ["<b>ملخص معالجة الدفعة</b>"]
+    if source_title:
+        lines.append(f"المصدر: {_text(source_title)}")
+    if period:
+        lines.append(f"الفترة: {_text(period)}")
+    if processed is not None and total:
+        lines.append(f"تمت المعالجة: {_text(processed)} من {_text(total)}")
+    else:
+        lines.append(f"تم الاستلام: {_text(total)}")
+    lines.extend(
+        [
+            f"مكتملة: {_text(complete)}",
+            f"تحتاج استكمالًا: {_text(incomplete)}",
+            f"تعذر تجهيزها: {_text(unavailable)}",
+        ]
+    )
+    if duplicate:
+        lines.append(f"مكررة: {_text(duplicate)}")
     replay_status = str(_value(summary, "replay_status", "") or "").upper()
     replay_completed = _value(summary, "replay_completed_records", None)
     replay_failed = _value(summary, "replay_failed_records", None)
     replay_pending = _value(summary, "replay_pending_records", None)
-    if replay_status or any(v is not None for v in (replay_completed, replay_failed, replay_pending)):
-        lines.extend(["", "<b>نتيجة المحاكاة التاريخية:</b>"])
-        if replay_completed is not None: lines.append(f"مكتملة: {_text(replay_completed)}")
-        if replay_failed is not None: lines.append(f"تعذر إكمالها: {_text(replay_failed)}")
-        if replay_pending is not None: lines.append(f"تنتظر نتيجة: {_text(replay_pending)}")
-        if replay_status == "COMPLETED_UNVERIFIABLE": lines.append("⚠️ اكتملت المحاكاة وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
-        elif replay_status == "COMPLETED": lines.append("اكتملت المحاكاة وفق بيانات السوق المتاحة.")
-        elif replay_failed: lines.append("تم حفظ الاستخراج؛ بعض النتائج التاريخية لم تكتمل.")
-        elif replay_pending: lines.append("تم حفظ الاستخراج؛ بعض النتائج التاريخية لم تكتمل بعد.")
+
+    if replay_status or any(value is not None for value in (replay_completed, replay_failed, replay_pending)):
+        lines.append("")
+        lines.append("<b>نتيجة المحاكاة التاريخية:</b>")
+        if replay_completed is not None:
+            lines.append(f"مكتملة: {_text(replay_completed)}")
+        if replay_failed is not None:
+            lines.append(f"تعذر إكمالها: {_text(replay_failed)}")
+        if replay_pending is not None:
+            lines.append(f"تنتظر نتيجة: {_text(replay_pending)}")
+        if replay_status == "COMPLETED_UNVERIFIABLE":
+            lines.append("⚠️ اكتملت المحاكاة وتم حسم الإغلاق المالي، مع تعذر التحقق الكامل من ترتيب الصفقات اللحظية داخل بعض الشموع.")
+        elif replay_status == "COMPLETED":
+            lines.append("اكتملت المحاكاة وفق بيانات السوق المتاحة.")
+        elif replay_failed:
+            lines.append("تم حفظ الاستخراج؛ بعض النتائج التاريخية لم تكتمل.")
+        elif replay_pending:
+            lines.append("تم حفظ الاستخراج؛ بعض النتائج التاريخية لم تكتمل بعد.")
     if extracted_items:
         lines.extend(["", "<b>عينات مما استُخرج:</b>"])
-        for index, item in enumerate(extracted_items[:3], 1):
-            asset = _value(item, "asset", _value(item, "symbol")); side = _value(item, "side", _value(item, "direction"))
-            entry = _value(item, "entry", _value(item, "entry_price")); stop = _value(item, "stop_loss", _value(item, "sl"))
+        for index, item in enumerate(extracted_items[:3], start=1):
+            asset = _value(item, "asset", _value(item, "symbol"))
+            side = _value(item, "side", _value(item, "direction"))
+            entry = _value(item, "entry", _value(item, "entry_price"))
+            stop_loss = _value(item, "stop_loss", _value(item, "sl"))
             targets = _value(item, "targets", _value(item, "take_profits"))
-            lines.append(f"{index}. <code>{_text(asset)}</code> · {_text(side)} · دخول {_text(entry)} · وقف {_text(stop)}")
-            if targets: lines.append(f"   الأهداف: {_text(_format_targets(targets).replace(chr(10), '، '))}")
+            lines.append(f"{index}. <code>{_text(asset)}</code> · {_text(side)} · دخول {_text(entry)} · وقف {_text(stop_loss)}")
+            if targets:
+                lines.append(f"   الأهداف: {_text(_format_targets(targets).replace(chr(10), '، '))}")
             replay = _value(item, "_replay", {}) or {}
-            if replay.get("replay_status"):
-                detail = f"المحاكاة: {_text(replay['replay_status'])} · أحداث {_text(replay.get('event_count', 0))}"
-                if replay.get("last_event"): detail += f" · آخر حدث {_text(replay['last_event'])}"
+            replay_status = replay.get("replay_status")
+            if replay_status:
+                detail = f"المحاكاة: {_text(replay_status)} · أحداث {_text(replay.get('event_count', 0))}"
+                if replay.get("last_event"):
+                    detail += f" · آخر حدث {_text(replay.get('last_event'))}"
                 lines.append(f"   {detail}")
     if incomplete or unavailable:
         lines.append("تظهر التفاصيل الكاملة لكل عنصر، ويمكنك تعديل القيم الناقصة بسرعة من Web.")
-    elif replay_failed or replay_pending:
-        lines.append("اكتمل استخراج القيم، وتظهر حالة المحاكاة التاريخية أعلاه.")
-    elif replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
-        lines.append("اكتملت المعالجة والمحاكاة التاريخية.")
     else:
-        lines.append("اكتملت المعالجة دون استثناءات ظاهرة.")
-    return BatchSummaryView("\n".join(lines), _button_markup(actions, callback_data_factory), actions)
+        if replay_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"} and not replay_failed and not replay_pending:
+            lines.append("اكتملت المعالجة والمحاكاة التاريخية.")
+        elif replay_failed or replay_pending:
+            lines.append("اكتمل استخراج القيم، وتظهر حالة المحاكاة التاريخية أعلاه.")
+        else:
+            lines.append("اكتملت المعالجة دون استثناءات ظاهرة.")
+
+    return BatchSummaryView(
+        text="\n".join(lines),
+        reply_markup=_button_markup(actions, callback_data_factory),
+        actions=actions,
+    )
 
 
-__all__ = ["BatchSummaryView", "CardAction", "TelegramCardView", "VisualCardState", "build_batch_summary", "build_card", "build_single_result_card"]
+__all__ = [
+    "BatchSummaryView",
+    "CardAction",
+    "TelegramCardView",
+    "VisualCardState",
+    "build_batch_summary",
+    "build_card",
+    "build_single_result_card",
+]
