@@ -55,7 +55,7 @@ def parse_decimal_token(token: str) -> Optional[Decimal]:
             multiplier = _SUFFIXES["B"]
             num_part = s[:-1]
         # Reject semantic labels / clock timestamps before stripping punctuation.
-        if re.fullmatch(r"(?:tp|target)\d*", s, flags=re.IGNORECASE):
+        if re.fullmatch(r"(?:tp|target)\d*\s*[:=-]?", s, flags=re.IGNORECASE):
             return None
         if re.fullmatch(r"(?:[01]?\d|2[0-3]):[0-5]\d", s):
             return None
