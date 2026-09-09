@@ -419,6 +419,7 @@ class HistoricalMarketReplayService:
         drilldown_days: list[str] = []
         macro_chunks: list[dict] = []
         macro_statuses: list[str] = []
+        minute_statuses: list[str] = []
         macro_times = []
         first_actual = None
         last_actual = None
@@ -446,7 +447,7 @@ class HistoricalMarketReplayService:
                 asset=str(signal.asset or ""), market=signal.market,
                 start=day_zero_window.start, end=day_zero_window.end,
             )
-            macro_statuses.append(minute_coverage.status.value)
+            minute_statuses.append(minute_coverage.status.value)
             if minutes:
                 drilldown_days.append(day_zero.isoformat())
                 day_events = self.replay_candles(
@@ -536,7 +537,7 @@ class HistoricalMarketReplayService:
                     asset=str(signal.asset or ""), market=signal.market,
                     start=window.start, end=window.end,
                 )
-                macro_statuses.append(minute_coverage.status.value)
+                minute_statuses.append(minute_coverage.status.value)
                 if state.activated and minute_coverage.status.value in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"}: incomplete_after_activation=True
                 if not minutes:
                     event_time = self._utc(day_candle.open_time)
@@ -611,7 +612,8 @@ class HistoricalMarketReplayService:
         else:
             run.status = "COMPLETED"; run.termination_reason = "HORIZON_REACHED_UNTRIGGERED"; run.exit_timestamp = end_utc
 
-        run.coverage_status = "FULL" if macro_statuses and not any(status in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"} for status in macro_statuses) else ("GAPPED" if "GAPPED" in macro_statuses else "PARTIAL_WINDOW")
+        coverage_statuses = macro_statuses + (minute_statuses if state.activated else [])
+        run.coverage_status = "FULL" if coverage_statuses and not any(status in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"} for status in coverage_statuses) else ("GAPPED" if "GAPPED" in coverage_statuses else "PARTIAL_WINDOW")
         run.coverage_ratio = (macro_actual / macro_expected) if macro_expected else 0.0
         run.actual_start = first_actual
         run.actual_end = last_actual
