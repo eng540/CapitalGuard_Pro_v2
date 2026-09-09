@@ -574,9 +574,9 @@ class HistoricalForwardingService:
         if "AMBIGUOUS" in event_types:
             return "CLOSED_UNVERIFIABLE"
         if "SL" in event_types:
-            return "CLOSED_SL"
+            return "CLOSED_STOP"
         if "CLOSE" in event_types:
-            return "CLOSED_SOURCE"
+            return "CLOSED_UNVERIFIABLE"
         target_count = len(signal.targets or [])
         hit_targets = {item for item in event_types if item.startswith("TP") and item[2:].isdigit()}
         if target_count and len(hit_targets) >= target_count:
