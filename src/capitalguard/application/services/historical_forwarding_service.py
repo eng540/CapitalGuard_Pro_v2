@@ -572,18 +572,18 @@ class HistoricalForwardingService:
     def _lifecycle_status(signal, events) -> str:
         event_types = [str(getattr(event, "event_type", "")) for event in events]
         if "AMBIGUOUS" in event_types:
-            return "AMBIGUOUS"
+            return "CLOSED_UNVERIFIABLE"
         if "SL" in event_types:
-            return "CLOSED_SL"
+            return "CLOSED_STOP"
         if "CLOSE" in event_types:
-            return "CLOSED_SOURCE"
+            return "CLOSED_UNVERIFIABLE"
         target_count = len(signal.targets or [])
         hit_targets = {item for item in event_types if item.startswith("TP") and item[2:].isdigit()}
         if target_count and len(hit_targets) >= target_count:
             return "CLOSED_TARGETS"
         if "ACTIVATED" in event_types:
-            return "ACTIVE"
-        return "NOT_ACTIVATED"
+            return "ACTIVE_POSITION"
+        return "PENDING_ORDER"
 
     def _canonical_auto_batch(self, session: Session, batch: HistoricalImportBatch) -> bool:
         """Allow historical replay from genuine forwards without claiming trust.
@@ -882,7 +882,7 @@ class HistoricalForwardingService:
                     interval,
                     end.isoformat(),
                 )
-                error_message = f"[{type(exc).__name__}] {str(exc)}"
+                error_message = f"[{type(exc).__name__}] {str(exc)}; G5 evidence was preserved."
                 item.update({
                     "status": "REPLAY_FAILED",
                     "replay_status": "FAILED",

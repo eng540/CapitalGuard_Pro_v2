@@ -49,30 +49,38 @@ def test_full_day_is_two_pages_max_1000_and_440():
     assert pages[-1].end == datetime(2026, 1, 11, tzinfo=UTC)
 
 
-def test_lifecycle_state_persists_remaining_targets():
+def test_lifecycle_state_persists_remaining_targets_and_fixed_stop():
+    # Verification gate: historical lifecycle must not silently trail the original stop.
     state = LifecycleState(
         activated=True,
         hit_target_indices=frozenset({1}),
         remaining_target_indices=frozenset({2, 3}),
         current_stop=100,
-        lifecycle_state="ACTIVE",
+        lifecycle_state="ACTIVE_POSITION",
     )
     state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(
         state,
         event_type="TP2",
         target_index=2,
+        stop=100,
         timestamp=datetime(2026, 1, 11, tzinfo=UTC),
     )
     assert state.hit_target_indices == frozenset({1, 2})
     assert state.remaining_target_indices == frozenset({3})
     assert state.current_stop == 100
-    assert state.lifecycle_state == "ACTIVE"
+    assert state.lifecycle_state == "ACTIVE_POSITION"
 
 
 def test_terminal_lifecycle_is_terminal():
-    state = LifecycleState(activated=True, remaining_target_indices=frozenset({2}))
+    state = LifecycleState(
+        activated=True,
+        remaining_target_indices=frozenset({2}),
+        current_stop=100,
+        lifecycle_state="ACTIVE_POSITION",
+    )
     state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(
         state, event_type="SL", timestamp=datetime(2026, 1, 12, tzinfo=UTC)
     )
     assert state.lifecycle_state == "CLOSED_STOP"
+    assert state.current_stop == 100
     assert AdaptiveHistoricalReplayPlanner.terminal(state)

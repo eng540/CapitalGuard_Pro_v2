@@ -73,7 +73,10 @@ def _floor_to_grid(value: datetime, interval: timedelta) -> datetime:
 def _expected_market_grid(*, requested_start: datetime, requested_end: datetime, interval: timedelta) -> tuple[datetime, datetime, list[datetime]]:
     start = _utc(requested_start)
     end = _utc(requested_end)
-    market_grid_start = _floor_to_grid(start, interval) + interval
+    floor_start = _floor_to_grid(start, interval)
+    # A completed UTC daily candle opened at requested_start covers the whole
+    # requested day; preserve the established minute-level signal boundary rule.
+    market_grid_start = floor_start if interval >= timedelta(days=1) and start == floor_start else floor_start + interval
     duration = end - start
     expected_count = int((duration + interval - timedelta(microseconds=1)) // interval)
     expected_count = max(0, expected_count)

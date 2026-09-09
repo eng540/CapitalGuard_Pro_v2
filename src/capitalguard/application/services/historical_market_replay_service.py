@@ -403,7 +403,7 @@ class HistoricalMarketReplayService:
             start=source_time, replay_end=end_utc, interval="1m", limit=limit,
             retry_of_fingerprint=retry_of_fingerprint,
         )
-        if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE", "STILL_ACTIVE"}:
+        if not created and run.status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
             events = session.execute(select(HistoricalSignalEvent).where(HistoricalSignalEvent.replay_run_id == run.id).order_by(HistoricalSignalEvent.event_timestamp, HistoricalSignalEvent.id)).scalars().all()
             return {"run": run, "events": events, "status": run.status, "replayed": True}
 
@@ -412,18 +412,20 @@ class HistoricalMarketReplayService:
             hit_target_indices=frozenset(),
             remaining_target_indices=frozenset(range(1, len(target_levels) + 1)),
             current_stop=stop,
-            lifecycle_state="NOT_ACTIVATED",
+            lifecycle_state="PENDING_ORDER",
             last_processed_timestamp=None,
         )
         all_events: list[HistoricalSignalEvent] = []
         drilldown_days: list[str] = []
         macro_chunks: list[dict] = []
         macro_statuses: list[str] = []
+        minute_statuses: list[str] = []
         macro_times = []
         first_actual = None
         last_actual = None
         macro_expected = 0
         macro_actual = 0
+        incomplete_after_activation = False
         fetched_at = datetime.now(timezone.utc)
 
         def range_touches(candle, level: Decimal, *, is_stop: bool = False) -> bool:
@@ -445,7 +447,7 @@ class HistoricalMarketReplayService:
                 asset=str(signal.asset or ""), market=signal.market,
                 start=day_zero_window.start, end=day_zero_window.end,
             )
-            macro_statuses.append(minute_coverage.status.value)
+            minute_statuses.append(minute_coverage.status.value)
             if minutes:
                 drilldown_days.append(day_zero.isoformat())
                 day_events = self.replay_candles(
@@ -463,13 +465,13 @@ class HistoricalMarketReplayService:
                     event_type = str(event.event_type)
                     last_ts = event.event_timestamp
                     if event_type == "ACTIVATED":
-                        activated = True; lifecycle = "ACTIVE"
+                        activated = True; lifecycle = "ACTIVE_POSITION"
                     elif event_type.startswith("TP") and event_type[2:].isdigit():
-                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE"
+                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE_POSITION"
                     elif event_type == "SL":
                         lifecycle = "CLOSED_STOP"
                     elif event_type == "CLOSE":
-                        lifecycle = "FINAL_CLOSE"
+                        lifecycle = "CLOSED_UNVERIFIABLE"
                     elif event_type == "AMBIGUOUS":
                         lifecycle = "CLOSED_UNVERIFIABLE"
                 state = LifecycleState(
@@ -535,8 +537,32 @@ class HistoricalMarketReplayService:
                     asset=str(signal.asset or ""), market=signal.market,
                     start=window.start, end=window.end,
                 )
-                macro_statuses.append(minute_coverage.status.value)
+                minute_statuses.append(minute_coverage.status.value)
+                if state.activated and minute_coverage.status.value in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"}: incomplete_after_activation=True
                 if not minutes:
+                    event_time = self._utc(day_candle.open_time)
+                    entry_touched = entry is not None and range_touches(day_candle, entry)
+                    stop_level = state.current_stop
+                    stop_touched = stop_level is not None and range_touches(day_candle, stop_level, is_stop=True)
+                    target_events = [(i, level) for i, level in enumerate(target_levels, 1) if i in state.remaining_target_indices and range_touches(day_candle, level)]
+                    if not state.activated:
+                        if not entry_touched:
+                            continue
+                        possible = ['ACTIVATED']
+                        ambiguous = bool(stop_touched or target_events)
+                    else:
+                        possible = (['SL'] if stop_touched else []) + [f'TP{i}' for i, _ in target_events]
+                        if not possible:
+                            continue
+                        ambiguous = len(possible) != 1
+                    if ambiguous:
+                        all_events.append(self.signal_service.record_event(session, signal_id=signal_id, event_type='AMBIGUOUS', event_timestamp=event_time, market_as_of=event_time, data_source=day_candle.data_source, price=None, replay_status='AMBIGUOUS', event_confidence='0.0000', event_data={'replay_end': end_utc.isoformat(), 'candle_rule': 'DAILY_OHLC_NO_MINUTE_EVIDENCE', 'possible_events': possible, 'entry_touched': entry_touched, 'stop_touched': stop_touched, 'target_events': [f'TP{i}' for i, _ in target_events], 'high': str(day_candle.high), 'low': str(day_candle.low), 'replay_run_id': run.id}, dedup_key=f'g6:{run.id}:AMBIGUOUS:{event_time.isoformat()}', replay_run_id=run.id, refresh_ranking=False))
+                        state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(state, event_type='AMBIGUOUS', timestamp=event_time)
+                        break
+                    event_type=possible[0]; target_index=int(event_type[2:]) if event_type.startswith('TP') else None
+                    event_price=entry if event_type=='ACTIVATED' else stop_level if event_type=='SL' else target_levels[target_index-1]
+                    all_events.append(self.signal_service.record_event(session, signal_id=signal_id, event_type=event_type, event_timestamp=event_time, market_as_of=event_time, data_source=day_candle.data_source, price=event_price, replay_status='INFERRED', event_confidence='0.5000', event_data={'replay_end': end_utc.isoformat(), 'candle_rule': 'DAILY_OHLC_SINGLE_EVENT', 'replay_run_id': run.id}, dedup_key=f'g6:{run.id}:{event_type}:{event_time.isoformat()}', replay_run_id=run.id, refresh_ranking=False))
+                    state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(state, event_type=event_type, target_index=target_index, stop=state.current_stop, timestamp=event_time)
                     continue
                 day_events = self.replay_candles(
                     session, signal_id=signal_id, candles=minutes, replay_end=window.end,
@@ -553,13 +579,13 @@ class HistoricalMarketReplayService:
                     event_type = str(event.event_type)
                     last_ts = event.event_timestamp
                     if event_type == "ACTIVATED":
-                        activated = True; lifecycle = "ACTIVE"
+                        activated = True; lifecycle = "ACTIVE_POSITION"
                     elif event_type.startswith("TP") and event_type[2:].isdigit():
-                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE"
+                        hit.add(int(event_type[2:])); lifecycle = "CLOSED_TARGETS" if len(hit) == len(target_levels) else "ACTIVE_POSITION"
                     elif event_type == "SL":
                         lifecycle = "CLOSED_STOP"
                     elif event_type == "CLOSE":
-                        lifecycle = "FINAL_CLOSE"
+                        lifecycle = "CLOSED_UNVERIFIABLE"
                     elif event_type == "AMBIGUOUS":
                         lifecycle = "CLOSED_UNVERIFIABLE"
                 state = LifecycleState(
@@ -573,22 +599,21 @@ class HistoricalMarketReplayService:
             if planner.terminal(state):
                 break
 
-        terminal_states = {"CLOSED_TARGETS", "CLOSED_STOP", "FINAL_CLOSE", "CLOSED_UNVERIFIABLE"}
-        terminal_event = next((event for event in reversed(all_events) if str(event.event_type) in {"SL", "CLOSE", "AMBIGUOUS"} or str(event.event_type).startswith("TP")), None)
-        if state.lifecycle_state in terminal_states:
-            run.status = "COMPLETED" if state.lifecycle_state != "CLOSED_UNVERIFIABLE" else "COMPLETED_UNVERIFIABLE"
-            run.termination_reason = "LIFECYCLE_COMPLETED"
-            run.exit_timestamp = getattr(terminal_event, "event_timestamp", None)
-        elif any(status in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"} for status in macro_statuses):
-            run.status = "REPLAY_PARTIAL"
-            run.termination_reason = "DATA_TRUNCATED_WHILE_ACTIVE"
-            run.exit_timestamp = last_actual
+        terminal_states = {"CLOSED_TARGETS", "CLOSED_STOP", "CLOSED_UNVERIFIABLE"}
+        terminal_event = next((event for event in reversed(all_events) if str(event.event_type) in {"SL", "AMBIGUOUS"} or str(event.event_type).startswith("TP")), None)
+        if state.lifecycle_state == "CLOSED_UNVERIFIABLE":
+            run.status = "COMPLETED_UNVERIFIABLE"; run.termination_reason = "LIFECYCLE_UNVERIFIABLE"; run.exit_timestamp = getattr(terminal_event, "event_timestamp", None)
+        elif incomplete_after_activation:
+            run.status = "REPLAY_PARTIAL"; run.termination_reason = "DATA_TRUNCATED_WHILE_ACTIVE"; run.exit_timestamp = last_actual
+        elif state.lifecycle_state in terminal_states:
+            run.status = "COMPLETED"; run.termination_reason = "LIFECYCLE_COMPLETED"; run.exit_timestamp = getattr(terminal_event, "event_timestamp", None)
+        elif state.activated:
+            run.status = "COMPLETED"; run.termination_reason = "HORIZON_REACHED_ACTIVE"; run.exit_timestamp = end_utc
         else:
-            run.status = "STILL_ACTIVE"
-            run.termination_reason = "HORIZON_REACHED"
-            run.exit_timestamp = end_utc
+            run.status = "COMPLETED"; run.termination_reason = "HORIZON_REACHED_UNTRIGGERED"; run.exit_timestamp = end_utc
 
-        run.coverage_status = "FULL" if macro_statuses and not any(status in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"} for status in macro_statuses) else ("GAPPED" if "GAPPED" in macro_statuses else "PARTIAL_WINDOW")
+        coverage_statuses = macro_statuses + (minute_statuses if state.activated else [])
+        run.coverage_status = "FULL" if coverage_statuses and not any(status in {"PARTIAL_WINDOW", "GAPPED", "UNAVAILABLE"} for status in coverage_statuses) else ("GAPPED" if "GAPPED" in coverage_statuses else "PARTIAL_WINDOW")
         run.coverage_ratio = (macro_actual / macro_expected) if macro_expected else 0.0
         run.actual_start = first_actual
         run.actual_end = last_actual
@@ -622,7 +647,7 @@ class HistoricalMarketReplayService:
         run.result_json = {
             "event_ids": [event.id for event in all_events], "event_count": len(all_events),
             "events": [{"id": event.id, "type": event.event_type, "timestamp": event.event_timestamp.isoformat(), "price": str(event.price) if event.price is not None else None, "replay_status": event.replay_status, "confidence": str(event.event_confidence), "data": event.event_data} for event in all_events],
-            "ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state,
+            "ambiguity_status": run.ambiguity_status, "lifecycle_status": state.lifecycle_state, "pnl_percentage": "0" if state.lifecycle_state == "PENDING_ORDER" else None,
             "termination_reason": run.termination_reason,
             "exit_timestamp": run.exit_timestamp.isoformat() if run.exit_timestamp else None,
             "evidence_metadata": {"resolution_mode": "HYBRID_MACRO_DRILLDOWN", "macro_chunk_days": 365, "critical_days_count": len(drilldown_days)},
@@ -739,8 +764,8 @@ class HistoricalMarketReplayService:
             run.termination_reason = "DATA_TRUNCATED_WHILE_ACTIVE"
             run.exit_timestamp = coverage.actual_end
         else:
-            run.status = "STILL_ACTIVE"
-            run.termination_reason = "HORIZON_REACHED"
+            run.status = "REPLAY_PARTIAL"
+            run.termination_reason = "DATA_TRUNCATED_WHILE_ACTIVE"
             run.exit_timestamp = coverage.actual_end
 
         run.result_json = {"event_ids": [event.id for event in events], "event_count": len(events), "events": [{"id": event.id, "type": event.event_type, "timestamp": event.event_timestamp.isoformat(), "price": str(event.price) if event.price is not None else None, "replay_status": event.replay_status, "confidence": str(event.event_confidence), "data": event.event_data} for event in events], "evidence_id": evidence.id if evidence else None, "ambiguity_status": run.ambiguity_status, "lifecycle_status": lifecycle_state, "resolution_quality": resolution_quality, "termination_reason": run.termination_reason, "exit_timestamp": run.exit_timestamp.isoformat() if run.exit_timestamp else None, "coverage": {"status": coverage.status.value, "ratio": coverage.coverage_ratio, "requested_start": start_utc.isoformat(), "requested_end": end_utc.isoformat(), "actual_start": coverage.actual_start.isoformat() if coverage.actual_start else None, "actual_end": coverage.actual_end.isoformat() if coverage.actual_end else None, "expected_candles": coverage.expected_candles, "actual_candles": coverage.actual_candles, "gaps": [[gap_start.isoformat(), gap_end.isoformat()] for gap_start, gap_end in coverage.gaps]}, "source_lifecycle": source_lifecycle}
