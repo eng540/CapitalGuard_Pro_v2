@@ -50,6 +50,7 @@ def test_full_day_is_two_pages_max_1000_and_440():
 
 
 def test_lifecycle_state_persists_remaining_targets_and_fixed_stop():
+    # Verification gate: historical lifecycle must not silently trail the original stop.
     state = LifecycleState(
         activated=True,
         hit_target_indices=frozenset({1}),
