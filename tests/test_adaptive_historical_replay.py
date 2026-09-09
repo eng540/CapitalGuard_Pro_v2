@@ -72,7 +72,12 @@ def test_lifecycle_state_persists_remaining_targets_and_fixed_stop():
 
 
 def test_terminal_lifecycle_is_terminal():
-    state = LifecycleState(activated=True, remaining_target_indices=frozenset({2}))
+    state = LifecycleState(
+        activated=True,
+        remaining_target_indices=frozenset({2}),
+        current_stop=100,
+        lifecycle_state="ACTIVE_POSITION",
+    )
     state = AdaptiveHistoricalReplayPlanner.lifecycle_after_event(
         state, event_type="SL", timestamp=datetime(2026, 1, 12, tzinfo=UTC)
     )
