@@ -1,3 +1,5 @@
+# --- START OF FILE src/capitalguard/application/services/historical_market_replay_service.py ---
+
 from __future__ import annotations
 
 import hashlib
@@ -393,6 +395,30 @@ class HistoricalMarketReplayService:
 
         authority = HistoricalReplayDecisionAuthority()
         decision = authority.decide(previous)
+
+        # ✅ CONSCIOUS IMPLEMENTATION (D1): the audit record is emitted through
+        # the ReplayDecision contract itself — no dict duplication, single source of truth.
+        # The contract guarantees unavailable values are NULL, not fabricated.
+        def emit_decision_audit(run=None) -> dict:
+            audit = decision.audit_record(
+                batch_id=getattr(receipt, "batch_id", None),
+                receipt_id=receipt.id,
+                signal_id=signal.id,
+                materialization_id=materialization.id,
+                new_run_id=getattr(run, "id", None),
+                new_fingerprint=(
+                    getattr(run, "request_fingerprint", None)
+                    if decision.is_reprocess
+                    else (getattr(previous, "request_fingerprint", None) if previous is not None else None)
+                ),
+                lineage_parent=getattr(previous, "id", None),
+            )
+            logging.getLogger(__name__).info(
+                "G6_REPLAY_AUDIT %s",
+                json.dumps(audit, sort_keys=True, default=str),
+            )
+            return audit
+
         logging.getLogger(__name__).info(
             "G6 replay decision action=%s reason=%s previous_run=%s previous_status=%s previous_version=%s current_version=%s previous_policy=%s current_policy=%s coverage=%s",
             decision.action.value, decision.reason.value, decision.previous_run_id,
@@ -402,6 +428,7 @@ class HistoricalMarketReplayService:
         )
 
         if not decision.is_reprocess and previous is not None:
+            audit = emit_decision_audit(previous)
             return {
                 "run": previous,
                 "events": list(previous.events or []),
@@ -409,6 +436,7 @@ class HistoricalMarketReplayService:
                 "replayed": True,
                 "retry_skipped": True,
                 "decision": decision,
+                "audit_record": audit,
             }
 
         if previous is None:
@@ -439,6 +467,7 @@ class HistoricalMarketReplayService:
             reprocess_of_run_id=reprocess_of_run_id,
         )
         result["decision"] = decision
+        result["audit_record"] = emit_decision_audit(result.get("run"))
         return result
 
     def _replay_g6_annual_adaptive(
@@ -742,9 +771,19 @@ class HistoricalMarketReplayService:
         self._g5_materialization(session, signal_id=signal_id, materialization_id=materialization_id)
         signal, _, _, target_levels = self._signal_levels(session, signal_id)
         source_lifecycle = self._source_lifecycle(session, signal_id=signal_id)
-        start_utc, end_utc = self._utc(start), self._utc(replay_end)
+
+        # ✅ FIXED (Future Replay Boundary): clamp requested end to 'now' before
+        # it flows into the planner/provider. Everything downstream uses end_utc.
+        start_utc = self._utc(start)
+        requested_replay_end = self._utc(replay_end)
+        effective_replay_end = min(
+            requested_replay_end,
+            datetime.now(timezone.utc),
+        )
+        end_utc = effective_replay_end
+
         if start_utc >= end_utc:
-            raise HistoricalSignalValidationError("Replay window is invalid")
+            raise HistoricalSignalValidationError("Replay window is invalid or in the future")
         if provider is None:
             from capitalguard.infrastructure.market.historical_ohlcv_provider import BinanceHistoricalOhlcvProvider
             provider = BinanceHistoricalOhlcvProvider()
@@ -953,6 +992,7 @@ class HistoricalMarketReplayService:
                     ambiguity_status="AMBIGUOUS"
                     events.append(self.signal_service.record_event(session,signal_id=signal.id,event_type="AMBIGUOUS",event_timestamp=candle_time,market_as_of=candle_time,data_source=candle.data_source,price=None,replay_status="AMBIGUOUS",event_confidence="0.0000",event_data={"replay_end":end_time.isoformat(),"candle_rule":"NO_FINE_GRAIN_PROVIDER","possible_events":["SL",*[f"TP{index}" for index in target_hits]],"high":str(candle.high),"low":str(candle.low),"market_evidence_ref":market_evidence.replay_run_ref if market_evidence else None,"replay_run_id":replay_run_id},dedup_key=f"{dedup_prefix}:AMBIGUOUS:{candle_time.isoformat()}",replay_run_id=replay_run_id,refresh_ranking=refresh_ranking)); closed=True; continue
                 resolution=self.intra_candle_resolver.resolve(symbol=str(signal.asset or ""),market=signal.market,side=str(signal.side or ""),candle_open=candle_time,candle_close=candle_time+interval_delta(interval),stop=stop,target_levels=list(enumerate(target_levels,start=1)),candle_high=candle.high,candle_low=candle.low); event_type=resolution.event; event_price=stop if event_type=="SL" else target_levels[int(event_type[2:])-1]; replay_status="VERIFIED" if resolution.resolution=="VERIFIED_EVENT" else "INFERRED"; ambiguity_status="NONE" if resolution.resolution=="VERIFIED_EVENT" else "INFERRED"
+                # ✅ RESTORED (D2): both keys preserved for backward compatibility with existing consumers.
                 events.append(self.signal_service.record_event(session,signal_id=signal.id,event_type=event_type,event_timestamp=candle_time,market_as_of=candle_time,data_source=candle.data_source,price=event_price,replay_status=replay_status,event_confidence=str(resolution.confidence),event_data={"replay_end":end_time.isoformat(),"candle_rule":resolution.resolution,"resolution":resolution.resolution,"reason":resolution.reason,"resolution_details":resolution.details,"market_evidence_ref":market_evidence.replay_run_ref if market_evidence else None,"replay_run_id":replay_run_id},dedup_key=f"{dedup_prefix}:{event_type}:{candle_time.isoformat()}",replay_run_id=replay_run_id,refresh_ranking=refresh_ranking)); closed=True; continue
             if stop_hit:
                 events.append(self.signal_service.record_event(session,signal_id=signal.id,event_type="SL",event_timestamp=candle_time,market_as_of=candle_time,data_source=candle.data_source,price=stop,replay_status="VERIFIED",event_confidence="1.0000",event_data={"replay_end":end_time.isoformat(),"candle_rule":"OHLCV","market_evidence_ref":market_evidence.replay_run_ref if market_evidence else None,"replay_run_id":replay_run_id},dedup_key=f"{dedup_prefix}:SL",replay_run_id=replay_run_id,refresh_ranking=refresh_ranking)); closed=True; continue
@@ -972,3 +1012,5 @@ class HistoricalMarketReplayService:
         candles, endpoint=provider.fetch(asset=str(signal.asset or ""),market=signal.market,interval=interval,start=self._utc(start),end=self._utc(replay_end),limit=limit)
         if not candles: raise HistoricalSignalValidationError("Historical candle provider returned no evidence")
         return self.replay_candles(session,signal_id=signal_id,candles=candles,replay_end=replay_end,interval=interval,provider_endpoint=endpoint,replay_run_id=replay_run_id,fetched_at=fetched_at,data_as_of_status=data_as_of_status,refresh_ranking=refresh_ranking)
+
+# --- END OF FILE ---
