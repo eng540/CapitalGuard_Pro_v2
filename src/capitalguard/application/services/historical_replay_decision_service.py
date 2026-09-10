@@ -1,3 +1,5 @@
+# --- START OF FILE src/capitalguard/application/services/historical_replay_decision_service.py ---
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -54,6 +56,43 @@ class ReplayDecision:
     @property
     def is_reprocess(self) -> bool:
         return self.action is ReplayAction.REPROCESS
+
+    # ✅ CONSCIOUS ADDITION (D1): single-source structured audit contract.
+    # Unavailable values are emitted as NULL (None), never fabricated.
+    # Runtime callers (retry_g6) MUST consume this method, not build dicts.
+    def audit_record(
+        self,
+        *,
+        batch_id: int | None = None,
+        receipt_id: int | None = None,
+        signal_id: int | None = None,
+        materialization_id: int | None = None,
+        new_run_id: int | None = None,
+        new_fingerprint: str | None = None,
+        lineage_parent: int | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "Batch": batch_id,
+            "Receipt": receipt_id,
+            "Signal": signal_id,
+            "Materialization": materialization_id,
+            "Decision": self.action.value,
+            "Reason": self.reason.value,
+            "PreviousRun": self.previous_run_id,
+            "EnginePrev": self.previous_replay_version,
+            "EngineCurrent": self.current_replay_version,
+            "PolicyPrev": self.previous_policy_version,
+            "PolicyCurrent": self.current_policy_version,
+            "Coverage": self.coverage.reason,
+            "CoverageValid": self.coverage.valid,
+            # REPROCESS-only fields: gated by is_reprocess → NULL on REUSE.
+            "NewRun": new_run_id if self.is_reprocess else None,
+            "LineageParent": lineage_parent if self.is_reprocess else None,
+            # Fingerprint is meaningful for both REUSE and REPROCESS:
+            # - REUSE: caller passes previous.request_fingerprint
+            # - REPROCESS: caller passes new_run.request_fingerprint
+            "Fingerprint": new_fingerprint,
+        }
 
 
 class HistoricalReplayDecisionAuthority:
@@ -140,3 +179,5 @@ class HistoricalReplayDecisionAuthority:
                 raise ValueError("Replay lineage cycle detected")
             seen.add(current_id)
             cursor = getattr(cursor, "reprocess_of", None)
+
+# --- END OF FILE ---
