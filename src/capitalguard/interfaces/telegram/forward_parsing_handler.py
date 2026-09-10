@@ -1,3 +1,5 @@
+# --- START OF FILE src/capitalguard/interfaces/telegram/forward_parsing_handler.py ---
+
 # File: src/capitalguard/interfaces/telegram/forward_parsing_handler.py
 # Version: v6.0.3 (Full Production Ready with Critical Fix)
 # ✅ THE FIX: (Critical Status Mapping Fix + Full Feature Preservation)
@@ -12,6 +14,7 @@ import re
 import html
 import json 
 import time
+import asyncio
 from decimal import Decimal
 from typing import Dict, Any, Optional
 
@@ -97,34 +100,51 @@ async def smart_safe_edit(
     bot: Bot, chat_id: int, message_id: int,
     text: str = None, reply_markup=None, parse_mode: str = ParseMode.HTML
 ) -> bool:
-    try:
-        await bot.edit_message_text(
-            chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup,
-            parse_mode=parse_mode, disable_web_page_preview=True,
-        )
-        return True
-    except BadRequest as e:
-        if "message is not modified" in str(e).lower(): return True
-        if "can't parse entities" in str(e).lower() or "unsupported start tag" in str(e).lower():
-            log.warning(f"HTML/Markdown parse failed for msg {chat_id}:{message_id}. Retrying with parse_mode=None. Error: {e}")
-            try:
-                clean_text = re.sub(r'<[^>]+>', '', text or "")
-                await bot.edit_message_text(
-                    chat_id=chat_id, message_id=message_id, text=clean_text, reply_markup=reply_markup,
-                    parse_mode=None, disable_web_page_preview=True,
-                )
-                return True
-            except Exception as e_retry:
-                loge.error(f"Failed to edit message {chat_id}:{message_id} even after retry: {e_retry}", exc_info=True)
-                return False
-        loge.warning(f"Handled BadRequest in smart_safe_edit: {e}")
-        return False
-    except TelegramError as e:
-        loge.error(f"TelegramError in smart_safe_edit {chat_id}:{message_id}: {e}")
-        return False
-    except Exception as e_other:
-        loge.exception(f"Unexpected error in smart_safe_edit {chat_id}:{message_id}: {e_other}")
-        return False
+    """✅ FIXED (Telegram Bounded Retry): up to 3 attempts with 0.25s/0.5s backoff.
+
+    Retry applies ONLY to transient TelegramErrors/Exceptions.
+    BadRequest (parse errors, message-not-modified) remains fail-fast as before.
+    No DB re-execution is triggered by this retry.
+    """
+    max_attempts = 3
+    backoff_seconds = (0.25, 0.5)
+
+    for attempt in range(max_attempts):
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup,
+                parse_mode=parse_mode, disable_web_page_preview=True,
+            )
+            return True
+        except BadRequest as e:
+            if "message is not modified" in str(e).lower(): return True
+            if "can't parse entities" in str(e).lower() or "unsupported start tag" in str(e).lower():
+                log.warning(f"HTML/Markdown parse failed for msg {chat_id}:{message_id}. Retrying with parse_mode=None. Error: {e}")
+                try:
+                    clean_text = re.sub(r'<[^>]+>', '', text or "")
+                    await bot.edit_message_text(
+                        chat_id=chat_id, message_id=message_id, text=clean_text, reply_markup=reply_markup,
+                        parse_mode=None, disable_web_page_preview=True,
+                    )
+                    return True
+                except Exception as e_retry:
+                    loge.error(f"Failed to edit message {chat_id}:{message_id} even after retry: {e_retry}", exc_info=True)
+                    return False
+            loge.warning(f"Handled BadRequest in smart_safe_edit: {e}")
+            return False
+        except TelegramError as e:
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(backoff_seconds[attempt])
+                continue
+            loge.error(f"TelegramError in smart_safe_edit {chat_id}:{message_id}: {e}")
+            return False
+        except Exception as e_other:
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(backoff_seconds[attempt])
+                continue
+            loge.exception(f"Unexpected error in smart_safe_edit {chat_id}:{message_id}: {e_other}")
+            return False
+    return False
 
 # --- Entry Point 1: Text Forward ---
 @uow_transaction
@@ -814,7 +834,6 @@ async def suppress_forwarded_live_fallback(update: Update, context: ContextTypes
     log.info("Suppressed forwarded message from stale live parser conversation; historical router owns the update.")
     return ConversationHandler.END
 
-
 # --- Cancel Conversation ---
 async def cancel_parsing_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message_text = "❌ Operation cancelled."
@@ -896,3 +915,5 @@ def register_forward_parsing_handlers(app: Application):
         save_template_confirm_handler,
         pattern=f"^{CallbackNamespace.SAVE_TEMPLATE.value}:"
     ), group=1)
+
+# --- END OF FILE ---
