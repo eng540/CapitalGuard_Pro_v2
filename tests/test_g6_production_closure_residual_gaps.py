@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from capitalguard.application.services.historical_replay_decision_service import (
@@ -6,7 +6,6 @@ from capitalguard.application.services.historical_replay_decision_service import
     ReplayAction,
     ReplayDecisionReason,
 )
-from capitalguard.application.services.historical_market_replay_service import HistoricalMarketReplayService
 
 
 CURRENT = "G6-R2"
@@ -106,7 +105,7 @@ def test_recent_replay_window_is_clamped_by_planner_not_future_extended():
     from capitalguard.application.services.adaptive_historical_replay import AdaptiveHistoricalReplayPlanner
 
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    source = now - __import__("datetime").timedelta(hours=1)
+    source = now - timedelta(hours=1)
     window = AdaptiveHistoricalReplayPlanner.minute_window_for_day(day=source, signal_source_time=source, now=now)
     assert window is not None
     assert window.end <= now
