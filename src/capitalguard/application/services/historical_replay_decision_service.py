@@ -55,6 +55,26 @@ class ReplayDecision:
     def is_reprocess(self) -> bool:
         return self.action is ReplayAction.REPROCESS
 
+    def audit_record(self, *, signal_id: int | None = None, materialization_id: int | None = None, receipt_id: int | None = None, batch_id: int | None = None, new_run_id: int | None = None, new_fingerprint: str | None = None, lineage_parent: int | None = None) -> dict[str, Any]:
+        return {
+            "batch": batch_id,
+            "receipt": receipt_id,
+            "signal": signal_id,
+            "materialization": materialization_id,
+            "decision": self.action.value,
+            "reason": self.reason.value,
+            "previous_run": self.previous_run_id,
+            "engine_prev": self.previous_replay_version,
+            "engine_current": self.current_replay_version,
+            "policy_prev": self.previous_policy_version,
+            "policy_current": self.current_policy_version,
+            "coverage": self.coverage.reason,
+            "coverage_valid": self.coverage.valid,
+            "new_run": new_run_id,
+            "lineage_parent": lineage_parent,
+            "fingerprint": new_fingerprint,
+        }
+
 
 class HistoricalReplayDecisionAuthority:
     """Single, side-effect-free authority for REUSE versus REPROCESS."""
@@ -72,13 +92,7 @@ class HistoricalReplayDecisionAuthority:
         coverage = dict(result.get("coverage") or {})
         status = str(getattr(run, "coverage_status", None) or coverage.get("status") or "UNKNOWN").upper()
         gaps = tuple(coverage.get("gaps") or provider_meta.get("gaps") or ())
-        activation_risk = bool(
-            result.get("activation_risk")
-            or result.get("entry_ambiguity")
-            or result.get("coverage_activation_risk")
-            or provider_meta.get("activation_risk")
-            or provider_meta.get("entry_ambiguity")
-        )
+        activation_risk = bool(result.get("activation_risk") or result.get("entry_ambiguity") or result.get("coverage_activation_risk") or provider_meta.get("activation_risk") or provider_meta.get("entry_ambiguity"))
         evidence = {
             "coverage_status": status,
             "coverage_ratio": getattr(run, "coverage_ratio", None),
