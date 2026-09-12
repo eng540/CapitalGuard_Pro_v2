@@ -288,7 +288,7 @@ class AlertService:
         """
         يُرسل التيك لـ queue الرمز.
         إذا لم يوجد worker → يُنشئه.
-        إذا امتلأ الـ queue → يتجاهل التيك القديم ويضع الجديد.
+        إذا امتلأ الـ queue → يطبّق backpressure ولا يسقط أي تيك.
         """
         async with self._workers_lock:
             # إنشاء queue + worker عند الحاجة
@@ -301,20 +301,10 @@ class AlertService:
 
             q = self._symbol_queues[key]
 
-        # ── وضع التيك — non-blocking ────────────────────────────────────
-        try:
-            q.put_nowait(payload)
-        except asyncio.QueueFull:
-            # الـ queue ممتلئة → تجاهل أقدم تيك واستبدله بالجديد
-            # التيك القديم بيانات منتهية الصلاحية — الجديد أدق
-            try:
-                q.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                q.put_nowait(payload)
-            except asyncio.QueueFull:
-                pass  # لا يحدث عملياً
+        # ── وضع التيك — lossless financial observation delivery ───────────
+        # لا يجوز إسقاط أو استبدال أي observation مالي عند saturation.
+        # backpressure هنا مقصود: ينتظر الـ worker حتى تتوفر سعة.
+        await q.put(payload)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Tier 2 — Per-Symbol Worker

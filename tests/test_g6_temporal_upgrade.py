@@ -12,8 +12,6 @@ def u(value: str) -> datetime:
 def test_source_seconds_do_not_break_market_grid():
     start = u("2025-12-04T20:38:30Z")
     end = start + timedelta(minutes=1440)
-    # The source timestamp is off-grid; exchange candles remain minute-aligned.
-    # The first complete candle after the source timestamp is 20:39:00.
     times = [u("2025-12-04T20:39:00Z") + timedelta(minutes=i) for i in range(1440)]
     coverage = calculate_historical_coverage(requested_start=start, requested_end=end, candle_times=times, interval=interval_delta("1m"))
     assert coverage.status is CoverageStatus.FULL
@@ -40,11 +38,12 @@ def test_agg_trades_resolve_stop_before_target():
     assert result.resolution == "VERIFIED_EVENT"
 
 
-def test_agg_trades_unavailable_uses_conservative_fallback():
+def test_agg_trades_unavailable_is_unverifiable_when_ohlc_touches_both():
     class Client:
         def fetch_agg_trades(self, **kwargs):
             raise RuntimeError("historical data unavailable")
 
     result = IntraCandleResolver(Client()).resolve(symbol="BTCUSDT", market="FUTURES", side="LONG", candle_open=u("2025-12-04T20:38:00Z"), candle_close=u("2025-12-04T20:39:00Z"), stop=Decimal("92000"), target_levels=[(1, Decimal("93400"))], candle_high=Decimal("93450"), candle_low=Decimal("91980"))
-    assert result.event == "SL"
-    assert result.resolution == "PESSIMISTIC_FALLBACK"
+    assert result.event == "AMBIGUOUS"
+    assert result.resolution == "UNVERIFIABLE"
+    assert set(result.details["possible_events"]) == {"SL", "TP1"}
