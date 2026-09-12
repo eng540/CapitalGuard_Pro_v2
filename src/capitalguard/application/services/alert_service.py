@@ -288,7 +288,7 @@ class AlertService:
         """
         يُرسل التيك لـ queue الرمز.
         إذا لم يوجد worker → يُنشئه.
-        إذا امتلأ الـ queue → يتجاهل التيك القديم ويضع الجديد.
+        إذا امتلأ الـ queue → يطبّق backpressure ولا يسقط أي تيك.
         """
         async with self._workers_lock:
             # إنشاء queue + worker عند الحاجة
