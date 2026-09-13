@@ -58,4 +58,5 @@ async def test_r1_funnel_and_activated_only_report(db_session, services):
     assert funnel["closed_activated"] == 1
     assert funnel["watchlist_to_activated_rate_pct"] == 50.0
     assert report["total_trades"] == 1
-    assert report["data_source"] == "Activated Portfolio Only"
+    assert report["aggregate_score"] == "5.00%"
+    assert report["data_source"] == "Activated Trade Price-Return Aggregate; not portfolio/capital return"
