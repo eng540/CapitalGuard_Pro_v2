@@ -273,7 +273,7 @@ class HistoricalSignalService:
         event_data: dict[str, Any] | None = None,
         source_evidence_id: int | None = None,
         replay_run_id: int | None = None,
-        refresh_ranking: bool = True,
+        refresh_ranking: bool = False,
     ) -> HistoricalSignalEvent:
         signal = session.get(HistoricalSignal, signal_id)
         if signal is None:

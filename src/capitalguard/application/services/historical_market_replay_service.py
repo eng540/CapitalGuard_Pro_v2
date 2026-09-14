@@ -880,7 +880,7 @@ class HistoricalMarketReplayService:
         run.completed_at = datetime.now(timezone.utc); session.flush()
         return {"run": run, "events": events, "status": run.status, "replayed": not created, "coverage": coverage}
 
-    def replay(self, session: Session, *, signal_id: int, observations: Iterable[MarketObservation], replay_end: datetime, replay_run_id: int | None = None, refresh_ranking: bool = True) -> list[HistoricalSignalEvent]:
+    def replay(self, session: Session, *, signal_id: int, observations: Iterable[MarketObservation], replay_end: datetime, replay_run_id: int | None = None, refresh_ranking: bool = False) -> list[HistoricalSignalEvent]:
         signal, entry, stop, target_levels = self._signal_levels(session, signal_id); end_time = self._utc(replay_end); normalized=[]
         for observation in observations:
             timestamp=self._utc(observation.as_of); price=self._decimal(observation.price)
@@ -961,7 +961,7 @@ class HistoricalMarketReplayService:
                     selected.extend(hour_candles)
         return sorted(selected, key=lambda item: item.open_time)
 
-    def replay_candles(self, session: Session, *, signal_id: int, candles: Iterable[MarketCandle], replay_end: datetime, interval: str = "1m", provider_endpoint: str | None = None, replay_run_id: int | None = None, fetched_at: datetime | None = None, data_as_of_status: str = "UNVERIFIABLE", refresh_ranking: bool = True, resolver_client=None, initial_state: LifecycleState | None = None) -> list[HistoricalSignalEvent]:
+    def replay_candles(self, session: Session, *, signal_id: int, candles: Iterable[MarketCandle], replay_end: datetime, interval: str = "1m", provider_endpoint: str | None = None, replay_run_id: int | None = None, fetched_at: datetime | None = None, data_as_of_status: str = "UNVERIFIABLE", refresh_ranking: bool = False, resolver_client=None, initial_state: LifecycleState | None = None) -> list[HistoricalSignalEvent]:
         signal, entry, stop, target_levels = self._signal_levels(session, signal_id); end_time=self._utc(replay_end); normalized=[]
         if initial_state is not None:
             stop = initial_state.current_stop if initial_state.current_stop is not None else stop
@@ -1004,7 +1004,7 @@ class HistoricalMarketReplayService:
             metadata=dict(market_evidence.metadata_json or {}); metadata["ambiguity_status"]=ambiguity_status; metadata["quality_status"]="UNVERIFIABLE" if ambiguity_status=="AMBIGUOUS" else "UNASSESSED"; market_evidence.metadata_json=metadata; session.flush()
         return events
 
-    def replay_from_binance(self, session: Session, *, signal_id: int, start: datetime, replay_end: datetime, interval: str = "1m", limit: int = 1500, provider=None, replay_run_id: int | None = None, refresh_ranking: bool = True, fetched_at: datetime | None = None, data_as_of_status: str = "UNVERIFIABLE") -> list[HistoricalSignalEvent]:
+    def replay_from_binance(self, session: Session, *, signal_id: int, start: datetime, replay_end: datetime, interval: str = "1m", limit: int = 1500, provider=None, replay_run_id: int | None = None, refresh_ranking: bool = False, fetched_at: datetime | None = None, data_as_of_status: str = "UNVERIFIABLE") -> list[HistoricalSignalEvent]:
         signal, _, _, _ = self._signal_levels(session, signal_id)
         if provider is None:
             from capitalguard.infrastructure.market.historical_ohlcv_provider import BinanceHistoricalOhlcvProvider
