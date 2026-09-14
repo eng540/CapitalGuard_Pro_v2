@@ -70,7 +70,7 @@ ROUTER_QUEUE_SIZE = 5_000
 
 # حجم كل symbol queue (الطبقة 2)
 # كل رمز يحصل على تيك واحد في الثانية → 10 تيكات كافية
-SYMBOL_QUEUE_SIZE = 10
+SYMBOL_QUEUE_SIZE = 1000
 
 
 def _to_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
@@ -275,8 +275,10 @@ class AlertService:
                     continue
 
                 # ── توجيه للـ Symbol Worker ────────────────────────────
-                await self._dispatch_to_symbol(key, payload)
-                self.price_queue.task_done()
+                try:
+                    await self._dispatch_to_symbol(key, payload)
+                finally:
+                    self.price_queue.task_done()
 
             except asyncio.CancelledError:
                 log.info("AlertService: Tick Router cancelled.")
@@ -301,10 +303,15 @@ class AlertService:
 
             q = self._symbol_queues[key]
 
-        # ── وضع التيك — lossless financial observation delivery ───────────
-        # لا يجوز إسقاط أو استبدال أي observation مالي عند saturation.
-        # backpressure هنا مقصود: ينتظر الـ worker حتى تتوفر سعة.
-        await q.put(payload)
+        # لا تسقط الملاحظة بصمت عند saturation؛ اجعل الفشل مرئيًا للمشغل.
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            log.critical(
+                "Financial observation queue saturated",
+                extra={"symbol": key, "queue_size": q.qsize(), "queue_capacity": q.maxsize},
+            )
+            raise
 
     # ─────────────────────────────────────────────────────────────────────────
     # Tier 2 — Per-Symbol Worker
