@@ -38,6 +38,7 @@ from capitalguard.domain.entities import (
     OrderType, ExitStrategy, UserType as UserTypeEntity
 )
 from capitalguard.domain.value_objects import Symbol, Side, Price, Targets
+from capitalguard.domain.financial_metrics import price_return_pct
 
 # Type-only imports
 if False:
@@ -66,23 +67,6 @@ def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
 def _format_price(price: Any) -> str:
     price_dec = _to_decimal(price)
     return "N/A" if not price_dec.is_finite() else f"{price_dec:g}"
-
-def _pct(entry: Any, target_price: Any, side: str) -> float:
-    try:
-        entry_dec = _to_decimal(entry)
-        target_dec = _to_decimal(target_price)
-        if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite():
-            return 0.0
-        side_upper = (str(side.value) if hasattr(side, 'value') else str(side) or "").upper()
-        if side_upper == "LONG":
-            pnl = ((target_dec / entry_dec) - 1) * 100
-        elif side_upper == "SHORT":
-            pnl = ((entry_dec / target_dec) - 1) * 100
-        else:
-            return 0.0
-        return float(pnl)
-    except (InvalidOperation, TypeError, ZeroDivisionError):
-        return 0.0
 
 def _parse_int_user_id(user_id: Any) -> Optional[int]:
     try:

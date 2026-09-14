@@ -197,8 +197,8 @@ async def test_close_user_trade_success(trade_service_real_db: TradeService, db_
     assert closed_trade_orm.status == UserTradeStatus.CLOSED
     assert closed_trade_orm.close_price == exit_price
     assert closed_trade_orm.closed_at is not None
-    # PnL for SHORT from 30 closed at 29.5 -> (30 / 29.5 - 1) * 100
-    expected_pnl = (Decimal("30") / Decimal("29.5") - 1) * 100
+    # Canonical unleveraged price return for SHORT: (entry - exit) / entry * 100.
+    expected_pnl = (Decimal("30") - Decimal("29.5")) / Decimal("30") * 100
     # Compare Decimal results carefully
     assert abs(closed_trade_orm.pnl_percentage - expected_pnl) < Decimal("0.0001") # Check PnL calculation
 
