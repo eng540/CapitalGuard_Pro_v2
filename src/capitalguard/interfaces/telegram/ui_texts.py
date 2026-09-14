@@ -20,7 +20,8 @@ from telegram.error import BadRequest
 
 # --- Internal Imports ---
 from capitalguard.domain.entities import Recommendation, RecommendationStatus
-from capitalguard.interfaces.telegram.helpers import _get_attr, _to_decimal, _pct
+from capitalguard.interfaces.telegram.helpers import _get_attr, _to_decimal
+from capitalguard.domain.financial_metrics import price_return_pct
 
 log = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ def calculate_real_pnl(rec: Recommendation) -> Dict[str, Any]:
                     close_price = event_data.get('price')
                     close_pct = event_data.get('amount', 0) or event_data.get('closed_percent', 0)
                     if close_price and close_pct > 0:
-                        profit = _pct(entry, Decimal(str(close_price)), side)
+                        profit = float(price_return_pct(entry, Decimal(str(close_price)), side))
                         partial_closes.append({'profit': profit, 'percentage': float(close_pct), 'price': float(close_price)})
                         total_closed_pct += float(close_pct)
         
@@ -147,7 +148,7 @@ def calculate_real_pnl(rec: Recommendation) -> Dict[str, Any]:
                 # UserTrade carries the authoritative PnL calculated at close.
                 final_pnl = float(stored_pnl)
             elif remaining_pct > 0.1:
-                remaining_pnl = _pct(entry, exit_price, side)
+                remaining_pnl = float(price_return_pct(entry, exit_price, side))
                 final_pnl += (remaining_pnl * remaining_pct / 100)
             
             if partial_closes:
@@ -202,7 +203,7 @@ def _build_status_dashboard(rec: Recommendation, is_initial_publish: bool = Fals
         if status_str == "PENDING":
             txt = f"⏳ <b>PENDING</b>\nEntry: <code>{_format_price_clean(entry)}</code>"
             if live_price and live_price != float(entry):
-                dist = _pct(entry, live_price, _get_attr(rec, 'side'))
+                dist = float(price_return_pct(entry, live_price, _get_attr(rec, 'side')))
                 txt += f" (Diff: {abs(dist):.2f}%)"
             return txt
             
@@ -220,10 +221,10 @@ def _build_status_dashboard(rec: Recommendation, is_initial_publish: bool = Fals
             )
 
         if is_initial_publish:
-            return "⚡ <b>ACTIVE</b>\nMarket Order Filled"
+            return "⚡ <b>ACTIVE</b>\nPRICE OBSERVED"
         
         current_price = live_price if live_price else float(entry)
-        pnl = _pct(entry, current_price, _get_attr(rec, 'side', 'LONG'))
+        pnl = float(price_return_pct(entry, current_price, _get_attr(rec, 'side', 'LONG')))
         
         # ✅ FIX: Simplified Live View
         return (
