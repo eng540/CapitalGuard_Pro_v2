@@ -489,7 +489,16 @@ def test_duplicate_partial_is_classified_as_partial_not_failed(db_session):
     )
 
     assert result["progressed"] == 0
-    assert result["failed"] == 0
+
+# TEMPORARY DIAGNOSTIC — remove once retry_g6 behavior is confirmed.
+db_session.refresh(duplicate)
+_diag = {
+    "failed": result["failed"],
+    "partial": result["partial"],
+    "status": result["status"],
+    "duplicate_metadata": duplicate.metadata_json,
+}
+assert result["failed"] == 0, f"DIAG_DUPLICATE: {_diag}"
     assert result["partial"] == 1
     assert result["duplicate_count"] == 1
     assert result["status"] == "PARTIAL"
