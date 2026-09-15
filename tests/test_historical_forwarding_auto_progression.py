@@ -499,11 +499,12 @@ _diag = {
     "duplicate_metadata": duplicate.metadata_json,
 }
 assert result["failed"] == 0, f"DIAG_DUPLICATE: {_diag}"
-    assert result["partial"] == 1
-    assert result["duplicate_count"] == 1
-    assert result["status"] == "PARTIAL"
 
-    item = result["items"][0]
+assert result["partial"] == 1
+assert result["duplicate_count"] == 1
+assert result["status"] == "PARTIAL"
 
-    assert item["status"] == "ALREADY_REGISTERED"
-    assert item["replay_status"] == "REPLAY_PARTIAL"
+item = result["items"][0]
+
+assert item["status"] == "ALREADY_REGISTERED"
+assert item["replay_status"] == "REPLAY_PARTIAL""
