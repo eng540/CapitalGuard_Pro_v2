@@ -81,8 +81,9 @@ def test_source_partial_updates_tracked_lifecycle_without_execution_claim():
     assert event.event_type == "SOURCE_PARTIAL"
     assert event.event_data["execution_status"] == "NOT_FILLED"
     assert event.event_data["execution_evidence"] is False
-    assert not any("FILLED" in str(item) or "EXECUTED" in str(item) for item in event.event_data.values())
     assert notifications
     detail = str(notifications[0][0])
     assert "Filled" not in detail
+    assert "FILLED" not in detail
     assert "Executed" not in detail
+    assert "EXECUTED" not in detail
