@@ -777,6 +777,7 @@ class HistoricalMarketReplayService:
         """Run G6 from an existing G5 materialization; caller owns commit/rollback."""
         self._g5_materialization(session, signal_id=signal_id, materialization_id=materialization_id)
         signal, _, _, target_levels = self._signal_levels(session, signal_id)
+        source_lifecycle = self._source_lifecycle(session, signal_id=signal_id)
 
         # ✅ FIXED (Future Replay Boundary): clamp requested end to 'now' before
         # it flows into the planner/provider. Everything downstream uses end_utc.
