@@ -73,6 +73,7 @@ class _FakeSession:
 def test_c09_partial_lifecycle_milestone_is_not_execution_fill():
     record = SimpleNamespace(
         id=1,
+        public_ref="REC-1",
         status=RecommendationStatusEnum.ACTIVE,
         analyst_id=1,
         open_size_percent=Decimal("100"),
