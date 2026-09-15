@@ -3,8 +3,9 @@
 **Repository:** `eng540/CapitalGuard_Pro_v2`  
 **PR:** `#426` — Financial / Trading Reality Contract — R2 implementation  
 **Branch:** `fix/financial-trading-reality-contract-r2`  
-**Remediation HEAD:** `11048ddd1e99fb51b212c50c3ccf1451a8d5c913`  
-**CI evidence for remediation HEAD:** workflow `CI`, run `34972243666` / #4491, conclusion `success`, 2026-09-15T13:00:11Z–13:01:20Z.
+**Code Remediation HEAD:** `11048ddd1e99fb51b212c50c3ccf1451a8d5c913`  
+**Permanent Documentation HEAD:** `59b02ffae80bf108012d8b284ffa0576f1ff0d0c`  
+**Final CI verification:** workflow `CI`, run `34974380681` / #4493, conclusion `success`.
 
 > This document records the proven semantic boundary and remediation outcome of the Financial / Trading Reality R2 work. It is a permanent handoff document, not permission to expand PR #426 into a new architecture.
 
@@ -332,7 +333,7 @@ No test name is asserted here beyond names verified directly from repository con
 
 ### CI result for remediation HEAD
 
-At remediation HEAD `11048ddd1e99fb51b212c50c3ccf1451a8d5c913`, GitHub Actions workflow `CI` run `34972243666` / run number `4491` completed with **success**.
+At code remediation HEAD `11048ddd1e99fb51b212c50c3ccf1451a8d5c913`, GitHub Actions workflow `CI` run `34972243666` / run number `4491` completed with **success**.
 
 All three jobs completed successfully:
 
@@ -341,6 +342,8 @@ All three jobs completed successfully:
 - `core` — success, including `G6 and Core tests`
 
 ## 14. CI Evidence
+
+### Code remediation verification
 
 - **Commit:** `11048ddd1e99fb51b212c50c3ccf1451a8d5c913`
 - **Workflow:** `CI`
@@ -351,7 +354,7 @@ All three jobs completed successfully:
 - **Completed:** `2026-09-15T13:01:20Z`
 - **Trigger:** pull request #426
 
-This is the verification evidence for the code/test remediation HEAD before this documentation-only commit.
+This is the verification evidence for the code/test remediation HEAD before the documentation-only commit.
 
 ## 15. Commits of This Remediation Stage
 
@@ -413,17 +416,36 @@ C-05 — `ARCHITECTURE_REQUIRED`.
 
 **Lifecycle Tracking ≠ Real Execution**
 
-## 19. Handoff Gate
+## 19. Final Documentation Verification
+
+The permanent handoff document was added in commit:
+
+`59b02ffae80bf108012d8b284ffa0576f1ff0d0c`
+
+GitHub Actions was rerun against this documentation HEAD:
+
+- Workflow: CI
+- Run ID: `34974380681`
+- Run number: `4493`
+- Conclusion: **success**
+
+The documentation commit is documentation-only relative to the preceding remediation state.
+
+The final CI verification confirms that the permanent documentation addition does not break the repository checks.
+
+## 20. Handoff Gate
 
 The intended outcome of this stage is:
 
 ```text
-VERIFY
-  ↓
-DOCUMENT
-  ↓
-HAND OFF
-  ↓
+CODE REMEDIATION
+        ↓
+VERIFICATION
+        ↓
+PERMANENT DOCUMENTATION
+        ↓
+FINAL CI
+        ↓
 FINAL REVIEW / MERGE DECISION
 ```
 
