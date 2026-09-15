@@ -162,6 +162,7 @@ def test_replay_records_activation_targets_and_eligibility(db_session):
         db_session,
         signal_id=signal.id,
         replay_end=_time(1, 15),
+        refresh_ranking=True,
         candles=[
             MarketCandle("BTCUSDT", "Futures", _time(1, 10), Decimal("100"), Decimal("100"), Decimal("99"), Decimal("100"), Decimal("1"), "historical-test"),
             MarketCandle("BTCUSDT", "Futures", _time(1, 11), Decimal("100"), Decimal("110"), Decimal("101"), Decimal("110"), Decimal("1"), "historical-test"),

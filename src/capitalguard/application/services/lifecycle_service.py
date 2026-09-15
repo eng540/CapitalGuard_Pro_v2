@@ -38,6 +38,7 @@ from capitalguard.domain.entities import (
 )
 from capitalguard.application.services.identity_service import IdentityService
 from capitalguard.domain.protection_policy import ProtectionPolicy
+from capitalguard.domain.financial_metrics import price_return_pct
 
 # Type-only imports
 if False:
@@ -61,23 +62,6 @@ def _to_decimal(value: Any, default: Decimal = Decimal('0')) -> Decimal:
 def _format_price(price: Any) -> str:
     price_dec = _to_decimal(price)
     return "N/A" if not price_dec.is_finite() else f"{price_dec:g}"
-
-def _pct(entry: Any, target_price: Any, side: str) -> float:
-    try:
-        entry_dec = _to_decimal(entry)
-        target_dec = _to_decimal(target_price)
-        if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite():
-            return 0.0
-        side_upper = (str(side.value) if hasattr(side, 'value') else str(side) or "").upper()
-        if side_upper == "LONG":
-            pnl = ((target_dec / entry_dec) - 1) * 100
-        elif side_upper == "SHORT":
-            pnl = ((entry_dec / target_dec) - 1) * 100
-        else:
-            return 0.0
-        return float(pnl)
-    except (InvalidOperation, TypeError, ZeroDivisionError):
-        return 0.0
 
 def _parse_int_user_id(user_id: Any) -> Optional[int]:
     # ✅ IMPROVED: Simplified version from v200 for better performance
@@ -369,7 +353,7 @@ class LifecycleService:
         ).with_for_update().all()
         for trade in followers:
             if event_type == "SOURCE_CLOSED":
-                pnl = _pct(trade.entry, event_data.get("price"), trade.side) if trade.activated_at else 0.0
+                pnl = float(price_return_pct(trade.entry, event_data.get("price"), trade.side)) if trade.activated_at else 0.0
                 trade.status = UserTradeStatusEnum.CLOSED
                 trade.close_price = _to_decimal(event_data.get("price"))
                 trade.pnl_percentage = Decimal(str(pnl))
@@ -387,7 +371,7 @@ class LifecycleService:
                 if "entry" in event_data and trade.status != UserTradeStatusEnum.ACTIVATED:
                     trade.entry = event_data["entry"]
                 if event_type == "SOURCE_PARTIAL":
-                    amount = _to_decimal(event_data.get("amount"))
+                    amount = _to_decimal(event_data.get("lifecycle_close_percent", event_data.get("amount")))
                     trade.open_size_percent = max(Decimal("0"), _to_decimal(trade.open_size_percent) - amount)
                     notification_title = "💰 Source Partial Close"
                     detail = f"Closed: <b>{amount:g}%</b> at <code>{_format_price(event_data.get('price'))}</code>"
@@ -486,13 +470,15 @@ class LifecycleService:
         actual_close = min(_to_decimal(close_percent), curr_pct)
         
         rec.open_size_percent = curr_pct - actual_close
-        pnl = _pct(rec.entry, price, rec.side)
+        pnl = float(price_return_pct(rec.entry, price, rec.side))
         
         partial_event_data = {
             "price": float(price),
-            "amount": float(actual_close),
-            "pnl": pnl,
+            "lifecycle_close_percent": float(actual_close),
+            "observed_return_pct": float(pnl),
             "mode": triggered_by,
+            "execution_status": "NOT_FILLED",
+            "execution_evidence": False,
         }
         db_session.add(RecommendationEvent(
             recommendation_id=rec.id,
@@ -511,7 +497,7 @@ class LifecycleService:
         # ✅ FIXED: Added await (from v106)
         await self.notify_reply(
             rec.id, 
-            f"💰 Partial Close {actual_close:g}% at {_format_price(price)} (PnL: {pnl:.2f}%)", 
+            f"🎯 Partial Lifecycle Milestone: {actual_close:g}% observed at {_format_price(price)} (Return: {pnl:.2f}%)",
             db_session
         )
         
@@ -929,7 +915,7 @@ class LifecycleService:
          with session_scope() as s:
             trade = s.query(UserTrade).filter(UserTrade.id == item_id).with_for_update().first()
             if trade and trade.status == UserTradeStatusEnum.ACTIVATED:
-                pnl = _pct(trade.entry, price, trade.side)
+                pnl = float(price_return_pct(trade.entry, price, trade.side))
                 trade.status = UserTradeStatusEnum.CLOSED
                 trade.close_price = price
                 trade.pnl_percentage = Decimal(str(pnl))
@@ -994,7 +980,7 @@ class LifecycleService:
             )
             
             if target_index == len(trade.targets or []) or trade.open_size_percent < Decimal("0.1"):
-                pnl = _pct(trade.entry, price, trade.side)
+                pnl = float(price_return_pct(trade.entry, price, trade.side))
                 trade.status = UserTradeStatusEnum.CLOSED
                 trade.close_price = price
                 trade.pnl_percentage = Decimal(str(pnl))
@@ -1036,7 +1022,7 @@ class LifecycleService:
         
         pnl = 0.0
         if trade.status == UserTradeStatusEnum.ACTIVATED:
-             pnl = _pct(trade.entry, exit_price, trade.side)
+             pnl = float(price_return_pct(trade.entry, exit_price, trade.side))
         
         trade.status = UserTradeStatusEnum.CLOSED
         trade.close_price = exit_price
@@ -1100,7 +1086,7 @@ class LifecycleService:
         if not exit_price.is_finite() or exit_price <= Decimal("0"):
             raise ValueError("Trusted market price is unavailable")
 
-        pnl = _pct(trade.entry, exit_price, trade.side)
+        pnl = float(price_return_pct(trade.entry, exit_price, trade.side))
         trade.open_size_percent = remaining_percent - requested_percent
         db_session.add(UserTradeEvent(
             user_trade_id=trade.id,

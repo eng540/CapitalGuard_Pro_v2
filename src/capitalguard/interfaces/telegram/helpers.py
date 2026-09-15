@@ -12,6 +12,7 @@ from typing import TypeVar, Callable, Optional, List, Any
 from decimal import Decimal, InvalidOperation
 
 from telegram.ext import ContextTypes
+from capitalguard.domain.financial_metrics import price_return_pct
 
 log = logging.getLogger(__name__)
 T = TypeVar('T')
@@ -56,27 +57,6 @@ def _format_price(price: Any) -> str:
     if not price_dec.is_finite() or price_dec == Decimal(0):
         return "N/A"
     return f"{price_dec:g}" # Use 'g' for cleaner output
-
-def _pct(entry: Any, target_price: Any, side: str) -> float:
-    """Calculates PnL percentage using Decimal, returns float."""
-    try:
-        entry_dec = _to_decimal(entry)
-        target_dec = _to_decimal(target_price)
-        if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite(): 
-            return 0.0
-        
-        side_upper = (str(side) or "").upper()
-        if side_upper == "LONG": 
-            pnl = ((target_dec / entry_dec) - 1) * 100
-        elif side_upper == "SHORT": 
-            pnl = ((entry_dec / target_dec) - 1) * 100
-        else: 
-            return 0.0
-        return float(pnl) 
-    except (InvalidOperation, TypeError, ZeroDivisionError): 
-        return 0.0
-
-# --- End of Added Helpers ---
 
 def parse_tail_int(data: str) -> Optional[int]:
     """Safely parses the last integer from a colon-separated string."""

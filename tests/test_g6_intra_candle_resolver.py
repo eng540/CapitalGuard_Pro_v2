@@ -34,7 +34,7 @@ def test_resolver_uses_first_trade_that_hits_a_level():
     assert len(client.calls) == 1
 
 
-def test_resolver_falls_back_to_pessimistic_sl_first_when_trades_unavailable():
+def test_resolver_returns_unverifiable_when_fine_grain_trades_are_unavailable():
     class FailingClient:
         def fetch_agg_trades(self, **kwargs):
             raise RuntimeError("archive unavailable")
@@ -45,9 +45,10 @@ def test_resolver_falls_back_to_pessimistic_sl_first_when_trades_unavailable():
         stop=Decimal("92000"), target_levels=[(1, Decimal("93400"))],
         candle_high=Decimal("93450"), candle_low=Decimal("91980"),
     )
-    assert result.event == "SL"
-    assert result.resolution == "PESSIMISTIC_FALLBACK"
-    assert result.details["inferred_event"] == "SL_FIRST"
+    assert result.event == "AMBIGUOUS"
+    assert result.resolution == "UNVERIFIABLE"
+    assert set(result.details["possible_events"]) == {"SL", "TP1"}
+    assert "inferred_event" not in result.details
 
 
 def test_resolver_discards_trades_outside_disputed_candle():

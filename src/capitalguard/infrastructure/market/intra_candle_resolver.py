@@ -71,17 +71,24 @@ class IntraCandleResolver:
     @staticmethod
     def _fallback(side, stop, target_levels, candle_open, high, low, reason):
         collided = [i for i, level in target_levels if (high >= level if side.upper() == "LONG" else low <= level)]
-        return AmbiguityResolution(
-            "SL",
-            "PESSIMISTIC_FALLBACK",
-            reason,
-            Decimal("0.5000"),
-            {
-                "candle_time": candle_open.isoformat(),
-                "high": str(high),
-                "low": str(low),
-                "stop": str(stop),
-                "collided_target_indices": collided,
-                "inferred_event": "SL_FIRST",
-            },
-        )
+        stop_touched = low <= stop if side.upper() == "LONG" else high >= stop
+        observed = {
+            "candle_time": candle_open.isoformat(),
+            "high": str(high),
+            "low": str(low),
+            "stop": str(stop),
+            "stop_touched": stop_touched,
+            "collided_target_indices": collided,
+        }
+        if stop_touched or collided:
+            return AmbiguityResolution(
+                "AMBIGUOUS",
+                "UNVERIFIABLE",
+                reason,
+                Decimal("0"),
+                {
+                    **observed,
+                    "possible_events": (["SL"] if stop_touched else []) + [f"TP{i}" for i in collided],
+                },
+            )
+        return AmbiguityResolution("NONE", "NO_TRIGGER", reason, Decimal("1"), observed)

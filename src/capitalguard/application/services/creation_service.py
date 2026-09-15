@@ -366,7 +366,14 @@ class CreationService:
         db_session.flush()
         
         # تسجيل حدث الإنشاء
-        db_session.add(RecommendationEvent(recommendation_id=rec.id, event_type="CREATED_ACTIVE" if status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING", event_data={'entry': str(final_entry)}))
+        db_session.add(RecommendationEvent(
+            recommendation_id=rec.id,
+            event_type="CREATED_ACTIVE" if status == RecommendationStatusEnum.ACTIVE else "CREATED_PENDING",
+            event_data={
+                'entry': str(final_entry),
+                **({'mode': 'MARKET', 'observation': 'PRICE_OBSERVED', 'observed_price': str(final_entry), 'execution_evidence': False} if order_type == OrderTypeEnum.MARKET else {}),
+            },
+        ))
 
         if self.outbox_service and target_channel_ids:
             self.outbox_service.enqueue_create_deliveries(

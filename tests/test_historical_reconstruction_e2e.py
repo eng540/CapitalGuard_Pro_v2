@@ -187,6 +187,7 @@ def test_demo_historical_reconstruction_end_to_end_isolated(db_session):
             signal_id=signal.id,
             candles=candles_by_asset.get(signal.asset, []),
             replay_end=replay_end,
+            refresh_ranking=True,
         )
 
     assert [event.event_type for event in events_by_message[1]] == ["ACTIVATED", "TP1", "TP2"]

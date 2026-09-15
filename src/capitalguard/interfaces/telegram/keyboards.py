@@ -16,6 +16,7 @@ from capitalguard.config import settings
 
 from capitalguard.domain.entities import Recommendation as RecommendationEntity, RecommendationStatus
 from capitalguard.domain.entities import UserTradeStatus
+from capitalguard.domain.financial_metrics import price_return_pct
 
 # ✅ R2: Import PriceService for type hinting
 if False:
@@ -46,23 +47,6 @@ def _format_price(price: Any) -> str:
     if not price_dec.is_finite() or price_dec == Decimal(0):
         return "N/A"
     return f"{price_dec:g}"
-
-def _pct(entry: Any, target_price: Any, side: str) -> float:
-    try:
-        entry_dec = _to_decimal(entry)
-        target_dec = _to_decimal(target_price)
-        if not entry_dec.is_finite() or entry_dec.is_zero() or not target_dec.is_finite(): 
-            return 0.0
-        side_upper = (str(side) or "").upper()
-        if side_upper == "LONG": 
-            pnl = ((target_dec / entry_dec) - 1) * 100
-        elif side_upper == "SHORT": 
-            pnl = ((entry_dec / target_dec) - 1) * 100
-        else: 
-            return 0.0
-        return float(pnl) 
-    except Exception: 
-        return 0.0
 
 def _truncate_text(text: str, max_length: int = MAX_BUTTON_TEXT_LENGTH) -> str:
     """Truncates text with ellipsis if too long."""
@@ -198,7 +182,7 @@ class StatusDeterminer:
                 if live_price is not None:
                     side = _get_attr(item, 'side')
                     if entry_dec > 0:
-                        pnl = _pct(entry_dec, live_price, side)
+                        pnl = price_return_pct(entry_dec, live_price, side)
                         if pnl > 0.05:
                             return StatusIcons.PROFIT
                         elif pnl < -0.05:
@@ -296,7 +280,7 @@ async def build_open_recs_keyboard(
             if list_type == "activated":
                 pnl_str = "PnL: N/A"
                 if live_price is not None:
-                    pnl = _pct(entry, live_price, side)
+                    pnl = price_return_pct(entry, live_price, side)
                     pnl_str = f"PnL: {pnl:+.2f}%"
                 
                 card_lines = [

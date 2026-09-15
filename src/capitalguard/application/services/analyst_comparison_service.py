@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from capitalguard.domain.entities import RecommendationStatus
+from capitalguard.domain.financial_metrics import price_return_pct
 from capitalguard.infrastructure.db.models import (
     ChannelCatalog,
     Recommendation,
@@ -27,13 +28,7 @@ class AnalystComparisonService:
     def _pnl_pct(recommendation: Recommendation) -> Decimal | None:
         if recommendation.exit_price is None or recommendation.entry is None:
             return None
-        entry = Decimal(str(recommendation.entry))
-        exit_price = Decimal(str(recommendation.exit_price))
-        if entry <= 0:
-            return None
-        if str(recommendation.side).upper().endswith("SHORT"):
-            return (entry - exit_price) / entry * Decimal("100")
-        return (exit_price - entry) / entry * Decimal("100")
+        return price_return_pct(recommendation.entry, recommendation.exit_price, recommendation.side)
 
     def compare_channels(
         self,

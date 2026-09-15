@@ -70,7 +70,7 @@ ROUTER_QUEUE_SIZE = 5_000
 
 # حجم كل symbol queue (الطبقة 2)
 # كل رمز يحصل على تيك واحد في الثانية → 10 تيكات كافية
-SYMBOL_QUEUE_SIZE = 10
+SYMBOL_QUEUE_SIZE = 1000
 
 
 def _to_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
@@ -275,8 +275,10 @@ class AlertService:
                     continue
 
                 # ── توجيه للـ Symbol Worker ────────────────────────────
-                await self._dispatch_to_symbol(key, payload)
-                self.price_queue.task_done()
+                try:
+                    await self._dispatch_to_symbol(key, payload)
+                finally:
+                    self.price_queue.task_done()
 
             except asyncio.CancelledError:
                 log.info("AlertService: Tick Router cancelled.")
@@ -288,7 +290,7 @@ class AlertService:
         """
         يُرسل التيك لـ queue الرمز.
         إذا لم يوجد worker → يُنشئه.
-        إذا امتلأ الـ queue → يتجاهل التيك القديم ويضع الجديد.
+        إذا امتلأ الـ queue → يطبّق backpressure ولا يسقط أي تيك.
         """
         async with self._workers_lock:
             # إنشاء queue + worker عند الحاجة
@@ -301,20 +303,15 @@ class AlertService:
 
             q = self._symbol_queues[key]
 
-        # ── وضع التيك — non-blocking ────────────────────────────────────
+        # لا تسقط الملاحظة بصمت عند saturation؛ اجعل الفشل مرئيًا للمشغل.
         try:
             q.put_nowait(payload)
         except asyncio.QueueFull:
-            # الـ queue ممتلئة → تجاهل أقدم تيك واستبدله بالجديد
-            # التيك القديم بيانات منتهية الصلاحية — الجديد أدق
-            try:
-                q.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                q.put_nowait(payload)
-            except asyncio.QueueFull:
-                pass  # لا يحدث عملياً
+            log.critical(
+                "Financial observation queue saturated",
+                extra={"symbol": key, "queue_size": q.qsize(), "queue_capacity": q.maxsize},
+            )
+            raise
 
     # ─────────────────────────────────────────────────────────────────────────
     # Tier 2 — Per-Symbol Worker

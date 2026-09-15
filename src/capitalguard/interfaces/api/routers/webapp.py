@@ -32,7 +32,8 @@ from capitalguard.application.services.historical_signal_query_service import Hi
 from capitalguard.application.services.historical_web_intake_service import HistoricalWebIntakeError, HistoricalWebIntakeService
 from capitalguard.application.services.historical_trust_release_service import HistoricalTrustReleaseService
 from capitalguard.application.services.web_command_service import WebCommandError, WebCommandService
-from capitalguard.interfaces.telegram.helpers import _pct, _to_decimal
+from capitalguard.interfaces.telegram.helpers import _to_decimal
+from capitalguard.domain.financial_metrics import price_return_pct
 from capitalguard.infrastructure.db.models import AnalystProfile, Channel, HistoricalImportBatch, HistoricalSignalEvent, PublicationDelivery, Recommendation, RecommendationEvent, RecommendationStatusEnum, User, UserTrade, WebCommandAudit
 from capitalguard.infrastructure.market.symbol_catalog import SymbolCatalog
 
@@ -258,7 +259,7 @@ def _serialize_live_position(entity: Any, live_price: float | None) -> dict[str,
         "stop_loss": float(stop_loss),
         "open_size_percent": float(getattr(entity, "open_size_percent", 100) or 100),
         "live_price": live_price,
-        "pnl_live_pct": _pct(entry, live_price, side) if live_price is not None else 0.0,
+        "pnl_live_pct": float(price_return_pct(entry, live_price, side)) if live_price is not None else 0.0,
         "status": str(getattr(entity, "unified_status", "WATCHLIST")),
         "source_type": "TRADER_LOG" if getattr(entity, "is_user_trade", False) else "ANALYST_RECOMMENDATION",
         "targets": targets,
@@ -667,7 +668,7 @@ async def get_user_portfolio(initData: str, request: Request):
                 live = price_map.get(asset_val)
                 side_val = getattr(i.side, 'value')
                 entry_val = _to_decimal(getattr(i.entry, 'value'))
-                pnl = _pct(entry_val, live, side_val) if live else 0.0
+                pnl = float(price_return_pct(entry_val, live, side_val)) if live else 0.0
                 
                 targets_ui = []
                 raw_targets = getattr(i.targets, 'values', [])
@@ -1548,7 +1549,7 @@ async def get_signal_details(rec_id: int, request: Request):
             # Calculate PnL
             entry_val = _to_decimal(rec.entry.value)
             side_val = rec.side.value
-            pnl = _pct(entry_val, live_price, side_val)
+            pnl = float(price_return_pct(entry_val, live_price, side_val))
             
             # Format Targets
             targets_ui = []
@@ -1569,7 +1570,7 @@ async def get_signal_details(rec_id: int, request: Request):
                 
                 targets_ui.append({
                     "price": float(t_price),
-                    "roi": round(_pct(entry_val, t_price, side_val), 1),
+                    "roi": round(float(price_return_pct(entry_val, t_price, side_val)), 1),
                     "hit": is_hit
                 })
 
