@@ -447,8 +447,15 @@ class HistoricalMarketReplayService:
             interval = "1m"
             limit = 1500
         else:
+            # SQLite does not preserve timezone information on DateTime(timezone=True)
+            # columns; normalize persisted naive timestamps to UTC before replay.
+            # PostgreSQL returns timezone-aware values and is unaffected.
             start = previous.window_start
+            if start is not None and start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
             replay_end = previous.window_end
+            if replay_end is not None and replay_end.tzinfo is None:
+                replay_end = replay_end.replace(tzinfo=timezone.utc)
             retry_of_fingerprint = previous.request_fingerprint
             reprocess_of_run_id = previous.id
             interval = previous.interval
@@ -770,7 +777,6 @@ class HistoricalMarketReplayService:
         """Run G6 from an existing G5 materialization; caller owns commit/rollback."""
         self._g5_materialization(session, signal_id=signal_id, materialization_id=materialization_id)
         signal, _, _, target_levels = self._signal_levels(session, signal_id)
-        source_lifecycle = self._source_lifecycle(session, signal_id=signal_id)
 
         # ✅ FIXED (Future Replay Boundary): clamp requested end to 'now' before
         # it flows into the planner/provider. Everything downstream uses end_utc.
