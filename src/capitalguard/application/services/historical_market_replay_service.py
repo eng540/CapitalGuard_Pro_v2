@@ -230,8 +230,17 @@ class HistoricalMarketReplayService:
 
     @staticmethod
     def _utc(value: datetime) -> datetime:
+        """Return a timezone-aware UTC datetime.
+
+        SQLite does not preserve timezone information for DateTime(timezone=True)
+        columns; values written as UTC come back naive. Every write path in this
+        service stores UTC timestamps, so a naive value loaded from SQLite is
+        interpreted as UTC. PostgreSQL returns timezone-aware values and is
+        unaffected. The conversion is a persistence boundary normalization; it
+        does not reinterpret the semantic meaning of the timestamp.
+        """
         if value.tzinfo is None:
-            raise HistoricalSignalValidationError("Market timestamps must be timezone-aware")
+            return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
     @staticmethod
@@ -447,8 +456,15 @@ class HistoricalMarketReplayService:
             interval = "1m"
             limit = 1500
         else:
+            # SQLite does not preserve timezone information on DateTime(timezone=True)
+            # columns; normalize persisted naive timestamps to UTC before replay.
+            # PostgreSQL returns timezone-aware values and is unaffected.
             start = previous.window_start
+            if start is not None and start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
             replay_end = previous.window_end
+            if replay_end is not None and replay_end.tzinfo is None:
+                replay_end = replay_end.replace(tzinfo=timezone.utc)
             retry_of_fingerprint = previous.request_fingerprint
             reprocess_of_run_id = previous.id
             interval = previous.interval

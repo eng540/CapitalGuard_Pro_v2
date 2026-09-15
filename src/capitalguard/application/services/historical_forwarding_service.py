@@ -643,6 +643,7 @@ class HistoricalForwardingService:
                 "progressed": 0,
                 "review_required": int(batch.accepted_records or 0),
                 "failed": 0,
+                "partial": 0,
                 "items": list(previous),
             }
         if not 1 <= limit <= 1500:
@@ -663,12 +664,14 @@ class HistoricalForwardingService:
                 "progressed": existing_summary.get("progressed", 0),
                 "review_required": existing_summary.get("review_required", 0),
                 "failed": existing_summary.get("failed", 0),
+                "partial": existing_summary.get("partial", 0),
                 "items": existing_summary.get("items", []),
             }
         items: list[dict[str, Any]] = []
         progressed = 0
         review_required = 0
         failed = 0
+        partial = 0
         replay_statuses: list[str] = []
 
         duplicate_count = 0
@@ -702,10 +705,18 @@ class HistoricalForwardingService:
                             resolution["replay"] = replay
                             receipt.metadata_json = {**(receipt.metadata_json or {}), "duplicate_resolution": resolution}
                             session.flush()
-                            if str(healed_run.status) not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
+                            healed_status = str(healed_run.status)
+                            if healed_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
+                                replay_statuses.append(healed_status)
+                            elif healed_status == "REPLAY_PARTIAL":
+                                partial += 1
+                                replay_statuses.append(healed_status)
+                            elif healed_status == "REPLAY_FAILED":
                                 failed += 1
+                                replay_statuses.append(healed_status)
                             else:
-                                replay_statuses.append(str(healed_run.status))
+                                failed += 1
+                                replay_statuses.append(healed_status)
                     except Exception as exc:
                         failed += 1
                         replay = {**replay, "replay_status": "FAILED", "retry_error_type": type(exc).__name__}
@@ -872,7 +883,13 @@ class HistoricalForwardingService:
                         "coverage_end": actual_end.isoformat() if actual_end else None,
                     })
                     replay_statuses.append(result_status)
-                    if result_status not in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
+                    if result_status in {"COMPLETED", "COMPLETED_UNVERIFIABLE"}:
+                        pass
+                    elif result_status == "REPLAY_PARTIAL":
+                        partial += 1
+                    elif result_status == "REPLAY_FAILED":
+                        failed += 1
+                    else:
                         failed += 1
             except Exception as exc:
                 import logging
@@ -899,14 +916,40 @@ class HistoricalForwardingService:
 
             items.append(item)
 
-        remaining_staged = sum(1 for receipt in receipts if receipt.validation_status == "STAGED")
+        remaining_staged = sum(
+            1 for receipt in receipts
+            if receipt.validation_status == "STAGED"
+        )
+
         if remaining_staged == 0 and progressed:
             batch.status = "EVIDENCE_INGESTED"
+
         overall_status = "PARTIAL"
-        if not progressed and not review_required and not failed and duplicate_count:
+
+        if (
+            not progressed
+            and not review_required
+            and not failed
+            and partial == 0
+            and duplicate_count
+        ):
             overall_status = "ALREADY_REGISTERED"
-        elif progressed and not review_required and not failed:
-            overall_status = "COMPLETED_UNVERIFIABLE" if "COMPLETED_UNVERIFIABLE" in replay_statuses else "COMPLETED"
+
+        elif (
+            progressed
+            and not review_required
+            and not failed
+            and partial == 0
+        ):
+            overall_status = (
+                "COMPLETED_UNVERIFIABLE"
+                if "COMPLETED_UNVERIFIABLE" in replay_statuses
+                else "COMPLETED"
+            )
+
+        elif partial > 0:
+            overall_status = "PARTIAL"
+
         batch.metadata_json = {
             **(batch.metadata_json or {}),
             "auto_progression": {
@@ -915,6 +958,7 @@ class HistoricalForwardingService:
                 "progressed": progressed,
                 "review_required": review_required,
                 "failed": failed,
+                "partial": partial,
                 "duplicate_count": duplicate_count,
                 "replay_end": end.isoformat(),
                 "completed_at": datetime.now(timezone.utc).isoformat(),
@@ -927,6 +971,7 @@ class HistoricalForwardingService:
             "progressed": progressed,
             "review_required": review_required,
             "failed": failed,
+            "partial": partial,
             "duplicate_count": duplicate_count,
             "items": items,
         }
