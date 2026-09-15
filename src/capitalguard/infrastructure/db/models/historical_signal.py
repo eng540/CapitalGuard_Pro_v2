@@ -3,8 +3,10 @@
 These records are read-only historical evidence and must not enter live
 recommendation lifecycle or publication outbox flows.
 """
+from datetime import timezone
+
 from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text, func
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import reconstructor, relationship
 
 from .base import Base, JSON_TYPE
 
@@ -86,6 +88,12 @@ class HistoricalSignal(Base):
     events = relationship("HistoricalSignalEvent", back_populates="signal", cascade="all, delete-orphan")
     attributions = relationship("HistoricalSignalAttribution", back_populates="signal", cascade="all, delete-orphan")
     market_evidence = relationship("HistoricalMarketEvidence", back_populates="signal", cascade="all, delete-orphan")
+
+    @reconstructor
+    def _restore_utc_timestamp(self) -> None:
+        """Restore the UTC invariant lost by SQLite timezone-less hydration."""
+        if self.decision_timestamp is not None and self.decision_timestamp.tzinfo is None:
+            self.decision_timestamp = self.decision_timestamp.replace(tzinfo=timezone.utc)
 
 
 class HistoricalMarketEvidence(Base):
