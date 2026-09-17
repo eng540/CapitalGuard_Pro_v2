@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 from typing import Any, Iterable, Mapping
 
 from sqlalchemy import select
@@ -33,6 +34,8 @@ from .historical_signal_materialization_service import (
     HistoricalSignalMaterializationService,
 )
 from .historical_signal_service import HistoricalSignalService, HistoricalSignalValidationError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,35 @@ class HistoricalForwardingService:
     SOURCE_KIND = "TELEGRAM_FORWARD"
     AUTO_PROGRESS_POLICY = "HISTORICAL_AUTO_PROGRESS_V1"
     VALID_ORIGIN_TYPES = {"CHANNEL", "MESSAGE_ORIGIN_CHANNEL"}
+
+    @staticmethod
+    def _log_receipt_decision(receipt: HistoricalForwardReceipt, *, item: Mapping[str, Any], decision: str) -> None:
+        """Emit one privacy-safe, joinable decision record for operational diagnosis."""
+        logger.info(
+            "Historical forwarding decision "
+            "batch_id=%s receipt_id=%s receiver_chat_id=%s receiver_message_id=%s "
+            "source_chat_id=%s source_message_id=%s source_revision=%s content_hash=%s "
+            "validation_status=%s decision=%s status=%s materialization_status=%s "
+            "replay_status=%s coverage_status=%s previous_receipt_id=%s "
+            "canonical_message_id=%s replay_run_id=%s",
+            receipt.batch_id,
+            receipt.id,
+            receipt.receiver_chat_id,
+            receipt.receiver_message_id,
+            receipt.source_chat_id,
+            receipt.source_message_id,
+            receipt.source_message_revision,
+            receipt.content_hash,
+            receipt.validation_status,
+            decision,
+            item.get("status"),
+            item.get("materialization_status"),
+            item.get("replay_status"),
+            item.get("coverage_status"),
+            item.get("previous_receipt_id"),
+            item.get("canonical_message_id"),
+            item.get("run_id") or item.get("replay_run_id"),
+        )
 
     def __init__(
         self,
@@ -363,6 +395,7 @@ class HistoricalForwardingService:
             )
         ).scalar_one_or_none()
         if existing_receiver is not None:
+            self._log_receipt_decision(existing_receiver, item={}, decision="RECEIVER_IDEMPOTENT")
             return existing_receiver
 
         source_timestamp = self._utc(message.source_message_timestamp)
@@ -402,6 +435,7 @@ class HistoricalForwardingService:
                 )
             ).scalar_one_or_none()
         if existing_source is not None:
+            self._log_receipt_decision(existing_source, item={}, decision="SOURCE_IDEMPOTENT")
             return existing_source
 
         duplicate_resolution = None
@@ -438,6 +472,14 @@ class HistoricalForwardingService:
         session.flush()
         if receipt.validation_status == "STAGED":
             self.message_foundation_service.record_receipt(session, receipt=receipt)
+        decision = (
+            "DUPLICATE"
+            if receipt.validation_status == "DUPLICATE"
+            else "NEW"
+            if receipt.validation_status == "STAGED"
+            else "BLOCKED"
+        )
+        self._log_receipt_decision(receipt, item={}, decision=decision)
         return receipt
 
     def preview_batch(self, session: Session, *, batch_id: int) -> ForwardingPreview:
@@ -734,11 +776,13 @@ class HistoricalForwardingService:
                     "termination_reason": replay.get("termination_reason"),
                     "exit_timestamp": replay.get("exit_timestamp"),
                     "coverage_status": replay.get("coverage_status"),
+                    "replay_run_id": replay.get("run_id"),
                     "duplicate": True,
                     "previous_receipt_id": resolution.get("previous_receipt_id"),
                     "canonical_message_id": resolution.get("canonical_message_id"),
                     "message": "SOURCE_MESSAGE_ALREADY_REGISTERED",
                 }
+                self._log_receipt_decision(receipt, item=duplicate_item, decision="REUSE_OR_REPROCESS")
                 items.append(duplicate_item)
                 continue
             if receipt.validation_status != "STAGED":
@@ -828,6 +872,7 @@ class HistoricalForwardingService:
                     start = self._utc(signal.decision_timestamp)
                     item.update({
                         "status": "MATERIALIZED",
+                        "materialization_status": "MATERIALIZED",
                         "signal_id": signal.id,
                         "public_ref": signal.public_ref,
                         "replay_policy": self.AUTO_PROGRESS_POLICY,
@@ -835,14 +880,18 @@ class HistoricalForwardingService:
                     })
                 progressed += 1
             except (HistoricalSignalMaterializationBlocked, HistoricalEvidenceIngestionError) as exc:
+                item["materialization_status"] = "BLOCKED"
                 item["reason"] = str(exc)
                 review_required += 1
+                self._log_receipt_decision(receipt, item=item, decision="BLOCKED")
                 items.append(item)
                 continue
             except Exception as exc:
                 item["status"] = "PROGRESSION_FAILED"
+                item["materialization_status"] = "FAILED"
                 item["reason"] = f"AUTO_PROGRESS_FAILED:{type(exc).__name__}"
                 failed += 1
+                self._log_receipt_decision(receipt, item=item, decision="FAILED")
                 items.append(item)
                 continue
 
@@ -878,6 +927,7 @@ class HistoricalForwardingService:
                         "lifecycle_status": self._lifecycle_status(signal, events),
                         "interval": interval,
                         "coverage_status": coverage_status,
+                        "replay_run_id": getattr(run, "id", None),
                         "coverage_ratio": coverage_ratio,
                         "coverage_start": actual_start.isoformat() if actual_start else None,
                         "coverage_end": actual_end.isoformat() if actual_end else None,
@@ -915,6 +965,7 @@ class HistoricalForwardingService:
                 failed += 1
 
             items.append(item)
+            self._log_receipt_decision(receipt, item=item, decision="REPLAY")
 
         remaining_staged = sum(
             1 for receipt in receipts

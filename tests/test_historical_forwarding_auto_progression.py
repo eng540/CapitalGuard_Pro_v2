@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import logging
 
 from sqlalchemy import select
 
@@ -52,9 +53,9 @@ def _candles(*, high=101, low=99):
     ]
 
 
-def _auto_batch(db_session, *, raw_text, claim_status="CANONICAL", source_time=SOURCE_TIME):
+def _auto_batch(db_session, *, raw_text, claim_status="CANONICAL", source_time=SOURCE_TIME, source_chat_id=-1007001):
     catalog = ChannelCatalog(
-        telegram_channel_id=-1007001,
+        telegram_channel_id=source_chat_id,
         channel_code="AUTO-PROGRESSION",
         public_ref="AUTO-PROGRESSION",
         title="Canonical historical source",
@@ -496,7 +497,53 @@ def test_same_content_with_different_source_message_id_is_new_recommendation(db_
     assert preview.manifest["records"][0]["telegram_message_id"] == 7002
 
 
-def test_duplicate_partial_is_classified_as_partial_not_failed(db_session):
+def test_same_visible_reference_from_different_source_channel_is_independent(db_session):
+    first_batch, first_receipt, _, _ = _auto_batch(
+        db_session,
+        raw_text="REC-EXAMPLE BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures",
+        source_chat_id=-1007001,
+    )
+    second_catalog = ChannelCatalog(
+        telegram_channel_id=-1007002,
+        channel_code="INDEPENDENT-SOURCE",
+        public_ref="INDEPENDENT-SOURCE",
+        title="Independent source channel",
+        is_active=True,
+    )
+    db_session.add(second_catalog)
+    db_session.flush()
+    service = HistoricalForwardingService()
+    second_batch = service.start_batch(
+        db_session,
+        channel_catalog_id=second_catalog.id,
+        requested_by_user_id=77,
+        expected_source_chat_id=-1007002,
+        mode="SINGLE",
+        max_records=1,
+    )
+    second_receipt = service.stage_message(
+        db_session,
+        batch_id=second_batch.id,
+        message=ForwardedMessageInput(
+            receiver_chat_id=701,
+            receiver_message_id=8003,
+            forwarding_user_id=77,
+            source_chat_id=-1007002,
+            source_message_id=7001,
+            source_origin_type="CHANNEL",
+            source_message_timestamp=SOURCE_TIME,
+            raw_text="REC-EXAMPLE BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures",
+            metadata={"source_title": "Independent source channel"},
+        ),
+    )
+    assert first_batch.id != second_batch.id
+    assert first_receipt.validation_status == "STAGED"
+    assert second_receipt.validation_status == "STAGED"
+    assert first_receipt.source_chat_id != second_receipt.source_chat_id
+
+
+def test_duplicate_partial_is_classified_as_partial_not_failed(db_session, caplog):
+    caplog.set_level(logging.INFO)
     batch, _, _, _ = _auto_batch(
         db_session,
         raw_text="#BTCUSDT LONG Entry 100 Stop 90 TP1 110 Futures",
@@ -580,16 +627,7 @@ def test_duplicate_partial_is_classified_as_partial_not_failed(db_session):
 
     assert result["progressed"] == 0
 
-    # TEMPORARY DIAGNOSTIC — remove once retry_g6 behavior is confirmed.
-    db_session.refresh(duplicate)
-    _diag = {
-        "failed": result["failed"],
-        "partial": result["partial"],
-        "status": result["status"],
-        "duplicate_metadata": duplicate.metadata_json,
-    }
-    assert result["failed"] == 0, f"DIAG_DUPLICATE: {_diag}"
-
+    assert result["failed"] == 0
     assert result["partial"] == 1
     assert result["duplicate_count"] == 1
     assert result["status"] == "PARTIAL"
@@ -598,3 +636,8 @@ def test_duplicate_partial_is_classified_as_partial_not_failed(db_session):
 
     assert item["status"] == "ALREADY_REGISTERED"
     assert item["replay_status"] == "REPLAY_PARTIAL"
+    assert "Historical forwarding decision" in caplog.text
+    assert f"receipt_id={duplicate.id}" in caplog.text
+    assert "source_chat_id=-1007001" in caplog.text
+    assert "decision=REUSE_OR_REPROCESS" in caplog.text
+    assert "replay_status=REPLAY_PARTIAL" in caplog.text
