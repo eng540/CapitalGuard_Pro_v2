@@ -17,7 +17,10 @@ import time
 import hashlib
 from typing import Dict, Any, Optional, List, Tuple
 from decimal import Decimal
-import spacy
+try:
+    import spacy
+except ImportError:
+    spacy = None
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -34,12 +37,15 @@ log = logging.getLogger(__name__)
 
 # Optional NER model (graceful fallback if unavailable)
 _NLP_MODEL = None
-try:
-    _NLP_MODEL = spacy.load("en_core_web_sm")
-    log.info("spaCy model 'en_core_web_sm' loaded.")
-except Exception:
-    _NLP_MODEL = None
-    log.debug("spaCy model not available; NER fallback disabled.")
+if spacy is not None:
+    try:
+        _NLP_MODEL = spacy.load("en_core_web_sm")
+        log.info("spaCy model 'en_core_web_sm' loaded.")
+    except Exception:
+        _NLP_MODEL = None
+        log.debug("spaCy model not available; NER fallback disabled.")
+else:
+    log.debug("spaCy package not available; NER fallback disabled.")
 
 
 # Exceptions
